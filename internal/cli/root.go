@@ -85,6 +85,7 @@ func init() {
 	RootCmd.AddCommand(newConfigCmd())
 	RootCmd.AddCommand(newVerifyHistoryCmd())
 	RootCmd.AddCommand(newExportCmd())
+	RootCmd.AddCommand(newMCPCmd())
 }
 
 func newVersionCmd() *cobra.Command {

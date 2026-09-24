@@ -41,8 +41,11 @@ type SurfaceState struct {
 	// this surface reports as. LastBackupRequestID is the last console
 	// "back up now" honoured, so a request is run once however many
 	// heartbeats repeat it.
-	ServerNodeID        string    `json:"server_node_id,omitempty"`
-	LastBackupRequestID string    `json:"last_backup_request_id,omitempty"`
+	ServerNodeID        string `json:"server_node_id,omitempty"`
+	LastBackupRequestID string `json:"last_backup_request_id,omitempty"`
+	// LastDrillRequestID is the last "drill now" this surface ran, so each
+	// request is run once.
+	LastDrillRequestID  string    `json:"last_drill_request_id,omitempty"`
 	DrillStatus         string    `json:"drill_status,omitempty"`
 	LastDrillAttempt    time.Time `json:"last_drill_attempt,omitempty"`
 	DrillFailures       int       `json:"drill_failures,omitempty"`
@@ -446,7 +449,11 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 		if hb != nil {
 			if hb.TriggerFireDrill && hb.DrillSnapshotID != "" {
 				s := surface
-				drills = append(drills, pendingDrill{surface: &s, state: sState, nodeID: nodeID, snapshotID: hb.DrillSnapshotID})
+				d := pendingDrill{surface: &s, state: sState, nodeID: nodeID, snapshotID: hb.DrillSnapshotID}
+				if hb.DrillRequestID != "" && hb.DrillRequestID != sState.LastDrillRequestID {
+					d.requestID = hb.DrillRequestID
+				}
+				drills = append(drills, d)
 			} else if sState.DrillStatus == model.DrillStatusNoKey {
 				sState.DrillStatus = ""
 			}
@@ -458,7 +465,7 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 		if ctx.Err() != nil {
 			break
 		}
-		runUnattendedDrill(ctx, c, d.surface, d.state, d.nodeID, d.snapshotID, func() {
+		runUnattendedDrill(ctx, c, d.surface, d.state, d.nodeID, d.snapshotID, d.requestID, func() {
 			warnIfStateUnsaved(saveAgentState(statePath, agentState), statePath)
 		})
 	}

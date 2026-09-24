@@ -216,4 +216,7 @@ type HeartbeatResponse struct {
 	// DrillSnapshotID is the snapshot a triggered drill should restore: the
 	// latest the remote server has recorded for this node.
 	DrillSnapshotID string `json:"drill_snapshot_id,omitempty"`
+	// DrillRequestID names a one-shot "drill now". The agent runs each id once,
+	// even inside its usual spacing between drills: someone asked for it.
+	DrillRequestID string `json:"drill_request_id,omitempty"`
 }

@@ -156,6 +156,7 @@ type pendingDrill struct {
 	state      *SurfaceState
 	nodeID     string
 	snapshotID string
+	requestID  string // a "drill now" not yet run, or empty
 }
 
 // drillMinSpacing is the least time between two unattended drill attempts of
@@ -200,9 +201,15 @@ func agentPrivateKey(ctx context.Context, c *config.CLIConfig) string {
 // surface with drill.sandbox_url is restored into that scratch database for
 // real and counted there; everything else is replayed in memory, and
 // the report says which.
-func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, s *config.SurfaceConfig, st *SurfaceState, nodeID, snapshotID string, save func()) {
+//
+// requestID is a "drill now" not yet run: it goes ahead inside the usual
+// spacing, once, because a person or an agent asked for it.
+func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, s *config.SurfaceConfig, st *SurfaceState, nodeID, snapshotID, requestID string, save func()) {
 	now := time.Now().UTC()
-	if !st.LastDrillAttempt.IsZero() {
+	if requestID != "" {
+		st.LastDrillRequestID = requestID
+		fmt.Printf("⏰ Surface %s: Fire Drill requested.\n", s.ID)
+	} else if !st.LastDrillAttempt.IsZero() {
 		wait := drillMinSpacing
 		if st.DrillFailures > 0 && drillBackoff(st.DrillFailures) > wait {
 			wait = drillBackoff(st.DrillFailures)
