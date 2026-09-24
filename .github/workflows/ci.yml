@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    name: Test & Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Verify dependencies
+        run: go mod verify
+
+      # `make ci` is the same gate a contributor can run locally: gofmt check,
+      # tidy check, vet, and the race-detector test run. Keeping it in one make
+      # target means CI and a local run cannot drift apart.
+      - name: Run CI gate
+        run: make ci

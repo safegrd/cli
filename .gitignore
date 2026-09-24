@@ -1,0 +1,58 @@
+# Binaries and build artifacts.
+# These two must stay anchored with a leading slash. A bare `safegrd` matches
+# every path component with that name, which silently swallowed the `cmd/safegrd/`
+# package directory: `main.go` was never committed and the release build failed
+# with "directory not found" on a fresh checkout.
+bin/
+/safegrd
+/safegrd.exe
+*.test
+*.prof
+
+# Test artifacts and local backups
+backups/
+safegrd-storage/
+test-storage/
+coverage.out
+coverage.html
+
+# Encrypted snapshot artifacts written by pkg/storage/local.go
+*.safegrd
+
+# Local configuration, Age keypairs, and secrets.
+# The CLI writes ~/.safegrd/config.yaml and ~/.safegrd/keys/agent.key, but a
+# node agent is often run from inside a checkout with a local --config, which
+# carries database_url and key paths in cleartext.
+.safegrd/
+*.key
+.env
+
+# `/config.yaml` only matched the repo root, so the very case the comment above
+# warns about — an operator keeping `agent-config.yaml` or `configs/prod.yaml`
+# next to the binary they are running — was still tracked. These patterns are
+# unanchored so they match at any depth.
+config.yaml
+*-config.yaml
+config.*.yaml
+safegrd.yaml
+
+# Any backup or rollback copy of one of those. A plain `*.prod.yaml` entry does
+# not match `*.prod.yaml.bak`, which is how a copy of a live secret can sit in
+# the tree looking untracked and then land in `git add -A`.
+*.prod.yaml*
+*.yaml.bak
+*.yaml.prev
+# A bare `prod.yaml` (e.g. configs/prod.yaml) has nothing before `.prod.yaml`
+# for the pattern above to match, so it needs its own entry.
+prod.yaml
+**/prod.yaml
+
+# Local state and scratch output a node agent writes when it is run from inside
+# a checkout.
+safegrd-data/
+*.tmp
+
+# IDE and OS
+.DS_Store
+.idea/
+.vscode/

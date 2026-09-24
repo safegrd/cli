@@ -1,0 +1,176 @@
+# SafeGrd CLI (node agent) Configuration Example — safegrd.dev
+#
+# For the `safegrd` binary. Copy to ~/.safegrd/config.yaml (the default
+# location) or pass it with `safegrd --config <path>`.
+#
+# For the remote server (attestation, scheduling, alerts), see https://safegrd.dev/docs.
+#
+# Contains connection strings and key paths: never commit a filled-in copy.
+#
+# The Age *private* key is never written here: `init` puts it at `key_path`
+# with 0600 permissions, and it is resolved from there or from
+# SAFEGRD_PRIVATE_KEY at load. This file still holds connection strings, so
+# keep it 0600 and do not commit a filled-in copy.
+
+# ---------------------------------------------------------------------------
+# CURRENT SCHEMA — one node, one surface. This is what the CLI reads today.
+# ---------------------------------------------------------------------------
+
+node_id: "node-prod-db-primary"
+node_name: "Production PostgreSQL"
+server_url: "http://localhost:8080" # or "https://api.safegrd.dev"
+server_token: ""
+
+# Target PostgreSQL Database to protect
+database_url: "postgres://postgres:password@localhost:5432/myapp_prod?sslmode=disable"
+
+# Storage Backend: "s3" or "local"
+storage:
+  type: "local" # Use "s3" for AWS S3 / MinIO
+  bucket: "my-safegrd-worm-backups" # Required if type: s3
+  region: "us-east-1"
+  endpoint: "" # Set for MinIO, Cloudflare R2, or Wasabi (e.g. http://localhost:9000)
+  prefix: "safegrd/snapshots"
+  retention_days: 30 # Immutable WORM retention period
+  # Exactly "COMPLIANCE" or "GOVERNANCE", uppercase, or leave it unset for
+  # COMPLIANCE. Anything else is refused at startup rather than guessed at:
+  # under COMPLIANCE an object cannot be deleted before retention_days expires,
+  # by anyone, including us. Lowercase "governance" is an error, not a synonym.
+  worm_mode: "COMPLIANCE"
+  local_path: "./safegrd-storage" # Used if type: local
+
+# Client-Side Zero-Knowledge Encryption (Age / X25519)
+encryption:
+  # Recipient public key for encryption (never exposes the private key to the runner or the remote server)
+  public_key: "age1..."
+  # Path to local identity file containing private key (for restores/verifications)
+  key_path: "~/.safegrd/keys/agent.key"
+
+# Alerts are not configured here. The remote server sends them — failed backups,
+# failed or blocked Fire Drills, silent hosts, overdue surfaces, recoveries — to
+# the webhook set in the console under Settings -> Alerts (Slack, Discord or plain
+# JSON), and by email on paid plans. An `alert:` block in this file was never
+# read; `safegrd config validate` warns if one is set. See safegrd.dev/docs/alerts.
+
+# ===========================================================================
+# Unattended multi-surface agent — `safegrd agent run`.
+#
+# `agent run` reads everything below. A few keys are accepted but not yet
+# acted on; each says so where it appears, and says what happens instead.
+# See https://safegrd.dev/docs/agent.
+#
+# The keys above stay valid: a config with no `surfaces:` list loads as a
+# single implicit `postgres` surface, so no existing install needs an edit.
+# ===========================================================================
+
+# agent:
+#   # How often the agent wakes to look for work. This is a POLL, not the
+#   # schedule — per-surface `schedule` below decides when a backup actually
+#   # runs. ±10% jitter is applied so a fleet does not stampede on the minute.
+#   interval: "5m"
+#
+#   # Backups running at once across all surfaces. NOT YET ACTED ON: surfaces
+#   # run one at a time whatever this says.
+#   max_concurrent: 1
+#
+#   # Per-surface exponential backoff after a failure, capped, so a failing
+#   # surface does not retry every tick forever. NOT YET ACTED ON:
+#   # the backoff is fixed at 5m doubling to 1h, the values shown.
+#   retry_backoff_min: "5m"
+#   retry_backoff_max: "1h"
+#
+#   # State, locks and logs. Defaults to ~/.safegrd (user scope) or
+#   # /var/lib/safegrd (system scope). Never put this on a network filesystem —
+#   # the in-progress lock depends on working flock semantics.
+#   state_dir: "~/.safegrd"
+#
+#   # NOT YET ACTED ON: the agent logs plain text at one level.
+#   log_format: "text"   # "text" | "json"
+#   log_level: "info"
+#
+#   # Prometheus counters. NOT YET ACTED ON: no metrics endpoint exists.
+#   metrics_addr: ""     # e.g. "127.0.0.1:9847"
+
+# Defaults every surface inherits unless it overrides them.
+# defaults:
+#   schedule: "@daily"        # "@hourly" | "@daily" | "@weekly" | "6h" | "2d" — one hour minimum
+#   timezone: "UTC"           # NOT YET ACTED ON: schedules are intervals, not wall-clock times
+#   retention_days: 30
+#   # Grandfather-father-son, applied by the agent at upload: the first backup of
+#   # each ISO week is locked keep_weekly weeks, the first of each month
+#   # keep_monthly months, every other one retention_days. 0 turns a tier off.
+#   keep_weekly: 4
+#   keep_monthly: 12
+
+# Each entry becomes its own registered node on the remote server and counts
+# as one protected surface against the plan quota. `id` must be stable — it is
+# how state, locks and snapshot history are keyed.
+# surfaces:
+#
+#   - id: "app-primary"
+#     type: "postgres"
+#     name: "Production PostgreSQL"
+#     schedule: "@daily"
+#     # Reference an environment variable rather than inlining the DSN when the
+#     # connection string carries a password.
+#     database_url_env: "APP_DATABASE_URL"
+#     # ...or inline it, for a passwordless local socket:
+#     # database_url: "postgres://postgres@localhost:5432/myapp?sslmode=disable"
+#     # Commands run around each of the agent's backups of this surface.
+#     # pre_backup must succeed or the backup is skipped; post_backup always
+#     # runs, with SAFEGRD_BACKUP_STATUS=success|failed.
+#     # pre_backup: "psql \"$APP_DB\" -c 'CHECKPOINT'"
+#     # post_backup: "logger safegrd backup $SAFEGRD_BACKUP_STATUS"
+#     # ...or read the whole URL from your secret manager, used only when
+#     # neither of the above is set:
+#     # credential_command: "op read op://vault/app-db/url"
+#     # A scratch database for Fire Drills: the drill restores the snapshot into
+#     # it and counts what came back. It must hold nothing and be used for
+#     # nothing else: the agent refuses one with tables in it, refuses the
+#     # database above, and empties it after each drill. Without it, drills
+#     # replay the snapshot in memory.
+#     # drill:
+#     #   sandbox_url_env: "APP_DRILL_DATABASE_URL"
+#
+#   - id: "user-uploads"
+#     type: "files"
+#     name: "User upload tree"
+#     schedule: "6h"
+#     roots:
+#       - "/var/www/uploads"
+#       - "/srv/shared"
+#     excludes:
+#       - "*.tmp"
+#       - "*.log"
+#       - "cache/*"
+#       - "node_modules/*"
+#     # macOS: backing up ~/Documents, ~/Desktop or ~/Library/Mail requires Full
+#     # Disk Access for the safegrd binary. Without it the read returns EMPTY
+#     # rather than failing — `safegrd doctor` checks for this.
+#
+#   - id: "support-mailbox"
+#     type: "email"
+#     name: "support@example.com"
+#     schedule: "@daily"
+#     host: "imap.gmail.com"
+#     port: 993
+#     username: "support@example.com"
+#     folders: ["INBOX", "Sent", "Archive"]
+#     # The config NEVER holds the password itself. Resolve it
+#     # through one of these, in order of preference:
+#     #
+#     # 1. A command whose stdout is the secret. Works identically under
+#     #    launchd, systemd and an interactive shell — a daemon inherits no
+#     #    login shell, so a bare env var is usually empty under a service.
+#     credential_command: "op read op://vault/support-mail/password"
+#     #    It runs under /bin/sh as the agent's user, has 30 seconds, and a
+#     #    failure fails this surface; it never falls back to a variable.
+#     #    `safegrd doctor` runs it, so check it there first.
+#     # 2. An environment variable NAME — the variable, never the value:
+#     # password_env: "SUPPORT_MAILBOX_PASSWORD"
+#
+#     # Per-surface storage override. Omit to inherit the top-level `storage`.
+#     # storage:
+#     #   type: "s3"
+#     #   bucket: "mail-archive-worm"
+#     #   retention_days: 365

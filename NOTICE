@@ -1,0 +1,9 @@
+safegrd is licensed under the Business Source License 1.1; see LICENSE.
+
+It includes the following third-party software under its own licence:
+
+  github.com/go-sql-driver/mysql   Mozilla Public License 2.0
+      Used unmodified. Source: https://github.com/go-sql-driver/mysql
+
+Every other dependency is under a permissive licence (Apache-2.0, BSD or MIT);
+`go list -m all` lists them, and each module's licence ships with its source.
