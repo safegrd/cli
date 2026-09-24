@@ -91,10 +91,12 @@ type DefaultsConfig struct {
 	Schedule      string `yaml:"schedule,omitempty" json:"schedule,omitempty"`             // "@daily", "@hourly", "6h", cron
 	Timezone      string `yaml:"timezone,omitempty" json:"timezone,omitempty"`             // e.g. "UTC"
 	RetentionDays int    `yaml:"retention_days,omitempty" json:"retention_days,omitempty"` // Default WORM retention days
-	// KeepWeekly and KeepMonthly are the grandfather-father-son tiers: the
-	// first backup of each ISO week is locked for KeepWeekly weeks, the first
-	// of each month for KeepMonthly months, and every other backup for
-	// RetentionDays. Zero turns a tier off.
+	// KeepDaily, KeepWeekly and KeepMonthly are the grandfather-father-son
+	// tiers: the first backup of each UTC day is locked for KeepDaily days,
+	// the first of each ISO week for KeepWeekly weeks, the first of each month
+	// for KeepMonthly months, and every other backup for RetentionDays. Zero
+	// turns a tier off.
+	KeepDaily   int `yaml:"keep_daily,omitempty" json:"keep_daily,omitempty"`
 	KeepWeekly  int `yaml:"keep_weekly,omitempty" json:"keep_weekly,omitempty"`
 	KeepMonthly int `yaml:"keep_monthly,omitempty" json:"keep_monthly,omitempty"`
 }
@@ -106,6 +108,7 @@ type SurfaceConfig struct {
 	Name          string `yaml:"name,omitempty" json:"name,omitempty"`
 	Schedule      string `yaml:"schedule,omitempty" json:"schedule,omitempty"`
 	RetentionDays int    `yaml:"retention_days,omitempty" json:"retention_days,omitempty"`
+	KeepDaily     int    `yaml:"keep_daily,omitempty" json:"keep_daily,omitempty"`
 	KeepWeekly    int    `yaml:"keep_weekly,omitempty" json:"keep_weekly,omitempty"`
 	KeepMonthly   int    `yaml:"keep_monthly,omitempty" json:"keep_monthly,omitempty"`
 

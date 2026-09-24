@@ -22,15 +22,15 @@ func TestGFSRetentionTiers(t *testing.T) {
 		keepDays   int
 	}{
 		{"2026-09-01T02:00:00Z", "monthly", 365}, // Tuesday, first of the month and week
-		{"2026-09-01T08:00:00Z", "daily", 7},
-		{"2026-09-06T02:00:00Z", "daily", 7},   // Sunday, same ISO week
+		{"2026-09-01T08:00:00Z", "base", 7},
+		{"2026-09-06T02:00:00Z", "base", 7},    // Sunday, same ISO week
 		{"2026-09-07T02:00:00Z", "weekly", 28}, // Monday, a new week
-		{"2026-09-07T09:00:00Z", "daily", 7},
+		{"2026-09-07T09:00:00Z", "base", 7},
 		{"2026-10-01T02:00:00Z", "monthly", 365},
 	}
 	for _, step := range steps {
 		now := at(step.when)
-		p := planRetention(now, 7, 4, 12, st)
+		p := planRetention(now, 7, gfs{Weeks: 4, Months: 12}, st)
 		if p.Tier != step.tier {
 			t.Errorf("%s: tier %s, want %s", step.when, p.Tier, step.tier)
 		}
@@ -41,16 +41,47 @@ func TestGFSRetentionTiers(t *testing.T) {
 	}
 	// A failed backup takes no slot: the next one is still promoted.
 	fresh := &SurfaceState{}
-	_ = planRetention(at("2026-11-02T02:00:00Z"), 7, 4, 12, fresh) // failed, not recorded
-	if p := planRetention(at("2026-11-02T05:00:00Z"), 7, 4, 12, fresh); p.Tier != "monthly" {
+	_ = planRetention(at("2026-11-02T02:00:00Z"), 7, gfs{Weeks: 4, Months: 12}, fresh) // failed, not recorded
+	if p := planRetention(at("2026-11-02T05:00:00Z"), 7, gfs{Weeks: 4, Months: 12}, fresh); p.Tier != "monthly" {
 		t.Errorf("a failed backup used up the month's slot: %s", p.Tier)
 	}
-	// No tiers configured: every backup is daily.
-	if p := planRetention(at("2026-12-01T00:00:00Z"), 14, 0, 0, &SurfaceState{}); p.Tier != "daily" || p.WeekKey != "" || p.MonthKey != "" {
+	// No tiers configured: every backup is base.
+	if p := planRetention(at("2026-12-01T00:00:00Z"), 14, gfs{}, &SurfaceState{}); p.Tier != "base" || p.WeekKey != "" || p.MonthKey != "" {
 		t.Errorf("tiers applied with none configured: %+v", p)
 	}
-	// A daily period longer than the weekly tier: the longer wins.
-	if p := planRetention(at("2026-12-07T00:00:00Z"), 60, 4, 0, &SurfaceState{}); p.Tier != "daily" || p.WeekKey == "" {
+	// A base period longer than the weekly tier: the longer wins.
+	if p := planRetention(at("2026-12-07T00:00:00Z"), 60, gfs{Weeks: 4}, &SurfaceState{}); p.Tier != "base" || p.WeekKey == "" {
 		t.Errorf("a 60-day daily tier was shortened by a 4-week weekly one: %+v", p)
+	}
+}
+
+// Hourly backups under a 2-day base lock with 14 days of dailies: each day's
+// first backup is kept two weeks, every other hour two days. That is the
+// shape hosted storage defaults to, and what keeps hourly schedules cheap.
+func TestGFSDailyTierOnAnHourlySchedule(t *testing.T) {
+	st := &SurfaceState{}
+	start := time.Date(2026, 9, 10, 0, 30, 0, 0, time.UTC)
+	daily, base := 0, 0
+	for h := 0; h < 72; h++ {
+		now := start.Add(time.Duration(h) * time.Hour)
+		p := planRetention(now, 2, gfs{Days: 14}, st)
+		switch p.Tier {
+		case "daily":
+			daily++
+			if got := p.Until.Sub(now); got != 14*24*time.Hour {
+				t.Errorf("%s: daily kept %s, want 14 days", now, got)
+			}
+		case "base":
+			base++
+			if got := p.Until.Sub(now); got != 48*time.Hour {
+				t.Errorf("%s: base kept %s, want 2 days", now, got)
+			}
+		default:
+			t.Errorf("%s: unexpected tier %s", now, p.Tier)
+		}
+		p.record(st)
+	}
+	if daily != 3 || base != 69 {
+		t.Errorf("72 hourly backups over 3 days gave %d daily and %d base, want 3 and 69", daily, base)
 	}
 }

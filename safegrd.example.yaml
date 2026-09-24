@@ -97,8 +97,11 @@ encryption:
 #   timezone: "UTC"           # NOT YET ACTED ON: schedules are intervals, not wall-clock times
 #   retention_days: 30
 #   # Grandfather-father-son, applied by the agent at upload: the first backup of
-#   # each ISO week is locked keep_weekly weeks, the first of each month
-#   # keep_monthly months, every other one retention_days. 0 turns a tier off.
+#   # each UTC day is locked keep_daily days, of each ISO week keep_weekly weeks,
+#   # of each month keep_monthly months, every other one retention_days. 0 turns
+#   # a tier off. An hourly schedule stays cheap with a short retention_days and
+#   # keep_daily carrying the history.
+#   keep_daily: 14
 #   keep_weekly: 4
 #   keep_monthly: 12
 

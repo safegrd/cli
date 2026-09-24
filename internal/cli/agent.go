@@ -53,8 +53,10 @@ type SurfaceState struct {
 	// supervisor restart would start the same drill straight away, forever,
 	// and the surfaces after it would never reach their backups.
 	DrillInFlight bool `json:"drill_in_flight,omitempty"`
-	// LastWeeklySlot and LastMonthlySlot are the ISO week ("2026-W39") and
-	// month ("2026-09") whose longer-lived backup has been taken (gfs.go).
+	// LastDailySlot, LastWeeklySlot and LastMonthlySlot are the UTC day
+	// ("2026-09-24"), ISO week ("2026-W39") and month ("2026-09") whose
+	// longer-lived backup has been taken (gfs.go).
+	LastDailySlot   string `json:"last_daily_slot,omitempty"`
 	LastWeeklySlot  string `json:"last_weekly_slot,omitempty"`
 	LastMonthlySlot string `json:"last_monthly_slot,omitempty"`
 }
@@ -581,11 +583,10 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 	}
 
 	snapshotID := fmt.Sprintf("snap-%s-%s", time.Now().UTC().Format("20060102-150405"), uuid.New().String()[:6])
-	weeks, months := gfsTiers(c, s)
-	plan = planRetention(time.Now(), storageCfg.RetentionDays, weeks, months, st)
+	plan = planRetention(time.Now(), storageCfg.RetentionDays, gfsTiers(c, s), st)
 	retentionUntil := plan.Until
 	// Under worm_mode NONE nothing is locked, so no tier is claimed either.
-	if plan.Tier != "daily" && storageCfg.WORMMode != config.WORMModeNone {
+	if plan.Tier != "base" && storageCfg.WORMMode != config.WORMModeNone {
 		fmt.Printf("   Surface %s: this is the %s backup, locked until %s\n", s.ID, plan.Tier, retentionUntil.UTC().Format("2006-01-02"))
 	}
 
