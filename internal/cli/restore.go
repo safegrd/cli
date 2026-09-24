@@ -92,6 +92,9 @@ using the private key, decompresses stream, and restores to PostgreSQL or extrac
 			// either — restoring from a centrally-configured sink has to work
 			// or the journey proves nothing.
 			storageCfg := resolveStorageRouting(ctx, cfg, "", "", "", "", false)
+			if _, err := resolveHostedStorage(ctx, cfg, &storageCfg, false); err != nil {
+				return err
+			}
 			resolveRuntimeCredentials(ctx, cfg, &storageCfg, false)
 			if cfg.NodeID != "" && storageCfg.NodeID == "" {
 				storageCfg.NodeID = cfg.NodeID

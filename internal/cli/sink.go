@@ -58,8 +58,10 @@ func fetchNodeSink(ctx context.Context, serverURL, nodeID, token string) (*nodeS
 func resolveStorageRouting(ctx context.Context, cfg *config.CLIConfig, flagBucket, flagPrefix, flagRegion, flagEndpoint string, verbose bool) config.StorageConfig {
 	storageCfg := cfg.Storage
 
-	// 2. Remote server project sink routing
-	if cfg.ServerURL != "" && cfg.NodeID != "" && cfg.ServerToken != "" {
+	// 2. Remote server project sink routing. Not for hosted storage: that is an
+	// explicit choice, leased separately (hosted.go), and a project sink must not
+	// silently redirect it.
+	if storageCfg.Type != config.StorageTypeHosted && cfg.ServerURL != "" && cfg.NodeID != "" && cfg.ServerToken != "" {
 		sinkResp, err := fetchNodeSink(ctx, cfg.ServerURL, cfg.NodeID, cfg.ServerToken)
 		if err == nil && sinkResp != nil && sinkResp.Configured && sinkResp.Sink != nil {
 			if sinkResp.Sink.Bucket != "" {

@@ -131,6 +131,16 @@ you if you have not already, so either order works.`,
 				},
 			}
 
+			switch cfg.Storage.Type {
+			case config.StorageTypeLocal, config.StorageTypeS3:
+			case config.StorageTypeHosted:
+				// The lease supplies the bucket, the prefix, the credential and
+				// the plan's retention; nothing about it belongs in the file.
+				cfg.Storage = config.StorageConfig{Type: config.StorageTypeHosted, WORMMode: config.WORMModeCompliance}
+			default:
+				return fmt.Errorf("--storage %q: want local, s3 or hosted", storageType)
+			}
+
 			if cfg.Storage.Type == config.StorageTypeLocal && cfg.Storage.LocalPath == "" {
 				cfg.Storage.LocalPath = filepath.Join(configDir, "storage")
 			}
@@ -159,6 +169,12 @@ you if you have not already, so either order works.`,
 			fmt.Println("🚀 Local setup complete.")
 			fmt.Println("   Back up the private key above: without it no snapshot can ever be read again.")
 			fmt.Println()
+			if cfg.Storage.Type == config.StorageTypeHosted {
+				fmt.Println("   Hosted storage is leased from the remote server, so enrol this host before")
+				fmt.Println("   the first backup:")
+				fmt.Println("     safegrd enroll --token <your access token>")
+				return nil
+			}
 			fmt.Println("   To protect this surface from the console, enrol it:")
 			fmt.Println("     safegrd enroll --token <your access token>")
 			fmt.Println("   Or stay standalone and run a backup right now:")
@@ -168,7 +184,7 @@ you if you have not already, so either order works.`,
 	}
 
 	cmd.Flags().StringVar(&dbURL, "database-url", "", "PostgreSQL connection URL")
-	cmd.Flags().StringVar(&storageType, "storage", "local", "Storage type ('local' or 's3')")
+	cmd.Flags().StringVar(&storageType, "storage", "local", "Storage type: 'local', 's3', or 'hosted' (SafeGrd's locked bucket, leased per run)")
 	cmd.Flags().StringVar(&s3Bucket, "s3-bucket", "", "S3 bucket for WORM storage")
 	cmd.Flags().StringVar(&s3Region, "s3-region", "us-east-1", "S3 bucket region")
 	cmd.Flags().StringVar(&s3Endpoint, "s3-endpoint", "", "S3 custom endpoint (for MinIO / R2)")

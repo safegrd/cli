@@ -52,7 +52,7 @@ func NewS3Storage(ctx context.Context, cfg config.StorageConfig) (*S3StorageProv
 	}
 	if cfg.AccessKeyID != "" && cfg.SecretAccessKey != "" {
 		optFns = append(optFns, awsconfig.WithCredentialsProvider(
-			credentials.NewStaticCredentialsProvider(cfg.AccessKeyID, cfg.SecretAccessKey, ""),
+			credentials.NewStaticCredentialsProvider(cfg.AccessKeyID, cfg.SecretAccessKey, cfg.SessionToken),
 		))
 	}
 

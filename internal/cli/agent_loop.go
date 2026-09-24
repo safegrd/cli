@@ -238,7 +238,12 @@ func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, s *config.Surf
 		storageCfg = *s.Storage
 	}
 	storageCfg.NodeID = nodeID
-	provider, err := storage.NewProvider(ctx, storageCfg)
+	// Hosted storage: a read lease, which is never refused for quota.
+	_, err := resolveHostedStorage(ctx, c, &storageCfg, false)
+	var provider storage.StorageProvider
+	if err == nil {
+		provider, err = storage.NewProvider(ctx, storageCfg)
+	}
 	if err != nil {
 		st.DrillFailures++
 		st.DrillStatus = model.DrillStatusFailed

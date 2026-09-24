@@ -307,7 +307,24 @@ func runDoctorChecks(path string, c *config.CLIConfig) []CheckResult {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	stProvider, err := storage.NewProvider(ctx, c.Storage)
+	// Hosted storage is checked the way a command uses it: with a lease.
+	stCfg := c.Storage
+	if stCfg.Type == config.StorageTypeHosted {
+		probe := *c
+		if l, err := resolveHostedStorage(ctx, &probe, &stCfg, false); err != nil {
+			results = append(results, CheckResult{Name: "Hosted Storage", Status: "FAIL", Message: err.Error()})
+		} else {
+			status := "PASS"
+			if l.QuotaBytes > 0 && l.UsedBytes*5 >= l.QuotaBytes*4 {
+				status = "WARN"
+			}
+			results = append(results, CheckResult{Name: "Hosted Storage", Status: status,
+				Message: fmt.Sprintf("%s of %s locked in s3://%s/%s (compliance mode)",
+					formatBytes(l.UsedBytes), formatBytes(l.QuotaBytes), l.Bucket, l.Prefix)})
+		}
+	}
+
+	stProvider, err := storage.NewProvider(ctx, stCfg)
 	if err != nil {
 		results = append(results, CheckResult{
 			Name:    "Storage Provider Init",

@@ -65,6 +65,9 @@ Plaintext data NEVER touches disk or third-party networks.`,
 			if retentionDays > 0 {
 				storageCfg.RetentionDays = retentionDays
 			}
+			if _, err := resolveHostedStorage(ctx, cfg, &storageCfg, true); err != nil {
+				return err
+			}
 
 			// Secrets the local config does not carry, fetched just before use
 			// and held in memory for this command only. Must run before

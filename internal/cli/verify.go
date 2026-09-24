@@ -107,6 +107,9 @@ executes a full active restore drill into the target ephemeral database.`,
 			}
 
 			storageCfg := resolveStorageRouting(ctx, cfg, "", "", "", "", false)
+			if _, err := resolveHostedStorage(ctx, cfg, &storageCfg, false); err != nil {
+				return err
+			}
 			resolveRuntimeCredentials(ctx, cfg, &storageCfg, false)
 			if cfg.NodeID != "" && storageCfg.NodeID == "" {
 				storageCfg.NodeID = cfg.NodeID

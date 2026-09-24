@@ -568,6 +568,11 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 	} else if storageCfg.RetentionDays == 0 && c.Defaults.RetentionDays > 0 {
 		storageCfg.RetentionDays = c.Defaults.RetentionDays
 	}
+	// Hosted storage: a write lease, refused when the organization is full.
+	lease, err := resolveHostedStorage(ctx, c, &storageCfg, true)
+	if err != nil {
+		return nil, plan, err
+	}
 
 	storageProvider, err := storage.NewProvider(ctx, storageCfg)
 	if err != nil {
@@ -583,7 +588,13 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 	}
 
 	snapshotID := fmt.Sprintf("snap-%s-%s", time.Now().UTC().Format("20060102-150405"), uuid.New().String()[:6])
-	plan = planRetention(time.Now(), storageCfg.RetentionDays, gfsTiers(c, s), st)
+	tiers := gfsTiers(c, s)
+	if tiers == (gfs{}) {
+		// On hosted storage the plan's tiers apply where the config sets none,
+		// so a typical estate fits its quota.
+		tiers = lease.gfs()
+	}
+	plan = planRetention(time.Now(), storageCfg.RetentionDays, tiers, st)
 	retentionUntil := plan.Until
 	// Under worm_mode NONE nothing is locked, so no tier is claimed either.
 	if plan.Tier != "base" && storageCfg.WORMMode != config.WORMModeNone {

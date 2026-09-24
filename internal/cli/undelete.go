@@ -71,6 +71,9 @@ version holding data, which is why it is safe to run.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
 			storageCfg := resolveStorageRouting(ctx, cfg, "", "", "", "", true)
+			if _, err := resolveHostedStorage(ctx, cfg, &storageCfg, false); err != nil {
+				return err
+			}
 			resolveRuntimeCredentials(ctx, cfg, &storageCfg, true)
 
 			provider, err := storage.NewProvider(ctx, storageCfg)

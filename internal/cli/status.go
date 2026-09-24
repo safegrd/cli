@@ -72,6 +72,9 @@ func newStatusCmd() *cobra.Command {
 			// cfg.Storage directly means this command cannot reach the bucket
 			// at all on exactly the hosts central configuration exists for.
 			storageCfg := resolveStorageRouting(ctx, cfg, "", "", "", "", false)
+			if _, err := resolveHostedStorage(ctx, cfg, &storageCfg, false); err != nil {
+				return err
+			}
 			resolveRuntimeCredentials(ctx, cfg, &storageCfg, false)
 			if cfg.NodeID != "" && storageCfg.NodeID == "" {
 				storageCfg.NodeID = cfg.NodeID

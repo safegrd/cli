@@ -18,6 +18,10 @@ type StorageType string
 const (
 	StorageTypeS3    StorageType = "s3"
 	StorageTypeLocal StorageType = "local"
+	// StorageTypeHosted is SafeGrd's own locked bucket: the remote server
+	// leases a credential for this organization's prefix at run time, so the
+	// config holds no bucket and no secret.
+	StorageTypeHosted StorageType = "hosted"
 )
 
 // WORMMode specifies Object Lock enforcement level.
@@ -56,9 +60,12 @@ type StorageConfig struct {
 	LocalPath       string      `yaml:"local_path,omitempty" json:"local_path,omitempty"` // For local filesystem WORM
 	AccessKeyID     string      `yaml:"access_key_id,omitempty" json:"access_key_id,omitempty"`
 	SecretAccessKey string      `yaml:"secret_access_key,omitempty" json:"secret_access_key,omitempty"`
-	ForcePathStyle  bool        `yaml:"force_path_style,omitempty" json:"force_path_style,omitempty"`
-	NodeID          string      `yaml:"node_id,omitempty" json:"node_id,omitempty"`
-	IAMRoleARN      string      `yaml:"iam_role_arn,omitempty" json:"iam_role_arn,omitempty"`
+	// SessionToken accompanies a temporary credential (a hosted storage
+	// lease). Never written to disk.
+	SessionToken   string `yaml:"-" json:"-"`
+	ForcePathStyle bool   `yaml:"force_path_style,omitempty" json:"force_path_style,omitempty"`
+	NodeID         string `yaml:"node_id,omitempty" json:"node_id,omitempty"`
+	IAMRoleARN     string `yaml:"iam_role_arn,omitempty" json:"iam_role_arn,omitempty"`
 }
 
 // EncryptionConfig holds Age asymmetric keypair configuration.
