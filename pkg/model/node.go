@@ -59,6 +59,10 @@ type Node struct {
 	// cleared when the next snapshot for this node arrives. Never inferred
 	// from due-ness: see HeartbeatResponse.BackupRequestID.
 	BackupRequestedAt *time.Time `json:"backup_requested_at,omitempty" yaml:"backup_requested_at,omitempty"`
+	// DrillRequestedAt is a one-shot "drill now", from the console, the API or
+	// an agent over MCP. The heartbeat answers it with TriggerFireDrill while
+	// the plan includes drills, and the next drill report clears it.
+	DrillRequestedAt *time.Time `json:"drill_requested_at,omitempty" yaml:"drill_requested_at,omitempty"`
 
 	// What the agent said on its last heartbeat. Absent for a node that has
 	// never heartbeated — one run by hand or from cron.
