@@ -9,20 +9,14 @@ import (
 	"github.com/safegrd/cli/pkg/model"
 )
 
-// The digest contract, asserted end to end through the real crypto.
+// The digest contract, asserted end to end through real streaming encryption.
 //
-// Until 2026-09-21 `safegrd backup` wrote the CIPHERTEXT digest into
-// Sha256Checksum and this package compared it against the PLAINTEXT digest.
-// They are different streams by construction, so the Fire Drill — the
-// paywalled feature, and the product's entire claim — failed on every snapshot
-// ever taken. Nothing caught it: `restore` accepted either digest, so it kept
-// passing, and no test ever encrypted a stream and then verified the manifest
-// it would really have produced.
-//
-// This one does exactly that, so the two halves can never drift apart again
-// without a failure here.
+// The manifest Sha256Checksum records the PLAINTEXT stream digest, and
+// verification compares it against the decrypted PLAINTEXT digest.
+// This test asserts that an encrypted stream produces a manifest
+// whose digest matches the restored stream.
 func TestTheManifestDigestIsOfThePlaintext(t *testing.T) {
-	plaintext := []byte(strings.Repeat("safegrd dogfood rows;", 500))
+	plaintext := []byte(strings.Repeat("safegrd sample data rows;", 500))
 
 	kp, err := crypto.GenerateKeyPair()
 	if err != nil {

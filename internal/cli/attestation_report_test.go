@@ -97,7 +97,7 @@ func TestMissingNodeIdentityIsReportedWithoutCallingTheServer(t *testing.T) {
 	}
 }
 
-// A successful report stays quiet on stderr — the warning has to mean something.
+// A successful report stays quiet on stderr; warnings indicate failures.
 func TestASuccessfulAttestationWarnsAboutNothing(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusCreated)
@@ -114,7 +114,7 @@ func TestASuccessfulAttestationWarnsAboutNothing(t *testing.T) {
 	}
 }
 
-// A standalone host — no token — is told it is standalone, not warned on
+// A standalone host (no token) is told it is standalone, not warned on
 // every backup, and nothing is sent anywhere. `init` writes a node_id
 // without enrolling, so a node id is not a sign of enrolment; a token the
 // remote server refuses is (TestARejectedAttestationIsReported).

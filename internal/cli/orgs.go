@@ -29,15 +29,7 @@ under your organization to segment environments (production, staging, etc.).`,
 
 	cmd.AddCommand(newListOrgsCmd())
 	cmd.AddCommand(newOrgMembersCmd())
-	// No `create` and no `invite`.
-	//
-	// An account gets its organization at signup, so there was never a second
-	// one to create — `create` existed only to say so, which is a help entry
-	// that teaches a customer about something they cannot do. Membership
-	// changes are console work and the remote server refuses them from a
-	// Personal Access Token, so `invite` could only ever have printed
-	// a 403. Both are done in the dashboard.
-
+	// Project creation and member invitations are managed in the web console.
 	return cmd
 }
 
@@ -96,11 +88,7 @@ func showCurrentOrg() error {
 	fmt.Println("💡 To manage environments or databases under this organization:")
 	fmt.Println("   safegrd projects list")
 	fmt.Println("   safegrd org members")
-	// No `projects create` here. It was suggested for some time after the
-	// subcommand was deliberately removed — the remote server refuses project
-	// creation from a Personal Access Token — so the one line of
-	// advice printed at the end of this command sent the reader to "unknown
-	// command". Projects are created in the console.
+	// Projects are created in the console.
 	fmt.Println("   New projects are created in the console at " + resolveServerURL() + "/dashboard")
 
 	return nil

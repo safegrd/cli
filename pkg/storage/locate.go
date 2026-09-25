@@ -14,11 +14,10 @@ import (
 // path segment between the prefix and the object, "" for a snapshot written
 // flat, before node segmentation.
 //
-// It exists for the recovery machine. Snapshots are stored under
-// <prefix>/<node_id>/, and restore looked only under the node its config
-// named. A machine rebuilding a lost host — holding the key and read access to
-// the bucket, with the remote server perhaps down too — did not know that
-// node id, so `list` showed every snapshot and `restore` found none of them.
+// It exists for disaster recovery. Snapshots are stored under
+// <prefix>/<node_id>/, and restore searches under the node configured.
+// A machine rebuilding a lost host (holding the key and read access to
+// the bucket) may not know the original node ID, so NodeLocator discovers it.
 type NodeLocator interface {
 	SnapshotNodes(ctx context.Context) (map[string]string, error)
 }

@@ -39,7 +39,7 @@ var (
 // RootCmd is the base command for the safegrd CLI.
 var RootCmd = &cobra.Command{
 	Use:   "safegrd",
-	Short: "SafeGrd — Immutable Postgres Backup & Verification Engine",
+	Short: "SafeGrd: Immutable Postgres Backup & Verification Engine",
 	Long: `SafeGrd (https://safegrd.dev)
 Agent-safe, cryptographically air-gapped PostgreSQL backups with
 client-side Age encryption and WORM storage immutability.`,
@@ -85,6 +85,7 @@ func init() {
 	RootCmd.AddCommand(newConfigCmd())
 	RootCmd.AddCommand(newVerifyHistoryCmd())
 	RootCmd.AddCommand(newExportCmd())
+	RootCmd.AddCommand(newPruneCmd())
 	RootCmd.AddCommand(newMCPCmd())
 }
 
@@ -136,7 +137,7 @@ func requireUsableConfig(cmd *cobra.Command) error {
 		return nil
 	}
 	return fmt.Errorf("the configuration file was not loaded: %w\n"+
-		"       No error after this one is about your configuration — it was never read, "+
+		"       No error after this one is about your configuration; it was never read, "+
 		"so every setting in it is missing. Run 'safegrd config validate' for the full picture", cfgLoadErr)
 }
 
@@ -166,7 +167,7 @@ func resolveServerURL() string {
 }
 
 // resolveServerURLFor is the same rule for a config the caller holds itself,
-// rather than the process-wide one — `doctor` is handed the config it just
+// rather than the process-wide one; doctor is handed the config it just
 // validated, which may have come from an explicit --config path.
 func resolveServerURLFor(c *config.CLIConfig) string {
 	if c != nil && c.ServerURL != "" {

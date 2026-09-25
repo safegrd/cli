@@ -406,7 +406,7 @@ func (d *MySQLDumper) Dump(ctx context.Context, databaseName string, dst io.Writ
 		})
 	}
 	meta.CalculateTotals()
-	meta.DurationMs = time.Since(start).Milliseconds()
+	meta.DurationMs = elapsedMilliseconds(start)
 	manifest, err := json.MarshalIndent(meta, "", "  ")
 	if err != nil {
 		return nil, err
@@ -683,7 +683,7 @@ func InspectMySQLArchive(ctx context.Context, src io.Reader) (*DryRestoreResult,
 		add(model.AssertionResult{Name: "Row Count: " + t.TableName, Passed: got == t.RowCount,
 			Expected: fmt.Sprintf("%d rows", t.RowCount), Actual: fmt.Sprintf("%d rows", got)})
 	}
-	result.DurationMs = time.Since(start).Milliseconds()
+	result.DurationMs = elapsedMilliseconds(start)
 	return result, nil
 }
 

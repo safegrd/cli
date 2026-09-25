@@ -22,7 +22,6 @@ import (
 	"github.com/safegrd/cli/pkg/crypto"
 	"github.com/safegrd/cli/pkg/dump"
 	"github.com/safegrd/cli/pkg/model"
-	"github.com/safegrd/cli/pkg/storage"
 	"github.com/spf13/cobra"
 )
 
@@ -52,7 +51,7 @@ type SurfaceState struct {
 	LastDrillSnapshotID string    `json:"last_drill_snapshot_id,omitempty"`
 	// DrillInFlight is saved before a drill starts and cleared when it ends.
 	// Found set at the next start, the drill took the process down with it
-	// (an out-of-memory kill, say) and counts as a failure — otherwise a
+	// (an out-of-memory kill, say) and counts as a failure. Otherwise a
 	// supervisor restart would start the same drill straight away, forever,
 	// and the surfaces after it would never reach their backups.
 	DrillInFlight bool `json:"drill_in_flight,omitempty"`
@@ -69,6 +68,9 @@ type AgentState struct {
 	AgentID   string                   `json:"agent_id"`
 	UpdatedAt time.Time                `json:"updated_at"`
 	Surfaces  map[string]*SurfaceState `json:"surfaces"`
+	// LastPrune is when the agent last pruned the bucket
+	// (storage.expire_after_lock).
+	LastPrune time.Time `json:"last_prune,omitempty"`
 }
 
 // LockInfo records in-flight execution to prevent concurrent runs.
@@ -314,9 +316,8 @@ func acquireLock(lockPath, surfaceID, snapshotID string) (func(), error) {
 }
 
 // effectiveSchedule is the schedule a surface actually runs on: its own, or the
-// config's defaults.schedule when it names none. The defaults block was
-// documented as inherited and was not — a surface with no schedule of its own
-// ran daily whatever the defaults said.
+// config's defaults.schedule when it names none. A surface with no schedule of its own
+// inherits from defaults.
 func effectiveSchedule(c *config.CLIConfig, s config.SurfaceConfig) string {
 	if strings.TrimSpace(s.Schedule) == "" && c != nil {
 		return c.Defaults.Schedule
@@ -326,9 +327,8 @@ func effectiveSchedule(c *config.CLIConfig, s config.SurfaceConfig) string {
 
 // warnAboutSchedules says out loud, once per agent start, every surface whose
 // schedule the agent will not run as written. The agent still protects the
-// surface — at the floor, or daily — because refusing over a typo would leave
-// it unprotected; but a substitution nobody is told about is how a host ends
-// up on a cadence its operator never chose.
+// surface (at the floor, or daily) because refusing over a typo would leave
+// it unprotected; but a substitution should be surfaced to the operator.
 func warnAboutSchedules(c *config.CLIConfig) {
 	for _, s := range c.Surfaces {
 		sched := effectiveSchedule(c, s)
@@ -359,6 +359,14 @@ func isSurfaceDue(s *config.SurfaceConfig, state *SurfaceState, now time.Time) (
 	// warnAboutSchedules rather than on every tick.
 	interval, _ := model.ScheduleInterval(s.Schedule)
 
+	// A last attempt or success in the future means this host's clock went
+	// backwards (a bad NTP step, a VM restored from an image). Waiting for
+	// the clock to catch up would stop backups for as long as it jumped, so
+	// the surface is due now; the agent says why once (clockWentBackwards).
+	if now.Before(state.LastAttempt) || now.Before(state.LastSuccess) {
+		return true, now
+	}
+
 	// Exponential backoff if consecutive failures exist: 5m, 10m, 20m, 40m, max 1h
 	if state.ConsecutiveFailures > 0 && !state.LastAttempt.IsZero() {
 		backoffMult := 1 << min(state.ConsecutiveFailures-1, 4) // up to 16 * 5m = 80m clamped to 1h
@@ -381,6 +389,12 @@ func isSurfaceDue(s *config.SurfaceConfig, state *SurfaceState, now time.Time) (
 	return now.After(nextDue) || now.Equal(nextDue), nextDue
 }
 
+// clockWentBackwards reports whether a surface's recorded times are ahead of
+// this host's clock.
+func clockWentBackwards(state *SurfaceState, now time.Time) bool {
+	return now.Before(state.LastAttempt) || now.Before(state.LastSuccess)
+}
+
 func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string, tick time.Duration, registered map[string]bool) error {
 	statePath := filepath.Join(stateDir, "agent_state.json")
 	lockDir := filepath.Join(stateDir, "locks")
@@ -396,7 +410,7 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 			st.DrillInFlight = false
 			st.DrillFailures++
 			st.DrillStatus = model.DrillStatusFailed
-			fmt.Fprintf(os.Stderr, "❌ Surface %s: the last Fire Drill did not finish — the agent stopped during it. "+
+			fmt.Fprintf(os.Stderr, "❌ Surface %s: the last Fire Drill did not finish; the agent stopped during it. "+
 				"Counted as a failure; the next is at least %s away.\n", st.SurfaceID, drillBackoff(st.DrillFailures))
 		}
 	}
@@ -419,6 +433,11 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 		nodeID := surfaceNodeID(ctx, c, &surface, sState, registered)
 		hb := sendHeartbeat(ctx, c, nodeID, sState, tick)
 
+		if clockWentBackwards(sState, now) {
+			fmt.Fprintf(os.Stderr, "⚠️  Surface %s: this host's clock is behind the last backup it recorded (%s); "+
+				"it went backwards. Backing up now rather than waiting for it to catch up. Check NTP.\n",
+				surface.ID, sState.LastAttempt.UTC().Format(time.RFC3339))
+		}
 		due, nextDue := isSurfaceDue(&surface, sState, now)
 		sState.NextDue = nextDue
 
@@ -468,6 +487,17 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 		runUnattendedDrill(ctx, c, d.surface, d.state, d.nodeID, d.snapshotID, d.requestID, func() {
 			warnIfStateUnsaved(saveAgentState(statePath, agentState), statePath)
 		})
+	}
+
+	// Expiry in the customer's own bucket, when they opted in: once a day.
+	// A failure is said and retried tomorrow; it never fails the backups.
+	if c.Storage.ExpireAfterLock && c.Storage.Type == config.StorageTypeS3 && time.Since(agentState.LastPrune) >= pruneEvery {
+		agentState.LastPrune = time.Now().UTC()
+		if r, err := pruneOwnBucket(ctx, c, pruneGrace, false, os.Stderr); err != nil {
+			fmt.Fprintf(os.Stderr, "❌ Prune (storage.expire_after_lock): %v\n", err)
+		} else {
+			fmt.Printf("🧹 Prune: %s\n", r)
+		}
 	}
 
 	warnIfStateUnsaved(saveAgentState(statePath, agentState), statePath)
@@ -548,17 +578,16 @@ func backupSurfaceNow(ctx context.Context, c *config.CLIConfig, surface *config.
 		plan.record(sState)
 		fmt.Printf("✅ Surface %s backup completed successfully.\n", surface.ID)
 	}
-	// Recomputed from the attempt just made. It kept the value from before
-	// the backup — "due now" — so `agent status` reported a surface as due
-	// the moment it had succeeded, which is the one field a monitor reads.
+	// Recomputed from the attempt just made. Reset next due after success
+	// so status reflects the next cycle.
 	_, sState.NextDue = isSurfaceDue(surface, sState, time.Now().UTC())
 
 	warnIfStateUnsaved(saveAgentState(statePath, agentState), statePath)
 	return backupErr
 }
 
-// runSurfaceBackup backs one surface up and reports it as nodeID — the child
-// node the remote server assigned, or the surface's own id without one. The
+// runSurfaceBackup backs one surface up and reports it as nodeID (the child
+// node the remote server assigned, or the surface's own id without one). The
 // snapshot is written under the same id, so the node a restore finds on the
 // remote server's record is the prefix it looks under.
 func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.SurfaceConfig, nodeID string, st *SurfaceState) (*model.SnapshotMetadata, retentionPlan, error) {
@@ -581,7 +610,7 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 		return nil, plan, err
 	}
 
-	storageProvider, err := storage.NewProvider(ctx, storageCfg)
+	storageProvider, err := openStorage(ctx, c, storageCfg)
 	if err != nil {
 		return nil, plan, fmt.Errorf("storage provider init failed: %w", err)
 	}
@@ -652,7 +681,7 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 		meta.StorageURI = storageURI
 		now := time.Now().UTC()
 		meta.CompletedAt = &now
-		meta.DurationMs = now.Sub(started).Milliseconds()
+		meta.DurationMs = backupMilliseconds(started)
 		meta.Status = model.SnapshotStatusCompleted
 		recordRetention(meta, storageCfg, retentionUntil)
 		meta.RawSizeBytes = metrics.RawBytes
@@ -733,7 +762,7 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 		meta.StorageURI = storageURI
 		now := time.Now().UTC()
 		meta.CompletedAt = &now
-		meta.DurationMs = now.Sub(started).Milliseconds()
+		meta.DurationMs = backupMilliseconds(started)
 		meta.Status = model.SnapshotStatusCompleted
 		recordRetention(meta, storageCfg, retentionUntil)
 		meta.RawSizeBytes = metrics.RawBytes
@@ -844,18 +873,9 @@ func newAgentStatusCmd() *cobra.Command {
 			statePath := filepath.Join(resolvedStateDir, "agent_state.json")
 			agentState := loadAgentState(statePath)
 
-			// last_success and next_due are what the table prints — "Never",
-			// "Due now", a local-looking stamp — and they stay that way,
-			// because that is what an operator reading the table expects.
-			//
-			// The *_at pair beside them is RFC3339 or absent, and it exists
-			// because this is the agent's only machine-readable surface. A
-			// monitor cannot answer "when did this host last back up" from the
-			// word "Never": a host that has stopped being protected and a host
-			// that never started look identical. That is the same failure the
-			// reporting paths had — a thing that is wrong and does not say so —
-			// one layer out, in the surface built for the thing that would say
-			// it.
+			// last_success and next_due are human-readable summary strings
+			// ("Never", "Due now", or timestamp string).
+			// The *_at pair beside them is RFC3339 or absent for machine parsing.
 			type SurfaceStatusView struct {
 				ID            string `json:"id"`
 				Type          string `json:"type"`
@@ -869,8 +889,8 @@ func newAgentStatusCmd() *cobra.Command {
 				LastSnapshot  string `json:"last_snapshot_id,omitempty"`
 				LastError     string `json:"last_error,omitempty"`
 				// ScheduleProblem is set when the agent is not running the
-				// schedule as written — clamped to the floor, or unreadable
-				// and run daily — so a monitor reading only JSON is told.
+				// schedule as written (clamped to the floor, or unreadable
+				// and fallback to daily).
 				ScheduleProblem string `json:"schedule_problem,omitempty"`
 			}
 
@@ -1019,7 +1039,7 @@ func newAgentInstallCmd() *cobra.Command {
 			fmt.Printf("   Config:     %s\n   State:      %s\n", svc.configPath, svc.stateDir)
 			switch {
 			case runtime.GOOS == "darwin":
-				fmt.Printf("   To activate:\n   launchctl load %s\n", targetPath)
+				fmt.Printf("   To activate:\n   %s\n", launchctlCommand("bootstrap", userScope, targetPath))
 			case userScope:
 				fmt.Println("   To activate:\n   systemctl --user daemon-reload && systemctl --user enable --now safegrd")
 				fmt.Println("   To keep it running after you log out:\n   loginctl enable-linger $USER")
@@ -1120,8 +1140,8 @@ func launchdPath(userScope bool) string {
 
 // systemdUnit is a unit for this host. A system unit keeps the hardening and
 // names every path the agent writes; a user unit cannot use ProtectSystem, and
-// is wanted by default.target — multi-user.target does not exist in a user
-// manager, so a user unit enabled against it never started.
+// is wanted by default.target because multi-user.target does not exist in a user
+// manager.
 func systemdUnit(s agentService, userScope bool) string {
 	quoted := make([]string, 0, 7)
 	for _, a := range s.args() {
@@ -1143,9 +1163,7 @@ func systemdUnit(s agentService, userScope bool) string {
 		// writes: its state and locks, and a local sink if it has one.
 		b.WriteString("ProtectSystem=strict\nPrivateTmp=true\n")
 		// "-": a path that does not exist is skipped rather than failing the
-		// unit. Without it systemd refused to start the service at all
-		// (226/NAMESPACE) when a local sink had not been written to yet —
-		// found by running the unit under real systemd.
+		// unit (e.g. 226/NAMESPACE when a local sink directory does not yet exist).
 		for _, w := range s.writable {
 			fmt.Fprintf(&b, "ReadWritePaths=-%s\n", systemdQuote(w))
 		}
@@ -1164,6 +1182,21 @@ func systemdQuote(v string) string {
 		return v
 	}
 	return "\"" + strings.NewReplacer("\\", "\\\\", "\"", "\\\"").Replace(v) + "\""
+}
+
+// launchctlCommand is the launchctl line a person runs to start or stop the
+// job: bootstrap and bootout into the user's GUI domain or the system domain.
+// load and unload are deprecated, and unload names a plist that uninstall
+// has just removed.
+func launchctlCommand(verb string, userScope bool, plist string) string {
+	domain, sudo := "system", "sudo "
+	if userScope {
+		domain, sudo = fmt.Sprintf("gui/%d", os.Getuid()), ""
+	}
+	if verb == "bootstrap" {
+		return fmt.Sprintf("%slaunchctl bootstrap %s %s", sudo, domain, plist)
+	}
+	return fmt.Sprintf("%slaunchctl %s %s/dev.safegrd.agent", sudo, verb, domain)
 }
 
 // launchdPlist logs beside the state rather than to /tmp, where the log was
@@ -1207,7 +1240,7 @@ func newAgentUninstallCmd() *cobra.Command {
 				stop = "systemctl --user disable --now safegrd"
 			}
 			if runtime.GOOS == "darwin" {
-				targetPath, stop = launchdPath(userScope), "launchctl unload "+launchdPath(userScope)
+				targetPath, stop = launchdPath(userScope), launchctlCommand("bootout", userScope, "")
 			}
 			// It printed "Removed" whether or not anything was, including
 			// when the delete was refused for want of sudo.
@@ -1261,8 +1294,7 @@ func newAgentRestartCmd() *cobra.Command {
 }
 
 // hostIsEnrolled decides whether the agent reports at all: a host with a
-// server token. A standalone agent under systemd logged "NOT RECORDED" for
-// every backup it took.
+// configured server URL and token.
 func hostIsEnrolled(c *config.CLIConfig) bool {
 	return c.ServerURL != "" && c.ServerToken != ""
 }

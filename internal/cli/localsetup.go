@@ -15,24 +15,11 @@ import (
 // ensureLocalSetup makes sure this machine has the two things every other
 // command assumes: a node identity, and an Age keypair to encrypt with.
 //
-// It exists because the two onboarding commands each half-assumed the other had
-// run. `enroll` read cfg.NodeID and cfg.Storage straight out of a config that
-// LoadCLIConfig will happily invent from defaults when no file exists — so
-// enrolling before init registered a node with an empty ID and no key, which
-// then could not encrypt a single byte. Meanwhile `init --register` tried to
-// register over an unauthenticated POST that the remote server has required
-// auth on for some time, failed with 401, and reported it as "could not reach
-// remote server (running headless mode)" — blaming the network for an
-// authorization failure.
-//
-// So the split is kept, because generating a private key and talking to a
-// server really are different acts with different failure modes, but the
-// ordering is no longer something the reader has to know: whichever command
-// runs first does the local half.
+// It ensures that both a node identity and an Age keypair are present before
+// operations proceed. Whichever setup command runs first performs the local initialization.
 //
 // Returns whether it generated anything, and whether it adopted an Age identity
-// that was already on disk. The caller needs the two apart: a key this command
-// generated may be escrowed, and a key it merely found may not be.
+// that was already on disk.
 func ensureLocalSetup(nodeName string) (created bool, adopted bool, err error) {
 	if cfg == nil {
 		cfg = config.NewDefaultCLIConfig()
@@ -52,22 +39,10 @@ func ensureLocalSetup(nodeName string) (created bool, adopted bool, err error) {
 	if cfg.Encryption.PublicKey == "" {
 		keyPath := filepath.Join(configDir, "keys", "agent.key")
 
-		// Adopt an identity that is already there before generating one.
-		//
-		// This is the retry after a failed enrollment, and it used to be
-		// impossible. `enroll` writes the config LAST, so an enrollment that
-		// failed for any reason — the remote server refusing, a 400, a dropped
-		// connection — left the key on disk and no config naming it. The next
-		// run therefore saw no public key, tried to generate a fresh one, and
-		// SavePrivateKey's O_EXCL refused: "refusing to overwrite the existing
-		// Age identity". Correctly, and fatally. The host could never enrol
-		// again without the operator deleting a key file they had just been
-		// told never to lose.
-		//
-		// The local half really is done in that state, so this finds it rather
-		// than inventing a second one. It is an adoption, not a generation, so
-		// `created` stays false and the caller's custody decision still reads
-		// this as a key that existed before the enrollment — which it did.
+		// Adopt an identity that is already present before generating one.
+		// This handles the retry scenario after a previously interrupted enrollment.
+		// If an identity already exists on disk, adopt it rather than failing
+		// on key file overwrite.
 		if identity, err := crypto.LoadPrivateKey(keyPath); err == nil {
 			recipient, recErr := recipientFor(identity)
 			if recErr != nil {

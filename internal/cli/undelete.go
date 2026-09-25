@@ -25,11 +25,6 @@ type snapshotUndeleter interface {
 
 // warnAboutShadowedSnapshots prints a warning for snapshots hidden behind a
 // delete marker, and returns how many there were.
-//
-// This runs on the read commands because a delete marker is the single loudest
-// signal of attack this product can receive. It used to present as
-// "No snapshots found in storage" — which reads like nothing was ever
-// configured, at the exact moment somebody is trying to recover.
 func warnAboutShadowedSnapshots(ctx context.Context, provider storage.StorageProvider) int {
 	lister, ok := provider.(shadowLister)
 	if !ok {
@@ -41,15 +36,14 @@ func warnAboutShadowedSnapshots(ctx context.Context, provider storage.StoragePro
 	}
 
 	fmt.Printf("\n🚨 %d snapshot(s) have been DELETED from the bucket.\n", len(shadowed))
-	fmt.Println("   Object Lock preserved the data — the encrypted versions are intact and still")
-	fmt.Println("   immutable — but a delete marker is hiding them. SafeGrd is reading past it.")
+	fmt.Println("   Object Lock preserved the data: the encrypted versions are intact and still")
+	fmt.Println("   immutable, but a delete marker is hiding them. SafeGrd is reading past it.")
 	fmt.Println("   Someone or something issued a DELETE against your backups. Investigate.")
 	for _, s := range shadowed {
 		fmt.Printf("   - %s  (deleted %s)\n", s.SnapshotID, s.DeletedAt.Format("2006-01-02 15:04 UTC"))
 	}
 	fmt.Println("\n   Clear the delete markers with:  safegrd undelete --snapshot <id>")
-	fmt.Println("   Then deny s3:DeleteObject on this bucket — that is what makes the WORM")
-	fmt.Println("   guarantee true in practice, not just on the object.")
+	fmt.Println("   Then deny s3:DeleteObject on this bucket so delete markers cannot be placed.")
 	return len(shadowed)
 }
 
@@ -74,9 +68,17 @@ version holding data, which is why it is safe to run.`,
 			if _, err := resolveHostedStorage(ctx, cfg, &storageCfg, false); err != nil {
 				return err
 			}
+			if storageCfg.Type == config.StorageTypeHosted {
+				// No host holds a credential that can place a delete marker on
+				// hosted storage, and every read goes past any marker that is
+				// there. There is nothing for this command to do.
+				fmt.Println("ℹ️  Hosted storage: hosts cannot hide snapshots, and restore, verify and export read past")
+				fmt.Println("   any delete marker. Nothing to undelete; run 'safegrd list' to see every snapshot.")
+				return nil
+			}
 			resolveRuntimeCredentials(ctx, cfg, &storageCfg, true)
 
-			provider, err := storage.NewProvider(ctx, storageCfg)
+			provider, err := openStorage(ctx, cfg, storageCfg)
 			if err != nil {
 				return fmt.Errorf("storage error: %w", err)
 			}
@@ -125,7 +127,7 @@ version holding data, which is why it is safe to run.`,
 					// not get the same sentence.
 					exists, existsErr := provider.SnapshotExists(ctx, id)
 					if existsErr == nil && exists {
-						fmt.Printf("ℹ️  %s: no delete markers — this snapshot is already visible.\n", id)
+						fmt.Printf("ℹ️  %s: no delete markers; this snapshot is already visible.\n", id)
 						continue
 					}
 					unknown++
@@ -185,14 +187,11 @@ func recordRetention(meta *model.SnapshotMetadata, storageCfg config.StorageConf
 // printRetentionLine reports what protects this snapshot, or states plainly
 // that nothing does.
 //
-// The honest version of this line matters more than the reassuring one. A
-// backup written with worm_mode: NONE is still encrypted, still checksummed and
-// still attested — but it is a copy, not a proof, and an attacker who reaches
-// the bucket can delete it. Printing "Immutable until ..." over that would make
-// the product's central claim false in the one place an operator actually looks.
+// A backup written with worm_mode: NONE is encrypted and checksummed,
+// but an attacker with write access to the bucket can delete it.
 func printRetentionLine(storageCfg config.StorageConfig, retainUntil time.Time) {
 	if mode, err := storageCfg.ResolveWORMMode(); err == nil && mode == config.WORMModeNone {
-		fmt.Printf("   WORM Locked:     ⚠️  NO — worm_mode is NONE, so this bucket applies no Object Lock.\n")
+		fmt.Printf("   WORM Locked:     ⚠️  NO: worm_mode is NONE, so this bucket applies no Object Lock.\n")
 		fmt.Printf("                    The backup is encrypted and attested, but it can be deleted.\n")
 		return
 	}
@@ -201,17 +200,8 @@ func printRetentionLine(storageCfg config.StorageConfig, retainUntil time.Time) 
 
 // warnIfManifestFailed reports a manifest that did not reach the sink.
 //
-// All six call sites used to discard this error with `_ =`. The manifest is
-// what `list` reads to describe a snapshot and what `verify` checks the digest
-// against, so losing it turns a proven backup into an opaque blob: the run
-// still says "Backup Completed Successfully", `safegrd list` prints
-// "[metadata unavailable]", and a Fire Drill has nothing to compare.
-//
-// The backup itself is genuinely fine — the ciphertext is in the sink and the
-// remote server has the attestation — so this warns rather than failing. But it
-// warns, which is the whole point: this was the third silent-failure path
-// found, after the unrecorded attestation and the unrecorded
-// Fire Drill.
+// The backup itself is fine: the ciphertext is in the sink and the
+// remote server has the attestation, so this warns rather than failing.
 func warnIfManifestFailed(err error, snapshotID string) {
 	if err == nil {
 		return

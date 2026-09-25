@@ -16,10 +16,8 @@ func TestWORMModeNoneIsOnlyEverExplicit(t *testing.T) {
 		{WORMModeCompliance, WORMModeCompliance, false},
 		{WORMModeGovernance, WORMModeGovernance, false},
 
-		// Near misses must refuse rather than resolve. A config that meant to
-		// disable Object Lock and mistyped it gets an error naming the three
-		// valid values — not a silent COMPLIANCE lock it cannot undo, and not
-		// a silent opt-out it did not ask for.
+		// Near misses must refuse rather than resolve. A config with a typo
+		// gets an error naming the valid values.
 		{"none", "", true},
 		{"None", "", true},
 		{"NO", "", true},

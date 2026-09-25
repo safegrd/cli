@@ -18,7 +18,6 @@ import (
 	"github.com/safegrd/cli/pkg/crypto"
 	"github.com/safegrd/cli/pkg/dump"
 	"github.com/safegrd/cli/pkg/model"
-	"github.com/safegrd/cli/pkg/storage"
 	"github.com/spf13/cobra"
 )
 
@@ -77,7 +76,7 @@ Plaintext data NEVER touches disk or third-party networks.`,
 			resolveRuntimeCredentials(ctx, cfg, &storageCfg, !jsonOutput)
 
 			// Initialize storage provider
-			storageProvider, err := storage.NewProvider(ctx, storageCfg)
+			storageProvider, err := openStorage(ctx, cfg, storageCfg)
 			if err != nil {
 				return fmt.Errorf("storage initialization failed: %w", err)
 			}
@@ -163,7 +162,7 @@ Plaintext data NEVER touches disk or third-party networks.`,
 				meta.NodeID = cfg.NodeID
 				now := time.Now().UTC()
 				meta.CompletedAt = &now
-				meta.DurationMs = now.Sub(started).Milliseconds()
+				meta.DurationMs = backupMilliseconds(started)
 				meta.Status = model.SnapshotStatusCompleted
 				meta.StorageURI = storageURI
 				recordRetention(meta, storageCfg, retentionUntil)
@@ -301,7 +300,7 @@ Plaintext data NEVER touches disk or third-party networks.`,
 				meta.NodeID = cfg.NodeID
 				now := time.Now().UTC()
 				meta.CompletedAt = &now
-				meta.DurationMs = now.Sub(started).Milliseconds()
+				meta.DurationMs = backupMilliseconds(started)
 				meta.Status = model.SnapshotStatusCompleted
 				meta.StorageURI = storageURI
 				recordRetention(meta, storageCfg, retentionUntil)
@@ -464,7 +463,7 @@ Plaintext data NEVER touches disk or third-party networks.`,
 	}
 
 	// Flags for PostgreSQL
-	cmd.Flags().StringVar(&dbURL, "database-url", "", "Database connection string: postgres://… or mysql://… (mariadb://…)")
+	cmd.Flags().StringVar(&dbURL, "database-url", "", "Database connection string: postgres://…, mysql://… (mariadb://…), mongodb://… or sqlite:///path/to/file.db")
 	cmd.Flags().StringVar(&engineStr, "engine", "native", "Accepted for old scripts and ignored: there is one Postgres backup path")
 	_ = cmd.Flags().MarkDeprecated("engine", "the schema comes from pg_dump and the rows from COPY; the flag is ignored")
 
@@ -500,18 +499,10 @@ Plaintext data NEVER touches disk or third-party networks.`,
 
 // sendMetadataToServer reports a finished backup to the remote server, and says
 // so when it cannot.
-//
-// The backup itself is already on disk by the time this runs, and a control
-// plane that is unreachable must never fail it. That is why every
-// outcome here is a message rather than an error — but it has to BE a message.
-//
-// Every failure used to return silently: a marshal error, a transport error,
-// and every non-201 alike. A node whose token was wrong, or whose node_id was
-// missing from its config, printed "Backup Completed Successfully" and the
-// console showed a node that had never backed up. The two situations were
-// indistinguishable from the host, which is the one thing this product cannot
-// afford: it sells the proof, not the copy, and an attestation nobody received
-// is not a proof.
+// The backup itself is already on disk by the time this runs, and a remote
+// server that is unreachable must not cause the backup command to report failure.
+// Failures to deliver metadata are reported as warnings to stderr so that
+// the operator is aware the server has not received the snapshot record.
 func sendMetadataToServer(ctx context.Context, serverURL, token string, meta *model.SnapshotMetadata, verbose bool) {
 	warn := func(format string, args ...any) {
 		// Printed even when quiet. --json suppresses the decorative lines
@@ -529,34 +520,29 @@ func sendMetadataToServer(ctx context.Context, serverURL, token string, meta *mo
 	}
 	// No token: a standalone host, which the CLI supports without an
 	// account. That is a choice, not a failure, and not a reason to contact
-	// the default remote server. The token is the only reliable
-	// signal — `init` writes a node_id with no enrolment at all, so "has a
-	// node id" called every standalone backup NOT RECORDED, under systemd
-	// included. A token the remote server refuses is still warned below.
-	//
-	// Still said on every backup, on stderr, because the same config shape is
-	// also an enrolled host that lost its token (seen in production, 2026-09-21), and
-	// a config cannot tell the two apart. It is stated, not alarmed.
+	// the default remote server. The token is the reliable signal.
+	// `init` writes a node_id with no enrolment at all, so having a
+	// node_id is not alone proof of enrolment.
 	if token == "" {
-		warn("not reported — no server_token in this config, so this host is standalone.\n" +
+		warn("not reported: no server_token in this config, so this host is standalone.\n" +
 			"                    The backup is in your bucket. Run 'safegrd enroll' to report to the console.")
 		return
 	}
 	if meta.NodeID == "" {
-		warn("NOT RECORDED — this config has no node_id, so the report names no node.\n" +
+		warn("NOT RECORDED: this config has no node_id, so the report names no node.\n" +
 			"                    The backup itself is fine. Add node_id, or re-run 'safegrd enroll'.")
 		return
 	}
 
 	body, err := json.Marshal(meta)
 	if err != nil {
-		warn("NOT RECORDED — could not encode the snapshot metadata: %v", err)
+		warn("NOT RECORDED: could not encode the snapshot metadata: %v", err)
 		return
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", serverURL+"/api/v1/snapshots", bytes.NewReader(body))
 	if err != nil {
-		warn("NOT RECORDED — %v", err)
+		warn("NOT RECORDED: %v", err)
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -596,7 +582,7 @@ func sendMetadataToServer(ctx context.Context, serverURL, token string, meta *mo
 	if detail == "" {
 		detail = strings.TrimSpace(string(raw))
 	}
-	warn("NOT RECORDED — %s rejected the report: HTTP %d %s\n"+
+	warn("NOT RECORDED: %s rejected the report: HTTP %d %s\n"+
 		"                    The backup itself is fine and the manifest is beside it, but the\n"+
 		"                    console will show this node as never having backed up.",
 		serverURL, resp.StatusCode, detail)
@@ -623,9 +609,9 @@ func reportBackupFailure(ctx context.Context, cfg *config.CLIConfig, snapshotID 
 // emailTLSConfig builds the TLS settings for an IMAP connection.
 //
 // The default is the strict one: system roots, TLS 1.2 floor, server name
-// verified. caFile *adds* trust anchors on top of the system pool for a
-// self-hosted mailbox behind a private CA — a real deployment, and the only way
-// to reach one without weakening anything.
+// verified. caFile adds trust anchors on top of the system pool for a
+// self-hosted mailbox behind a private CA (the standard pattern
+// to reach one without weakening anything).
 //
 // There is no insecure-skip option and there should not be one. The password
 // crosses this connection, so a flag that turns verification off would be a flag
@@ -674,4 +660,17 @@ func warnSkipped(skipped []string) {
 		}
 		fmt.Fprintf(os.Stderr, "    %s\n", s)
 	}
+}
+
+// backupMilliseconds is how long a backup took since started, rounded up to
+// whole milliseconds. A one-file tree finishes in microseconds, and a manifest
+// that says it took 0 ms reads as a backup that never ran. time.Since reads the
+// monotonic clock, so a host clock stepped mid-backup cannot make it 0 either;
+// the completed_at stamp beside it is wall time and would.
+func backupMilliseconds(started time.Time) int64 {
+	d := time.Since(started)
+	if d <= 0 {
+		return 0
+	}
+	return int64((d + time.Millisecond - 1) / time.Millisecond)
 }

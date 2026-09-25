@@ -19,11 +19,7 @@ func newProjectsCmd() *cobra.Command {
 	}
 
 	cmd.AddCommand(newListProjectsCmd())
-	// No `create`. Creating a project is console work: the remote server
-	// refuses it from a Personal Access Token, so this command could
-	// only have printed a 403, and a help entry for something that always fails
-	// is worse than no help entry. Create projects in the dashboard.
-
+	// Projects are created in the web console.
 	return cmd
 }
 
@@ -107,13 +103,8 @@ func getFirstOrgID(serverURL, token string) (string, error) {
 
 	var orgs []*model.Organization
 	if err := json.NewDecoder(resp.Body).Decode(&orgs); err != nil || len(orgs) == 0 {
-		// Not "create one with 'safegrd orgs create'": that subcommand was
-		// removed on purpose, because an account gets its organization at
-		// signup and the remote server refuses creating another from a PAT.
-		// Advice naming a command that does not exist is read by someone who
-		// is already stuck.
 		return "", fmt.Errorf("this credential belongs to no organization, so there are no projects to list. " +
-			"An account gets its organization at signup — check you are logged in as the right one with 'safegrd whoami'")
+			"Check your login session with 'safegrd whoami'")
 	}
 
 	return orgs[0].ID, nil

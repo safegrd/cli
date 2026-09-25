@@ -34,13 +34,13 @@ You can either provide a direct Node Token or an Organization API Key to registe
 			serverURL := resolveServerURL()
 
 			// Did the operator bring their own key? Decided BEFORE the local
-			// setup runs, because that step generates one when none is found —
+			// setup runs, because that step generates one when none is found;
 			// after it, every host looks like it had a key all along.
 			//
-			// This is the whole of the custody decision. A key
+			// This is the custody decision. A key
 			// the operator supplied is theirs and never leaves the host; a key
-			// we just generated is escrowed, so that losing the host is not
-			// losing the backups. --key-custody=local opts out and makes the
+			// we generate is escrowed, so that losing the host does not lose
+			// the backups. --key-custody=local opts out and makes the
 			// operator responsible for it.
 			keyExistedBeforeEnroll := cfg != nil && cfg.Encryption.PublicKey != ""
 
@@ -51,7 +51,7 @@ You can either provide a direct Node Token or an Organization API Key to registe
 			// Do the local half if it has not been done. Enrolling used to read
 			// cfg.NodeID out of a config LoadCLIConfig had invented from
 			// defaults, which registered a node with an empty identity and no
-			// keypair — enrolled, and unable to encrypt anything.
+			// keypair: enrolled, and unable to encrypt anything.
 			created, adopted, err := ensureLocalSetup(nodeName)
 			if err != nil {
 				return err
@@ -61,11 +61,8 @@ You can either provide a direct Node Token or an Organization API Key to registe
 			}
 			// An identity found on disk is the operator's, whatever wrote it.
 			// It reaches here when a previous enrollment generated the key and
-			// then failed before writing a config, so this is the retry — and
-			// escrowing a key that was already on this host, without being
-			// asked in that run, is a custody decision made on somebody's
-			// behalf. The conservative half is the one that cannot be undone:
-			// a key we did not send stays theirs, and we say so.
+			// then failed before writing a config, so this is the retry.
+			// A key we did not send stays theirs, and we say so.
 			if adopted {
 				keyExistedBeforeEnroll = true
 			}
@@ -76,16 +73,11 @@ You can either provide a direct Node Token or an Organization API Key to registe
 			// node token.
 			//
 			// This is what the documentation, docs.html and the dashboard's own
-			// copy-paste command all tell an operator to run — all three print
-			// `enroll --token sg_pat_...`. Before this dispatch that landed in
-			// the node-token path below: the PAT was written to server_token, a
-			// heartbeat was attempted for a node that did not exist, the 403
-			// came back as a one-line warning, and the command printed
-			// "Configuration updated" and exited 0 having registered nothing.
-			// The operator had a config, a key, and no node in the console.
+			// copy-paste command tell an operator to run: all print
+			// `enroll --token sg_pat_...`.
 			//
-			// The prefixes are unambiguous — sg_pat_ for an operator
-			// credential, sg_tok_ for a node's own — so this routes on the
+			// The prefixes are unambiguous (sg_pat_ for an operator
+			// credential, sg_tok_ for a node token), so this routes on the
 			// prefix rather than asking the operator to know which flag their
 			// token belongs to.
 			if apiKey == "" && strings.HasPrefix(token, "sg_pat_") {
@@ -104,17 +96,15 @@ You can either provide a direct Node Token or an Organization API Key to registe
 				// server answered 403 because the token authenticates a
 				// different node, and the command printed a one-line warning
 				// and exited 0. The host kept the fabricated node_id, so every
-				// later command — reporting a snapshot, fetching credentials —
-				// spoke about a node the remote server has never heard of,
-				// while the console showed the real node as never having
-				// checked in.
+				// later command (such as reporting a snapshot or fetching credentials)
+				// spoke about a node the remote server has never heard of.
 				switch {
 				case nodeIDFlag != "":
 					cfg.NodeID = nodeIDFlag
 				case !hostAlreadyHadNodeID:
 					return fmt.Errorf("a node token authenticates one existing node, and this host "+
 						"has no node id of its own yet, so there is nothing to attach the token to.\n"+
-						"  Pass --node-id <id> — the console shows it beside the token — or enrol with a\n"+
+						"  Pass --node-id <id> (the console shows it beside the token) or enrol with a\n"+
 						"  personal access token (sg_pat_...), which registers a new node and issues its\n"+
 						"  own token.\n"+
 						"  Nothing was changed: the local key at %s is untouched and no config was written",
@@ -127,12 +117,8 @@ You can either provide a direct Node Token or an Organization API Key to registe
 					cfg.ProjectID = projectID
 				}
 
-				// A rejected credential is not a warning. There is nothing to
-				// protect yet on this path — no backup depends on it (protection
-				// continuing without the remote server is not enrollment
-				// pretending to have happened) — and a config
-				// saved with a token the server refuses would make every later
-				// command fail somewhere else.
+				// A rejected credential is an error: saving a config with an invalid
+				// token would make subsequent commands fail.
 				status, err := verifyToken(serverURL, cfg.NodeID, token)
 				switch {
 				case status == http.StatusUnauthorized || status == http.StatusForbidden:
@@ -164,7 +150,7 @@ You can either provide a direct Node Token or an Organization API Key to registe
 
 				generatedNow := !keyExistedBeforeEnroll && cfg.Encryption.PublicKey != ""
 
-				// Two different journeys, named rather than inferred:
+				// Two different custody modes, named rather than inferred:
 				//
 				//   --key-custody=safegrd  generate here, send it, SafeGrd can
 				//                          decrypt, losing this host is survivable
@@ -172,9 +158,9 @@ You can either provide a direct Node Token or an Organization API Key to registe
 				//                          send only the recipient, nobody but
 				//                          you can ever read these backups
 				//
-				// A key the operator supplied is always local. Sending someone
-				// else's existing key is a decision no flag should make on
-				// their behalf — it may be shared with other systems, and its
+				// A key the operator supplied is always local. Sending an
+				// existing key is a decision no flag should make on
+				// their behalf; it may be shared with other systems, and its
 				// custody was settled before SafeGrd was involved.
 				switch keyCustody {
 				case "", "safegrd", "local":
@@ -189,12 +175,7 @@ You can either provide a direct Node Token or an Organization API Key to registe
 				}
 				escrowRequested := generatedNow && keyCustody != "local"
 
-				// org_id is mandatory server-side and is never inferred there:
-				// registering without it would bypass the tier quota, which is
-				// why the remote server refuses (handlers.go). The CLI never
-				// sent it, so every `enroll --api-key` ended in
-				// "org_id is required for node registration" — the whole
-				// registration path was unreachable.
+				// Resolve organization ID for node registration if not provided.
 				if orgID == "" {
 					resolved, err := resolveEnrollmentOrg(serverURL, apiKey)
 					if err != nil {
@@ -213,8 +194,8 @@ You can either provide a direct Node Token or an Organization API Key to registe
 					StorageBucket: cfg.Storage.Bucket,
 					RetentionDays: cfg.Storage.RetentionDays,
 
-					// The recipient is public and always sent: the control
-					// plane needs it to name which key this node uses and to
+					// The recipient is public and always sent: the remote
+					// server needs it to record which key this node uses and to
 					// catch a mismatch before a restore fails, not after.
 					PublicKey:      cfg.Encryption.PublicKey,
 					KeyFingerprint: crypto.Fingerprint(cfg.Encryption.PublicKey),
@@ -270,16 +251,14 @@ You can either provide a direct Node Token or an Organization API Key to registe
 					fmt.Printf("   by you and by us. Nobody can recover it for you.\n\n")
 					fmt.Printf("   Public key:  %s\n", cfg.Encryption.PublicKey)
 					fmt.Printf("   Fingerprint: %s\n", crypto.Fingerprint(cfg.Encryption.PublicKey))
-					return fmt.Errorf("enrollment completed but key escrow failed — save the key above before running a backup")
+					return fmt.Errorf("enrollment completed but key escrow failed: save the key above before running a backup")
 				}
 
 				fmt.Printf("✅ Successfully enrolled node '%s'!\n", regResp.NodeID)
 				fmt.Printf("   Node Token:  %s\n", regResp.Token)
 				fmt.Printf("   Key:         %s\n", crypto.Fingerprint(cfg.Encryption.PublicKey))
 
-				// Say which custody the operator ended up in, every time, in
-				// words. A customer must never have to read documentation to
-				// find out whether their vendor can read their backups.
+				// Report key custody mode.
 				switch {
 				case regResp.KeyEscrowed:
 					fmt.Printf("   Custody:     SafeGrd holds a copy of this key and CAN decrypt these backups.\n")
@@ -287,19 +266,13 @@ You can either provide a direct Node Token or an Organization API Key to registe
 				case keyExistedBeforeEnroll:
 					fmt.Printf("   Custody:     you hold this key. SafeGrd has only the public half and CANNOT decrypt these backups.\n")
 					if adopted {
-						// The key was found on this host rather than named by a
-						// config, which is the retry after a failed
-						// enrollment. The operator may well have wanted the
-						// default — escrow — and silently getting the other
-						// answer is the kind of custody surprise this command
-						// exists to prevent, so the remedy is stated.
 						fmt.Printf("                It was already at %s, so it was not sent: a key we find on a host\n", cfg.Encryption.KeyPath)
 						fmt.Printf("                is yours. To have SafeGrd hold one instead, move that file aside and\n")
 						fmt.Printf("                re-run with --key-custody=safegrd.\n")
 					}
 				default:
 					fmt.Printf("   Custody:     you hold this key (--key-custody=local). SafeGrd CANNOT decrypt these backups.\n")
-					fmt.Printf("                Back up %s — nobody can recover it for you.\n", cfg.Encryption.KeyPath)
+					fmt.Printf("                Back up %s; nobody can recover it for you.\n", cfg.Encryption.KeyPath)
 				}
 				if cfg.ProjectID != "" {
 					fmt.Printf("   Project ID:  %s\n", cfg.ProjectID)
@@ -335,7 +308,7 @@ You can either provide a direct Node Token or an Organization API Key to registe
 			"and SafeGrd can decrypt them; "+
 			"'local' writes it to key_path and sends only the public half, so nobody but you can ever read them "+
 			"and nobody can recover it if you lose it. "+
-			"Ignored when you supplied your own key — that one is never sent.")
+			"Ignored when you supplied your own key (an existing key is never sent).")
 
 	return cmd
 }

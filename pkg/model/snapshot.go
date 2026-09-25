@@ -28,12 +28,14 @@ const (
 	// SurfaceTypeMongoDB is a MongoDB database: its
 	// collections count as tables and its documents as rows.
 	SurfaceTypeMongoDB SurfaceType = "mongodb"
+	// SurfaceTypeSQLite is a SQLite database file.
+	SurfaceTypeSQLite SurfaceType = "sqlite"
 )
 
 // IsDatabase reports whether a surface is a database, counted in tables and
 // rows.
 func (t SurfaceType) IsDatabase() bool {
-	return t == "" || t == SurfaceTypePostgres || t == SurfaceTypeMySQL || t == SurfaceTypeMongoDB
+	return t == "" || t == SurfaceTypePostgres || t == SurfaceTypeMySQL || t == SurfaceTypeMongoDB || t == SurfaceTypeSQLite
 }
 
 // ExtensionStat captures file counts and aggregate sizes per extension (e.g. .png, .pdf, .json).
@@ -91,36 +93,20 @@ type SnapshotMetadata struct {
 	Status             SnapshotStatus `json:"status" yaml:"status"`
 	RawSizeBytes       int64          `json:"raw_size_bytes" yaml:"raw_size_bytes"`
 	EncryptedSizeBytes int64          `json:"encrypted_size_bytes" yaml:"encrypted_size_bytes"`
-	// Sha256Checksum is the digest of the PLAINTEXT stream — the dump as it
-	// was read, before compression and encryption. It is the restore-integrity
-	// claim: what you get back is what was there.
-	//
-	// It used to hold the digest of the CIPHERTEXT instead, while
-	// pkg/runner compared it against the plaintext digest. The two are
-	// different streams by construction, so the Fire Drill — the paywalled
-	// feature and the whole product claim — failed on every snapshot ever
-	// taken, and nobody saw it because `restore` accepted either digest and
-	// `verify` had never been run against a real backup. Dogfooding found it
-	// on the first try (2026-09-21).
-	//
-	// That tolerance in restore was the thing that hid it, so both sides
-	// compare exactly now. A manifest carrying the wrong digest must fail,
-	// not be accommodated.
+	// Sha256Checksum is the digest of the PLAINTEXT stream: the dump as it
+	// was read, before compression and encryption. It is used to verify restore
+	// integrity to ensure restored bytes match what was originally read.
 	Sha256Checksum string `json:"sha256_checksum" yaml:"sha256_checksum"`
 
-	// EncryptedSha256 is the digest of the ciphertext as written to the sink.
-	// It answers a different question — has the object rotted or been altered
-	// at rest — and answering it does not require the key. Empty on snapshots
-	// written before it existed.
+	// EncryptedSha256 is the digest of the ciphertext as written to the storage sink.
+	// It verifies at-rest object integrity without requiring decryption keys.
+	// Empty on legacy snapshots taken before this field was added.
 	EncryptedSha256    string    `json:"encrypted_sha256,omitempty" yaml:"encrypted_sha256,omitempty"`
 	StorageURI         string    `json:"storage_uri" yaml:"storage_uri"`
 	WORMRetentionUntil time.Time `json:"worm_retention_until" yaml:"worm_retention_until"`
-	// WORMMode is the Object Lock mode the snapshot was written under —
-	// COMPLIANCE, GOVERNANCE or NONE — so a reader can tell a retention date
-	// that something enforces from one that is merely written down. Without
-	// it `safegrd list` printed a retention date over snapshots written at
-	// worm_mode NONE, which nothing retains. Empty on sidecars written
-	// before it existed.
+	// WORMMode is the Object Lock mode the snapshot was written under:
+	// COMPLIANCE, GOVERNANCE, or NONE. Empty on snapshots written before
+	// this field existed.
 	WORMMode        string      `json:"worm_mode,omitempty" yaml:"worm_mode,omitempty"`
 	TotalItems      int64       `json:"total_items" yaml:"total_items"`           // rows, files, or emails
 	TotalContainers int         `json:"total_containers" yaml:"total_containers"` // tables, directories, or folders

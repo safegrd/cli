@@ -115,12 +115,12 @@ executes a full active restore drill into the target ephemeral database.`,
 				storageCfg.NodeID = cfg.NodeID
 			}
 			// A surface the agent backs up lives under its own node, not the
-			// host's, so the bucket is searched under the node the control
-			// plane recorded this snapshot for.
+			// host's, so the bucket is searched under the node the remote
+			// server recorded this snapshot for.
 			if recorded := recordedNodeID(ctx, cfg, snapshotID); recorded != "" && recorded != storageCfg.NodeID {
 				storageCfg.NodeID = recorded
 			}
-			storageProvider, err := storage.NewProvider(ctx, storageCfg)
+			storageProvider, err := openStorage(ctx, cfg, storageCfg)
 			if err != nil {
 				return fmt.Errorf("storage error: %w", err)
 			}
@@ -130,9 +130,9 @@ executes a full active restore drill into the target ephemeral database.`,
 				fmt.Printf("   Found %s under node %s.\n", snapshotID, node)
 			}
 
-			// A snapshot hidden behind a delete marker is the loudest signal
-			// of attack this system can receive. Reading past it is
-			// not enough — the operator has to be told it happened.
+			// A snapshot hidden behind a delete marker is a clear signal
+			// of attack. Reading past it is not enough; the operator
+			// has to be told it happened.
 			warnAboutShadowedSnapshots(ctx, storageProvider)
 
 			verifier := runner.NewVerifier(storageProvider, cfg.ServerURL)
@@ -264,7 +264,7 @@ executes a full active restore drill into the target ephemeral database.`,
 
 	cmd.Flags().StringVar(&snapshotID, "snapshot", "", "Snapshot ID to verify (required)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Perform pure Go in-memory dry restore without target database")
-	cmd.Flags().StringVar(&sandboxURL, "sandbox-target", "", "An empty database to restore the snapshot into for a full Fire Drill: postgres://… or mysql://…")
+	cmd.Flags().StringVar(&sandboxURL, "sandbox-target", "", "An empty database to restore the snapshot into for a full Fire Drill: postgres://…, mysql://…, or sqlite:///path/to/absent.db")
 	cmd.Flags().StringVar(&keyPath, "key-path", "", "Path to Age private identity file")
 	cmd.Flags().StringVar(&privKey, "private-key", "", "Age private identity key string")
 	cmd.Flags().StringVar(&s3Bucket, "s3-bucket", "", "Override S3 bucket to pull snapshot from")

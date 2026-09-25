@@ -85,9 +85,7 @@ func (v *Verifier) RunFireDrill(ctx context.Context, snapshotID, privateKey, san
 	// 2. Download encrypted snapshot ciphertext
 	cipherStream, err := v.storage.DownloadSnapshot(ctx, snapshotID)
 	if err != nil {
-		report.Status = model.VerificationStatusFailed
-		report.ErrorMessage = fmt.Sprintf("failed downloading snapshot: %v", err)
-		report.CompletedAt = time.Now()
+		v.failEarly(ctx, report, startTime, fmt.Sprintf("failed downloading snapshot: %v", err))
 		return report, nil
 	}
 	defer cipherStream.Close()
@@ -118,33 +116,25 @@ func (v *Verifier) RunFireDrill(ctx context.Context, snapshotID, privateKey, san
 	_, _ = io.Copy(io.Discard, plainReader)
 
 	if err := <-decryptErrChan; err != nil {
-		report.Status = model.VerificationStatusFailed
-		report.ErrorMessage = fmt.Sprintf("decryption verification failed: %v", err)
-		report.CompletedAt = time.Now()
+		v.failEarly(ctx, report, startTime, fmt.Sprintf("decryption verification failed: %v", err))
 		return report, nil
 	}
 
 	// 4b. Hold the decrypted stream to the digest recorded at backup time.
 	if msg := v.checkDigests(report, meta, rec, decMetrics); msg != "" {
-		report.Status = model.VerificationStatusFailed
-		report.ErrorMessage = msg
-		report.CompletedAt = time.Now()
+		v.failEarly(ctx, report, startTime, msg)
 		return report, nil
 	}
 
 	if restoreErr != nil {
-		report.Status = model.VerificationStatusFailed
-		report.ErrorMessage = fmt.Sprintf("restore execution failed: %v", restoreErr)
-		report.CompletedAt = time.Now()
+		v.failEarly(ctx, report, startTime, fmt.Sprintf("restore execution failed: %v", restoreErr))
 		return report, nil
 	}
 
 	// 5. Count what the sandbox now holds, exactly.
 	restoredMeta, err := inspectSandbox(ctx, sandboxTargetURL, meta)
 	if err != nil {
-		report.Status = model.VerificationStatusFailed
-		report.ErrorMessage = fmt.Sprintf("sandbox inspection failed: %v", err)
-		report.CompletedAt = time.Now()
+		v.failEarly(ctx, report, startTime, fmt.Sprintf("sandbox inspection failed: %v", err))
 		return report, nil
 	}
 
@@ -250,9 +240,7 @@ func (v *Verifier) RunDryRestore(ctx context.Context, snapshotID, privateKey str
 	// 2. Download encrypted snapshot ciphertext from storage
 	cipherStream, err := v.storage.DownloadSnapshot(ctx, snapshotID)
 	if err != nil {
-		report.Status = model.VerificationStatusFailed
-		report.ErrorMessage = fmt.Sprintf("failed downloading snapshot from storage: %v", err)
-		report.CompletedAt = time.Now()
+		v.failEarly(ctx, report, startTime, fmt.Sprintf("failed downloading snapshot from storage: %v", err))
 		return report, nil, nil
 	}
 	defer cipherStream.Close()
@@ -293,6 +281,8 @@ func (v *Verifier) RunDryRestore(ctx context.Context, snapshotID, privateKey str
 		dryResult, dryErr = dump.InspectMySQLArchive(ctx, plainReader)
 	case model.SurfaceTypeMongoDB:
 		dryResult, dryErr = dump.InspectMongoArchive(ctx, plainReader)
+	case model.SurfaceTypeSQLite:
+		dryResult, dryErr = dump.InspectSQLiteArchive(ctx, plainReader)
 	default:
 		dryInspector := dump.NewDryRestorer()
 		dryResult, dryErr = dryInspector.InspectArchive(ctx, plainReader)
@@ -303,7 +293,6 @@ func (v *Verifier) RunDryRestore(ctx context.Context, snapshotID, privateKey str
 	if decErr := <-decryptErrChan; decErr != nil {
 		report.Status = model.VerificationStatusFailed
 		report.ErrorMessage = fmt.Sprintf("Age private key decryption failed: %v", decErr)
-		report.CompletedAt = time.Now()
 		report.Assertions = append(report.Assertions, model.AssertionResult{
 			Name:     "DecryptionIntegrity",
 			Passed:   false,
@@ -311,6 +300,7 @@ func (v *Verifier) RunDryRestore(ctx context.Context, snapshotID, privateKey str
 			Actual:   decErr.Error(),
 			Message:  "Cryptographic signature check or decryption failed",
 		})
+		v.failEarly(ctx, report, startTime, report.ErrorMessage)
 		return report, dryResult, nil
 	}
 
@@ -323,16 +313,12 @@ func (v *Verifier) RunDryRestore(ctx context.Context, snapshotID, privateKey str
 
 	// Hold the decrypted stream to the digest recorded at backup time.
 	if msg := v.checkDigests(report, meta, rec, decMetrics); msg != "" {
-		report.Status = model.VerificationStatusFailed
-		report.ErrorMessage = msg
-		report.CompletedAt = time.Now()
+		v.failEarly(ctx, report, startTime, msg)
 		return report, dryResult, nil
 	}
 
 	if dryErr != nil {
-		report.Status = model.VerificationStatusFailed
-		report.ErrorMessage = fmt.Sprintf("dry restore archive inspection error: %v", dryErr)
-		report.CompletedAt = time.Now()
+		v.failEarly(ctx, report, startTime, fmt.Sprintf("dry restore archive inspection error: %v", dryErr))
 		return report, dryResult, nil
 	}
 
@@ -417,24 +403,28 @@ func (v *Verifier) RunDryRestore(ctx context.Context, snapshotID, privateKey str
 	return report, dryResult, nil
 }
 
+// failEarly records a drill that failed before its assertions ran (the
+// snapshot could not be read, decrypted or restored) and reports it, so a
+// drill that could not even start is on the record as a failure rather than
+// missing from it. It carries a certificate hash like any other report,
+// because the next record links to it.
+func (v *Verifier) failEarly(ctx context.Context, report *model.VerificationReport, started time.Time, msg string) {
+	report.Status = model.VerificationStatusFailed
+	report.ErrorMessage = msg
+	report.CompletedAt = time.Now()
+	report.DurationMs = drillMilliseconds(report.CompletedAt.Sub(started))
+	report.CertificateHash = computeCertificateHash(report)
+	v.submitReport(ctx, report)
+}
+
 func (v *Verifier) submitReport(ctx context.Context, report *model.VerificationReport) {
-	// The no-server case is said out loud rather than skipped silently. It is a
-	// legitimate way to run — an operator restoring on their own machine, which
-	// is exactly what customer-held key custody requires — but a drill that
-	// produced a certificate nobody has is worth one line, or the difference
-	// between "proved and recorded" and "proved on my laptop" disappears.
 	if v.serverURL == "" {
 		fmt.Fprintf(os.Stderr, "\n[!] Not recorded: no remote server configured for this run.\n"+
 			"    The verification above is real; nothing outside this machine knows it happened.\n")
 		return
 	}
-	// With no token the remote server can only answer 401, and the report —
-	// snapshot and node ids, counts — would have crossed the network to be
-	// refused. serverURL is never empty in practice, because the config falls
-	// back to https://safegrd.dev, so this is the branch a local-only operator
-	// actually reaches. backup already stops here; verify now agrees with it.
 	if v.serverToken == "" {
-		fmt.Fprintf(os.Stderr, "\n[!] NOT RECORDED — no server_token in this config, so the remote server cannot be told.\n"+
+		fmt.Fprintf(os.Stderr, "\n[!] NOT RECORDED: no server_token in this config, so the remote server cannot be told.\n"+
 			"    The verification above is real; nothing outside this machine knows it happened.\n")
 		return
 	}
@@ -456,23 +446,13 @@ func (v *Verifier) submitReport(ctx context.Context, report *model.VerificationR
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		// A drill that happened and was not recorded is not proof, and this
-		// product sells the proof. Every non-402 failure used to return
-		// silently here, exactly as sendMetadataToServer did before the
-		// dogfood found it: the screen said "Verified Successfully" and the
-		// console showed a node that had never been drilled.
-		fmt.Fprintf(os.Stderr, "\n[!] NOT RECORDED — could not reach %s: %v\n"+
+		fmt.Fprintf(os.Stderr, "\n[!] NOT RECORDED: could not reach %s: %v\n"+
 			"    The verification itself is valid and shown above, but the remote server\n"+
-			"    has no record of it, so it cannot be shown to an auditor.\n", v.serverURL, err)
+			"    has no record of it.\n", v.serverURL, err)
 		return
 	}
 	defer resp.Body.Close()
 
-	// A drill the remote server refuses is a drill nobody can prove happened.
-	// Fire Drills are a paid feature, so the refusal is 402 and carries the
-	// reason — printing it is the difference between "your plan does not record
-	// proof" and a report that silently vanished. Everything else stays quiet:
-	// the local verification still ran and its result is already on screen.
 	if resp.StatusCode == http.StatusPaymentRequired {
 		var body struct {
 			Error string `json:"error"`
@@ -495,27 +475,14 @@ func (v *Verifier) submitReport(ctx context.Context, report *model.VerificationR
 		if detail == "" {
 			detail = strings.TrimSpace(string(raw))
 		}
-		fmt.Fprintf(os.Stderr, "\n[!] NOT RECORDED — %s rejected the verification: HTTP %d %s\n"+
-			"    The drill itself is valid and shown above. The console will show this node\n"+
-			"    as never having been drilled until this is fixed.\n",
+		fmt.Fprintf(os.Stderr, "\n[!] NOT RECORDED: %s rejected the verification: HTTP %d %s\n"+
+			"    The drill itself is valid and shown above.\n",
 			v.serverURL, resp.StatusCode, detail)
 	}
 }
 
 // computeCertificateHash is the value the attestation chain links against:
 // the next record's PrevHash is the previous record's CertificateHash.
-//
-// The digest is the full SHA-256, not a prefix of it. It used to be
-// hex.EncodeToString(h[:12]) — 96 bits, a ~48-bit birthday bound — on the
-// reasoning that the id also has to be readable in a console. The chain's
-// tamper-evidence rests on the Ed25519 signature over each record rather than
-// on this width, so the truncation was never a break; it was a margin far
-// narrower than everything around it, on the one value the chain is built out
-// of. Widening it costs nothing but the length.
-//
-// This changes every id the function produces, so a chain written before it
-// and one written after do not interleave. That is acceptable only because it
-// landed before GA; after GA it would need the chain to carry its own version.
 func computeCertificateHash(r *model.VerificationReport) string {
 	payload := fmt.Sprintf("CERT:%s:%s:%s:%d:%d:%d",
 		r.VerificationID, r.SnapshotID, r.NodeID,
@@ -527,15 +494,9 @@ func computeCertificateHash(r *model.VerificationReport) string {
 // legacyDigestExplanation distinguishes a snapshot written before the digest
 // fix from an actually corrupt one.
 //
-// Until 2026-09-21 the CLI recorded the CIPHERTEXT digest in
-// Sha256Checksum while this function compared it against the PLAINTEXT digest,
-// so every Fire Drill failed with "cryptographic digest mismatch" — which reads
-// as tampering. Snapshots taken before that fix still carry the old value, and
-// telling their owner they have been tampered with would be both alarming and
-// false.
-//
-// So: if the manifest digest matches the CIPHERTEXT we just read, this is a
-// pre-fix snapshot and the data is fine. Anything else is a real mismatch.
+// Older CLI versions recorded the ciphertext digest in Sha256Checksum.
+// If the manifest digest matches the ciphertext, this is a legacy snapshot
+// and the backup payload is sound.
 func legacyDigestExplanation(decMetrics *crypto.StreamMetrics, expected, source string) string {
 	if decMetrics.EncryptedSha256 != "" && decMetrics.EncryptedSha256 == expected {
 		return fmt.Sprintf(
@@ -550,6 +511,22 @@ func legacyDigestExplanation(decMetrics *crypto.StreamMetrics, expected, source 
 
 // inspectSandbox counts every table a drill restored into its sandbox.
 func inspectSandbox(ctx context.Context, sandboxURL string, meta *model.SnapshotMetadata) (*model.SnapshotMetadata, error) {
+	if dump.IsSQLiteURL(sandboxURL) {
+		path, err := dump.SQLitePath(sandboxURL)
+		if err != nil {
+			return nil, err
+		}
+		counts, err := dump.SQLiteCountRows(ctx, path)
+		if err != nil {
+			return nil, err
+		}
+		restored := &model.SnapshotMetadata{SurfaceType: model.SurfaceTypeSQLite, DatabaseName: meta.DatabaseName}
+		for _, t := range meta.TableStats {
+			restored.TableStats = append(restored.TableStats, model.TableStat{Schema: t.Schema, TableName: t.TableName, RowCount: counts[t.TableName]})
+		}
+		restored.CalculateTotals()
+		return restored, nil
+	}
 	if dump.IsMongoURL(sandboxURL) {
 		client, db, err := dump.OpenMongo(ctx, sandboxURL)
 		if err != nil {

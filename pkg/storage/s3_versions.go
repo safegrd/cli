@@ -13,21 +13,13 @@ import (
 
 // Seeing past delete markers.
 //
-// Object Lock protects a *version*. It does not stop anyone with s3:DeleteObject
-// from issuing a plain DELETE, which on a versioned bucket does not destroy
-// anything — it writes a **delete marker** as the new current version. The
-// locked bytes are still there, still immutable, still billable.
+// Object Lock protects a version. A client with s3:DeleteObject issuing a plain
+// DELETE on a versioned bucket writes a delete marker as the new current version,
+// while locked bytes remain intact.
 //
-// But every plain read goes to the current version, so the delete marker makes
-// `list` print "No snapshots found in storage" and `restore` fail with
-// NoSuchKey. The data survived; the recoverability did not. From the customer's
-// position at the moment they need it, that is indistinguishable from
-// ransomware having destroyed the backups — and undoing it by hand needs S3
-// version expertise this product exists to make unnecessary.
-//
-// So: read through the marker. A snapshot whose current version is a delete
-// marker is still listed, still downloadable, and reported as shadowed rather
-// than as absent.
+// Reading through the delete marker allows SafeGrd to discover and restore
+// snapshots even if a simple DELETE was issued. A snapshot whose current version
+// is a delete marker is still listed, downloadable, and reported as shadowed.
 
 // objectVersion is one version of one key, reduced to what matters here.
 type objectVersion struct {
@@ -142,11 +134,7 @@ func (s *S3StorageProvider) liveVersionID(ctx context.Context, key string) (vers
 }
 
 // ShadowedSnapshot names a snapshot whose current version is a delete marker.
-//
-// Someone issued a DELETE against a backup. Under Object Lock the bytes
-// survived, which is the system working — but a snapshot in this state is the
-// loudest signal of attack this product can receive, and it used to be
-// reported as "no snapshots found", which reads like nothing is configured.
+// Under Object Lock the underlying data version remains intact.
 type ShadowedSnapshot struct {
 	SnapshotID string
 	Key        string
@@ -213,11 +201,8 @@ func (s *S3StorageProvider) ListShadowedSnapshots(ctx context.Context) ([]Shadow
 // UndeleteSnapshot removes the delete markers hiding a snapshot and its
 // metadata, bringing the locked versions back as current.
 //
-// This deletes ONLY delete markers, addressed by version id, and never a
-// version holding data — which is also why it is safe to offer: a delete marker
-// carries no bytes, and Object Lock does not protect one. Without this command
-// the runbook for the scenario the product exists for is "install mc, learn S3
-// versioning, hope".
+// This deletes only delete markers (addressed by version ID) and never a
+// version holding data.
 func (s *S3StorageProvider) UndeleteSnapshot(ctx context.Context, snapshotID string) (int, error) {
 	keys := []string{s.snapshotKey(snapshotID), s.metadataKey(snapshotID)}
 	if s.nodeID != "" {
@@ -252,13 +237,8 @@ func (s *S3StorageProvider) UndeleteSnapshot(ctx context.Context, snapshotID str
 }
 
 // listSnapshotsWithoutVersioning is the fallback for a bucket whose provider
-// does not implement ListObjectVersions.
-//
-// It is the original implementation, kept deliberately. On such a provider a
-// DELETE destroys the object outright rather than writing a delete marker, so
-// there is no hidden version to find and nothing this loses — and a customer on
-// that provider should be told plainly that the undelete path does not exist
-// for them, which is what a provider support matrix is for.
+// does not implement ListObjectVersions. On such providers, objects are enumerated
+// using standard ListObjectsV2.
 func (s *S3StorageProvider) listSnapshotsWithoutVersioning(ctx context.Context) ([]string, error) {
 	prefix := s.prefix + "/"
 	var snapshots []string
@@ -282,14 +262,7 @@ func (s *S3StorageProvider) listSnapshotsWithoutVersioning(ctx context.Context) 
 }
 
 // deleteKeyWithoutVersioning removes a key on a provider that cannot enumerate
-// versions.
-//
-// Paired with listSnapshotsWithoutVersioning, and it exists for the same
-// reason: DeleteSnapshot addresses versions by id, so a provider that does not
-// implement ListObjectVersions would make retention cleanup fail for every
-// object forever — a bucket that only ever grows, on a nightly timer, billed to
-// the customer. A keyed DELETE is correct there because there is no version to
-// leave behind and no delete marker to strand.
+// versions. A keyed DELETE removes the object directly when versioning is not supported.
 //
 // A missing object is not an error: DeleteSnapshot's caller already decided
 // this snapshot should be gone.

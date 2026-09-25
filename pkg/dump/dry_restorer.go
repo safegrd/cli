@@ -314,7 +314,7 @@ func (d *DryRestorer) InspectArchive(ctx context.Context, src io.Reader) (*DryRe
 		}
 	}
 
-	result.DurationMs = time.Since(startTime).Milliseconds()
+	result.DurationMs = elapsedMilliseconds(startTime)
 	return result, nil
 }
 
@@ -477,6 +477,10 @@ func SchemaFidelity(m *model.SnapshotMetadata) model.AssertionResult {
 	if m != nil && m.SurfaceType == model.SurfaceTypeMySQL {
 		return model.AssertionResult{Name: "Schema Captured By The Server's Dump Tool", Expected: "mysqldump or mariadb-dump",
 			Actual: m.SchemaSource, Passed: strings.HasPrefix(m.SchemaSource, "mysqldump") || strings.HasPrefix(m.SchemaSource, "mariadb-dump")}
+	}
+	if m != nil && m.SurfaceType == model.SurfaceTypeSQLite {
+		return model.AssertionResult{Name: "Copied By The SQLite Engine", Expected: "sqlite VACUUM INTO",
+			Actual: m.SchemaSource, Passed: strings.HasPrefix(m.SchemaSource, "sqlite VACUUM INTO")}
 	}
 	if m != nil && m.SurfaceType == model.SurfaceTypeMongoDB {
 		return model.AssertionResult{Name: "Captured By mongodump", Expected: "mongodump",

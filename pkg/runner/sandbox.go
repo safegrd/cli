@@ -25,6 +25,17 @@ const userSchemasQuery = `SELECT nspname FROM pg_namespace
 func CheckSandboxEmpty(ctx context.Context, sandboxURL string) error {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
+	if dump.IsSQLiteURL(sandboxURL) {
+		path, err := dump.SQLitePath(sandboxURL)
+		if err != nil {
+			return err
+		}
+		if err := dump.SQLiteCheckEmpty(path); err != nil {
+			return fmt.Errorf("refusing to restore into the sandbox: %w. A Fire Drill sandbox must be a file "+
+				"used for nothing else, absent before each drill; point drill.sandbox_url at one", err)
+		}
+		return nil
+	}
 	if dump.IsMongoURL(sandboxURL) {
 		client, db, err := dump.OpenMongo(ctx, sandboxURL)
 		if err != nil {
@@ -73,6 +84,13 @@ func CheckSandboxEmpty(ctx context.Context, sandboxURL string) error {
 func ResetSandbox(ctx context.Context, sandboxURL string) error {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
+	if dump.IsSQLiteURL(sandboxURL) {
+		path, err := dump.SQLitePath(sandboxURL)
+		if err != nil {
+			return err
+		}
+		return dump.SQLiteResetDatabase(path)
+	}
 	if dump.IsMongoURL(sandboxURL) {
 		client, db, err := dump.OpenMongo(ctx, sandboxURL)
 		if err != nil {
@@ -135,6 +153,9 @@ func ResetSandbox(ctx context.Context, sandboxURL string) error {
 // SameDatabase reports whether two connection URLs name the same database on
 // the same server, so a sandbox can never be the surface it drills.
 func SameDatabase(a, b string) bool {
+	if dump.IsSQLiteURL(a) || dump.IsSQLiteURL(b) {
+		return dump.SameSQLiteDatabase(a, b)
+	}
 	if dump.IsMongoURL(a) || dump.IsMongoURL(b) {
 		return dump.SameMongoDatabase(a, b)
 	}

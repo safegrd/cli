@@ -8,7 +8,7 @@
 
 `safegrd` protects modern engineering teams and autonomous AI agents from data corruption and accidental drops. It delivers **PostgreSQL backups that restore as the database** (schema from `pg_dump`, rows over binary `COPY`, one snapshot), **streaming POSIX file tree archives**, **universal IMAP email extraction**, **client-side Age (X25519) encryption**, **Zstandard compression**, **immutable WORM storage**, and **automated Fire Drill restore verifications**.
 
-The private key stays on your machine. Fire Drills run here, in your environment, and the remote server receives a signed attestation report — never your data and never your key.
+The private key stays on your machine. Fire Drills run here, in your environment, and the remote server receives a signed attestation report; never your data and never your key.
 
 **Surfaces.** Supports PostgreSQL, MySQL, MariaDB and MongoDB databases, POSIX file trees, and IMAP email mailboxes under one customer-held Age keypair, Object Lock WORM policy, and attestation chain.
 
@@ -16,7 +16,7 @@ The private key stays on your machine. Fire Drills run here, in your environment
 
 ## Installation
 
-### Method 1: Universal Shell Script (Linux & macOS — Recommended for Servers)
+### Method 1: Universal Shell Script (Linux & macOS; Recommended for Servers)
 
 ```bash
 # Installs the pre-compiled binary for your OS and architecture to /usr/local/bin

@@ -32,8 +32,8 @@ func newInitCmd() *cobra.Command {
 
 Nothing leaves this machine: init is the offline half of setup, and a node set up
 this way can back up and restore standalone. To register it with a remote server
-so the console can track it, run 'safegrd enroll' — which will run this step for
-you if you have not already, so either order works.`,
+so the console can track it, run 'safegrd enroll' (which will run this step for
+you if you have not already).`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			serverURL := resolveServerURL()
 
@@ -66,7 +66,7 @@ you if you have not already, so either order works.`,
 				return fmt.Errorf(
 					"refusing to overwrite the existing config at %s\n"+
 						"  init writes a fresh config, which would discard the database URL, storage\n"+
-						"  settings and credentials already there — and repoint key_path at a newly\n"+
+						"  settings and credentials already there, and repoint key_path at a newly\n"+
 						"  generated key, leaving every existing snapshot sealed to a key the config\n"+
 						"  no longer names.\n\n"+
 						"  Edit that file directly, or pass --force if you really mean to start over\n"+
@@ -87,11 +87,7 @@ you if you have not already, so either order works.`,
 			}
 
 			keyPath := filepath.Join(configDir, "keys", "agent.key")
-			// --force means "replace the config", and it has always also meant
-			// "replace the key" — the flag's own help text says so. Routed
-			// through the explicit call so the no-clobber default protects the
-			// case nobody asked for: a second config at a different path
-			// quietly taking the identity with it.
+			// --force means "replace the config", and replaces the key as well.
 			save := crypto.SavePrivateKey
 			if initForce {
 				save = crypto.OverwritePrivateKey
@@ -194,7 +190,7 @@ you if you have not already, so either order works.`,
 	cmd.Flags().BoolVar(&initForce, "force", false,
 		"Overwrite an existing config. This discards the settings in it and generates a NEW "+
 			"keypair, after which snapshots taken under the old key can only be read with the "+
-			"old key — back it up first.")
+			"old key; back it up first.")
 
 	return cmd
 }

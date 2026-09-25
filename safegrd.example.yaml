@@ -1,4 +1,4 @@
-# SafeGrd CLI (node agent) Configuration Example — safegrd.dev
+# SafeGrd CLI (node agent) Configuration Example - safegrd.dev
 #
 # For the `safegrd` binary. Copy to ~/.safegrd/config.yaml (the default
 # location) or pass it with `safegrd --config <path>`.
@@ -13,7 +13,7 @@
 # keep it 0600 and do not commit a filled-in copy.
 
 # ---------------------------------------------------------------------------
-# CURRENT SCHEMA — one node, one surface. This is what the CLI reads today.
+# CURRENT SCHEMA: one node, one surface. This is what the CLI reads today.
 # ---------------------------------------------------------------------------
 
 node_id: "node-prod-db-primary"
@@ -35,7 +35,7 @@ storage:
   # Exactly "COMPLIANCE" or "GOVERNANCE", uppercase, or leave it unset for
   # COMPLIANCE. Anything else is refused at startup rather than guessed at:
   # under COMPLIANCE an object cannot be deleted before retention_days expires,
-  # by anyone, including us. Lowercase "governance" is an error, not a synonym.
+  # by anyone. Lowercase "governance" is an error, not a synonym.
   worm_mode: "COMPLIANCE"
   local_path: "./safegrd-storage" # Used if type: local
 
@@ -46,14 +46,13 @@ encryption:
   # Path to local identity file containing private key (for restores/verifications)
   key_path: "~/.safegrd/keys/agent.key"
 
-# Alerts are not configured here. The remote server sends them — failed backups,
-# failed or blocked Fire Drills, silent hosts, overdue surfaces, recoveries — to
-# the webhook set in the console under Settings -> Alerts (Slack, Discord or plain
-# JSON), and by email on paid plans. An `alert:` block in this file was never
-# read; `safegrd config validate` warns if one is set. See safegrd.dev/docs/alerts.
+# Alerts are not configured here. The remote server sends notifications
+# (failed backups, failed or blocked Fire Drills, silent hosts, overdue surfaces, recoveries)
+# to configured alert webhooks (Slack, Discord, or generic JSON).
+# See https://safegrd.dev/docs/alerts.
 
 # ===========================================================================
-# Unattended multi-surface agent — `safegrd agent run`.
+# Unattended multi-surface agent: `safegrd agent run`.
 #
 # `agent run` reads everything below. A few keys are accepted but not yet
 # acted on; each says so where it appears, and says what happens instead.
@@ -65,7 +64,7 @@ encryption:
 
 # agent:
 #   # How often the agent wakes to look for work. This is a POLL, not the
-#   # schedule — per-surface `schedule` below decides when a backup actually
+#   # schedule; per-surface `schedule` below decides when a backup actually
 #   # runs. ±10% jitter is applied so a fleet does not stampede on the minute.
 #   interval: "5m"
 #
@@ -80,7 +79,7 @@ encryption:
 #   retry_backoff_max: "1h"
 #
 #   # State, locks and logs. Defaults to ~/.safegrd (user scope) or
-#   # /var/lib/safegrd (system scope). Never put this on a network filesystem —
+#   # /var/lib/safegrd (system scope). Never put this on a network filesystem;
 #   # the in-progress lock depends on working flock semantics.
 #   state_dir: "~/.safegrd"
 #
@@ -93,7 +92,7 @@ encryption:
 
 # Defaults every surface inherits unless it overrides them.
 # defaults:
-#   schedule: "@daily"        # "@hourly" | "@daily" | "@weekly" | "6h" | "2d" — one hour minimum
+#   schedule: "@daily"        # "@hourly" | "@daily" | "@weekly" | "6h" | "2d" (one hour minimum)
 #   timezone: "UTC"           # NOT YET ACTED ON: schedules are intervals, not wall-clock times
 #   retention_days: 30
 #   # Grandfather-father-son, applied by the agent at upload: the first backup of
@@ -105,9 +104,8 @@ encryption:
 #   keep_weekly: 4
 #   keep_monthly: 12
 
-# Each entry becomes its own registered node on the remote server and counts
-# as one protected surface against the plan quota. `id` must be stable — it is
-# how state, locks and snapshot history are keyed.
+# Each entry becomes its own registered node on the remote server.
+# `id` must be stable: it is how state, locks and snapshot history are keyed.
 # surfaces:
 #
 #   - id: "app-primary"
@@ -149,7 +147,7 @@ encryption:
 #       - "node_modules/*"
 #     # macOS: backing up ~/Documents, ~/Desktop or ~/Library/Mail requires Full
 #     # Disk Access for the safegrd binary. Without it the read returns EMPTY
-#     # rather than failing — `safegrd doctor` checks for this.
+#     # rather than failing; `safegrd doctor` checks for this.
 #
 #   - id: "support-mailbox"
 #     type: "email"
@@ -163,13 +161,13 @@ encryption:
 #     # through one of these, in order of preference:
 #     #
 #     # 1. A command whose stdout is the secret. Works identically under
-#     #    launchd, systemd and an interactive shell — a daemon inherits no
+#     #    launchd, systemd and an interactive shell; a daemon inherits no
 #     #    login shell, so a bare env var is usually empty under a service.
 #     credential_command: "op read op://vault/support-mail/password"
 #     #    It runs under /bin/sh as the agent's user, has 30 seconds, and a
 #     #    failure fails this surface; it never falls back to a variable.
 #     #    `safegrd doctor` runs it, so check it there first.
-#     # 2. An environment variable NAME — the variable, never the value:
+#     # 2. An environment variable NAME: the variable, never the value:
 #     # password_env: "SUPPORT_MAILBOX_PASSWORD"
 #
 #     # Per-surface storage override. Omit to inherit the top-level `storage`.

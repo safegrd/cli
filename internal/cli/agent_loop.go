@@ -45,6 +45,8 @@ func postJSON(ctx context.Context, c *config.CLIConfig, path string, body, out a
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.ServerToken)
+	// This host's clock, so the remote server can say when it is wrong.
+	req.Header.Set("X-Safegrd-Host-Time", time.Now().UTC().Format(time.RFC3339Nano))
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return 0, err
@@ -209,7 +211,9 @@ func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, s *config.Surf
 	if requestID != "" {
 		st.LastDrillRequestID = requestID
 		fmt.Printf("⏰ Surface %s: Fire Drill requested.\n", s.ID)
-	} else if !st.LastDrillAttempt.IsZero() {
+	} else if !st.LastDrillAttempt.IsZero() && !now.Before(st.LastDrillAttempt) {
+		// (A last attempt in the future means the clock went backwards;
+		// the spacing is not waited out from a time that has not happened.)
 		wait := drillMinSpacing
 		if st.DrillFailures > 0 && drillBackoff(st.DrillFailures) > wait {
 			wait = drillBackoff(st.DrillFailures)
@@ -249,7 +253,7 @@ func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, s *config.Surf
 	_, err := resolveHostedStorage(ctx, c, &storageCfg, false)
 	var provider storage.StorageProvider
 	if err == nil {
-		provider, err = storage.NewProvider(ctx, storageCfg)
+		provider, err = openStorage(ctx, c, storageCfg)
 	}
 	if err != nil {
 		st.DrillFailures++
@@ -266,10 +270,10 @@ func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, s *config.Surf
 		err = sandboxErr
 	case sandbox != "":
 		how = "restore into the sandbox database"
-		fmt.Printf("🔥 Surface %s: Fire Drill due — restoring snapshot %s into its sandbox database.\n", s.ID, snapshotID)
+		fmt.Printf("🔥 Surface %s: Fire Drill due: restoring snapshot %s into its sandbox database.\n", s.ID, snapshotID)
 		report, err = verifier.RunSandboxDrill(ctx, snapshotID, key, sandbox)
 	default:
-		fmt.Printf("🔥 Surface %s: Fire Drill due — restoring snapshot %s in memory.\n", s.ID, snapshotID)
+		fmt.Printf("🔥 Surface %s: Fire Drill due: restoring snapshot %s in memory.\n", s.ID, snapshotID)
 		report, _, err = verifier.RunDryRestore(ctx, snapshotID, key)
 	}
 	switch {

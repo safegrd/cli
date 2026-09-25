@@ -19,7 +19,7 @@ import (
 // Every field here is a live secret except PublicKey. None of them is ever
 // written back to the config file: SaveCLIConfig is not called on this path,
 // and the values live in the CLIConfig struct in memory for the length of one
-// command. That is the whole point of fetching them — a credential that lands
+// command. That is the whole point of fetching them: a credential that lands
 // on disk makes central revocation stop being revocation, because the host
 // keeps working after the remote server has withdrawn it.
 type nodeCredentialsResponse struct {
@@ -127,14 +127,18 @@ func resolveRuntimeCredentials(ctx context.Context, cfg *config.CLIConfig, stora
 	if cfg.DatabaseURL == "" {
 		src.DatabaseURL = "not configured"
 	}
-	if storageCfg.SecretAccessKey == "" {
+	// Hosted storage is leased per command, never held, so it needs no secret.
+	hosted := storageCfg.Type == config.StorageTypeHosted
+	if hosted {
+		src.SinkSecret = "hosted lease"
+	} else if storageCfg.SecretAccessKey == "" {
 		src.SinkSecret = "not configured"
 	}
 	if cfg.Encryption.PublicKey == "" {
 		src.PublicKey = "not configured"
 	}
 
-	needsSomething := cfg.DatabaseURL == "" || storageCfg.SecretAccessKey == "" || cfg.Encryption.PublicKey == ""
+	needsSomething := cfg.DatabaseURL == "" || (storageCfg.SecretAccessKey == "" && !hosted) || cfg.Encryption.PublicKey == ""
 	if !needsSomething || cfg.ServerURL == "" || cfg.NodeID == "" || cfg.ServerToken == "" {
 		return src
 	}
@@ -151,7 +155,7 @@ func resolveRuntimeCredentials(ctx context.Context, cfg *config.CLIConfig, stora
 		cfg.DatabaseURL = creds.DatabaseURL
 		src.DatabaseURL = "remote server"
 	}
-	if storageCfg.SecretAccessKey == "" && creds.Sink != nil && creds.Sink.SecretAccessKey != "" {
+	if storageCfg.SecretAccessKey == "" && !hosted && creds.Sink != nil && creds.Sink.SecretAccessKey != "" {
 		storageCfg.AccessKeyID = creds.Sink.AccessKeyID
 		storageCfg.SecretAccessKey = creds.Sink.SecretAccessKey
 		src.SinkSecret = "remote server"
@@ -184,7 +188,7 @@ type managedIdentityFetchResponse struct {
 // this node's organization.
 //
 // The returned key is never written anywhere. It is not saved to key_path, not
-// written into the config, and not logged — it exists in one local variable for
+// written into the config, and not logged; it exists in one local variable for
 // the length of one restore. Writing it to key_path would quietly convert a
 // managed-custody organization into a customer-held one on that host, which is
 // the opposite of what the operator chose and would survive revocation.

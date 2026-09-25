@@ -26,6 +26,8 @@ func newStatusCmd() *cobra.Command {
 			if cfg.DatabaseURL != "" {
 				label, ping := "Postgres DB:      ", func() error { return pingSQL("pgx", cfg.DatabaseURL) }
 				switch {
+				case dump.IsSQLiteURL(cfg.DatabaseURL):
+					label, ping = "SQLite DB:        ", func() error { return dump.PingSQLite(ctx, cfg.DatabaseURL) }
 				case dump.IsMongoURL(cfg.DatabaseURL):
 					label, ping = "MongoDB:          ", func() error {
 						client, _, err := dump.OpenMongo(ctx, cfg.DatabaseURL)
@@ -68,9 +70,9 @@ func newStatusCmd() *cobra.Command {
 
 			// 3. Storage Provider Connectivity & Immutability Verification
 			// Routed and credentialed like backup and restore. A node enrolled
-			// under Journey A has no bucket or sink secret locally, so reading
+			// with a centrally-managed sink has no bucket or sink secret locally, so reading
 			// cfg.Storage directly means this command cannot reach the bucket
-			// at all on exactly the hosts central configuration exists for.
+			// on hosts configured centrally.
 			storageCfg := resolveStorageRouting(ctx, cfg, "", "", "", "", false)
 			if _, err := resolveHostedStorage(ctx, cfg, &storageCfg, false); err != nil {
 				return err
@@ -79,7 +81,7 @@ func newStatusCmd() *cobra.Command {
 			if cfg.NodeID != "" && storageCfg.NodeID == "" {
 				storageCfg.NodeID = cfg.NodeID
 			}
-			storageProvider, err := storage.NewProvider(ctx, storageCfg)
+			storageProvider, err := openStorage(ctx, cfg, storageCfg)
 			if err == nil {
 				snaps, err := storageProvider.ListSnapshots(ctx)
 				if err == nil {
@@ -88,6 +90,9 @@ func newStatusCmd() *cobra.Command {
 					fmt.Printf("   Storage (%s):    ❌ Error listing snapshots: %v\n", cfg.Storage.Type, err)
 				}
 
+				if storageProvider.Type() == "hosted" {
+					fmt.Printf("   WORM Object Lock:  ✅ Compliance mode, set by the remote server on every hosted object\n")
+				}
 				if s3Prov, ok := storageProvider.(*storage.S3StorageProvider); ok {
 					if err := s3Prov.VerifyBucketObjectLock(ctx); err == nil {
 						fmt.Printf("   WORM Object Lock:  ✅ Verified enabled on bucket %s\n", cfg.Storage.Bucket)

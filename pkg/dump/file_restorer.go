@@ -217,7 +217,7 @@ func (fr *FileRestorer) InspectFileArchive(ctx context.Context, src io.Reader, o
 	result.TotalFiles = filesFound
 	result.TotalDirectories = dirsFound
 	result.TotalRawBytes = bytesFound
-	result.DurationMs = time.Since(startTime).Milliseconds()
+	result.DurationMs = elapsedMilliseconds(startTime)
 
 	// Assertion 1: Sealed manifest presence
 	result.Assertions = append(result.Assertions, model.AssertionResult{
@@ -343,7 +343,7 @@ func (fr *FileRestorer) InspectFileArchive(ctx context.Context, src io.Reader, o
 //
 // Modes are set explicitly (creation modes pass through the umask, and an
 // existing file's mode was never updated), and directories get theirs, with
-// their times, in a last pass deepest first — earlier, a 0500 directory
+// their times, in a last pass deepest first. Earlier, a 0500 directory
 // would block its own children, and writing the children resets its mtime.
 // Every directory used to come back 0755, so a 0700 ~/.ssh was restored
 // readable by everyone.
@@ -520,7 +520,7 @@ func (fr *FileRestorer) ExtractArchive(ctx context.Context, src io.Reader, targe
 }
 
 // refuseSymlinkPath fails when any existing component between root and rel
-// is a symlink — writing through it would land outside root. The entry
+// is a symlink; writing through it would land outside root. The entry
 // itself may be an existing symlink only when the archive entry replaces it
 // with a symlink.
 func refuseSymlinkPath(root, rel string, entryIsSymlink bool) error {

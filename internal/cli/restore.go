@@ -76,7 +76,7 @@ using the private key, decompresses stream, and restores to PostgreSQL or extrac
 
 			// Last resort: SafeGrd may hold this organization's identity.
 			// Only reached when the host has no key of its own, and
-			// the result is never written to key_path — it opens this archive
+			// the result is never written to key_path; it opens this archive
 			// and then goes away. A customer-held org answers 404 and the
 			// error below stands.
 			if resolvedKey == "" {
@@ -88,9 +88,8 @@ using the private key, decompresses stream, and restores to PostgreSQL or extrac
 			}
 
 			// Routed and credentialed exactly as backup does, because a node
-			// enrolled under Journey A has no bucket or sink secret locally
-			// either — restoring from a centrally-configured sink has to work
-			// or the journey proves nothing.
+			// enrolled with a centrally-managed sink has no bucket or sink secret locally
+			// either; restoring from a centrally-configured sink must work.
 			storageCfg := resolveStorageRouting(ctx, cfg, "", "", "", "", false)
 			if _, err := resolveHostedStorage(ctx, cfg, &storageCfg, false); err != nil {
 				return err
@@ -100,12 +99,12 @@ using the private key, decompresses stream, and restores to PostgreSQL or extrac
 				storageCfg.NodeID = cfg.NodeID
 			}
 			// A surface the agent backs up lives under its own node, not the
-			// host's, so the bucket is searched under the node the control
-			// plane recorded this snapshot for.
+			// host's, so the bucket is searched under the node the remote
+			// server recorded this snapshot for.
 			if recorded := recordedNodeID(ctx, cfg, snapshotID); recorded != "" && recorded != storageCfg.NodeID {
 				storageCfg.NodeID = recorded
 			}
-			storageProvider, err := storage.NewProvider(ctx, storageCfg)
+			storageProvider, err := openStorage(ctx, cfg, storageCfg)
 			if err != nil {
 				return fmt.Errorf("storage initialization failed: %w", err)
 			}
@@ -115,9 +114,9 @@ using the private key, decompresses stream, and restores to PostgreSQL or extrac
 				fmt.Printf("   Found %s under node %s.\n", snapshotID, node)
 			}
 
-			// A snapshot hidden behind a delete marker is the loudest signal
-			// of attack this system can receive. Reading past it is
-			// not enough — the operator has to be told it happened.
+			// A snapshot hidden behind a delete marker is a clear signal
+			// of attack. Reading past it is not enough; the operator
+			// has to be told it happened.
 			warnAboutShadowedSnapshots(ctx, storageProvider)
 
 			// Fetch metadata to detect surface type and checksum
@@ -274,7 +273,7 @@ using the private key, decompresses stream, and restores to PostgreSQL or extrac
 	}
 
 	cmd.Flags().StringVar(&snapshotID, "snapshot", "", "Snapshot ID to restore (required)")
-	cmd.Flags().StringVar(&targetURL, "target", "", "Target database URL, postgres://… or mysql://… (an empty database)")
+	cmd.Flags().StringVar(&targetURL, "target", "", "Target database URL: postgres://… or mysql://… (an empty database), or sqlite:///path/to/new.db (a file that does not exist yet)")
 	cmd.Flags().StringVar(&targetDir, "target-dir", "", "Target directory path to extract files or emails into")
 	cmd.Flags().StringVar(&engineStr, "engine", "native", "Accepted for old scripts and ignored: there is one Postgres restore path")
 	_ = cmd.Flags().MarkDeprecated("engine", "there is one Postgres restore path; the flag is ignored")
@@ -291,7 +290,7 @@ func printFileRestoreLimits(res *dump.FileExtractionResult) {
 	if res.OwnershipRestored {
 		fmt.Printf("   Ownership:      restored from the sealed manifest\n")
 	} else if res.OwnershipNote != "" {
-		fmt.Printf("   Ownership:      not restored — %s\n", res.OwnershipNote)
+		fmt.Printf("   Ownership:      not restored (%s)\n", res.OwnershipNote)
 	}
 	fmt.Printf("   Not preserved:  hard links (each comes back as its own copy), extended\n" +
 		"                   attributes and ACLs, setuid/setgid bits, and sparse regions\n" +
@@ -319,8 +318,8 @@ func schemaSourceLabel(source string) string {
 // checkRestoreDigest holds a restored stream to the digest recorded at backup
 // time: the remote server's record when it can be asked, the sidecar when not.
 func checkRestoreDigest(ctx context.Context, meta *model.SnapshotMetadata, snapshotID string, decMetrics *crypto.StreamMetrics) error {
-	// The sidecar is written by whoever can write the bucket; the control
-	// plane's record is not, so it wins when it can be asked.
+	// The sidecar is written to the bucket; the remote server's
+	// record is kept separately, so it takes precedence when available.
 	expected, source := "", "backup manifest (sidecar)"
 	if meta != nil {
 		expected = meta.Sha256Checksum
@@ -331,17 +330,12 @@ func checkRestoreDigest(ctx context.Context, meta *model.SnapshotMetadata, snaps
 	}
 	switch {
 	case decMetrics == nil || expected == "":
-		fmt.Fprintf(os.Stderr, "\n[!] NOT VERIFIED — no digest is recorded for this snapshot (%s).\n"+
+		fmt.Fprintf(os.Stderr, "\n[!] NOT VERIFIED: no digest is recorded for this snapshot (%s).\n"+
 			"    The data decrypted cleanly, but nothing proves it is what was backed up.\n", why)
 	case decMetrics.RawSha256 != expected:
-		// Exact, against the plaintext. Accepting "either digest
-		// matches" is what hid the fact that backup recorded the
-		// ciphertext digest and verify compared the plaintext one:
-		// restore kept passing, so the broken Fire Drill looked like a
-		// Fire Drill problem rather than a manifest problem.
-		//
-		// A pre-fix snapshot still restores — it is named as such
-		// rather than reported as tampering, because it is not.
+		// Exact, against the plaintext.
+		// A legacy snapshot still restores and is identified as such
+		// rather than reported as tampering.
 		if decMetrics.EncryptedSha256 == expected {
 			fmt.Printf("   Digest:          manifest predates 2026-09-21 and records the ciphertext digest;\n")
 			fmt.Printf("                    the payload decrypted cleanly, so the restore is sound.\n")

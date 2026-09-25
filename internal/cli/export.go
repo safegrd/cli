@@ -53,7 +53,7 @@ keeps each snapshot's lock: it is locked there until the same date.`,
 			if cfg.NodeID != "" && srcCfg.NodeID == "" {
 				srcCfg.NodeID = cfg.NodeID
 			}
-			src, err := storage.NewProvider(ctx, srcCfg)
+			src, err := openStorage(ctx, cfg, srcCfg)
 			if err != nil {
 				return fmt.Errorf("source storage: %w", err)
 			}
@@ -67,7 +67,7 @@ keeps each snapshot's lock: it is locked there until the same date.`,
 					Prefix: toPrefix, WORMMode: config.WORMMode(toWORM), RetentionDays: 1,
 				}
 			}
-			dst, err := storage.NewProvider(ctx, dstCfg)
+			dst, err := openStorage(ctx, cfg, dstCfg)
 			if err != nil {
 				return fmt.Errorf("destination storage: %w", err)
 			}

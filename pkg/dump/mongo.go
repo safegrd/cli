@@ -392,7 +392,7 @@ func (d *MongoDumper) Dump(ctx context.Context, databaseName string, dst io.Writ
 		meta.TableStats = append(meta.TableStats, model.TableStat{Schema: db, TableName: coll, RowCount: st.Docs[ns], SizeBytes: st.DocBytes[ns]})
 	}
 	meta.CalculateTotals()
-	meta.DurationMs = time.Since(start).Milliseconds()
+	meta.DurationMs = elapsedMilliseconds(start)
 	manifest, err := json.MarshalIndent(meta, "", "  ")
 	if err != nil {
 		return nil, err
@@ -522,7 +522,7 @@ func InspectMongoArchive(ctx context.Context, src io.Reader) (*DryRestoreResult,
 		add(model.AssertionResult{Name: "Document Count: " + t.TableName, Passed: got == t.RowCount,
 			Expected: fmt.Sprintf("%d documents", t.RowCount), Actual: fmt.Sprintf("%d documents", got)})
 	}
-	result.DurationMs = time.Since(start).Milliseconds()
+	result.DurationMs = elapsedMilliseconds(start)
 	return result, nil
 }
 

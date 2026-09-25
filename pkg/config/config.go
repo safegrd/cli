@@ -33,16 +33,10 @@ const (
 
 	// WORMModeNone writes objects with no Object Lock at all.
 	//
-	// It exists because several S3-compatible providers — DigitalOcean Spaces
-	// among them — do not implement Object Lock, and until this value existed
-	// SafeGrd could not write to them at all: every PutObject carried a
-	// retain-until date and the bucket rejected it. The alternative was
-	// silently dropping the lock when a bucket refused one, which is the worst
-	// option on the list, because the CLI would keep printing "WORM Locked"
-	// over objects anyone can delete.
+	// It exists because several S3-compatible providers (such as DigitalOcean Spaces)
+	// do not implement Object Lock.
 	//
-	// So it is opt-in, spelled out, and never a default or a fallback. A
-	// backup written under it is a copy, not a proof: it is still encrypted and
+	// It is strictly opt-in and never a default or fallback.
 	// still attested, but nothing stops an attacker who reaches the bucket from
 	// deleting it, and `safegrd backup` says so on every run.
 	WORMModeNone WORMMode = "NONE"
@@ -50,16 +44,22 @@ const (
 
 // StorageConfig holds settings for immutable snapshot storage.
 type StorageConfig struct {
-	Type            StorageType `yaml:"type" json:"type"`
-	Bucket          string      `yaml:"bucket" json:"bucket"`
-	Region          string      `yaml:"region" json:"region"`
-	Endpoint        string      `yaml:"endpoint,omitempty" json:"endpoint,omitempty"` // For MinIO / R2
-	Prefix          string      `yaml:"prefix" json:"prefix"`
-	RetentionDays   int         `yaml:"retention_days" json:"retention_days"`
-	WORMMode        WORMMode    `yaml:"worm_mode" json:"worm_mode"`
-	LocalPath       string      `yaml:"local_path,omitempty" json:"local_path,omitempty"` // For local filesystem WORM
-	AccessKeyID     string      `yaml:"access_key_id,omitempty" json:"access_key_id,omitempty"`
-	SecretAccessKey string      `yaml:"secret_access_key,omitempty" json:"secret_access_key,omitempty"`
+	Type          StorageType `yaml:"type" json:"type"`
+	Bucket        string      `yaml:"bucket" json:"bucket"`
+	Region        string      `yaml:"region" json:"region"`
+	Endpoint      string      `yaml:"endpoint,omitempty" json:"endpoint,omitempty"` // For MinIO / R2
+	Prefix        string      `yaml:"prefix" json:"prefix"`
+	RetentionDays int         `yaml:"retention_days" json:"retention_days"`
+	WORMMode      WORMMode    `yaml:"worm_mode" json:"worm_mode"`
+	// ExpireAfterLock lets the agent delete snapshots from this bucket once
+	// their Object Lock has ended (a day of grace, by the bucket's clock),
+	// never the newest of a surface and never one the remote server keeps as
+	// last known good. Off by default: it needs s3:DeleteObjectVersion, which
+	// the recommended policy denies. `safegrd prune` does the same by hand.
+	ExpireAfterLock bool   `yaml:"expire_after_lock,omitempty" json:"expire_after_lock,omitempty"`
+	LocalPath       string `yaml:"local_path,omitempty" json:"local_path,omitempty"` // For local filesystem WORM
+	AccessKeyID     string `yaml:"access_key_id,omitempty" json:"access_key_id,omitempty"`
+	SecretAccessKey string `yaml:"secret_access_key,omitempty" json:"secret_access_key,omitempty"`
 	// SessionToken accompanies a temporary credential (a hosted storage
 	// lease). Never written to disk.
 	SessionToken   string `yaml:"-" json:"-"`
@@ -111,7 +111,7 @@ type DefaultsConfig struct {
 // SurfaceConfig defines a protected surface on a host.
 type SurfaceConfig struct {
 	ID            string `yaml:"id" json:"id"`     // Stable identifier
-	Type          string `yaml:"type" json:"type"` // "postgres", "files", "email"
+	Type          string `yaml:"type" json:"type"` // "postgres", "mysql", "mongodb", "sqlite", "files", "email"
 	Name          string `yaml:"name,omitempty" json:"name,omitempty"`
 	Schedule      string `yaml:"schedule,omitempty" json:"schedule,omitempty"`
 	RetentionDays int    `yaml:"retention_days,omitempty" json:"retention_days,omitempty"`
@@ -416,11 +416,8 @@ func SaveCLIConfig(cfg *CLIConfig, path string) error {
 // including us. The two silent outcomes are both wrong. Picking compliance for
 // an unrecognised value hands an operator fourteen days of undeletable objects
 // they did not ask for; picking none leaves backups with no lock at all while
-// the config claims otherwise. Accepting a lowercase `governance` would be a
-// third kind of wrong — the CLI has been applying *compliance* for that spelling,
-// so quietly honouring it now would weaken live retention without anyone saying so.
-//
-// So: say the value is wrong, name the two that are right, and let a human choose.
+// Exact casing (COMPLIANCE, GOVERNANCE, NONE) is required to ensure retention
+// intent is explicit.
 func (c *StorageConfig) ResolveWORMMode() (WORMMode, error) {
 	switch c.WORMMode {
 	case "":
@@ -481,6 +478,9 @@ func (c *CLIConfig) ValidateForEmailBackup() error {
 
 // topLevelDatabaseType is the surface type a top-level database_url stands for.
 func topLevelDatabaseType(url string) string {
+	if strings.HasPrefix(strings.ToLower(url), "sqlite:") {
+		return "sqlite"
+	}
 	if strings.HasPrefix(url, "mongodb://") || strings.HasPrefix(url, "mongodb+srv://") {
 		return "mongodb"
 	}

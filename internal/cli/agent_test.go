@@ -157,3 +157,37 @@ func TestAgentStatePersistence(t *testing.T) {
 		t.Errorf("surface state did not persist properly: %+v", surf)
 	}
 }
+
+// A host clock that jumps backwards must not stop backups until it catches
+// up: the surface is due now.
+func TestABackwardsClockDoesNotStallTheSchedule(t *testing.T) {
+	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+	s := &config.SurfaceConfig{ID: "db", Schedule: "1h"}
+	st := &SurfaceState{LastSuccess: now.Add(72 * time.Hour), LastAttempt: now.Add(72 * time.Hour)}
+	if due, _ := isSurfaceDue(s, st, now); !due {
+		t.Error("a surface whose last success is three days in the future is not due")
+	}
+	st = &SurfaceState{LastSuccess: now.Add(-2 * time.Hour), LastAttempt: now.Add(48 * time.Hour), ConsecutiveFailures: 3}
+	if due, _ := isSurfaceDue(s, st, now); !due {
+		t.Error("a failure recorded in the future holds the backoff open")
+	}
+	st = &SurfaceState{LastSuccess: now.Add(-30 * time.Minute), LastAttempt: now.Add(-30 * time.Minute)}
+	if due, _ := isSurfaceDue(s, st, now); due {
+		t.Error("an hourly surface backed up 30 minutes ago is due")
+	}
+}
+
+// A backup that finished inside a millisecond still took time. Truncating it to
+// 0 wrote manifests that read as a backup that never ran, and the agent-loop
+// end-to-end test caught one.
+func TestBackupMillisecondsRoundsUpNeverDown(t *testing.T) {
+	if got := backupMilliseconds(time.Now()); got < 1 {
+		t.Errorf("a backup started just now took %d ms, want at least 1", got)
+	}
+	if got := backupMilliseconds(time.Now().Add(-1500 * time.Millisecond)); got < 1500 || got > 1600 {
+		t.Errorf("a backup of 1.5 s took %d ms, want 1500 or a little over", got)
+	}
+	if got := backupMilliseconds(time.Now().Add(time.Hour)); got != 0 {
+		t.Errorf("a start in the future gave %d ms, want 0", got)
+	}
+}

@@ -18,7 +18,6 @@ import (
 	"github.com/safegrd/cli/pkg/crypto"
 	"github.com/safegrd/cli/pkg/dump"
 	"github.com/safegrd/cli/pkg/model"
-	"github.com/safegrd/cli/pkg/storage"
 	"github.com/spf13/cobra"
 )
 
@@ -89,7 +88,7 @@ func runValidationChecks(path string, c *config.CLIConfig) []CheckResult {
 			results = append(results, CheckResult{
 				Name:    "Config Permissions",
 				Status:  "FAIL",
-				Message: fmt.Sprintf("insecure mode %04o for %s: must be 0600 — run: chmod 0600 %s", fi.Mode().Perm(), resolvedPath, resolvedPath),
+				Message: fmt.Sprintf("insecure mode %04o for %s: must be 0600; run: chmod 0600 %s", fi.Mode().Perm(), resolvedPath, resolvedPath),
 			})
 		} else {
 			results = append(results, CheckResult{
@@ -109,8 +108,7 @@ func runValidationChecks(path string, c *config.CLIConfig) []CheckResult {
 	// The file was refused, so c holds defaults rather than anything the
 	// operator wrote. Every check below reads c, and reporting on it here would
 	// say "encryption.public_key is missing (run 'safegrd init')" about a file
-	// whose public key is present and unread — advice that points away from the
-	// one thing that is wrong. Stop at the refusal and name it.
+	// whose public key is present and unread. Stop at the refusal and name it.
 	if cfgLoadErr != nil {
 		results = append(results, CheckResult{
 			Name:   "Configuration Load",
@@ -124,6 +122,16 @@ func runValidationChecks(path string, c *config.CLIConfig) []CheckResult {
 	// The alert block has never been read by anything: alerts come from the
 	// remote server. A host config that sets it believes it is alerting and is
 	// not.
+	if c.Storage.ExpireAfterLock {
+		msg := "on: the agent deletes snapshots from this bucket a day after their lock ends (never the newest, " +
+			"never the last known good one). The key needs s3:DeleteObjectVersion and s3:GetObjectRetention; " +
+			"run 'safegrd prune --dry-run' to see what it would do"
+		status := "PASS"
+		if c.Storage.Type != config.StorageTypeS3 {
+			status, msg = "WARN", "set, but storage.type is not s3: only your own S3 bucket is pruned"
+		}
+		results = append(results, CheckResult{Name: "Expire after lock", Status: status, Message: msg})
+	}
 	if msg := unusedAlertBlock(c); msg != "" {
 		results = append(results, CheckResult{Name: "Alert Webhooks", Status: "WARN", Message: msg})
 	}
@@ -203,7 +211,7 @@ func runValidationChecks(path string, c *config.CLIConfig) []CheckResult {
 	} else {
 		for _, s := range c.Surfaces {
 			switch strings.ToLower(s.Type) {
-			case "postgres", "mysql", "mongodb":
+			case "postgres", "mysql", "mongodb", "sqlite":
 				if s.DatabaseURL == "" && s.DatabaseURLEnv == "" && s.CredentialCommand == "" && c.DatabaseURL == "" {
 					results = append(results, CheckResult{
 						Name:    fmt.Sprintf("Surface %s (%s)", s.ID, strings.ToLower(s.Type)),
@@ -324,7 +332,7 @@ func runDoctorChecks(path string, c *config.CLIConfig) []CheckResult {
 		}
 	}
 
-	stProvider, err := storage.NewProvider(ctx, stCfg)
+	stProvider, err := openStorage(ctx, c, stCfg)
 	if err != nil {
 		results = append(results, CheckResult{
 			Name:    "Storage Provider Init",
@@ -506,7 +514,7 @@ func printAndEvaluateResults(title string, results []CheckResult, jsonOut bool) 
 // claims, and nothing else distinguishes them: a backup succeeds identically
 // whether the database URL came from the config file or from the remote server,
 // so an operator moving a node has no way to know what they need to carry with
-// it. This answers that without printing a single secret — only where each one
+// it. This answers that without printing secrets, showing where each one
 // came from.
 //
 // It runs the same resolution the backup path runs, against a copy, so it
@@ -546,7 +554,7 @@ func unusedAlertBlock(c *config.CLIConfig) string {
 	if c.Alert.SlackWebhookURL == "" && c.Alert.DiscordWebhookURL == "" {
 		return ""
 	}
-	return "alert: webhooks in this file are not used — no host sends alerts. The remote server does: " +
+	return "alert: webhooks in this file are not used; the remote server sends alerts: " +
 		"set the Slack, Discord or plain webhook in the console under Settings → Alerts " +
 		"(safegrd.dev/docs/alerts)"
 }
@@ -564,7 +572,7 @@ func surfaceCredentialChecks(c *config.CLIConfig) []CheckResult {
 		var secret string
 		var err error
 		switch strings.ToLower(s.Type) {
-		case "postgres", "mysql", "mongodb":
+		case "postgres", "mysql", "mongodb", "sqlite":
 			secret, err = resolveSurfaceDatabaseURL(ctx, c, s)
 		case "email":
 			secret, err = surfaceEmailPassword(ctx, s)
@@ -637,6 +645,10 @@ func pgDumpChecks(c *config.CLIConfig) []CheckResult {
 		if r, err := ResolveSecretRef("database_url", u); err == nil && r != "" && (strings.HasPrefix(u, "env:") || strings.HasPrefix(u, "file:")) {
 			u = r
 		}
+		if dump.IsSQLiteURL(u) {
+			results = append(results, sqliteCheck(name, u))
+			continue
+		}
 		if dump.IsMySQLURL(u) {
 			results = append(results, mysqlToolCheck(name, u))
 			continue
@@ -694,6 +706,29 @@ func mysqlToolCheck(name, databaseURL string) CheckResult {
 	default:
 		check.Status = "PASS"
 		check.Message = fmt.Sprintf("%s and %s for the %s server", dumpTool, client, server)
+	}
+	return check
+}
+
+// sqliteCheck opens a SQLite surface read-only, the way a backup does, and
+// says whether writers will wait while it is copied.
+func sqliteCheck(name, databaseURL string) CheckResult {
+	check := CheckResult{Name: "SQLite database for " + name}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := dump.PingSQLite(ctx, databaseURL); err != nil {
+		check.Status, check.Message = "FAIL", err.Error()
+		return check
+	}
+	mode, err := dump.SQLiteJournalMode(ctx, databaseURL)
+	switch {
+	case err != nil:
+		check.Status, check.Message = "WARN", "opened, but its journal mode could not be read: "+err.Error()
+	case !strings.EqualFold(mode, "wal"):
+		check.Status, check.Message = "WARN", fmt.Sprintf("readable; journal mode %s, so writers wait while a backup reads it. "+
+			"PRAGMA journal_mode=WAL lets them carry on", mode)
+	default:
+		check.Status, check.Message = "PASS", "readable, WAL mode: backups copy it without blocking writers"
 	}
 	return check
 }

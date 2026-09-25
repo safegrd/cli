@@ -21,9 +21,9 @@ func newListCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
 			// Routed and credentialed like backup and restore. A node enrolled
-			// under Journey A has no bucket or sink secret locally, so reading
+			// with a centrally-managed sink has no bucket or sink secret locally, so reading
 			// cfg.Storage directly means this command cannot reach the bucket
-			// at all on exactly the hosts central configuration exists for.
+			// on hosts configured centrally.
 			storageCfg := resolveStorageRouting(ctx, cfg, "", "", "", "", false)
 			if _, err := resolveHostedStorage(ctx, cfg, &storageCfg, false); err != nil {
 				return err
@@ -32,7 +32,7 @@ func newListCmd() *cobra.Command {
 			if cfg.NodeID != "" && storageCfg.NodeID == "" {
 				storageCfg.NodeID = cfg.NodeID
 			}
-			storageProvider, err := storage.NewProvider(ctx, storageCfg)
+			storageProvider, err := openStorage(ctx, cfg, storageCfg)
 			if err != nil {
 				return fmt.Errorf("storage error: %w", err)
 			}
@@ -116,7 +116,7 @@ func newListCmd() *cobra.Command {
 				fmt.Fprintf(os.Stderr,
 					"\n⚠️  %d snapshot(s) above could not be described. The sidecar beside the object is\n"+
 						"   what this table reads; it is routing data, not the backup. The manifest is sealed\n"+
-						"   inside the encrypted archive, so those snapshots still restore — run\n"+
+						"   inside the encrypted archive, so those snapshots still restore: run\n"+
 						"   'safegrd verify --snapshot <id>' with the identity to read what is in them.\n",
 					undescribed)
 			}
@@ -128,11 +128,8 @@ func newListCmd() *cobra.Command {
 // describeContents says what is in a snapshot in the vocabulary of its own
 // surface.
 //
-// It reads TotalItems and TotalContainers — the surface-neutral pair that
-// CalculateTotals populates for every surface — rather than TotalTables and
-// TotalRows, which are set only for Postgres. Reading the Postgres-only pair is
-// why a file backup of two files listed as 0 tables and 0 rows: the columns were
-// not merely mislabelled, they were reading fields nothing had written.
+// It reads TotalItems and TotalContainers (the surface-neutral pair that
+// CalculateTotals populates for every surface) rather than TotalTables and TotalRows.
 func describeContents(meta *model.SnapshotMetadata) string {
 	switch meta.SurfaceType {
 	case model.SurfaceTypeFiles:
@@ -141,7 +138,7 @@ func describeContents(meta *model.SnapshotMetadata) string {
 		return fmt.Sprintf("%d emails, %d folders", meta.TotalItems, meta.TotalContainers)
 	case model.SurfaceTypeMongoDB:
 		return fmt.Sprintf("%d documents, %d collections", meta.TotalItems, meta.TotalContainers)
-	case model.SurfaceTypePostgres, model.SurfaceTypeMySQL:
+	case model.SurfaceTypePostgres, model.SurfaceTypeMySQL, model.SurfaceTypeSQLite:
 		return fmt.Sprintf("%d rows, %d tables", meta.TotalItems, meta.TotalContainers)
 	default:
 		return fmt.Sprintf("%d items, %d containers", meta.TotalItems, meta.TotalContainers)
@@ -150,15 +147,8 @@ func describeContents(meta *model.SnapshotMetadata) string {
 
 // describeRetention says what, if anything, retains a snapshot.
 //
-// The column was "WORM RETENTION" and printed the date unconditionally, so a
-// snapshot written at worm_mode NONE — which nothing retains, and which backup
-// had just said "WORM Locked: NO" about — listed as retained until next month.
-// That is the product's central claim made falsely in the command an operator
-// checks afterwards.
-//
-// The sidecar now records the mode it was written under. One written before it
-// did falls back to the mode this config resolves to, and says the mode was not
-// recorded rather than presenting a guess as a fact.
+// The column was previously printed unconditionally. A snapshot written
+// at worm_mode NONE has no WORM lock applied.
 func describeRetention(meta *model.SnapshotMetadata, storageCfg config.StorageConfig) string {
 	mode := meta.WORMMode
 	recorded := mode != ""

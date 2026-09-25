@@ -77,12 +77,10 @@ func resolveStorageRouting(ctx context.Context, cfg *config.CLIConfig, flagBucke
 					storageCfg.Prefix = sinkResp.Sink.Prefix
 				}
 				storageCfg.ForcePathStyle = sinkResp.Sink.ForcePathStyle
-				// Object Lock intent, and the reason this is not cosmetic: a
-				// node enrolled under Journey A has no local storage config,
-				// so storageCfg.WORMMode is empty here and ResolveWORMMode
-				// reads an empty mode as COMPLIANCE. Without these two lines
-				// a centrally-configured sink that says GOVERNANCE would
-				// still write objects nobody can delete before expiry.
+				// Object Lock intent: a node enrolled with a centrally-managed sink
+				// has no local storage config, so storageCfg.WORMMode is empty here
+				// and ResolveWORMMode defaults to COMPLIANCE. Applying the sink's
+				// configured WORMMode ensures governance mode is respected if configured.
 				if sinkResp.Sink.WORMMode != "" {
 					storageCfg.WORMMode = config.WORMMode(sinkResp.Sink.WORMMode)
 				}

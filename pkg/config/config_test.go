@@ -226,20 +226,9 @@ database_url: postgres://postgres:secret@localhost:5432/mydb
 	}
 }
 
-// TestResolveWORMModeRefusesAnythingUnrecognised pins the choice made for a
-// worm_mode the parser does not know.
-//
-// This is the regression test for the divergence that made it worth writing:
-// the CLI selected the mode with `if Governance { … } else { Compliance }` and
-// the remote server with `else if == Compliance || == ""`, so an unrecognised
-// value — a typo, or the entirely ordinary lowercase `governance` — meant no
-// lock on one side and compliance-mode Object Lock on the other. The CLI is the
-// side that writes objects, and a compliance-mode object cannot be deleted
-// before its retention expires by anyone, including us.
-//
-// Both sides now refuse. The case-sensitivity is deliberate: accepting
-// lowercase `governance` would hand an operator governance where they have
-// been getting compliance, which is a silent weakening of live retention.
+// TestResolveWORMModeRefusesAnythingUnrecognised asserts that any unrecognized
+// or incorrectly-cased worm_mode value is rejected with an error.
+// The case sensitivity is intentional to avoid silent mode misconfigurations.
 func TestResolveWORMModeRefusesAnythingUnrecognised(t *testing.T) {
 	cases := []struct {
 		name    string

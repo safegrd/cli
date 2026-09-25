@@ -79,8 +79,7 @@ func (v *Verifier) fetchRecord(ctx context.Context, snapshotID string) snapshotR
 // With a record: the plaintext digest must match the record, the sidecar must
 // agree with the record, and the ciphertext must match the record where one
 // was kept. Without one, the sidecar is all there is, and the run says so on
-// stderr and by the absence of the RemoteServerRecord assertion — which is
-// what the console sees.
+// stderr and by the absence of the RemoteServerRecord assertion.
 func (v *Verifier) checkDigests(report *model.VerificationReport, meta *model.SnapshotMetadata, rec snapshotRecord, dec *crypto.StreamMetrics) string {
 	if dec == nil {
 		return "the decrypted stream produced no digest"
@@ -160,9 +159,8 @@ func (v *Verifier) checkDigests(report *model.VerificationReport, meta *model.Sn
 	return ""
 }
 
-// RecordedDigests is the remote server's record of snapshotID for callers
-// outside a Verifier — restore holds its stream to the same record. rec is
-// nil when the record could not be consulted, and why says what happened.
+// RecordedDigests returns the remote server's record of snapshotID.
+// rec is nil when the record could not be consulted, and why explains what happened.
 func RecordedDigests(ctx context.Context, serverURL, serverToken, snapshotID string) (rec *model.SnapshotMetadata, why string) {
 	v := &Verifier{serverURL: serverURL, serverToken: serverToken}
 	r := v.fetchRecord(ctx, snapshotID)

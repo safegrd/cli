@@ -210,7 +210,7 @@ func (d *NativeDumper) Dump(ctx context.Context, databaseName string, dst io.Wri
 	}
 
 	meta.CalculateTotals()
-	meta.DurationMs = time.Since(startTime).Milliseconds()
+	meta.DurationMs = elapsedMilliseconds(startTime)
 	manifest, err := json.MarshalIndent(meta, "", "  ")
 	if err != nil {
 		return nil, err

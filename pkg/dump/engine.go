@@ -30,9 +30,13 @@ type Restorer interface {
 	Restore(ctx context.Context, src io.Reader) (*model.SnapshotMetadata, error)
 }
 
-// NewDumper returns the dumper for a database URL: MySQL or MariaDB for
-// mysql:// and mariadb://, Postgres for everything else.
+// NewDumper returns the dumper for a database URL: SQLite for sqlite:,
+// MongoDB for mongodb://, MySQL or MariaDB for mysql:// and mariadb://,
+// Postgres for everything else.
 func NewDumper(_ EngineType, databaseURL string) Dumper {
+	if IsSQLiteURL(databaseURL) {
+		return NewSQLiteDumper(databaseURL)
+	}
 	if IsMongoURL(databaseURL) {
 		return NewMongoDumper(databaseURL)
 	}
@@ -44,6 +48,9 @@ func NewDumper(_ EngineType, databaseURL string) Dumper {
 
 // NewRestorer returns the restorer for a target URL.
 func NewRestorer(_ EngineType, targetURL string) Restorer {
+	if IsSQLiteURL(targetURL) {
+		return NewSQLiteRestorer(targetURL)
+	}
 	if IsMongoURL(targetURL) {
 		return NewMongoRestorer(targetURL)
 	}
@@ -56,6 +63,8 @@ func NewRestorer(_ EngineType, targetURL string) Restorer {
 // SurfaceTypeOfURL is the database surface a connection URL selects.
 func SurfaceTypeOfURL(u string) model.SurfaceType {
 	switch {
+	case IsSQLiteURL(u):
+		return model.SurfaceTypeSQLite
 	case IsMongoURL(u):
 		return model.SurfaceTypeMongoDB
 	case IsMySQLURL(u):

@@ -69,7 +69,7 @@ func (f *fakeRemoteServer) backups() int {
 }
 
 // TriggerBackup is true whenever the remote server has not heard of a recent
-// success — including when this host's report of one was lost. An agent that
+// success, including when this host's report of one was lost. An agent that
 // obeyed it would back up on every tick, and under Object Lock every one of
 // those is an object nobody can delete. Only a
 // one-shot request id starts an unscheduled backup, and each id runs once.

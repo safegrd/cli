@@ -382,10 +382,9 @@ func TestVerifier_RunDryRestore_Email(t *testing.T) {
 
 // The certificate digest is the full SHA-256, not a prefix.
 //
-// It was hex.EncodeToString(h[:12]) — 96 bits, a ~48-bit birthday bound — and
-// it is the value PrevHash links against, so it is the narrowest margin in the
-// chain. This asserts the width rather than only the prefix, because every
-// other test here checks "cert_sg_" and would pass at any length.
+// It was previously hex.EncodeToString(h[:12]) (96 bits) and
+// it is the value PrevHash links against. This asserts the width rather
+// than only the prefix.
 func TestTheCertificateDigestIsAWholeSHA256(t *testing.T) {
 	report := &model.VerificationReport{
 		VerificationID: "ver-width-01",
@@ -400,8 +399,7 @@ func TestTheCertificateDigestIsAWholeSHA256(t *testing.T) {
 	const prefix = "cert_sg_"
 	digest := strings.TrimPrefix(hash, prefix)
 	if len(digest) != sha256.Size*2 {
-		t.Fatalf("certificate digest is %d hex chars (%d bits), want %d (%d bits) — "+
-			"a truncated digest is the one value the whole attestation chain is built out of",
+		t.Fatalf("certificate digest is %d hex chars (%d bits), want %d (%d bits)",
 			len(digest), len(digest)*4, sha256.Size*2, sha256.Size*8)
 	}
 

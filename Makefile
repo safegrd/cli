@@ -14,7 +14,7 @@ CLI_BIN := $(BIN_DIR)/safegrd
 .DEFAULT_GOAL := help
 
 help: ## Display this help message
-	@echo "SafeGrd CLI — Build & Test"
+	@echo "SafeGrd CLI: Build & Test"
 	@echo "==========================="
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
 
@@ -57,10 +57,9 @@ dist: ## Cross-compile release archives and checksums into dist/
 # CI runs these instead of `vet`, because `vet` depends on fmt and tidy, which
 # rewrite files: a formatting gate that formats for you always passes.
 #
-# `ci` depends on `build` because `go vet ./...` and `go test ./...` both pass on
-# a checkout with no `cmd/safegrd` package at all — which is exactly what a
-# .gitignore rule once produced, green CI and a release build that could not
-# link a binary. Compiling the command is the only gate that catches that.
+# `ci` depends on `build` because `go vet` and `go test` can succeed even if
+# the main command package is missing or misconfigured. Compiling ensures
+# cmd/safegrd builds successfully.
 check-fmt: ## Fail if any file needs gofmt
 	@out="$$(gofmt -l .)"; \
 	if [ -n "$$out" ]; then echo "These files need gofmt:"; echo "$$out"; exit 1; fi

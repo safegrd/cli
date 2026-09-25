@@ -152,7 +152,7 @@ func (er *EmailRestorer) InspectEmailArchive(ctx context.Context, src io.Reader,
 	result.TotalEmails = emailsFound
 	result.TotalFolders = dirsFound
 	result.TotalRawBytes = bytesFound
-	result.DurationMs = time.Since(startTime).Milliseconds()
+	result.DurationMs = elapsedMilliseconds(startTime)
 
 	// Assertion 1: Sealed Manifest Present
 	result.Assertions = append(result.Assertions, model.AssertionResult{

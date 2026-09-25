@@ -8,13 +8,8 @@ import (
 )
 
 // MinScheduleInterval is the shortest interval a surface may be backed up on.
-//
-// It is a floor on cost, not on protection. Under compliance-mode Object Lock
-// every backup is an object nobody can delete until its retention expires, so a
-// schedule is also a bill. A mistyped "1m" on the agent's five-minute tick
-// writes 288 immutable objects a day, each retained for the full period, and
-// there is no support ticket that removes them. One hour is the shortest named
-// schedule (@hourly), which is where the floor sits.
+// Under compliance-mode Object Lock, backups cannot be deleted until retention expires.
+// One hour is the shortest supported schedule interval (@hourly).
 const MinScheduleInterval = time.Hour
 
 // DefaultScheduleInterval is what an empty schedule means.
@@ -22,13 +17,6 @@ const DefaultScheduleInterval = 24 * time.Hour
 
 // ParseSchedule returns the interval a schedule names, or an error saying why
 // it names none.
-//
-// It is the one parser for schedules. The remote server and the agent each had
-// their own and they disagreed: the server accepted "hourly" and "7d", the
-// agent read both as daily, and both read an unparseable schedule as daily
-// without saying so. So a node could be backed up on one cadence while the
-// console computed due-ness on another. The vocabulary here is the union of
-// both, so no stored schedule changes meaning.
 //
 // Accepted: "" (daily), "@hourly"/"hourly", "@daily"/"daily",
 // "@weekly"/"weekly", a Go duration ("6h", "90m"), or whole days ("2d").
@@ -68,13 +56,12 @@ func ParseSchedule(schedule string) (time.Duration, error) {
 	return d, nil
 }
 
-// ScheduleInterval is ParseSchedule for code that must act on a schedule
-// rather than judge it — the agent's tick and the heartbeat's due-ness.
+// ScheduleInterval is ParseSchedule for code that executes scheduled tasks
+// (such as agent intervals and heartbeat checks).
 //
-// It never fails, because refusing to back up over a typo would leave a
-// surface unprotected. A schedule that is too frequent runs at the floor, and
-// one that cannot be read runs daily. Either way the problem comes back with
-// it, so the caller can say so out loud instead of quietly substituting.
+// It falls back to safe defaults rather than failing outright. A schedule that
+// is too frequent runs at the floor, and an unparseable schedule runs daily.
+// Any parsing error is returned alongside the duration so callers can log warnings.
 func ScheduleInterval(schedule string) (time.Duration, error) {
 	d, err := ParseSchedule(schedule)
 	if err == nil {

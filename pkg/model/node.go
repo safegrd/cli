@@ -60,12 +60,12 @@ type Node struct {
 	// from due-ness: see HeartbeatResponse.BackupRequestID.
 	BackupRequestedAt *time.Time `json:"backup_requested_at,omitempty" yaml:"backup_requested_at,omitempty"`
 	// DrillRequestedAt is a one-shot "drill now", from the console, the API or
-	// an agent over MCP. The heartbeat answers it with TriggerFireDrill while
-	// the plan includes drills, and the next drill report clears it.
+	// an agent over MCP. The heartbeat answers it with TriggerFireDrill,
+	// and the next drill report clears it.
 	DrillRequestedAt *time.Time `json:"drill_requested_at,omitempty" yaml:"drill_requested_at,omitempty"`
 
 	// What the agent said on its last heartbeat. Absent for a node that has
-	// never heartbeated — one run by hand or from cron.
+	// never sent a heartbeat (for example, one run manually or from cron).
 	AgentVersion         string `json:"agent_version,omitempty" yaml:"agent_version,omitempty"`
 	AgentIntervalSeconds int    `json:"agent_interval_seconds,omitempty" yaml:"agent_interval_seconds,omitempty"`
 	AgentFailures        int    `json:"agent_failures,omitempty" yaml:"agent_failures,omitempty"`
@@ -74,7 +74,7 @@ type Node struct {
 
 	// AlertState is the open alert episode, if any: AlertStateSilent or
 	// AlertStateOverdue. One alert opens it and one closes it, so it is
-	// persisted — a restart must neither repeat an alert nor forget one.
+	// persisted across restarts.
 	AlertState      string     `json:"alert_state,omitempty" yaml:"alert_state,omitempty"`
 	AlertStateSince *time.Time `json:"alert_state_since,omitempty" yaml:"alert_state_since,omitempty"`
 }
@@ -140,9 +140,8 @@ type NodeRegisterResponse struct {
 	Message      string `json:"message"`
 
 	// KeyEscrowed is the server's confirmation that it sealed and stored the
-	// identity it was sent. The CLI must treat a false here after sending one
-	// as a hard failure and print the key for the operator to save — never as
-	// a warning that scrolls past.
+	// identity it was sent. The CLI treats a false value here after sending one
+	// as an error and prints the key for the operator to save.
 	KeyEscrowed    bool   `json:"key_escrowed"`
 	KeyFingerprint string `json:"key_fingerprint,omitempty"`
 }
@@ -186,22 +185,18 @@ type HeartbeatRequest struct {
 
 // HeartbeatResponse instructs the node on next actions.
 //
-// Fire Drills are the paywall, so drill instructions are decided here — on the
-// server, from model.EffectivePlan — and never from anything the node knows
-// about its own tier. A tier that runs no drills is told so by omission:
-// TriggerFireDrill stays false and NextDrillDue is absent, which is the only
-// shape a client should read as "this plan proves nothing".
+// Drill instructions are scheduled on the remote server
+// and sent to the node. When no drill is scheduled,
+// TriggerFireDrill is false and NextDrillDue is absent.
 type HeartbeatResponse struct {
 	Acknowledge   bool      `json:"acknowledge"`
 	NextBackupDue time.Time `json:"next_backup_due"`
 	TriggerBackup bool      `json:"trigger_backup"`
 	ServerTime    time.Time `json:"server_time"`
 
-	// TriggerFireDrill asks the node to run a verified restore now. It is false
-	// for every tier without drills, whatever the node last did.
+	// TriggerFireDrill asks the node to run a verified restore now.
 	TriggerFireDrill bool `json:"trigger_fire_drill"`
-	// NextDrillDue is absent when the tier runs no drills, so a client cannot
-	// mistake a zero interval for "due immediately".
+	// NextDrillDue is absent when no drill is scheduled.
 	NextDrillDue *time.Time `json:"next_drill_due,omitempty"`
 	// FireDrillsIncluded lets the CLI explain a refusal before it posts a report
 	// the remote server will reject with 402.
@@ -211,7 +206,7 @@ type HeartbeatResponse struct {
 	// once and remembers it. TriggerBackup is NOT this and an agent must not
 	// act on it: it is true whenever the server has not heard of a recent
 	// success, so obeying it would back up on every tick whenever a report
-	// failed — undeletable objects under Object Lock.
+	// failed (creating excess objects under Object Lock).
 	BackupRequestID string `json:"backup_request_id,omitempty"`
 	// DrillSnapshotID is the snapshot a triggered drill should restore: the
 	// latest the remote server has recorded for this node.

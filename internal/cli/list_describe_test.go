@@ -15,12 +15,8 @@ import (
 // `list` must describe a snapshot in the vocabulary of its own surface, and the
 // numbers must come from the fields the backup path actually wrote.
 //
-// The defect: `list` read TotalTables and TotalRows, which CalculateTotals sets
-// only for Postgres, so a file backup of two files printed 0 tables and 0 rows
-// — Postgres columns over a file surface, populated from fields nothing had
-// written. The metadata here is built the way backup builds it and run
-// through the same CalculateTotals, so the test pins the producer/consumer pair
-// rather than a hand-written fixture that could encode the same misreading.
+// This test asserts that CalculateTotals populates surface-appropriate
+// totals and that list describes files, email, and databases correctly.
 func TestListDescribesEachSurfaceFromTheFieldsBackupWrote(t *testing.T) {
 	for _, tc := range []struct {
 		name string
