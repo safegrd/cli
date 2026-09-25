@@ -271,14 +271,30 @@ esac
 # 12. Connect this host, or say how to
 SAFEGRD_BIN="$INSTALL_DIR/safegrd"
 
+# A binary older than this script (a pinned VERSION, or a release published
+# before it) has an enroll that ignores the saved login, so `login` then
+# `enroll` would fail. Ask the binary rather than compare versions.
+ENROLL_USES_LOGIN=""
+if "$SAFEGRD_BIN" enroll --help 2>/dev/null | grep -q "safegrd login"; then
+  ENROLL_USES_LOGIN=1
+fi
+
 print_next_steps() {
   printf "\n"
   printf "${BOLD} Next steps${RESET}\n"
-  printf "   1. Log in. Prints a URL and a code; open it in a browser on any device:\n"
-  printf "      ${CYAN}safegrd login${RESET}\n\n"
-  printf "   2. Register this host. Generates its encryption key if it has none:\n"
-  printf "      ${CYAN}safegrd enroll${RESET}\n\n"
-  printf "   3. Take the first encrypted, immutable backup:\n"
+  if [ -n "$ENROLL_USES_LOGIN" ]; then
+    printf "   1. Log in. Prints a URL and a code; open it in a browser on any device:\n"
+    printf "      ${CYAN}safegrd login${RESET}\n\n"
+    printf "   2. Register this host. Generates its encryption key if it has none:\n"
+    printf "      ${CYAN}safegrd enroll${RESET}\n\n"
+  else
+    printf "   1. Create a token under Tokens in the console, then register this host.\n"
+    printf "      It generates the encryption key if the host has none:\n"
+    printf "      ${CYAN}safegrd enroll --token sg_pat_YOUR_TOKEN${RESET}\n"
+    printf "      (%s predates enrolling through a browser login; the latest release has it.)\n\n" "$TAG"
+  fi
+  if [ -n "$ENROLL_USES_LOGIN" ]; then step=3; else step=2; fi
+  printf "   %s. Take the first encrypted, immutable backup:\n" "$step"
   printf "      ${CYAN}safegrd backup --database-url \"\$DATABASE_URL\"${RESET}\n\n"
   printf "   No account? ${CYAN}safegrd init${RESET} sets up a standalone host that contacts no server.\n"
   printf " Docs: ${CYAN}https://safegrd.dev/docs/install${RESET} | Source: ${CYAN}https://github.com/safegrd/cli${RESET}\n\n"
@@ -309,7 +325,7 @@ setup_failed() {
 printf "\n"
 log_success "SafeGrd CLI ${TAG} is installed."
 
-if [ -n "${SAFEGRD_NO_SETUP:-}" ] || ! have_tty; then
+if [ -n "${SAFEGRD_NO_SETUP:-}" ] || [ -z "$ENROLL_USES_LOGIN" ] || ! have_tty; then
   print_next_steps
   exit 0
 fi
@@ -336,8 +352,15 @@ if ! "$SAFEGRD_BIN" login </dev/tty; then
   setup_failed "Login did not complete, so this host is not enrolled."
 fi
 
+# A key already on this host (from `safegrd init`, or a key you put there) is
+# yours and is never sent, so there is nothing to ask; enroll says so.
+KEY_ON_HOST=""
+if [ -f "${HOME}/.safegrd/keys/agent.key" ] || grep -q '^ *public_key: *age1' "${HOME}/.safegrd/config.yaml" 2>/dev/null; then
+  KEY_ON_HOST=1
+fi
+
 CUSTODY="${SAFEGRD_KEY_CUSTODY:-}"
-if [ -z "$CUSTODY" ]; then
+if [ -z "$CUSTODY" ] && [ -z "$KEY_ON_HOST" ]; then
   printf "\n${BOLD}Who holds the key that decrypts this host's backups?${RESET}\n" >/dev/tty
   printf "  This is decided once, when the key is made, and cannot be changed later.\n\n" >/dev/tty
   printf "  1) SafeGrd keeps a copy. Losing this host does not lose the backups,\n" >/dev/tty
@@ -353,7 +376,10 @@ if [ -z "$CUSTODY" ]; then
   done
 fi
 
-set -- enroll --key-custody "$CUSTODY"
+set -- enroll
+if [ -n "$CUSTODY" ] && [ -z "$KEY_ON_HOST" ]; then
+  set -- "$@" --key-custody "$CUSTODY"
+fi
 if [ -n "${SAFEGRD_PROJECT:-}" ]; then
   set -- "$@" --project "$SAFEGRD_PROJECT"
 fi

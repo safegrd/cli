@@ -29,7 +29,8 @@ func newEnrollCmd() *cobra.Command {
 		Use:   "enroll",
 		Short: "Enroll this node with the SafeGrd Remote Server using an API key or node token",
 		Long: `Authenticates the local CLI agent with the SafeGrd remote server.
-You can either provide a direct Node Token or an Organization API Key to register this node.`,
+You can either provide a direct Node Token or an Organization API Key to register this node.
+With neither, it uses the login saved by 'safegrd login'.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			serverURL := resolveServerURL()
 

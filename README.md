@@ -83,6 +83,9 @@ make build
 
 ### 1. Initialize Configuration & Encryption Keys
 
+Skip this if you let the install script connect the machine: it already wrote the
+keypair and `~/.safegrd/config.yaml`, and `init` refuses to overwrite them.
+
 ```bash
 # Generates an Age X25519 keypair and creates ~/.safegrd/config.yaml
 safegrd init \
