@@ -667,10 +667,15 @@ func warnSkipped(skipped []string) {
 // that says it took 0 ms reads as a backup that never ran. time.Since reads the
 // monotonic clock, so a host clock stepped mid-backup cannot make it 0 either;
 // the completed_at stamp beside it is wall time and would.
+// Two readings of the clock can be equal on a coarse one (darwin), so only a
+// start in the future, which cannot be a backup that ran, reads as 0.
 func backupMilliseconds(started time.Time) int64 {
 	d := time.Since(started)
-	if d <= 0 {
+	if d < 0 {
 		return 0
+	}
+	if d == 0 {
+		return 1
 	}
 	return int64((d + time.Millisecond - 1) / time.Millisecond)
 }
