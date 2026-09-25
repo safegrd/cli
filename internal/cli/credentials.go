@@ -51,6 +51,7 @@ func fetchNodeCredentials(ctx context.Context, serverURL, nodeID, token string) 
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("User-Agent", UserAgent())
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
@@ -206,6 +207,7 @@ func fetchManagedIdentity(ctx context.Context, serverURL, nodeID, token string) 
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("User-Agent", UserAgent())
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)

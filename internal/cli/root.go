@@ -3,12 +3,18 @@ package cli
 import (
 	"fmt"
 	"os"
+	"runtime"
 	"runtime/debug"
 	"strings"
 
 	"github.com/safegrd/cli/pkg/config"
 	"github.com/spf13/cobra"
 )
+
+// UserAgent returns the User-Agent string conveying CLI version, OS, and architecture.
+func UserAgent() string {
+	return fmt.Sprintf("safegrd-cli/%s (%s/%s)", Version, runtime.GOOS, runtime.GOARCH)
+}
 
 var (
 	cfgFile       string

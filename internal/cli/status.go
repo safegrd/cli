@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
@@ -10,6 +11,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/safegrd/cli/pkg/crypto"
 	"github.com/safegrd/cli/pkg/dump"
+	"github.com/safegrd/cli/pkg/model"
 	"github.com/safegrd/cli/pkg/storage"
 	"github.com/spf13/cobra"
 )
@@ -111,12 +113,40 @@ func newStatusCmd() *cobra.Command {
 				fmt.Printf("   Remote Server:     Standalone (not enrolled; run 'safegrd enroll' to report to the console)\n")
 			} else if cfg.ServerURL != "" {
 				client := &http.Client{Timeout: 3 * time.Second}
-				resp, err := client.Get(cfg.ServerURL + "/healthz")
-				if err == nil && resp.StatusCode == http.StatusOK {
-					fmt.Printf("   Remote Server:     ✅ Online (%s)\n", cfg.ServerURL)
-					resp.Body.Close()
+				req, err := http.NewRequestWithContext(ctx, http.MethodGet, cfg.ServerURL+"/api/v1/nodes/"+cfg.NodeID, nil)
+				if err == nil && cfg.NodeID != "" {
+					req.Header.Set("Authorization", "Bearer "+cfg.ServerToken)
+					req.Header.Set("User-Agent", UserAgent())
+					resp, err := client.Do(req)
+					if err == nil {
+						defer resp.Body.Close()
+						if resp.StatusCode == http.StatusOK {
+							fmt.Printf("   Remote Server:     ✅ Online (%s)\n", cfg.ServerURL)
+							var n model.Node
+							if err := json.NewDecoder(resp.Body).Decode(&n); err == nil && n.UpgradeAvailable {
+								fmt.Printf("   CLI Update:        ⚠️  A new release is available: v%s (installed: %s)\n", n.LatestCLIVersion, Version)
+							}
+						} else {
+							// Fallback to /healthz ping
+							hResp, hErr := client.Get(cfg.ServerURL + "/healthz")
+							if hErr == nil && hResp.StatusCode == http.StatusOK {
+								fmt.Printf("   Remote Server:     ✅ Online (%s)\n", cfg.ServerURL)
+								hResp.Body.Close()
+							} else {
+								fmt.Printf("   Remote Server:     ⚠️  Unreachable (%s: HTTP %d)\n", cfg.ServerURL, resp.StatusCode)
+							}
+						}
+					} else {
+						fmt.Printf("   Remote Server:     ⚠️  Unreachable (%s)\n", cfg.ServerURL)
+					}
 				} else {
-					fmt.Printf("   Remote Server:     ⚠️  Unreachable (%s)\n", cfg.ServerURL)
+					resp, err := client.Get(cfg.ServerURL + "/healthz")
+					if err == nil && resp.StatusCode == http.StatusOK {
+						fmt.Printf("   Remote Server:     ✅ Online (%s)\n", cfg.ServerURL)
+						resp.Body.Close()
+					} else {
+						fmt.Printf("   Remote Server:     ⚠️  Unreachable (%s)\n", cfg.ServerURL)
+					}
 				}
 			}
 

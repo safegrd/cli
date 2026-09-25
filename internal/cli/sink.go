@@ -32,6 +32,7 @@ func fetchNodeSink(ctx context.Context, serverURL, nodeID, token string) (*nodeS
 	if err != nil {
 		return nil, err
 	}
+	req.Header.Set("User-Agent", UserAgent())
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}

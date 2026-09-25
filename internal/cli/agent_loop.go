@@ -17,7 +17,9 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/safegrd/cli/pkg/config"
@@ -26,6 +28,14 @@ import (
 	"github.com/safegrd/cli/pkg/runner"
 	"github.com/safegrd/cli/pkg/storage"
 )
+
+var upgradeNoticeOnce sync.Once
+
+func notifyUpgrade(latest string) {
+	upgradeNoticeOnce.Do(func() {
+		fmt.Fprintf(os.Stderr, "💡 A new SafeGrd CLI release is available: v%s (current: %s). Visit https://safegrd.dev or run 'safegrd version' for update details.\n", latest, Version)
+	})
+}
 
 // canReport says whether this config can talk to a remote server at all.
 func canReport(c *config.CLIConfig) bool {
@@ -45,6 +55,7 @@ func postJSON(ctx context.Context, c *config.CLIConfig, path string, body, out a
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.ServerToken)
+	req.Header.Set("User-Agent", UserAgent())
 	// This host's clock, so the remote server can say when it is wrong.
 	req.Header.Set("X-Safegrd-Host-Time", time.Now().UTC().Format(time.RFC3339Nano))
 	resp, err := http.DefaultClient.Do(req)
@@ -136,6 +147,8 @@ func sendHeartbeat(ctx context.Context, c *config.CLIConfig, nodeID string, st *
 	_, err := postJSON(ctx, c, "/api/v1/nodes/heartbeat", model.HeartbeatRequest{
 		NodeID:              nodeID,
 		CLI_Version:         Version,
+		OS:                  runtime.GOOS,
+		Arch:                runtime.GOARCH,
 		PostgresUp:          st.ConsecutiveFailures == 0,
 		StorageUp:           st.ConsecutiveFailures == 0,
 		LastSnapshot:        st.LastSnapshotID,
@@ -147,6 +160,9 @@ func sendHeartbeat(ctx context.Context, c *config.CLIConfig, nodeID string, st *
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "⚠️  Surface %s: heartbeat failed (%v). Backups carry on; the console will show this host as silent if it persists.\n", st.SurfaceID, err)
 		return nil
+	}
+	if resp.UpgradeAvailable {
+		notifyUpgrade(resp.LatestCLIVersion)
 	}
 	return &resp
 }

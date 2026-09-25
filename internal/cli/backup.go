@@ -547,6 +547,7 @@ func sendMetadataToServer(ctx context.Context, serverURL, token string, meta *mo
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("User-Agent", UserAgent())
 
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"runtime"
 	"strings"
 	"time"
 
@@ -215,6 +216,9 @@ With neither, it uses the login saved by 'safegrd login'.`,
 					DatabaseName:  "postgres",
 					StorageBucket: cfg.Storage.Bucket,
 					RetentionDays: cfg.Storage.RetentionDays,
+					OS:            runtime.GOOS,
+					Arch:          runtime.GOARCH,
+					CLIVersion:    Version,
 
 					// The recipient is public and always sent: the remote
 					// server needs it to record which key this node uses and to
@@ -232,6 +236,7 @@ With neither, it uses the login saved by 'safegrd login'.`,
 					return err
 				}
 				req.Header.Set("Content-Type", "application/json")
+				req.Header.Set("User-Agent", UserAgent())
 				if apiKey != "" {
 					req.Header.Set("Authorization", "Bearer "+apiKey)
 				}
@@ -343,6 +348,8 @@ func verifyToken(serverURL, nodeID, token string) (int, error) {
 	hb := model.HeartbeatRequest{
 		NodeID:      nodeID,
 		CLI_Version: Version,
+		OS:          runtime.GOOS,
+		Arch:        runtime.GOARCH,
 		PostgresUp:  true,
 		StorageUp:   true,
 	}
@@ -353,6 +360,7 @@ func verifyToken(serverURL, nodeID, token string) (int, error) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("User-Agent", UserAgent())
 
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)

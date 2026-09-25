@@ -1,6 +1,8 @@
 package model
 
 import (
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -72,6 +74,12 @@ type Node struct {
 	AgentLastError       string `json:"agent_last_error,omitempty" yaml:"agent_last_error,omitempty"`
 	DrillStatus          string `json:"drill_status,omitempty" yaml:"drill_status,omitempty"`
 
+	// Platform telemetry (OS / Arch) and update notification.
+	OS               string `json:"os,omitempty" yaml:"os,omitempty"`
+	Arch             string `json:"arch,omitempty" yaml:"arch,omitempty"`
+	UpgradeAvailable bool   `json:"upgrade_available,omitempty" yaml:"upgrade_available,omitempty"`
+	LatestCLIVersion string `json:"latest_cli_version,omitempty" yaml:"latest_cli_version,omitempty"`
+
 	// AlertState is the open alert episode, if any: AlertStateSilent or
 	// AlertStateOverdue. One alert opens it and one closes it, so it is
 	// persisted across restarts.
@@ -129,6 +137,9 @@ type NodeRegisterRequest struct {
 	ManagedIdentity string `json:"managed_identity,omitempty"`
 	Schedule        string `json:"schedule"`
 	RetentionDays   int    `json:"retention_days"`
+	OS              string `json:"os,omitempty"`
+	Arch            string `json:"arch,omitempty"`
+	CLIVersion      string `json:"cli_version,omitempty"`
 }
 
 // NodeRegisterResponse returns API credentials and registration confirmation.
@@ -170,6 +181,8 @@ type SurfaceRegisterResponse struct {
 type HeartbeatRequest struct {
 	NodeID       string `json:"node_id"`
 	CLI_Version  string `json:"cli_version"`
+	OS           string `json:"os,omitempty"`
+	Arch         string `json:"arch,omitempty"`
 	PostgresUp   bool   `json:"postgres_up"`
 	StorageUp    bool   `json:"storage_up"`
 	LastSnapshot string `json:"last_snapshot,omitempty"`
@@ -214,4 +227,48 @@ type HeartbeatResponse struct {
 	// DrillRequestID names a one-shot "drill now". The agent runs each id once,
 	// even inside its usual spacing between drills: someone asked for it.
 	DrillRequestID string `json:"drill_request_id,omitempty"`
+
+	// LatestCLIVersion and UpgradeAvailable inform the client when a newer
+	// version of SafeGrd CLI is released.
+	LatestCLIVersion string `json:"latest_cli_version,omitempty"`
+	UpgradeAvailable bool   `json:"upgrade_available,omitempty"`
+}
+
+// IsVersionOutdated reports whether current is strictly older than latest according to semantic versioning.
+// Returns false if either string is empty, or if current/latest is "dev" or "unknown".
+func IsVersionOutdated(current, latest string) bool {
+	if current == "" || latest == "" || current == "dev" || latest == "dev" || current == "unknown" || latest == "unknown" {
+		return false
+	}
+	curParts := parseSemver(current)
+	latParts := parseSemver(latest)
+	if curParts == nil || latParts == nil {
+		return false
+	}
+	for i := 0; i < 3; i++ {
+		if curParts[i] < latParts[i] {
+			return true
+		}
+		if curParts[i] > latParts[i] {
+			return false
+		}
+	}
+	return false
+}
+
+func parseSemver(v string) []int {
+	v = strings.TrimPrefix(strings.TrimPrefix(strings.TrimSpace(v), "v"), "V")
+	if idx := strings.IndexAny(v, "-+"); idx != -1 {
+		v = v[:idx]
+	}
+	parts := strings.Split(v, ".")
+	nums := make([]int, 3)
+	for i := 0; i < len(parts) && i < 3; i++ {
+		n, err := strconv.Atoi(parts[i])
+		if err != nil {
+			return nil
+		}
+		nums[i] = n
+	}
+	return nums
 }

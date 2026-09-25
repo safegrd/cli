@@ -9,8 +9,12 @@ import "time"
 // clock stepped mid-run cannot shorten it.
 func elapsedMilliseconds(start time.Time) int64 {
 	d := time.Since(start)
-	if d <= 0 {
+	if d < 0 {
 		return 0
 	}
-	return int64((d + time.Millisecond - 1) / time.Millisecond)
+	ms := int64((d + time.Millisecond - 1) / time.Millisecond)
+	if ms < 1 {
+		return 1
+	}
+	return ms
 }
