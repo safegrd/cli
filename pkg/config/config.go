@@ -232,6 +232,34 @@ func DefaultConfigFile() (string, error) {
 	return filepath.Join(dir, "config.yaml"), nil
 }
 
+// readPrivateKeyFile reads the Age identity at path.
+//
+// It is held to the same rule as config.yaml: readable by its owner only. The
+// key decrypts every backup this host has taken, so a copy left at 0644 is a
+// copy every local user can read. init writes it 0600; one made or copied by
+// hand may not be, and nothing said so.
+//
+// A key file that does not exist is not an error: a host that only backs up
+// needs the public key alone, and keeping the private key off it is good
+// practice. Restore and verify say so when they need it.
+func readPrivateKeyFile(path string) (string, error) {
+	fi, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("could not read the private key file %s: %w", path, err)
+	}
+	if runtime.GOOS != "windows" && fi.Mode().Perm()&0077 != 0 {
+		return "", fmt.Errorf("insecure private key file permissions (%04o): %s must be readable only by its owner. Run: chmod 600 %s", fi.Mode().Perm(), path, path)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("could not read the private key file %s: %w", path, err)
+	}
+	return strings.TrimSpace(string(data)), nil
+}
+
 // DefaultServerURL points to the production SafeGrd remote server.
 const DefaultServerURL = "https://safegrd.dev"
 
@@ -308,11 +336,14 @@ func LoadCLIConfig(path string) (*CLIConfig, error) {
 		}
 	}
 
-	// Resolve PrivateKey from KeyPath if not already populated
-	if cfg.Encryption.PrivateKey == "" && cfg.Encryption.KeyPath != "" {
-		if keyBytes, err := os.ReadFile(cfg.Encryption.KeyPath); err == nil {
-			cfg.Encryption.PrivateKey = strings.TrimSpace(string(keyBytes))
+	// Resolve PrivateKey from KeyPath if not already populated. Skipped when
+	// SAFEGRD_PRIVATE_KEY is set, which replaces it below anyway.
+	if cfg.Encryption.PrivateKey == "" && cfg.Encryption.KeyPath != "" && os.Getenv("SAFEGRD_PRIVATE_KEY") == "" {
+		key, err := readPrivateKeyFile(cfg.Encryption.KeyPath)
+		if err != nil {
+			return nil, err
 		}
+		cfg.Encryption.PrivateKey = key
 	}
 
 	// Environment variable overrides
