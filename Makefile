@@ -1,12 +1,17 @@
 SHELL := /bin/bash
 
 MODULE     := github.com/safegrd/cli
-VERSION    ?= 0.0.1
+VERSION    ?= dev
 GIT_COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "dev")
 BUILD_DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS    := -s -w -X $(MODULE)/internal/cli.Version=$(VERSION) -X $(MODULE)/internal/cli.Commit=$(GIT_COMMIT) -X $(MODULE)/internal/cli.Date=$(BUILD_DATE)
 
 BIN_DIR := bin
+
+# Platforms `make dist` builds. The release builds all four; a test that only
+# needs the host's archive narrows it, e.g. DIST_TARGETS=linux/amd64.
+DIST_TARGETS ?= linux/amd64 linux/arm64 darwin/amd64 darwin/arm64
+DIST_DIR     ?= dist
 CLI_BIN := $(BIN_DIR)/safegrd
 
 .PHONY: help all build dist test vet fmt tidy clean ci check-fmt check-tidy
@@ -37,22 +42,23 @@ fmt: ## Format Go code
 tidy: ## Tidy Go module dependencies
 	go mod tidy
 
-dist: ## Cross-compile release archives and checksums into dist/
+dist: ## Cross-compile release archives and checksums into $(DIST_DIR)/
 	@set -euo pipefail; \
-	rm -rf dist; mkdir -p dist; \
-	for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do \
+	out="$(DIST_DIR)"; \
+	rm -rf "$${out}"; mkdir -p "$${out}"; \
+	for target in $(DIST_TARGETS); do \
 	  goos="$${target%/*}"; goarch="$${target#*/}"; \
 	  name="safegrd_$(VERSION)_$${goos}_$${goarch}"; \
 	  echo "Compiling $${goos}/$${goarch}..."; \
-	  mkdir -p "dist/$${name}"; \
+	  mkdir -p "$${out}/$${name}"; \
 	  CGO_ENABLED=0 GOOS="$${goos}" GOARCH="$${goarch}" \
-	    go build -trimpath -ldflags="$(LDFLAGS)" -o "dist/$${name}/safegrd" ./cmd/safegrd; \
-	  cp LICENSE NOTICE README.md "dist/$${name}/"; \
-	  (cd dist && tar -czf "$${name}.tar.gz" "$${name}"); \
-	  rm -rf "dist/$${name}"; \
+	    go build -trimpath -ldflags="$(LDFLAGS)" -o "$${out}/$${name}/safegrd" ./cmd/safegrd; \
+	  cp LICENSE NOTICE README.md "$${out}/$${name}/"; \
+	  (cd "$${out}" && tar -czf "$${name}.tar.gz" "$${name}"); \
+	  rm -rf "$${out}/$${name}"; \
 	done; \
-	(cd dist && shasum -a 256 safegrd_*.tar.gz > checksums.txt); \
-	echo "Checksums:"; cat dist/checksums.txt
+	(cd "$${out}" && if command -v sha256sum >/dev/null; then sha256sum safegrd_*.tar.gz; else shasum -a 256 safegrd_*.tar.gz; fi > checksums.txt); \
+	echo "Checksums:"; cat "$${out}/checksums.txt"
 
 # CI runs these instead of `vet`, because `vet` depends on fmt and tidy, which
 # rewrite files: a formatting gate that formats for you always passes.

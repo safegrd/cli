@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"runtime/debug"
 	"strings"
 
 	"github.com/safegrd/cli/pkg/config"
@@ -28,8 +29,10 @@ var (
 	// command body runs.
 	cfgLoadErr error
 
-	// Version is the semantic release version of SafeGrd CLI, injected via -ldflags at build time.
-	Version = "0.0.1"
+	// Version is the semantic release version of SafeGrd CLI, injected via
+	// -ldflags at build time. A `go install ...@vX.Y.Z` build has no ldflags,
+	// so stampFromBuildInfo fills it from the module version instead.
+	Version = "dev"
 	// Commit is the git commit SHA, injected via -ldflags at build time.
 	Commit = "dev"
 	// Date is the build timestamp, injected via -ldflags at build time.
@@ -56,7 +59,29 @@ func Execute() {
 	}
 }
 
+// stampFromBuildInfo fills in what -ldflags did not. Without it a binary from
+// `go install github.com/safegrd/cli/cmd/safegrd@v0.0.3` reported the
+// placeholder version, which is what the heartbeat then told the console.
+func stampFromBuildInfo() {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return
+	}
+	if Version == "dev" && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		Version = strings.TrimPrefix(info.Main.Version, "v")
+	}
+	for _, s := range info.Settings {
+		switch {
+		case s.Key == "vcs.revision" && Commit == "dev" && len(s.Value) >= 7:
+			Commit = s.Value[:7]
+		case s.Key == "vcs.time" && Date == "unknown":
+			Date = s.Value
+		}
+	}
+}
+
 func init() {
+	stampFromBuildInfo()
 	cobra.OnInitialize(initConfig)
 	RootCmd.PersistentPreRunE = func(cmd *cobra.Command, _ []string) error {
 		return requireUsableConfig(cmd)

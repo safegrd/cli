@@ -51,3 +51,6 @@ safegrd-data/
 .DS_Store
 .idea/
 .vscode/
+
+# make dist output
+/dist/

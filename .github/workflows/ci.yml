@@ -28,3 +28,9 @@ jobs:
       # target means CI and a local run cannot drift apart.
       - name: Run CI gate
         run: make ci
+
+      # install.sh is what `curl ... | sh` runs, under dash on Debian and
+      # Ubuntu, so it is linted as POSIX sh. SC2059 is the colour codes in
+      # printf format strings, which are constants.
+      - name: Lint the installer
+        run: shellcheck -s sh -e SC2059 install.sh scripts/*.sh

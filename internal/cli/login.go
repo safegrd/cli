@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"os/exec"
 	"runtime"
 	"time"
@@ -77,13 +78,27 @@ For CI/CD or headless environments, pass your Personal Access Token via '--token
 
 			authURL := fmt.Sprintf("%s/auth/cli?session=%s&code=%s", serverURL, session.SessionID, session.UserCode)
 
+			remote := isRemoteSession()
+
 			fmt.Println("\n==================================================")
 			fmt.Printf("Confirmation Code:  \033[1;36m%s\033[0m\n", session.UserCode)
 			fmt.Println("==================================================")
-			fmt.Printf("Open the following URL in your browser to authorize:\n\n  \033[4;34m%s\033[0m\n\n", authURL)
+			if remote {
+				// Over SSH or PuTTY the browser is on the operator's own
+				// machine, not this one, so say where to open it.
+				fmt.Printf("Open this URL in a browser on any device, such as the machine you are\n")
+				fmt.Printf("connecting from, and check the code matches:\n\n  \033[4;34m%s\033[0m\n\n", authURL)
+			} else {
+				fmt.Printf("Open the following URL in your browser to authorize:\n\n  \033[4;34m%s\033[0m\n\n", authURL)
+			}
 
-			if !noBrowser {
-				_ = openBrowser(authURL)
+			// Never launch a browser on a remote host: xdg-open there either
+			// fails or starts a text browser such as w3m inside the SSH
+			// session, which takes over the terminal the code is printed in.
+			if !noBrowser && !remote {
+				if err := openBrowser(authURL); err != nil {
+					fmt.Printf("(Could not open a browser here: %v. Open the URL above by hand.)\n\n", err)
+				}
 			}
 
 			fmt.Print("⏳ Waiting for browser authorization...")
@@ -172,6 +187,18 @@ func fetchProfile(serverURL, token string) (string, error) {
 		return name, nil
 	}
 	return "authenticated user", nil
+}
+
+// isRemoteSession reports whether there is no local browser to open: a login
+// over SSH, or a Linux host with no graphical session (a server, a container).
+func isRemoteSession() bool {
+	if os.Getenv("SSH_CONNECTION") != "" || os.Getenv("SSH_TTY") != "" || os.Getenv("SSH_CLIENT") != "" {
+		return true
+	}
+	if runtime.GOOS == "linux" && os.Getenv("DISPLAY") == "" && os.Getenv("WAYLAND_DISPLAY") == "" {
+		return true
+	}
+	return false
 }
 
 func openBrowser(url string) error {

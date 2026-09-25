@@ -3,13 +3,31 @@
 # https://safegrd.dev
 #
 # Usage:
-#   curl -fsSL https://safegrd.dev/install.sh | bash
-#   or:
-#   curl -fsSL https://raw.githubusercontent.com/safegrd/cli/main/install.sh | bash
+#   curl -fsSL https://safegrd.dev/install.sh | sh
+#   or, the same file from the source repository:
+#   curl -fsSL https://raw.githubusercontent.com/safegrd/cli/main/install.sh | sh
 #
-# Custom options:
-#   VERSION=v0.0.1 curl -fsSL https://safegrd.dev/install.sh | bash
-#   SAFEGRD_INSTALL_DIR=~/.local/bin curl -fsSL https://safegrd.dev/install.sh | bash
+# After installing, and only when there is a terminal to ask on, it offers to
+# connect this host: a browser login (the URL can be opened on any device, so
+# it works over SSH), a question about who holds the encryption key, then
+# `safegrd enroll`. Without a terminal (CI, cloud-init) it installs and stops.
+#
+# Options are environment variables, and they go on the shell that runs the
+# script, after the pipe. `VERSION=v1 curl ... | sh` sets it for curl instead,
+# and the script never sees it.
+#
+#   curl -fsSL https://safegrd.dev/install.sh | VERSION=v0.0.3 sh
+#   curl -fsSL https://safegrd.dev/install.sh | SAFEGRD_INSTALL_DIR=~/.local/bin sh
+#
+#   VERSION              release tag to install (default: latest)
+#   SAFEGRD_INSTALL_DIR  where to put the binary (default: /usr/local/bin, or ~/.local/bin without sudo)
+#   SAFEGRD_NO_SETUP=1   install only; do not offer to log in and enroll
+#   SAFEGRD_PROJECT      project ID or slug to enroll this host into
+#   SAFEGRD_NODE_NAME    name this host is shown under
+#   SAFEGRD_KEY_CUSTODY  'safegrd' or 'local'; answers the key question in advance
+#   SAFEGRD_SERVER_URL   remote server to log in and enroll with (default: https://safegrd.dev)
+#   SAFEGRD_DOWNLOAD_BASE  where release archives are fetched from, for testing a
+#                        build before it is published (curl only; file:// works)
 
 set -e
 
@@ -98,7 +116,6 @@ download_stdout() {
 }
 
 # 4. Resolve Target Version
-DEFAULT_FALLBACK_VERSION="v0.0.1"
 TARGET_VERSION="${VERSION:-${SAFEGRD_VERSION:-}}"
 
 if [ -z "$TARGET_VERSION" ]; then
@@ -108,17 +125,20 @@ if [ -z "$TARGET_VERSION" ]; then
   TARGET_VERSION="$(echo "$LATEST_JSON" | grep '"tag_name":' | head -n 1 | sed -E 's/.*"tag_name":[[:space:]]*"([^"]+)".*/\1/' || true)"
 
   # Fallback to redirect resolution if API was rate-limited or failed
-  if [ -z "$TARGET_VERSION" ]; then
-    if [ "$DOWNLOADER" = "curl" ]; then
-      LOC="$(curl -sI "https://github.com/safegrd/cli/releases/latest" 2>/dev/null | grep -i '^location:' | tr -d '\r\n' || true)"
-      TARGET_VERSION="$(echo "$LOC" | sed -E 's/.*tag\///' || true)"
-    fi
+  if [ -z "$TARGET_VERSION" ] && [ "$DOWNLOADER" = "curl" ]; then
+    LOC="$(curl -sI "https://github.com/safegrd/cli/releases/latest" 2>/dev/null | grep -i '^location:' | tr -d '\r\n' || true)"
+    case "$LOC" in
+      */tag/*) TARGET_VERSION="$(echo "$LOC" | sed -E 's/.*tag\///')" ;;
+    esac
   fi
 
-  # Final fallback if repository has no public releases yet or network is blocked
+  # No guessed default: a version baked into this file goes stale with the
+  # next release and would install an old binary without saying so.
   if [ -z "$TARGET_VERSION" ]; then
-    TARGET_VERSION="$DEFAULT_FALLBACK_VERSION"
-    log_warn "Could not query GitHub releases API; defaulting to ${TARGET_VERSION}"
+    log_error "Could not find the latest release on GitHub (network blocked or rate-limited)."
+    log_error "Name one explicitly, e.g.:  curl -fsSL https://safegrd.dev/install.sh | VERSION=v0.0.3 sh"
+    log_error "Releases: https://github.com/safegrd/cli/releases"
+    exit 1
   fi
 fi
 
@@ -156,8 +176,9 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 ARCHIVE_NAME="safegrd_${VERSION_NUM}_${OS}_${ARCH}.tar.gz"
-DOWNLOAD_URL="https://github.com/safegrd/cli/releases/download/${TAG}/${ARCHIVE_NAME}"
-CHECKSUMS_URL="https://github.com/safegrd/cli/releases/download/${TAG}/checksums.txt"
+DOWNLOAD_BASE="${SAFEGRD_DOWNLOAD_BASE:-https://github.com/safegrd/cli/releases/download/${TAG}}"
+DOWNLOAD_URL="${DOWNLOAD_BASE}/${ARCHIVE_NAME}"
+CHECKSUMS_URL="${DOWNLOAD_BASE}/checksums.txt"
 
 log_info "Downloading ${ARCHIVE_NAME}..."
 if ! download_file "$DOWNLOAD_URL" "$TMP_DIR/$ARCHIVE_NAME"; then
@@ -168,7 +189,9 @@ if ! download_file "$DOWNLOAD_URL" "$TMP_DIR/$ARCHIVE_NAME"; then
 fi
 
 # 7. Checksum Verification
-if download_file "$CHECKSUMS_URL" "$TMP_DIR/checksums.txt" 2>/dev/null; then
+if ! download_file "$CHECKSUMS_URL" "$TMP_DIR/checksums.txt" 2>/dev/null; then
+  log_warn "No checksums.txt next to the archive; the download was NOT verified."
+else
   log_info "Verifying SHA256 checksum..."
   EXPECTED_HASH="$(grep "${ARCHIVE_NAME}" "$TMP_DIR/checksums.txt" | awk '{print $1}' | head -n 1 || true)"
   if [ -n "$EXPECTED_HASH" ]; then
@@ -190,6 +213,8 @@ if download_file "$CHECKSUMS_URL" "$TMP_DIR/checksums.txt" 2>/dev/null; then
       fi
       log_success "Checksum verified: ${ACTUAL_HASH}"
     fi
+  else
+    log_warn "${ARCHIVE_NAME} is not listed in checksums.txt; the download was NOT verified."
   fi
 fi
 
@@ -243,17 +268,105 @@ case ":$PATH:" in
     ;;
 esac
 
-# 12. Quickstart Guidance
+# 12. Connect this host, or say how to
+SAFEGRD_BIN="$INSTALL_DIR/safegrd"
+
+print_next_steps() {
+  printf "\n"
+  printf "${BOLD} Next steps${RESET}\n"
+  printf "   1. Log in. Prints a URL and a code; open it in a browser on any device:\n"
+  printf "      ${CYAN}safegrd login${RESET}\n\n"
+  printf "   2. Register this host. Generates its encryption key if it has none:\n"
+  printf "      ${CYAN}safegrd enroll${RESET}\n\n"
+  printf "   3. Take the first encrypted, immutable backup:\n"
+  printf "      ${CYAN}safegrd backup --database-url \"\$DATABASE_URL\"${RESET}\n\n"
+  printf "   No account? ${CYAN}safegrd init${RESET} sets up a standalone host that contacts no server.\n"
+  printf " Docs: ${CYAN}https://safegrd.dev/docs/install${RESET} | Source: ${CYAN}https://github.com/safegrd/cli${RESET}\n\n"
+}
+
+# `curl | sh` gives the script the pipe as stdin, so questions are asked on the
+# terminal directly. Opening /dev/tty fails when there is no controlling
+# terminal (CI, cloud-init, cron), and then nothing is asked.
+have_tty() {
+  (exec </dev/tty) 2>/dev/null
+}
+
+ask() {
+  # $1 prompt; the answer is left in REPLY
+  printf "%s" "$1" >/dev/tty
+  REPLY=""
+  read -r REPLY </dev/tty || REPLY=""
+}
+
+setup_failed() {
+  printf "\n"
+  log_error "$1"
+  printf "   safegrd itself is installed at %s. Finish setting up with:\n" "$SAFEGRD_BIN" >&2
+  printf "      safegrd login && safegrd enroll\n\n" >&2
+  exit 1
+}
+
 printf "\n"
-printf "${BOLD}================================================================${RESET}\n"
-printf "${BOLD} SafeGrd CLI (${TAG}) Ready!${RESET}\n"
-printf "${BOLD}================================================================${RESET}\n"
-printf " Next steps:\n"
-printf "   1. Initialize your local asymmetric Age encryption keys:\n"
-printf "      ${CYAN}safegrd init --database-url \"\$DATABASE_URL\"${RESET}\n\n"
-printf "   2. Enroll this host with the SafeGrd remote server:\n"
-printf "      ${CYAN}safegrd enroll --token <PAT_TOKEN>${RESET}\n\n"
-printf "   3. Create your first immutable, zero-knowledge backup:\n"
-printf "      ${CYAN}safegrd backup${RESET}\n\n"
-printf " Documentation: ${CYAN}https://safegrd.dev${RESET} | CLI source: ${CYAN}https://github.com/safegrd/cli${RESET}\n"
-printf "${BOLD}================================================================${RESET}\n\n"
+log_success "SafeGrd CLI ${TAG} is installed."
+
+if [ -n "${SAFEGRD_NO_SETUP:-}" ] || ! have_tty; then
+  print_next_steps
+  exit 0
+fi
+
+# A host that is already enrolled keeps its key and its node: re-running the
+# installer is how people upgrade, and it must not re-register anything.
+if [ -f "${HOME}/.safegrd/config.yaml" ] && grep -q '^server_token: *sg_tok_' "${HOME}/.safegrd/config.yaml" 2>/dev/null; then
+  printf "   This host is already enrolled (%s). Nothing else to do.\n" "${HOME}/.safegrd/config.yaml"
+  printf "   Check it with: ${CYAN}safegrd status${RESET}\n\n"
+  exit 0
+fi
+
+printf "\n"
+ask "Connect this host to SafeGrd now? It opens a browser login. [Y/n] "
+case "$REPLY" in
+  n|N|no|NO|No)
+    print_next_steps
+    exit 0
+    ;;
+esac
+
+printf "\n"
+if ! "$SAFEGRD_BIN" login </dev/tty; then
+  setup_failed "Login did not complete, so this host is not enrolled."
+fi
+
+CUSTODY="${SAFEGRD_KEY_CUSTODY:-}"
+if [ -z "$CUSTODY" ]; then
+  printf "\n${BOLD}Who holds the key that decrypts this host's backups?${RESET}\n" >/dev/tty
+  printf "  This is decided once, when the key is made, and cannot be changed later.\n\n" >/dev/tty
+  printf "  1) SafeGrd keeps a copy. Losing this host does not lose the backups,\n" >/dev/tty
+  printf "     and SafeGrd CAN decrypt them.\n" >/dev/tty
+  printf "  2) Only you. SafeGrd gets the public half and can NEVER decrypt them;\n" >/dev/tty
+  printf "     lose the key file and nobody can recover the backups.\n\n" >/dev/tty
+  while [ -z "$CUSTODY" ]; do
+    ask "Choose 1 or 2: "
+    case "$REPLY" in
+      1) CUSTODY="safegrd" ;;
+      2) CUSTODY="local" ;;
+    esac
+  done
+fi
+
+set -- enroll --key-custody "$CUSTODY"
+if [ -n "${SAFEGRD_PROJECT:-}" ]; then
+  set -- "$@" --project "$SAFEGRD_PROJECT"
+fi
+if [ -n "${SAFEGRD_NODE_NAME:-}" ]; then
+  set -- "$@" --node-name "$SAFEGRD_NODE_NAME"
+fi
+
+printf "\n"
+if ! "$SAFEGRD_BIN" "$@" </dev/tty; then
+  setup_failed "Enrollment failed, so this host is not registered."
+fi
+
+printf "\n"
+log_success "This host is enrolled. Take the first backup with:"
+printf "      ${CYAN}safegrd backup --database-url \"\$DATABASE_URL\"${RESET}\n"
+printf "   or run it unattended: ${CYAN}https://safegrd.dev/docs/agent${RESET}\n\n"

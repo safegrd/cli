@@ -33,6 +33,16 @@ You can either provide a direct Node Token or an Organization API Key to registe
 		RunE: func(cmd *cobra.Command, args []string) error {
 			serverURL := resolveServerURL()
 
+			// Refused before anything is generated. Checked after the local
+			// setup, a key made here would be found on the retry and adopted
+			// as the operator's own, which silently changes its custody.
+			if token == "" && apiKey == "" && (cfg == nil || !strings.HasPrefix(cfg.ServerToken, "sg_pat_")) {
+				return fmt.Errorf("no credential to enroll with, and this host is not logged in.\n" +
+					"  Run 'safegrd login' first (it prints a URL you can open on any device),\n" +
+					"  or pass --token sg_pat_... from Tokens in the console.\n" +
+					"  Nothing was changed")
+			}
+
 			// Did the operator bring their own key? Decided BEFORE the local
 			// setup runs, because that step generates one when none is found;
 			// after it, every host looks like it had a key all along.
@@ -83,6 +93,17 @@ You can either provide a direct Node Token or an Organization API Key to registe
 			if apiKey == "" && strings.HasPrefix(token, "sg_pat_") {
 				fmt.Printf("🔑 That is a personal access token, so this host will be registered with it.\n")
 				apiKey, token = token, ""
+			}
+
+			// No credential on the command line: use the one 'safegrd login'
+			// saved. Without this, `safegrd login && safegrd enroll` sent the
+			// registration with no Authorization header at all and was refused,
+			// so the browser login the installer walks you through led nowhere.
+			// Only a personal access token counts; a node token already in the
+			// config belongs to a node this host enrolled before.
+			if token == "" && apiKey == "" && strings.HasPrefix(cfg.ServerToken, "sg_pat_") {
+				fmt.Printf("🔑 Using the login saved by 'safegrd login'.\n")
+				apiKey = cfg.ServerToken
 			}
 
 			// Mode 1: Direct Node Token provided

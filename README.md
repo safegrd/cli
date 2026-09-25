@@ -16,36 +16,63 @@ The private key stays on your machine. Fire Drills run here, in your environment
 
 ## Installation
 
-### Method 1: Universal Shell Script (Linux & macOS; Recommended for Servers)
+### Install script (Linux and macOS)
 
-```bash
-# Installs the pre-compiled binary for your OS and architecture to /usr/local/bin
-curl -fsSL https://safegrd.dev/install.sh | bash
-
-# Or directly from the GitHub repository:
-curl -fsSL https://raw.githubusercontent.com/safegrd/cli/main/install.sh | bash
+```sh
+curl -fsSL https://safegrd.dev/install.sh | sh
 ```
 
-Custom installation options:
-```bash
-# Pin a specific release version:
-VERSION=v0.0.1 curl -fsSL https://safegrd.dev/install.sh | bash
+It detects your OS and architecture, downloads the matching release archive, checks
+it against the release's `checksums.txt`, and installs `safegrd` to `/usr/local/bin`
+(or `~/.local/bin` when it cannot use sudo). The script is [`install.sh`](install.sh)
+in this repository; `https://raw.githubusercontent.com/safegrd/cli/main/install.sh`
+serves the same file.
 
-# Install to a custom directory without root/sudo:
-SAFEGRD_INSTALL_DIR=~/.local/bin curl -fsSL https://safegrd.dev/install.sh | bash
+When it runs in a terminal, it then offers to connect the machine to a remote server:
+a browser login, a question about who holds the encryption key, then `safegrd enroll`.
+The login prints a URL and a code that you can open in a browser on **any** device, so
+it works the same on a server you reached over SSH or PuTTY. Without a terminal (CI,
+cloud-init, cron) it installs and stops.
+
+Options are environment variables, and they go on the `sh` after the pipe. Written
+before `curl` they apply to `curl`, and the script never sees them:
+
+```sh
+curl -fsSL https://safegrd.dev/install.sh | VERSION=v0.0.3 sh                  # pin a release
+curl -fsSL https://safegrd.dev/install.sh | SAFEGRD_INSTALL_DIR=~/.local/bin sh  # no sudo
+curl -fsSL https://safegrd.dev/install.sh | SAFEGRD_NO_SETUP=1 sh               # install only
 ```
 
-### Method 2: Direct Release Binaries
+| Variable | Effect |
+| :--- | :--- |
+| `VERSION` | Release tag to install. Default: the latest release. |
+| `SAFEGRD_INSTALL_DIR` | Where the binary goes. |
+| `SAFEGRD_NO_SETUP=1` | Install only; do not offer to log in and enroll. |
+| `SAFEGRD_PROJECT` | Project ID or slug to enroll this machine into. |
+| `SAFEGRD_NODE_NAME` | Name the machine is shown under. |
+| `SAFEGRD_KEY_CUSTODY` | `safegrd` or `local`: answers the key question in advance. |
+| `SAFEGRD_SERVER_URL` | Remote server to log in and enroll with. Default: `https://safegrd.dev`. |
 
-Download pre-built static binaries and SHA256 checksums directly from the [GitHub Releases](https://github.com/safegrd/cli/releases) page for Linux (`amd64`, `arm64`) and macOS (`amd64`, `arm64`).
+### Homebrew (macOS and Linux)
 
-### Method 3: Install via Go or Build from Source
+```sh
+brew install safegrd/tap/safegrd
+```
 
-```bash
-# Install directly via Go
+The formula installs the same release archives as the script.
+
+### Go
+
+```sh
 go install github.com/safegrd/cli/cmd/safegrd@latest
+```
 
-# Or compile from source
+### Release archives, or from source
+
+Static binaries for Linux and macOS (`amd64`, `arm64`) and their SHA-256 checksums are
+on the [releases page](https://github.com/safegrd/cli/releases). To build:
+
+```sh
 git clone https://github.com/safegrd/cli.git && cd cli
 make build
 ```
@@ -65,16 +92,20 @@ safegrd init \
   --retention-days 14
 ```
 
-### 2. Authenticate with a remote server (Optional)
+### 2. Connect to a remote server (optional)
 
 ```bash
-# Interactive browser flow
+# Prints a URL and a code: open it in a browser on any device, including over SSH
 safegrd login
 
-# Or headless / CI using Personal Access Token (PAT)
-safegrd login --token "sg_pat_..."
+# Register this machine, generating its encryption key if it has none.
+# --key-custody decides whether the server keeps a copy (safegrd) or not (local)
+safegrd enroll --key-custody local
 
-# Verify active session
+# Headless / CI: a Personal Access Token instead of the browser
+safegrd enroll --token "sg_pat_..."
+
+# Verify the active session
 safegrd whoami
 ```
 

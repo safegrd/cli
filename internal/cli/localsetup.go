@@ -84,7 +84,12 @@ func ensureLocalSetup(nodeName string) (created bool, adopted bool, err error) {
 			cfg.NodeName = "pg-node-primary"
 		}
 	}
-	if cfg.Storage.Type == config.StorageTypeLocal && cfg.Storage.LocalPath == "" {
+	// The built-in default is "./safegrd-storage", relative to wherever the
+	// command happens to run. A host set up by `login` then `enroll` kept it,
+	// so a backup run from /root and a `list` run from /home saw different
+	// stores. A fresh setup pins it next to the config instead.
+	if cfg.Storage.Type == config.StorageTypeLocal &&
+		(cfg.Storage.LocalPath == "" || cfg.Storage.LocalPath == "./safegrd-storage") {
 		cfg.Storage.LocalPath = filepath.Join(configDir, "storage")
 	}
 
