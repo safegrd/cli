@@ -48,6 +48,7 @@ curl -fsSL https://safegrd.dev/install.sh | SAFEGRD_NO_SETUP=1 sh               
 | `VERSION` | Release tag to install. Default: the latest release. |
 | `SAFEGRD_INSTALL_DIR` | Where the binary goes. |
 | `SAFEGRD_NO_SETUP=1` | Install only; do not offer to log in and enroll. |
+| `SAFEGRD_FORCE_INSTALL=1` | Download and install even when the release asked for is already installed. |
 | `SAFEGRD_PROJECT` | Project ID or slug to enroll this machine into. |
 | `SAFEGRD_STORAGE` | `hosted` or `local`: where backups go when the project has no bucket. |
 | `SAFEGRD_CLAIM` | The claim code the console shows for this machine. It carries the project, where backups go and the surfaces to protect, so enrollment writes them into the config and asks nothing. Needs a release whose `enroll` has `--claim`; an older one stops and says so. |

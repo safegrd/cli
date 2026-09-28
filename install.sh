@@ -7,6 +7,9 @@
 #   or, the same file from the source repository:
 #   curl -fsSL https://raw.githubusercontent.com/safegrd/cli/main/install.sh | sh
 #
+# When the release asked for is already installed, it is not downloaded again;
+# the script goes straight on to connecting the host.
+#
 # After installing, and only when there is a terminal to ask on, it offers to
 # connect this host: a browser login (the URL can be opened on any device, so
 # it works over SSH), a question about who holds the encryption key, then
@@ -22,6 +25,7 @@
 #   VERSION              release tag to install (default: latest)
 #   SAFEGRD_INSTALL_DIR  where to put the binary (default: /usr/local/bin, or ~/.local/bin without sudo)
 #   SAFEGRD_NO_SETUP=1   install only; do not offer to log in and enroll
+#   SAFEGRD_FORCE_INSTALL=1  download and install even when this release is already installed
 #   SAFEGRD_PROJECT      project ID or slug to enroll this host into
 #   SAFEGRD_STORAGE      where backups go when the project has no bucket: 'hosted' or 'local'
 #   SAFEGRD_CLAIM        the code the console shows for this host: the project, where backups
@@ -171,96 +175,133 @@ else
   USE_SUDO=0
 fi
 
-# 6. Download Artifacts to Temporary Directory
-TMP_DIR="$(mktemp -d 2>/dev/null || mktemp -d -t 'safegrd-install')"
-cleanup() {
-  rm -rf "$TMP_DIR"
+# 6. Is this release already installed?
+# Re-running the one-liner is how a claim code or a second setup attempt is
+# used, so a host that already has the release is not made to download it
+# again. The binary in INSTALL_DIR decides when there is one: it is the one
+# this script would replace. Otherwise one on PATH counts, unless an install
+# directory was named, which asks for a copy there.
+installed_version() {
+  "$1" --version 2>/dev/null | sed -n 's/^safegrd version \([^ ]*\).*/\1/p' | head -n 1
 }
-trap cleanup EXIT INT TERM
 
-ARCHIVE_NAME="safegrd_${VERSION_NUM}_${OS}_${ARCH}.tar.gz"
-DOWNLOAD_BASE="${SAFEGRD_DOWNLOAD_BASE:-https://github.com/safegrd/cli/releases/download/${TAG}}"
-DOWNLOAD_URL="${DOWNLOAD_BASE}/${ARCHIVE_NAME}"
-CHECKSUMS_URL="${DOWNLOAD_BASE}/checksums.txt"
-
-log_info "Downloading ${ARCHIVE_NAME}..."
-if ! download_file "$DOWNLOAD_URL" "$TMP_DIR/$ARCHIVE_NAME"; then
-  log_error "Failed to download release archive from:"
-  log_error "  $DOWNLOAD_URL"
-  log_error "Please verify the tag exists at https://github.com/safegrd/cli/releases"
-  exit 1
+SAFEGRD_BIN="$INSTALL_DIR/safegrd"
+if [ -x "$INSTALL_DIR/safegrd" ]; then
+  EXISTING_BIN="$INSTALL_DIR/safegrd"
+elif [ -z "${SAFEGRD_INSTALL_DIR:-}" ] && command -v safegrd >/dev/null 2>&1; then
+  EXISTING_BIN="$(command -v safegrd)"
+else
+  EXISTING_BIN=""
 fi
 
-# 7. Checksum Verification
-if ! download_file "$CHECKSUMS_URL" "$TMP_DIR/checksums.txt" 2>/dev/null; then
-  log_warn "No checksums.txt next to the archive; the download was NOT verified."
-else
-  log_info "Verifying SHA256 checksum..."
-  EXPECTED_HASH="$(grep "${ARCHIVE_NAME}" "$TMP_DIR/checksums.txt" | awk '{print $1}' | head -n 1 || true)"
-  if [ -n "$EXPECTED_HASH" ]; then
-    if command -v sha256sum >/dev/null 2>&1; then
-      ACTUAL_HASH="$(sha256sum "$TMP_DIR/$ARCHIVE_NAME" | awk '{print $1}')"
-    elif command -v shasum >/dev/null 2>&1; then
-      ACTUAL_HASH="$(shasum -a 256 "$TMP_DIR/$ARCHIVE_NAME" | awk '{print $1}')"
-    else
-      ACTUAL_HASH=""
-      log_warn "Neither 'sha256sum' nor 'shasum' found; skipping checksum verification."
-    fi
-
-    if [ -n "$ACTUAL_HASH" ]; then
-      if [ "$EXPECTED_HASH" != "$ACTUAL_HASH" ]; then
-        log_error "Checksum verification failed!"
-        log_error "  Expected: $EXPECTED_HASH"
-        log_error "  Actual:   $ACTUAL_HASH"
-        exit 1
-      fi
-      log_success "Checksum verified: ${ACTUAL_HASH}"
-    fi
-  else
-    log_warn "${ARCHIVE_NAME} is not listed in checksums.txt; the download was NOT verified."
+ALREADY_INSTALLED=""
+if [ -n "$EXISTING_BIN" ] && [ -z "${SAFEGRD_FORCE_INSTALL:-}" ]; then
+  EXISTING_VERSION="$(installed_version "$EXISTING_BIN" || true)"
+  if [ -n "$EXISTING_VERSION" ] && [ "$EXISTING_VERSION" = "$VERSION_NUM" ]; then
+    ALREADY_INSTALLED=1
+    SAFEGRD_BIN="$EXISTING_BIN"
+    INSTALL_DIR="$(dirname "$EXISTING_BIN")"
+    log_success "SafeGrd CLI ${TAG} is already installed and up to date (${EXISTING_BIN})."
+    printf "   Set SAFEGRD_FORCE_INSTALL=1 to download and install it again.\n"
   fi
 fi
 
-# 8. Unpack Archive
-log_info "Extracting binary..."
-tar -xzf "$TMP_DIR/$ARCHIVE_NAME" -C "$TMP_DIR"
+TMP_DIR=""
+cleanup() {
+  if [ -n "$TMP_DIR" ]; then
+    rm -rf "$TMP_DIR"
+  fi
+}
 
-if [ ! -f "$TMP_DIR/safegrd" ]; then
-  # Check if nested in folder
-  FOUND_BIN="$(find "$TMP_DIR" -type f -name safegrd | head -n 1 || true)"
-  if [ -n "$FOUND_BIN" ]; then
-    cp "$FOUND_BIN" "$TMP_DIR/safegrd"
+if [ -z "$ALREADY_INSTALLED" ]; then
+  # 7. Download Artifacts to Temporary Directory
+  TMP_DIR="$(mktemp -d 2>/dev/null || mktemp -d -t 'safegrd-install')"
+  trap cleanup EXIT INT TERM
+
+  ARCHIVE_NAME="safegrd_${VERSION_NUM}_${OS}_${ARCH}.tar.gz"
+  DOWNLOAD_BASE="${SAFEGRD_DOWNLOAD_BASE:-https://github.com/safegrd/cli/releases/download/${TAG}}"
+  DOWNLOAD_URL="${DOWNLOAD_BASE}/${ARCHIVE_NAME}"
+  CHECKSUMS_URL="${DOWNLOAD_BASE}/checksums.txt"
+
+  log_info "Downloading ${ARCHIVE_NAME}..."
+  if ! download_file "$DOWNLOAD_URL" "$TMP_DIR/$ARCHIVE_NAME"; then
+    log_error "Failed to download release archive from:"
+    log_error "  $DOWNLOAD_URL"
+    log_error "Please verify the tag exists at https://github.com/safegrd/cli/releases"
+    exit 1
+  fi
+
+  # 8. Checksum Verification
+  if ! download_file "$CHECKSUMS_URL" "$TMP_DIR/checksums.txt" 2>/dev/null; then
+    log_warn "No checksums.txt next to the archive; the download was NOT verified."
   else
-    log_error "Binary 'safegrd' not found inside archive."
+    log_info "Verifying SHA256 checksum..."
+    EXPECTED_HASH="$(grep "${ARCHIVE_NAME}" "$TMP_DIR/checksums.txt" | awk '{print $1}' | head -n 1 || true)"
+    if [ -n "$EXPECTED_HASH" ]; then
+      if command -v sha256sum >/dev/null 2>&1; then
+        ACTUAL_HASH="$(sha256sum "$TMP_DIR/$ARCHIVE_NAME" | awk '{print $1}')"
+      elif command -v shasum >/dev/null 2>&1; then
+        ACTUAL_HASH="$(shasum -a 256 "$TMP_DIR/$ARCHIVE_NAME" | awk '{print $1}')"
+      else
+        ACTUAL_HASH=""
+        log_warn "Neither 'sha256sum' nor 'shasum' found; skipping checksum verification."
+      fi
+
+      if [ -n "$ACTUAL_HASH" ]; then
+        if [ "$EXPECTED_HASH" != "$ACTUAL_HASH" ]; then
+          log_error "Checksum verification failed!"
+          log_error "  Expected: $EXPECTED_HASH"
+          log_error "  Actual:   $ACTUAL_HASH"
+          exit 1
+        fi
+        log_success "Checksum verified: ${ACTUAL_HASH}"
+      fi
+    else
+      log_warn "${ARCHIVE_NAME} is not listed in checksums.txt; the download was NOT verified."
+    fi
+  fi
+
+  # 9. Unpack Archive
+  log_info "Extracting binary..."
+  tar -xzf "$TMP_DIR/$ARCHIVE_NAME" -C "$TMP_DIR"
+
+  if [ ! -f "$TMP_DIR/safegrd" ]; then
+    # Check if nested in folder
+    FOUND_BIN="$(find "$TMP_DIR" -type f -name safegrd | head -n 1 || true)"
+    if [ -n "$FOUND_BIN" ]; then
+      cp "$FOUND_BIN" "$TMP_DIR/safegrd"
+    else
+      log_error "Binary 'safegrd' not found inside archive."
+      exit 1
+    fi
+  fi
+
+  chmod +x "$TMP_DIR/safegrd"
+
+  # 10. Install Binary
+  if [ "$USE_SUDO" -eq 1 ]; then
+    log_info "Installing to ${INSTALL_DIR} (requires sudo)..."
+    sudo mkdir -p "$INSTALL_DIR"
+    sudo cp "$TMP_DIR/safegrd" "$INSTALL_DIR/safegrd"
+    sudo chmod 755 "$INSTALL_DIR/safegrd"
+  else
+    log_info "Installing to ${INSTALL_DIR}..."
+    mkdir -p "$INSTALL_DIR"
+    cp "$TMP_DIR/safegrd" "$INSTALL_DIR/safegrd"
+    chmod 755 "$INSTALL_DIR/safegrd"
+  fi
+
+  # 11. Smoke Test
+  if [ -x "$INSTALL_DIR/safegrd" ]; then
+    VERSION_OUTPUT="$("$INSTALL_DIR/safegrd" version 2>/dev/null || "$INSTALL_DIR/safegrd" --version 2>/dev/null || true)"
+    log_success "Installed successfully: ${VERSION_OUTPUT:-safegrd}"
+  else
+    log_error "Installation failed: $INSTALL_DIR/safegrd is not executable."
     exit 1
   fi
 fi
 
-chmod +x "$TMP_DIR/safegrd"
-
-# 9. Install Binary
-if [ "$USE_SUDO" -eq 1 ]; then
-  log_info "Installing to ${INSTALL_DIR} (requires sudo)..."
-  sudo mkdir -p "$INSTALL_DIR"
-  sudo cp "$TMP_DIR/safegrd" "$INSTALL_DIR/safegrd"
-  sudo chmod 755 "$INSTALL_DIR/safegrd"
-else
-  log_info "Installing to ${INSTALL_DIR}..."
-  mkdir -p "$INSTALL_DIR"
-  cp "$TMP_DIR/safegrd" "$INSTALL_DIR/safegrd"
-  chmod 755 "$INSTALL_DIR/safegrd"
-fi
-
-# 10. Smoke Test
-if [ -x "$INSTALL_DIR/safegrd" ]; then
-  VERSION_OUTPUT="$("$INSTALL_DIR/safegrd" version 2>/dev/null || "$INSTALL_DIR/safegrd" --version 2>/dev/null || true)"
-  log_success "Installed successfully: ${VERSION_OUTPUT:-safegrd}"
-else
-  log_error "Installation failed: $INSTALL_DIR/safegrd is not executable."
-  exit 1
-fi
-
-# 11. Check PATH
+# 12. Check PATH
 case ":$PATH:" in
   *":$INSTALL_DIR:"*) ;;
   *)
@@ -271,9 +312,7 @@ case ":$PATH:" in
     ;;
 esac
 
-# 12. Connect this host, or say how to
-SAFEGRD_BIN="$INSTALL_DIR/safegrd"
-
+# 13. Connect this host, or say how to
 # A binary older than this script (a pinned VERSION, or a release published
 # before it) has an enroll that ignores the saved login, so `login` then
 # `enroll` would fail. Ask the binary rather than compare versions.
