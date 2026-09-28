@@ -297,7 +297,7 @@ func printFileRestoreLimits(res *dump.FileExtractionResult) {
 	}
 	fmt.Printf("   Not preserved:  hard links (each comes back as its own copy), extended\n" +
 		"                   attributes and ACLs, setuid/setgid bits, and sparse regions\n" +
-		"                   (written out in full). See safegrd.dev/docs/surfaces.\n")
+		"                   (written out in full). See safegrd.dev/docs/surfaces/files.\n")
 	if len(res.Skipped) > 0 {
 		fmt.Fprintf(os.Stderr, "\n[!] %d archive entries were not restored, because this restore does not create them:\n", len(res.Skipped))
 		for _, s := range res.Skipped {
