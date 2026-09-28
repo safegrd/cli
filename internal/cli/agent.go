@@ -601,6 +601,8 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 	storageCfg := c.Storage
 	if s.Storage != nil {
 		storageCfg = *s.Storage
+	} else {
+		routeProjectSink(ctx, c, &storageCfg, false)
 	}
 	if nodeID != "" && storageCfg.NodeID == "" {
 		storageCfg.NodeID = nodeID
@@ -615,6 +617,7 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 	if err != nil {
 		return nil, plan, err
 	}
+	applyHeldSinkKey(ctx, c, &storageCfg)
 
 	storageProvider, err := openStorage(ctx, c, storageCfg)
 	if err != nil {

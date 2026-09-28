@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/safegrd/cli/pkg/config"
@@ -53,49 +54,11 @@ func fetchNodeSink(ctx context.Context, serverURL, nodeID, token string) (*nodeS
 }
 
 // resolveStorageRouting applies the storage routing precedence rule:
-//  1. CLI flags (highest precedence)
-//  2. Remote server project sink routing (if node enrolled and remote server reachable)
-//  3. Local config file / environment variables (offline fallback)
+// CLI flags, then the project's bucket on the remote server, then the host's
+// own config.
 func resolveStorageRouting(ctx context.Context, cfg *config.CLIConfig, flagBucket, flagPrefix, flagRegion, flagEndpoint string, verbose bool) config.StorageConfig {
 	storageCfg := cfg.Storage
-
-	// 2. Remote server project sink routing. Not for hosted storage: that is an
-	// explicit choice, leased separately (hosted.go), and a project sink must not
-	// silently redirect it.
-	if storageCfg.Type != config.StorageTypeHosted && cfg.ServerURL != "" && cfg.NodeID != "" && cfg.ServerToken != "" {
-		sinkResp, err := fetchNodeSink(ctx, cfg.ServerURL, cfg.NodeID, cfg.ServerToken)
-		if err == nil && sinkResp != nil && sinkResp.Configured && sinkResp.Sink != nil {
-			if sinkResp.Sink.Bucket != "" {
-				storageCfg.Type = config.StorageTypeS3
-				storageCfg.Bucket = sinkResp.Sink.Bucket
-				if sinkResp.Sink.Region != "" {
-					storageCfg.Region = sinkResp.Sink.Region
-				}
-				if sinkResp.Sink.Endpoint != "" {
-					storageCfg.Endpoint = sinkResp.Sink.Endpoint
-				}
-				if sinkResp.Sink.Prefix != "" {
-					storageCfg.Prefix = sinkResp.Sink.Prefix
-				}
-				storageCfg.ForcePathStyle = sinkResp.Sink.ForcePathStyle
-				// Object Lock intent: a node enrolled with a centrally-managed sink
-				// has no local storage config, so storageCfg.WORMMode is empty here
-				// and ResolveWORMMode defaults to COMPLIANCE. Applying the sink's
-				// configured WORMMode ensures governance mode is respected if configured.
-				if sinkResp.Sink.WORMMode != "" {
-					storageCfg.WORMMode = config.WORMMode(sinkResp.Sink.WORMMode)
-				}
-				if sinkResp.Sink.RetentionDays > 0 {
-					storageCfg.RetentionDays = sinkResp.Sink.RetentionDays
-				}
-				if verbose {
-					fmt.Printf("   Sink Routing:    Project '%s' -> s3://%s\n", sinkResp.ProjectName, storageCfg.Bucket)
-				}
-			}
-		} else if verbose && err != nil && cfg.ServerURL != "" {
-			fmt.Printf("   Sink Routing:    Remote server offline (%v); falling back to local storage config\n", err)
-		}
-	}
+	routeProjectSink(ctx, cfg, &storageCfg, verbose)
 
 	// 1. CLI flags override everything
 	if flagBucket != "" {
@@ -117,4 +80,70 @@ func resolveStorageRouting(ctx context.Context, cfg *config.CLIConfig, flagBucke
 	}
 
 	return storageCfg
+}
+
+// routeProjectSink points storageCfg at the project's bucket when the remote
+// server has one for this host's project. Every command that opens storage
+// for this host goes through it, the agent included: a host whose project
+// has a bucket must not back up to its own disk while the console shows the
+// bucket. Not for hosted storage: that is an explicit choice, leased
+// separately (hosted.go), and a project sink must not silently redirect it.
+// An unreachable server leaves the host's own config in place, and says so.
+func routeProjectSink(ctx context.Context, cfg *config.CLIConfig, storageCfg *config.StorageConfig, verbose bool) {
+	if storageCfg.Type == config.StorageTypeHosted || cfg.ServerURL == "" || cfg.NodeID == "" || cfg.ServerToken == "" {
+		return
+	}
+	sinkResp, err := fetchNodeSink(ctx, cfg.ServerURL, cfg.NodeID, cfg.ServerToken)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "⚠️  Could not ask the remote server where this project's backups go (%v); using this host's storage config\n", err)
+		return
+	}
+	if !sinkResp.Configured || sinkResp.Sink == nil || sinkResp.Sink.Bucket == "" {
+		return
+	}
+	storageCfg.Type = config.StorageTypeS3
+	storageCfg.Bucket = sinkResp.Sink.Bucket
+	if sinkResp.Sink.Region != "" {
+		storageCfg.Region = sinkResp.Sink.Region
+	}
+	if sinkResp.Sink.Endpoint != "" {
+		storageCfg.Endpoint = sinkResp.Sink.Endpoint
+	}
+	if sinkResp.Sink.Prefix != "" {
+		storageCfg.Prefix = sinkResp.Sink.Prefix
+	}
+	storageCfg.ForcePathStyle = sinkResp.Sink.ForcePathStyle
+	// Object Lock intent: a node enrolled with a centrally-managed sink has
+	// no local storage config, so storageCfg.WORMMode is empty here and
+	// ResolveWORMMode defaults to COMPLIANCE. The sink's mode is applied so
+	// governance, or NONE on a bucket with no Object Lock, is respected.
+	if sinkResp.Sink.WORMMode != "" {
+		storageCfg.WORMMode = config.WORMMode(sinkResp.Sink.WORMMode)
+	}
+	if sinkResp.Sink.RetentionDays > 0 {
+		storageCfg.RetentionDays = sinkResp.Sink.RetentionDays
+	}
+	if verbose {
+		fmt.Printf("   Sink Routing:    Project '%s' -> s3://%s\n", sinkResp.ProjectName, storageCfg.Bucket)
+	}
+}
+
+// applyHeldSinkKey fills in the bucket key the remote server holds for this
+// host's project, when the host's config has none. Only the key: the agent
+// resolves its surfaces' own credentials separately, per surface. A failure
+// is said out loud; the backup then fails on the missing key, not on a guess.
+func applyHeldSinkKey(ctx context.Context, cfg *config.CLIConfig, storageCfg *config.StorageConfig) {
+	if storageCfg.Type != config.StorageTypeS3 || storageCfg.SecretAccessKey != "" ||
+		cfg.ServerURL == "" || cfg.NodeID == "" || cfg.ServerToken == "" {
+		return
+	}
+	creds, err := fetchNodeCredentials(ctx, cfg.ServerURL, cfg.NodeID, cfg.ServerToken)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "⚠️  Could not fetch the bucket key the remote server holds (%v)\n", err)
+		return
+	}
+	if creds.Sink != nil && creds.Sink.SecretAccessKey != "" {
+		storageCfg.AccessKeyID = creds.Sink.AccessKeyID
+		storageCfg.SecretAccessKey = creds.Sink.SecretAccessKey
+	}
 }

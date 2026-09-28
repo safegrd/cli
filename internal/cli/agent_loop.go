@@ -263,15 +263,20 @@ func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, s *config.Surf
 	}()
 	sandbox, sandboxErr := surfaceSandboxURL(ctx, c, s)
 
+	// The same storage the surface backs up to (runSurfaceBackup), or the
+	// drill restores from somewhere its backups never went.
 	storageCfg := c.Storage
 	if s.Storage != nil {
 		storageCfg = *s.Storage
+	} else {
+		routeProjectSink(ctx, c, &storageCfg, false)
 	}
 	storageCfg.NodeID = nodeID
 	// Hosted storage: a read lease, which is never refused for quota.
 	_, err := resolveHostedStorage(ctx, c, &storageCfg, false)
 	var provider storage.StorageProvider
 	if err == nil {
+		applyHeldSinkKey(ctx, c, &storageCfg)
 		provider, err = openStorage(ctx, c, storageCfg)
 	}
 	if err != nil {

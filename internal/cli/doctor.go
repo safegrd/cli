@@ -315,8 +315,11 @@ func runDoctorChecks(path string, c *config.CLIConfig) []CheckResult {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Hosted storage is checked the way a command uses it: with a lease.
+	// Checked the way a backup uses it: the project's bucket when the remote
+	// server has one, and hosted storage with a lease.
 	stCfg := c.Storage
+	routeProjectSink(ctx, c, &stCfg, false)
+	applyHeldSinkKey(ctx, c, &stCfg)
 	if stCfg.Type == config.StorageTypeHosted {
 		probe := *c
 		if l, err := resolveHostedStorage(ctx, &probe, &stCfg, false); err != nil {
