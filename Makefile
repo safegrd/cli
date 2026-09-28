@@ -14,7 +14,7 @@ DIST_TARGETS ?= linux/amd64 linux/arm64 darwin/amd64 darwin/arm64
 DIST_DIR     ?= dist
 CLI_BIN := $(BIN_DIR)/safegrd
 
-.PHONY: help all build dist test vet fmt tidy clean ci check-fmt check-tidy
+.PHONY: help all build dist test vet fmt tidy clean ci check-fmt check-tidy release-tag tag
 
 .DEFAULT_GOAL := help
 
@@ -80,3 +80,28 @@ ci: check-fmt check-tidy build ## Run every gate CI runs
 
 clean: ## Clean build artifacts
 	rm -rf $(BIN_DIR) coverage.out coverage.html dist
+
+tag: release-tag ## Alias for release-tag
+
+release-tag: ## Tag and push a release (usage: make release-tag TAG=v0.0.5)
+	@if [ -z "$(TAG)" ]; then \
+		echo "Error: TAG is required (e.g. make release-tag TAG=v0.0.5)"; \
+		latest=$$(git describe --tags --abbrev=0 2>/dev/null || echo "none"); \
+		echo "Latest tag was: $$latest"; \
+		exit 1; \
+	fi
+	@if ! [[ "$(TAG)" =~ ^v[0-9]+\.[0-9]+\.[0-9]+.*$$ ]]; then \
+		echo "Error: TAG must follow semver format prefixed with 'v' (e.g. v0.0.5)"; \
+		exit 1; \
+	fi
+	@if [ -n "$$(git status --porcelain)" ]; then \
+		echo "Error: working directory has uncommitted changes"; \
+		exit 1; \
+	fi
+	@echo "==> Running CI gate before tagging..."
+	@$(MAKE) ci
+	@echo "==> Creating annotated tag $(TAG)..."
+	git tag -a "$(TAG)" -m "SafeGrd CLI $(TAG)"
+	@echo "==> Pushing tag $(TAG) to origin..."
+	git push origin "$(TAG)"
+	@echo "==> Tag $(TAG) pushed. GitHub Actions Release workflow will build and publish."
