@@ -601,6 +601,9 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 	storageCfg := c.Storage
 	if s.Storage != nil {
 		storageCfg = *s.Storage
+		if err := checkSurfaceStorage(ctx, c, &storageCfg); err != nil {
+			return nil, plan, err
+		}
 	} else if err := routeProjectSink(ctx, c, &storageCfg, false, true); err != nil {
 		return nil, plan, err
 	}

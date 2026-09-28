@@ -269,6 +269,7 @@ func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, s *config.Surf
 	var err error
 	if s.Storage != nil {
 		storageCfg = *s.Storage
+		err = checkSurfaceStorage(ctx, c, &storageCfg)
 	} else {
 		err = routeProjectSink(ctx, c, &storageCfg, false, false)
 	}

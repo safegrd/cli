@@ -141,18 +141,8 @@ func routeProjectSink(ctx context.Context, cfg *config.CLIConfig, storageCfg *co
 		}
 		return nil
 	}
-	if ownBucket {
-		if !sameBucket(sinkResp.Sink.Bucket, sinkResp.Sink.Endpoint, storageCfg.Bucket, storageCfg.Endpoint) {
-			return fmt.Errorf("project '%s' keeps its backups in s3://%s, set up on the remote server, and this host's config "+
-				"names s3://%s. A project's bucket has one origin: remove the bucket from this host's storage config so it "+
-				"uses the project's, or change the project's bucket on the remote server",
-				sinkResp.ProjectName, sinkResp.Sink.Bucket, storageCfg.Bucket)
-		}
-		if sinkResp.KeyHeld && storageCfg.SecretAccessKey != "" {
-			return fmt.Errorf("the remote server holds the key for project '%s''s bucket, and this host's storage config sets "+
-				"its own secret_access_key. A bucket's key has one origin: remove it from this host's config, and the host "+
-				"fetches the held key when it backs up", sinkResp.ProjectName)
-		}
+	if err := secondOrigin(sinkResp, storageCfg); err != nil {
+		return err
 	}
 	storageCfg.Type = config.StorageTypeS3
 	storageCfg.Bucket = sinkResp.Sink.Bucket
@@ -180,6 +170,43 @@ func routeProjectSink(ctx context.Context, cfg *config.CLIConfig, storageCfg *co
 		fmt.Printf("   Sink Routing:    Project '%s' -> s3://%s\n", sinkResp.ProjectName, storageCfg.Bucket)
 	}
 	return nil
+}
+
+// secondOrigin refuses a host's own storage that would be a second origin for
+// a bucket set up on the remote server: another bucket, or its own key where
+// the server holds the key. Only a bucket the server says is the console's
+// is judged.
+func secondOrigin(sinkResp *nodeSinkResponse, st *config.StorageConfig) error {
+	if sinkResp.Origin != "console" || sinkResp.Sink == nil || st.Type != config.StorageTypeS3 || st.Bucket == "" {
+		return nil
+	}
+	if !sameBucket(sinkResp.Sink.Bucket, sinkResp.Sink.Endpoint, st.Bucket, st.Endpoint) {
+		return fmt.Errorf("project '%s' keeps its backups in s3://%s, set up on the remote server, and this host's config "+
+			"names s3://%s. A project's bucket has one origin: remove the bucket from this host's storage config so it "+
+			"uses the project's, or change the project's bucket on the remote server",
+			sinkResp.ProjectName, sinkResp.Sink.Bucket, st.Bucket)
+	}
+	if sinkResp.KeyHeld && st.SecretAccessKey != "" {
+		return fmt.Errorf("the remote server holds the key for project '%s''s bucket, and this host's storage config sets "+
+			"its own secret_access_key. A bucket's key has one origin: remove it from this host's config, and the host "+
+			"fetches the held key when it backs up", sinkResp.ProjectName)
+	}
+	return nil
+}
+
+// checkSurfaceStorage applies the same refusal to a surface's own storage
+// section, which is never rerouted: it is the surface's explicit choice, and
+// may still not be a second origin for its project's bucket.
+func checkSurfaceStorage(ctx context.Context, cfg *config.CLIConfig, st *config.StorageConfig) error {
+	if st.Type != config.StorageTypeS3 || cfg.ServerURL == "" || cfg.NodeID == "" || cfg.ServerToken == "" {
+		return nil
+	}
+	sinkResp, err := fetchNodeSink(ctx, cfg.ServerURL, cfg.NodeID, cfg.ServerToken)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "⚠️  Could not ask the remote server where this project's backups go (%v); using this surface's storage config\n", err)
+		return nil
+	}
+	return secondOrigin(sinkResp, st)
 }
 
 // sameBucket is whether two storage configs name one bucket. An endpoint
