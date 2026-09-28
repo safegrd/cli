@@ -387,7 +387,10 @@ fi
 if [ -n "${SAFEGRD_NODE_NAME:-}" ]; then
   set -- "$@" --node-name "$SAFEGRD_NODE_NAME"
 fi
-if [ -n "${SAFEGRD_STORAGE:-}" ]; then
+# Only a release whose enroll has --storage is given it. An older one would
+# stop at "unknown flag"; it also never reports its storage, so the remote
+# server does not refuse it for lacking one.
+if [ -n "${SAFEGRD_STORAGE:-}" ] && "$SAFEGRD_BIN" enroll --help 2>/dev/null | grep -q -- "--storage"; then
   set -- "$@" --storage "$SAFEGRD_STORAGE"
 fi
 
