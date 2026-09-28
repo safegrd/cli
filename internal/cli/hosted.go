@@ -195,6 +195,9 @@ type hostedProvider struct {
 
 	mu      sync.Mutex
 	objects []hostedObject // cached listing, for one command
+	// kept is the lock the remote server actually set on each snapshot's
+	// ciphertext, which the plan bounds and may differ from the one asked.
+	kept map[string]time.Time
 }
 
 type hostedObject struct {
@@ -221,15 +224,40 @@ func (p *hostedProvider) UploadSnapshot(ctx context.Context, snapshotID string, 
 	if retentionUntil.IsZero() && p.retentionDays > 0 {
 		retentionUntil = time.Now().UTC().AddDate(0, 0, p.retentionDays)
 	}
-	uri, err := p.upload(ctx, snapshotID+".safegrd", stream, retentionUntil)
+	uri, kept, err := p.upload(ctx, snapshotID+".safegrd", stream, retentionUntil)
 	if err != nil {
 		return "", err
 	}
 	p.forget()
+	if !kept.IsZero() {
+		p.mu.Lock()
+		if p.kept == nil {
+			p.kept = map[string]time.Time{}
+		}
+		p.kept[snapshotID] = kept
+		p.mu.Unlock()
+		if !retentionUntil.IsZero() && !sameDay(kept, retentionUntil) {
+			fmt.Fprintf(os.Stderr, "⚠️  hosted storage keeps snapshot %s until %s, not %s as this host asked: the plan sets the range\n",
+				snapshotID, kept.UTC().Format("2006-01-02"), retentionUntil.UTC().Format("2006-01-02"))
+		}
+	}
 	return uri, nil
 }
 
+func sameDay(a, b time.Time) bool {
+	return a.UTC().Format("2006-01-02") == b.UTC().Format("2006-01-02")
+}
+
 func (p *hostedProvider) UploadMetadata(ctx context.Context, snapshotID string, meta *model.SnapshotMetadata) error {
+	// The manifest, the record the remote server is sent and the line the
+	// command prints all carry the date the ciphertext is locked until, not
+	// the date this host asked for.
+	p.mu.Lock()
+	kept, ok := p.kept[snapshotID]
+	p.mu.Unlock()
+	if ok {
+		meta.WORMRetentionUntil = kept
+	}
 	data, err := json.MarshalIndent(meta, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal metadata: %w", err)
@@ -238,7 +266,7 @@ func (p *hostedProvider) UploadMetadata(ctx context.Context, snapshotID string, 
 	if retain.IsZero() && p.retentionDays > 0 {
 		retain = time.Now().UTC().AddDate(0, 0, p.retentionDays)
 	}
-	if _, err := p.upload(ctx, snapshotID+".meta.json", bytes.NewReader(data), retain); err != nil {
+	if _, _, err := p.upload(ctx, snapshotID+".meta.json", bytes.NewReader(data), retain); err != nil {
 		return err
 	}
 	p.forget()
@@ -266,15 +294,17 @@ const hostedBufferBudget = 128 << 20
 // asks the remote server for a URL signed for exactly that part's length, and
 // PUTs it, with several parts in flight at once. Any failure aborts the upload,
 // so nothing half-written is left to be billed or mistaken for a backup.
-func (p *hostedProvider) upload(ctx context.Context, name string, r io.Reader, retainUntil time.Time) (string, error) {
+// It returns the lock the remote server set, which may differ from the one
+// asked for.
+func (p *hostedProvider) upload(ctx context.Context, name string, r io.Reader, retainUntil time.Time) (string, time.Time, error) {
 	var up hostedUpload
 	if err := p.client.call(ctx, http.MethodPost, "/uploads", map[string]any{
 		"node_id": p.nodeID, "name": name, "retain_until": retainUntil,
 	}, &up); err != nil {
-		return "", err
+		return "", time.Time{}, err
 	}
 	if up.PartSize <= 0 {
-		return "", fmt.Errorf("hosted storage: the remote server gave no part size")
+		return "", time.Time{}, fmt.Errorf("hosted storage: the remote server gave no part size")
 	}
 	concurrency := int(hostedBufferBudget / up.PartSize)
 	if concurrency < 1 {
@@ -335,19 +365,19 @@ func (p *hostedProvider) upload(ctx context.Context, name string, r io.Reader, r
 	}
 	if firstErr != nil {
 		p.abort(up.UploadID)
-		return "", firstErr
+		return "", time.Time{}, firstErr
 	}
 	var done struct {
 		StorageURI string `json:"storage_uri"`
 		Bytes      int64  `json:"bytes"`
 	}
 	if err := p.client.call(context.WithoutCancel(ctx), http.MethodPost, "/uploads/"+up.UploadID+"/complete", nil, &done); err != nil {
-		return "", err
+		return "", time.Time{}, err
 	}
 	if done.Bytes != total {
-		return "", fmt.Errorf("hosted storage: %s was stored as %d bytes, %d were sent", name, done.Bytes, total)
+		return "", time.Time{}, fmt.Errorf("hosted storage: %s was stored as %d bytes, %d were sent", name, done.Bytes, total)
 	}
-	return done.StorageURI, nil
+	return done.StorageURI, up.RetainUntil, nil
 }
 
 // abort tells the remote server to abandon an upload. Said out loud when it

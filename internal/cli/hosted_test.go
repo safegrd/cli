@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/safegrd/cli/pkg/config"
+	"github.com/safegrd/cli/pkg/model"
 )
 
 // fakeHosted plays the remote server and the bucket behind it: it grants part
@@ -34,6 +35,10 @@ type fakeHosted struct {
 	maxIn    int32
 	// failPuts makes the first n part PUTs fail with 403, as an expired URL would.
 	failPuts int32
+	// keep, when set, is the lock the server grants whatever is asked, as
+	// the plan's range does; asked records each lock the host asked for.
+	keep  time.Time
+	asked []time.Time
 }
 
 func newFakeHosted(t *testing.T) *fakeHosted {
@@ -82,12 +87,19 @@ func (f *fakeHosted) serve(w http.ResponseWriter, r *http.Request) {
 	case r.Header.Get("Authorization") != "Bearer sg_tok_1":
 		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
 	case r.URL.Path == api+"/uploads":
-		var req map[string]any
+		var req struct {
+			RetainUntil time.Time `json:"retain_until"`
+		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		f.mu.Lock()
 		f.parts, f.grants = map[int32][]byte{}, map[int32]int64{}
+		f.asked = append(f.asked, req.RetainUntil)
+		keep := req.RetainUntil
+		if !f.keep.IsZero() {
+			keep = f.keep
+		}
 		f.mu.Unlock()
-		_ = json.NewEncoder(w).Encode(map[string]any{"upload_id": "hup_1", "part_size": 1 << 20})
+		_ = json.NewEncoder(w).Encode(map[string]any{"upload_id": "hup_1", "part_size": 1 << 20, "retain_until": keep})
 	case r.URL.Path == api+"/uploads/hup_1/parts":
 		var req struct {
 			Parts []struct {
@@ -228,5 +240,28 @@ func TestHostedStorageNeverDeletes(t *testing.T) {
 	f := newFakeHosted(t)
 	if err := f.provider(t).DeleteSnapshot(context.Background(), "snap-1"); err == nil {
 		t.Error("the hosted provider deleted a snapshot; no host may")
+	}
+}
+
+// The lock a hosted backup reports is the one the remote server set, not the
+// one the host asked for: the plan bounds it, and a manifest, a record and a
+// printed line that named the asked date would claim a lock nobody set.
+func TestAHostedBackupReportsTheLockTheServerKept(t *testing.T) {
+	f := newFakeHosted(t)
+	p := f.provider(t)
+	asked := time.Now().UTC().AddDate(0, 0, 30).Truncate(time.Second)
+	f.keep = time.Now().UTC().AddDate(0, 0, 14).Truncate(time.Second)
+	if _, err := p.UploadSnapshot(context.Background(), "snap-1", bytes.NewReader(make([]byte, 100)), -1, asked); err != nil {
+		t.Fatal(err)
+	}
+	meta := &model.SnapshotMetadata{SnapshotID: "snap-1", WORMRetentionUntil: asked}
+	if err := p.UploadMetadata(context.Background(), "snap-1", meta); err != nil {
+		t.Fatal(err)
+	}
+	if !meta.WORMRetentionUntil.Equal(f.keep) {
+		t.Errorf("the snapshot reports a lock until %s, the server kept it until %s", meta.WORMRetentionUntil, f.keep)
+	}
+	if len(f.asked) != 2 || !f.asked[1].Equal(f.keep) {
+		t.Errorf("the manifest asked for a lock other than the one its ciphertext has: %v", f.asked)
 	}
 }
