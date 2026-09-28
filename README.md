@@ -49,6 +49,8 @@ curl -fsSL https://safegrd.dev/install.sh | SAFEGRD_NO_SETUP=1 sh               
 | `SAFEGRD_INSTALL_DIR` | Where the binary goes. |
 | `SAFEGRD_NO_SETUP=1` | Install only; do not offer to log in and enroll. |
 | `SAFEGRD_PROJECT` | Project ID or slug to enroll this machine into. |
+| `SAFEGRD_STORAGE` | `hosted` or `local`: where backups go when the project has no bucket. |
+| `SAFEGRD_CLAIM` | The claim code the console shows for this machine. It carries the project, where backups go and the surfaces to protect, so enrollment writes them into the config and asks nothing. Needs a release whose `enroll` has `--claim`; an older one stops and says so. |
 | `SAFEGRD_NODE_NAME` | Name the machine is shown under. |
 | `SAFEGRD_KEY_CUSTODY` | `safegrd` or `local`: answers the key question in advance. |
 | `SAFEGRD_SERVER_URL` | Remote server to log in and enroll with. Default: `https://safegrd.dev`. |
@@ -107,6 +109,11 @@ safegrd enroll --key-custody local
 
 # Headless / CI: a Personal Access Token instead of the browser
 safegrd enroll --token "sg_pat_..."
+
+# Or with the claim code the console's setup shows: the project, where backups go and
+# the surfaces are written into ~/.safegrd/config.yaml, and the key stays on this machine
+safegrd enroll --claim <code>
+safegrd agent run --once
 
 # Verify the active session
 safegrd whoami

@@ -143,7 +143,8 @@ type SurfaceConfig struct {
 
 	// CredentialHeld says the remote server holds this surface's credential
 	// (its database URL, or its mailbox password), and the agent fetches it
-	// when the surface backs up. Anything set locally still wins.
+	// when the surface backs up. It is the only origin: a surface that also
+	// names a credential on the host is refused, never resolved quietly.
 	CredentialHeld bool `yaml:"credential_held,omitempty" json:"credential_held,omitempty"`
 	// HeldSecret is that credential once fetched. Memory only: the tags keep
 	// it out of the file, so withdrawing it on the server withdraws it here.
