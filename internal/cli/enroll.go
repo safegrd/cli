@@ -26,6 +26,7 @@ func newEnrollCmd() *cobra.Command {
 		keyCustody        string
 		storageFlag       string
 		allowUnconfigured bool
+		claimCode         string
 	)
 
 	cmd := &cobra.Command{
@@ -66,6 +67,20 @@ With neither, it uses the login saved by 'safegrd login'.`,
 			// cfg.NodeID out of a config LoadCLIConfig had invented from
 			// defaults, which registered a node with an empty identity and no
 			// keypair: enrolled, and unable to encrypt anything.
+			// A claim registers a new host with the key kept on it: the
+			// console has not asked this organization who should hold keys.
+			if claimCode != "" {
+				if token != "" && !strings.HasPrefix(token, "sg_pat_") {
+					return fmt.Errorf("--claim registers a new host, and a node token belongs to one that exists. " +
+						"Log in with 'safegrd login' instead. Nothing was changed")
+				}
+				if keyCustody == "safegrd" {
+					return fmt.Errorf("a claimed enrollment keeps the encryption key on this host; " +
+						"leave out --key-custody. Nothing was changed")
+				}
+				keyCustody = "local"
+			}
+
 			if storageFlag != "" && storageFlag != string(config.StorageTypeHosted) && storageFlag != string(config.StorageTypeLocal) {
 				return fmt.Errorf("--storage %q: enroll can choose hosted or local; configure a bucket in the console "+
 					"or with 'safegrd init --storage s3'. Nothing was changed", storageFlag)
@@ -216,6 +231,21 @@ With neither, it uses the login saved by 'safegrd login'.`,
 				}
 				escrowRequested := generatedNow && keyCustody != "local"
 
+				// A claim says where this host goes and what it protects.
+				var claim *claimPreview
+				if claimCode != "" {
+					pv, err := fetchClaim(serverURL, apiKey, claimCode)
+					if err != nil {
+						return fmt.Errorf("%w. Nothing was changed", err)
+					}
+					claim, orgID, projectID = pv, pv.OrgID, pv.ProjectID
+					fmt.Printf("🎫 Claim for project '%s'.\n", pv.ProjectName)
+					if pv.StorageKind == string(config.StorageTypeHosted) && storageFlag == "" {
+						cfg.Storage = config.StorageConfig{Type: config.StorageTypeHosted, WORMMode: config.WORMModeCompliance}
+						storageFlag = string(config.StorageTypeHosted)
+					}
+				}
+
 				// Resolve organization ID for node registration if not provided.
 				if orgID == "" {
 					resolved, err := resolveEnrollmentOrg(serverURL, apiKey)
@@ -239,6 +269,7 @@ With neither, it uses the login saved by 'safegrd login'.`,
 					// send them rather than enroll it to back up nothing.
 					LocalStorage:      localStorageKind(cfg.Storage, created, storageFlag != ""),
 					AllowUnconfigured: allowUnconfigured,
+					Claim:             claimCode,
 					OS:                runtime.GOOS,
 					Arch:              runtime.GOARCH,
 					CLIVersion:        Version,
@@ -327,6 +358,12 @@ With neither, it uses the login saved by 'safegrd login'.`,
 				if cfg.ProjectID != "" {
 					fmt.Printf("   Project ID:  %s\n", cfg.ProjectID)
 				}
+				if claim != nil {
+					addClaimSurfaces(cfg, claim.Surfaces)
+					fmt.Printf("\n   Next: run 'safegrd doctor', then 'sudo safegrd agent install --system'\n")
+					fmt.Printf("   (on macOS: 'safegrd agent install'). The agent registers each surface and\n")
+					fmt.Printf("   takes its first backup; the console shows each as it lands.\n")
+				}
 			}
 
 			targetConfig := cfgFile
@@ -352,6 +389,9 @@ With neither, it uses the login saved by 'safegrd login'.`,
 	cmd.Flags().StringVar(&orgID, "org", "",
 		"Organization to enrol this node into. Only needed when the credential can see more than one: "+
 			"with a single organization it is resolved automatically.")
+	cmd.Flags().StringVar(&claimCode, "claim", "",
+		"The code the console shows for this host. It names the project and the surfaces to protect; "+
+			"log in with 'safegrd login' first")
 	cmd.Flags().StringVar(&storageFlag, "storage", "",
 		"Where this host's backups go, when the project has no bucket: 'hosted' uses SafeGrd's hosted "+
 			"storage, where your plan includes it; 'local' keeps them in a directory on this host")

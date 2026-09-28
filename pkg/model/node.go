@@ -147,11 +147,15 @@ type NodeRegisterRequest struct {
 	LocalStorage string `json:"local_storage,omitempty"`
 	// AllowUnconfigured enrolls a host with nowhere to send its backups yet,
 	// on purpose: storage is configured after enrollment.
-	AllowUnconfigured bool   `json:"allow_unconfigured,omitempty"`
-	RetentionDays     int    `json:"retention_days"`
-	OS                string `json:"os,omitempty"`
-	Arch              string `json:"arch,omitempty"`
-	CLIVersion        string `json:"cli_version,omitempty"`
+	AllowUnconfigured bool `json:"allow_unconfigured,omitempty"`
+	// Claim is the code a console session issued for this host. It names the
+	// organization, project and surfaces the enrollment is for; the caller
+	// still authenticates as a member of that organization.
+	Claim         string `json:"claim,omitempty"`
+	RetentionDays int    `json:"retention_days"`
+	OS            string `json:"os,omitempty"`
+	Arch          string `json:"arch,omitempty"`
+	CLIVersion    string `json:"cli_version,omitempty"`
 }
 
 // NodeRegisterResponse returns API credentials and registration confirmation.

@@ -24,6 +24,8 @@
 #   SAFEGRD_NO_SETUP=1   install only; do not offer to log in and enroll
 #   SAFEGRD_PROJECT      project ID or slug to enroll this host into
 #   SAFEGRD_STORAGE      where backups go when the project has no bucket: 'hosted' or 'local'
+#   SAFEGRD_CLAIM        the code the console shows for this host: the project, where backups
+#                        go and the surfaces to protect, as chosen in the browser
 #   SAFEGRD_NODE_NAME    name this host is shown under
 #   SAFEGRD_KEY_CUSTODY  'safegrd' or 'local'; answers the key question in advance
 #   SAFEGRD_SERVER_URL   remote server to log in and enroll with (default: https://safegrd.dev)
@@ -360,7 +362,22 @@ if [ -f "${HOME}/.safegrd/keys/agent.key" ] || grep -q '^ *public_key: *age1' "$
   KEY_ON_HOST=1
 fi
 
+# Only a release whose enroll takes --claim can use one. An older release is
+# told so, rather than enrolled without the setup the console prepared.
+CLAIM=""
+if [ -n "${SAFEGRD_CLAIM:-}" ]; then
+  if "$SAFEGRD_BIN" enroll --help 2>/dev/null | grep -q -- "--claim"; then
+    CLAIM="$SAFEGRD_CLAIM"
+  else
+    setup_failed "This release of safegrd cannot use the console's claim code yet. Install the latest release, or enroll with: safegrd enroll"
+  fi
+fi
+
 CUSTODY="${SAFEGRD_KEY_CUSTODY:-}"
+# A claimed enrollment keeps the key on this host, so there is nothing to ask.
+if [ -n "$CLAIM" ]; then
+  CUSTODY="local"
+fi
 if [ -z "$CUSTODY" ] && [ -z "$KEY_ON_HOST" ]; then
   printf "\n${BOLD}Who holds the key that decrypts this host's backups?${RESET}\n" >/dev/tty
   printf "  This is decided once, when the key is made, and cannot be changed later.\n\n" >/dev/tty
@@ -390,6 +407,9 @@ fi
 # Only a release whose enroll has --storage is given it. An older one would
 # stop at "unknown flag"; it also never reports its storage, so the remote
 # server does not refuse it for lacking one.
+if [ -n "$CLAIM" ]; then
+  set -- "$@" --claim "$CLAIM"
+fi
 if [ -n "${SAFEGRD_STORAGE:-}" ] && "$SAFEGRD_BIN" enroll --help 2>/dev/null | grep -q -- "--storage"; then
   set -- "$@" --storage "$SAFEGRD_STORAGE"
 fi
