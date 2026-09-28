@@ -90,7 +90,10 @@ using the private key, decompresses stream, and restores to PostgreSQL or extrac
 			// Routed and credentialed exactly as backup does, because a node
 			// enrolled with a centrally-managed sink has no bucket or sink secret locally
 			// either; restoring from a centrally-configured sink must work.
-			storageCfg := resolveStorageRouting(ctx, cfg, "", "", "", "", false)
+			storageCfg, routeErr := resolveStorageRouting(ctx, cfg, "", "", "", "", false)
+			if routeErr != nil {
+				return routeErr
+			}
 			if _, err := resolveHostedStorage(ctx, cfg, &storageCfg, false); err != nil {
 				return err
 			}

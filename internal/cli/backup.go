@@ -60,7 +60,10 @@ Plaintext data NEVER touches disk or third-party networks.`,
 
 			// Resolve storage according to the routing precedence rule:
 			// CLI Flags > Remote Server Project Sink > Local Config Fallback
-			storageCfg := resolveStorageRouting(ctx, cfg, storageBucket, storagePrefix, storageRegion, storageEndpoint, !jsonOutput)
+			storageCfg, routeErr := routeStorage(ctx, cfg, storageBucket, storagePrefix, storageRegion, storageEndpoint, !jsonOutput, true)
+			if routeErr != nil {
+				return routeErr
+			}
 			if retentionDays > 0 {
 				storageCfg.RetentionDays = retentionDays
 			}

@@ -306,7 +306,10 @@ func serverKeepList(ctx context.Context, c *config.CLIConfig, node string) (map[
 
 // pruneOwnBucket prunes the configured S3 bucket.
 func pruneOwnBucket(ctx context.Context, c *config.CLIConfig, grace time.Duration, dryRun bool, out io.Writer) (pruneReport, error) {
-	storageCfg := resolveStorageRouting(ctx, c, "", "", "", "", false)
+	storageCfg, err := resolveStorageRouting(ctx, c, "", "", "", "", false)
+	if err != nil {
+		return pruneReport{}, err
+	}
 	if storageCfg.Type != config.StorageTypeS3 {
 		return pruneReport{}, fmt.Errorf("prune works on your own S3 bucket (storage.type: s3), not %q: hosted storage expires on its own, "+
 			"and a local directory has no lock or clock to judge by", storageCfg.Type)

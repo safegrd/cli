@@ -266,14 +266,17 @@ func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, s *config.Surf
 	// The same storage the surface backs up to (runSurfaceBackup), or the
 	// drill restores from somewhere its backups never went.
 	storageCfg := c.Storage
+	var err error
 	if s.Storage != nil {
 		storageCfg = *s.Storage
 	} else {
-		routeProjectSink(ctx, c, &storageCfg, false)
+		err = routeProjectSink(ctx, c, &storageCfg, false, false)
 	}
 	storageCfg.NodeID = nodeID
 	// Hosted storage: a read lease, which is never refused for quota.
-	_, err := resolveHostedStorage(ctx, c, &storageCfg, false)
+	if err == nil {
+		_, err = resolveHostedStorage(ctx, c, &storageCfg, false)
+	}
 	var provider storage.StorageProvider
 	if err == nil {
 		applyHeldSinkKey(ctx, c, &storageCfg)

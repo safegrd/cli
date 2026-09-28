@@ -45,7 +45,10 @@ keeps each snapshot's lock: it is locked there until the same date.`,
 				return fmt.Errorf("choose one destination: --to-dir or --to-bucket")
 			}
 
-			srcCfg := resolveStorageRouting(ctx, cfg, "", "", "", "", false)
+			srcCfg, routeErr := resolveStorageRouting(ctx, cfg, "", "", "", "", false)
+			if routeErr != nil {
+				return routeErr
+			}
 			if _, err := resolveHostedStorage(ctx, cfg, &srcCfg, false); err != nil {
 				return err
 			}

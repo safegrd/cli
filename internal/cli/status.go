@@ -75,7 +75,10 @@ func newStatusCmd() *cobra.Command {
 			// with a centrally-managed sink has no bucket or sink secret locally, so reading
 			// cfg.Storage directly means this command cannot reach the bucket
 			// on hosts configured centrally.
-			storageCfg := resolveStorageRouting(ctx, cfg, "", "", "", "", false)
+			storageCfg, routeErr := resolveStorageRouting(ctx, cfg, "", "", "", "", false)
+			if routeErr != nil {
+				return routeErr
+			}
 			if _, err := resolveHostedStorage(ctx, cfg, &storageCfg, false); err != nil {
 				return err
 			}

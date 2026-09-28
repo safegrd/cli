@@ -1,14 +1,21 @@
 package cli
 
 import (
+	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/safegrd/cli/pkg/config"
+	"github.com/safegrd/cli/pkg/model"
 )
 
 type nodeSinkResponse struct {
@@ -26,6 +33,18 @@ type nodeSinkResponse struct {
 		WORMMode          string `json:"worm_mode"`
 		RetentionDays     int    `json:"retention_days"`
 	} `json:"sink"`
+	// Origin is who set the project's bucket up: "console", or "cli" for one
+	// a host registered from its own config, which routes nobody. KeyHeld is
+	// whether the remote server holds a console bucket's key.
+	Origin     string `json:"origin"`
+	KeyHeld    bool   `json:"key_held"`
+	Registered *struct {
+		Bucket   string `json:"bucket"`
+		Endpoint string `json:"endpoint"`
+		NodeID   string `json:"node_id"`
+	} `json:"registered"`
+	// FingerprintSalt keys the fingerprint of this host's own bucket key.
+	FingerprintSalt string `json:"fingerprint_salt"`
 }
 
 func fetchNodeSink(ctx context.Context, serverURL, nodeID, token string) (*nodeSinkResponse, error) {
@@ -55,10 +74,19 @@ func fetchNodeSink(ctx context.Context, serverURL, nodeID, token string) (*nodeS
 
 // resolveStorageRouting applies the storage routing precedence rule:
 // CLI flags, then the project's bucket on the remote server, then the host's
-// own config.
-func resolveStorageRouting(ctx context.Context, cfg *config.CLIConfig, flagBucket, flagPrefix, flagRegion, flagEndpoint string, verbose bool) config.StorageConfig {
+// own config. It fails only when the remote server's bucket and this host's
+// own config are two origins for one project (routeProjectSink).
+func resolveStorageRouting(ctx context.Context, cfg *config.CLIConfig, flagBucket, flagPrefix, flagRegion, flagEndpoint string, verbose bool) (config.StorageConfig, error) {
+	return routeStorage(ctx, cfg, flagBucket, flagPrefix, flagRegion, flagEndpoint, verbose, false)
+}
+
+// routeStorage is resolveStorageRouting for a command that writes: with
+// register, a host naming its own bucket reports it (routeProjectSink).
+func routeStorage(ctx context.Context, cfg *config.CLIConfig, flagBucket, flagPrefix, flagRegion, flagEndpoint string, verbose, register bool) (config.StorageConfig, error) {
 	storageCfg := cfg.Storage
-	routeProjectSink(ctx, cfg, &storageCfg, verbose)
+	if err := routeProjectSink(ctx, cfg, &storageCfg, verbose, register); err != nil {
+		return storageCfg, err
+	}
 
 	// 1. CLI flags override everything
 	if flagBucket != "" {
@@ -79,7 +107,7 @@ func resolveStorageRouting(ctx context.Context, cfg *config.CLIConfig, flagBucke
 		storageCfg.NodeID = cfg.NodeID
 	}
 
-	return storageCfg
+	return storageCfg, nil
 }
 
 // routeProjectSink points storageCfg at the project's bucket when the remote
@@ -88,18 +116,43 @@ func resolveStorageRouting(ctx context.Context, cfg *config.CLIConfig, flagBucke
 // has a bucket must not back up to its own disk while the console shows the
 // bucket. Not for hosted storage: that is an explicit choice, leased
 // separately (hosted.go), and a project sink must not silently redirect it.
-// An unreachable server leaves the host's own config in place, and says so.
-func routeProjectSink(ctx context.Context, cfg *config.CLIConfig, storageCfg *config.StorageConfig, verbose bool) {
+//
+// A project's bucket has one origin. Only a bucket set up in the console
+// routes; one a host registered from its own config is that host's, and every
+// host names it itself. A host whose own config names a different bucket than
+// the console's, or sets its own key where the remote server holds it, is
+// refused rather than quietly overridden either way. With register, a host
+// naming its own bucket in a project with none reports it: the bucket and a
+// fingerprint of its key, never the key. An unreachable server leaves the
+// host's own config in place, and says so.
+func routeProjectSink(ctx context.Context, cfg *config.CLIConfig, storageCfg *config.StorageConfig, verbose, register bool) error {
 	if storageCfg.Type == config.StorageTypeHosted || cfg.ServerURL == "" || cfg.NodeID == "" || cfg.ServerToken == "" {
-		return
+		return nil
 	}
 	sinkResp, err := fetchNodeSink(ctx, cfg.ServerURL, cfg.NodeID, cfg.ServerToken)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "⚠️  Could not ask the remote server where this project's backups go (%v); using this host's storage config\n", err)
-		return
+		return nil
 	}
+	ownBucket := storageCfg.Type == config.StorageTypeS3 && storageCfg.Bucket != ""
 	if !sinkResp.Configured || sinkResp.Sink == nil || sinkResp.Sink.Bucket == "" {
-		return
+		if ownBucket && register {
+			return registerOwnBucket(ctx, cfg, storageCfg, sinkResp.FingerprintSalt)
+		}
+		return nil
+	}
+	if ownBucket {
+		if !sameBucket(sinkResp.Sink.Bucket, sinkResp.Sink.Endpoint, storageCfg.Bucket, storageCfg.Endpoint) {
+			return fmt.Errorf("project '%s' keeps its backups in s3://%s, set up on the remote server, and this host's config "+
+				"names s3://%s. A project's bucket has one origin: remove the bucket from this host's storage config so it "+
+				"uses the project's, or change the project's bucket on the remote server",
+				sinkResp.ProjectName, sinkResp.Sink.Bucket, storageCfg.Bucket)
+		}
+		if sinkResp.KeyHeld && storageCfg.SecretAccessKey != "" {
+			return fmt.Errorf("the remote server holds the key for project '%s''s bucket, and this host's storage config sets "+
+				"its own secret_access_key. A bucket's key has one origin: remove it from this host's config, and the host "+
+				"fetches the held key when it backs up", sinkResp.ProjectName)
+		}
 	}
 	storageCfg.Type = config.StorageTypeS3
 	storageCfg.Bucket = sinkResp.Sink.Bucket
@@ -126,6 +179,68 @@ func routeProjectSink(ctx context.Context, cfg *config.CLIConfig, storageCfg *co
 	if verbose {
 		fmt.Printf("   Sink Routing:    Project '%s' -> s3://%s\n", sinkResp.ProjectName, storageCfg.Bucket)
 	}
+	return nil
+}
+
+// sameBucket is whether two storage configs name one bucket. An endpoint
+// left out is the provider's default, the same place only as another left out.
+func sameBucket(bucketA, endpointA, bucketB, endpointB string) bool {
+	return bucketA == bucketB && strings.TrimRight(endpointA, "/") == strings.TrimRight(endpointB, "/")
+}
+
+// bucketKeyFingerprint identifies a bucket key without revealing it: an HMAC
+// under the salt the remote server gives this project's hosts, so the same
+// key on two hosts matches and a guessable key cannot be looked up.
+func bucketKeyFingerprint(salt, secret string) string {
+	if salt == "" || secret == "" {
+		return ""
+	}
+	m := hmac.New(sha256.New, []byte(salt))
+	m.Write([]byte(secret))
+	return hex.EncodeToString(m.Sum(nil))[:32]
+}
+
+// registerOwnBucket reports the bucket this host's own config names to the
+// remote server, which records it as the project's, owned by its hosts. A
+// refusal fails the command, because the server has said this bucket would be
+// a second origin for the project. Any other failure is said and the host's
+// own config is used: protection never waits on the remote server.
+func registerOwnBucket(ctx context.Context, cfg *config.CLIConfig, st *config.StorageConfig, salt string) error {
+	if err := refuseInsecureServerURL(cfg.ServerURL); err != nil {
+		fmt.Fprintf(os.Stderr, "⚠️  Not registering this host's bucket with the remote server: %v\n", err)
+		return nil
+	}
+	body, _ := json.Marshal(model.NodeSinkRegisterRequest{
+		Bucket: st.Bucket, Region: st.Region, Endpoint: st.Endpoint, Prefix: st.Prefix,
+		AccessKeyID: st.AccessKeyID, ForcePathStyle: st.ForcePathStyle, WORMMode: string(st.WORMMode),
+		KeyFingerprint: bucketKeyFingerprint(salt, st.SecretAccessKey),
+	})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut,
+		fmt.Sprintf("%s/api/v1/nodes/%s/sink", strings.TrimRight(cfg.ServerURL, "/"), cfg.NodeID), bytes.NewReader(body))
+	if err != nil {
+		return nil
+	}
+	req.Header.Set("Authorization", "Bearer "+cfg.ServerToken)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", UserAgent())
+	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "⚠️  Could not register this host's bucket with the remote server (%v); backing up to it anyway\n", err)
+		return nil
+	}
+	defer resp.Body.Close()
+	var answer struct {
+		Error string `json:"error"`
+	}
+	_ = json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&answer)
+	switch {
+	case resp.StatusCode == http.StatusConflict:
+		return fmt.Errorf("the remote server refused this host's bucket: %s", answer.Error)
+	case resp.StatusCode/100 != 2:
+		fmt.Fprintf(os.Stderr, "⚠️  The remote server did not record this host's bucket (HTTP %d %s); backing up to it anyway\n",
+			resp.StatusCode, answer.Error)
+	}
+	return nil
 }
 
 // applyHeldSinkKey fills in the bucket key the remote server holds for this

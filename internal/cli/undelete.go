@@ -64,7 +64,10 @@ It only ever deletes delete markers, addressed by version id. It cannot remove a
 version holding data, which is why it is safe to run.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
-			storageCfg := resolveStorageRouting(ctx, cfg, "", "", "", "", true)
+			storageCfg, routeErr := resolveStorageRouting(ctx, cfg, "", "", "", "", true)
+			if routeErr != nil {
+				return routeErr
+			}
 			if _, err := resolveHostedStorage(ctx, cfg, &storageCfg, false); err != nil {
 				return err
 			}

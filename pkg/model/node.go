@@ -198,6 +198,21 @@ type SurfaceRegisterRequest struct {
 	CredentialSource string `json:"credential_source,omitempty"`
 }
 
+// NodeSinkRegisterRequest is a host reporting the bucket its own config
+// names, for PUT /api/v1/nodes/{id}/sink. KeyFingerprint is an HMAC of the
+// secret access key under the salt the remote server gives the project's
+// hosts, or empty when the host sets no key; the key itself is never sent.
+type NodeSinkRegisterRequest struct {
+	Bucket         string `json:"bucket"`
+	Region         string `json:"region,omitempty"`
+	Endpoint       string `json:"endpoint,omitempty"`
+	Prefix         string `json:"prefix,omitempty"`
+	AccessKeyID    string `json:"access_key_id,omitempty"`
+	ForcePathStyle bool   `json:"force_path_style,omitempty"`
+	WORMMode       string `json:"worm_mode,omitempty"`
+	KeyFingerprint string `json:"key_fingerprint,omitempty"`
+}
+
 // SurfaceRegisterResponse names the node the surface reports as. The host's
 // own token authenticates for it; there is no per-surface token.
 type SurfaceRegisterResponse struct {

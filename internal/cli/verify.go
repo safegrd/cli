@@ -106,7 +106,10 @@ executes a full active restore drill into the target ephemeral database.`,
 				return fmt.Errorf("decryption key required for verification: specify --private-key or configure ~/.safegrd/keys/agent.key")
 			}
 
-			storageCfg := resolveStorageRouting(ctx, cfg, "", "", "", "", false)
+			storageCfg, routeErr := resolveStorageRouting(ctx, cfg, "", "", "", "", false)
+			if routeErr != nil {
+				return routeErr
+			}
 			if _, err := resolveHostedStorage(ctx, cfg, &storageCfg, false); err != nil {
 				return err
 			}

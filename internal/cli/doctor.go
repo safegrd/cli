@@ -318,7 +318,9 @@ func runDoctorChecks(path string, c *config.CLIConfig) []CheckResult {
 	// Checked the way a backup uses it: the project's bucket when the remote
 	// server has one, and hosted storage with a lease.
 	stCfg := c.Storage
-	routeProjectSink(ctx, c, &stCfg, false)
+	if err := routeProjectSink(ctx, c, &stCfg, false, false); err != nil {
+		results = append(results, CheckResult{Name: "Storage Origin", Status: "FAIL", Message: err.Error()})
+	}
 	applyHeldSinkKey(ctx, c, &stCfg)
 	if stCfg.Type == config.StorageTypeHosted {
 		probe := *c
