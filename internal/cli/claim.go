@@ -1,10 +1,10 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
@@ -46,11 +46,15 @@ type claimPreview struct {
 
 // fetchClaim asks the remote server what a claim code is for.
 func fetchClaim(serverURL, credential, code string) (*claimPreview, error) {
-	req, err := http.NewRequest(http.MethodGet,
-		strings.TrimRight(serverURL, "/")+"/api/v1/onboarding/claim?code="+url.QueryEscape(code), nil)
+	// In the body, never the URL: a URL is written to access logs, and the
+	// code should not be.
+	body, _ := json.Marshal(map[string]string{"code": code})
+	req, err := http.NewRequest(http.MethodPost,
+		strings.TrimRight(serverURL, "/")+"/api/v1/onboarding/claim", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
+	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+credential)
 	req.Header.Set("User-Agent", UserAgent())
 	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
