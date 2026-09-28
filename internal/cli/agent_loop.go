@@ -111,6 +111,9 @@ func surfaceNodeID(ctx context.Context, c *config.CLIConfig, s *config.SurfaceCo
 		Schedule:      s.Schedule,
 		RetentionDays: retention,
 		PublicKey:     pub,
+		// Where its credential comes from, so the remote server holds one
+		// only for a surface that fetches it (one origin per credential).
+		CredentialSource: credentialSourceOf(s),
 	}, &resp)
 	if err != nil || resp.NodeID == "" {
 		// The backup still runs. Its report will be refused, and the backup

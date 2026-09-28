@@ -57,6 +57,16 @@ type Node struct {
 	// token per host covers every surface on it.
 	ParentNodeID string `json:"parent_node_id,omitempty" yaml:"parent_node_id,omitempty"`
 
+	// CredentialSource is where a surface's own credential comes from, as its
+	// host's config says: "held" (the remote server holds it and the host
+	// fetches it), "host" (the host's config or environment has it), or
+	// empty (the surface needs none, or its agent is too old to say). A
+	// credential has one origin, and only that side may change it.
+	CredentialSource string `json:"credential_source,omitempty" yaml:"credential_source,omitempty"`
+	// CredentialHeld is whether the remote server holds a credential for
+	// this node now. Filled in when nodes are listed; never stored.
+	CredentialHeld bool `json:"credential_held,omitempty" yaml:"-"`
+
 	// BackupRequestedAt is a one-shot "back up now" from the console or API,
 	// cleared when the next snapshot for this node arrives. Never inferred
 	// from due-ness: see HeartbeatResponse.BackupRequestID.
@@ -184,6 +194,8 @@ type SurfaceRegisterRequest struct {
 	Schedule      string      `json:"schedule,omitempty"`
 	RetentionDays int         `json:"retention_days,omitempty"`
 	PublicKey     string      `json:"public_key,omitempty"`
+	// CredentialSource is "held", "host" or empty, as Node.CredentialSource.
+	CredentialSource string `json:"credential_source,omitempty"`
 }
 
 // SurfaceRegisterResponse names the node the surface reports as. The host's

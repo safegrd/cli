@@ -84,11 +84,61 @@ func runCredentialCommand(ctx context.Context, surfaceID, command string) (strin
 	return secret, nil
 }
 
-// surfaceEmailPassword resolves a mailbox password in this order:
+// localCredentialField names the credential a surface's config sets on the
+// host itself, or "" when it sets none.
+func localCredentialField(s *config.SurfaceConfig) string {
+	switch {
+	case s.CredentialCommand != "":
+		return "credential_command"
+	case s.DatabaseURL != "":
+		return "database_url"
+	case s.DatabaseURLEnv != "":
+		return "database_url_env"
+	case s.PasswordEnv != "":
+		return "password_env"
+	}
+	return ""
+}
+
+// credentialSourceOf is what the host tells the remote server about where a
+// surface's credential comes from: "held", "host", or "" for a surface that
+// needs none.
+func credentialSourceOf(s *config.SurfaceConfig) string {
+	if s.CredentialHeld {
+		return "held"
+	}
+	switch strings.ToLower(s.Type) {
+	case "postgres", "mysql", "mongodb", "email":
+		if localCredentialField(s) != "" {
+			return "host"
+		}
+	}
+	return ""
+}
+
+// heldConflict refuses a surface that says its credential is held and also
+// names one on the host. A credential has one origin: two that can each win
+// is how a host backs up something other than what the console shows.
+func heldConflict(s *config.SurfaceConfig) error {
+	if f := localCredentialField(s); s.CredentialHeld && f != "" {
+		return fmt.Errorf("surface %s: credential_held is set and so is %s. A credential has one origin: "+
+			"remove %s to use the one the remote server holds, or remove credential_held to keep it on this host", s.ID, f, f)
+	}
+	return nil
+}
+
+// surfaceEmailPassword resolves a mailbox password. A held surface uses only
+// the password the remote server holds. Otherwise, in this order:
 // credential_command, then password_env, then SAFEGRD_EMAIL_PASSWORD. A
 // command that is set and fails is the answer: it is never papered over by an
 // environment variable left behind from an older setup.
 func surfaceEmailPassword(ctx context.Context, s *config.SurfaceConfig) (string, error) {
+	if err := heldConflict(s); err != nil {
+		return "", err
+	}
+	if s.CredentialHeld {
+		return s.HeldSecret, nil
+	}
 	if s.CredentialCommand != "" {
 		return runCredentialCommand(ctx, s.ID, s.CredentialCommand)
 	}
@@ -97,25 +147,27 @@ func surfaceEmailPassword(ctx context.Context, s *config.SurfaceConfig) (string,
 			return v, nil
 		}
 	}
-	if s.HeldSecret != "" {
-		return s.HeldSecret, nil
-	}
 	return os.Getenv("SAFEGRD_EMAIL_PASSWORD"), nil
 }
 
-// resolveSurfaceDatabaseURL is the database a Postgres surface backs up:
+// resolveSurfaceDatabaseURL is the database a Postgres surface backs up. A
+// held surface uses only the URL the remote server holds. Otherwise:
 // database_url, database_url_env, then credential_command (whose output is
 // the whole URL), then the host's database_url.
 func resolveSurfaceDatabaseURL(ctx context.Context, c *config.CLIConfig, s *config.SurfaceConfig) (string, error) {
+	if err := heldConflict(s); err != nil {
+		return "", err
+	}
+	if s.CredentialHeld {
+		// Held means held: never the host's database_url behind it.
+		return s.HeldSecret, nil
+	}
 	url := s.DatabaseURL
 	if url == "" && s.DatabaseURLEnv != "" {
 		url = os.Getenv(s.DatabaseURLEnv)
 	}
 	if url == "" && s.CredentialCommand != "" {
 		return runCredentialCommand(ctx, s.ID, s.CredentialCommand)
-	}
-	if url == "" && s.HeldSecret != "" {
-		return s.HeldSecret, nil
 	}
 	if url == "" {
 		url = c.DatabaseURL

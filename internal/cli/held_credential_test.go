@@ -26,23 +26,29 @@ func TestAClaimedSurfaceWithAHeldCredentialIsWrittenAsHeld(t *testing.T) {
 	}
 }
 
-// Anything set on the host wins over the held credential, and the held one is
-// used only when nothing local provides one.
-func TestAHeldSurfaceCredentialIsUsedAfterEveryLocalSource(t *testing.T) {
+// A held credential is used as held, and a surface that also names one on the
+// host is refused: a credential has one origin.
+func TestAHeldSurfaceCredentialHasOneOrigin(t *testing.T) {
 	ctx := context.Background()
-	c := &config.CLIConfig{}
+	c := &config.CLIConfig{DatabaseURL: "postgres://host-default"}
 	s := &config.SurfaceConfig{ID: "app-db", Type: "postgres", CredentialHeld: true, HeldSecret: "postgres://held"}
-	if got, _ := resolveSurfaceDatabaseURL(ctx, c, s); got != "postgres://held" {
-		t.Errorf("with nothing local, the database URL resolved to %q", got)
+	if got, err := resolveSurfaceDatabaseURL(ctx, c, s); err != nil || got != "postgres://held" {
+		t.Errorf("a held database URL resolved to %q (%v), not the held one", got, err)
 	}
-	t.Setenv("APP_DATABASE_URL", "postgres://local")
+	if credentialSourceOf(s) != "held" {
+		t.Errorf("a held surface reports its source as %q", credentialSourceOf(s))
+	}
 	s.DatabaseURLEnv = "APP_DATABASE_URL"
-	if got, _ := resolveSurfaceDatabaseURL(ctx, c, s); got != "postgres://local" {
-		t.Errorf("a variable set on the host lost to the held credential: %q", got)
+	if _, err := resolveSurfaceDatabaseURL(ctx, c, s); err == nil || !strings.Contains(err.Error(), "one origin") {
+		t.Errorf("a surface both held and named on the host was not refused: %v", err)
 	}
 	m := &config.SurfaceConfig{ID: "support", Type: "email", CredentialHeld: true, HeldSecret: "held-pass"}
 	if got, _ := surfaceEmailPassword(ctx, m); got != "held-pass" {
-		t.Errorf("with nothing local, the mailbox password resolved to %q", got)
+		t.Errorf("a held mailbox password resolved to %q", got)
+	}
+	host := &config.SurfaceConfig{ID: "db", Type: "mysql", DatabaseURLEnv: "DB_URL"}
+	if credentialSourceOf(host) != "host" || credentialSourceOf(&config.SurfaceConfig{Type: "files"}) != "" {
+		t.Error("the credential source is not reported as the config says")
 	}
 }
 
