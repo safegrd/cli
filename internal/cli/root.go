@@ -90,6 +90,7 @@ func init() {
 	stampFromBuildInfo()
 	cobra.OnInitialize(initConfig)
 	RootCmd.PersistentPreRunE = func(cmd *cobra.Command, _ []string) error {
+		runningCommand = cmd.Name()
 		return requireUsableConfig(cmd)
 	}
 	RootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is ~/.safegrd/config.yaml)")

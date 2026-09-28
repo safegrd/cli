@@ -34,6 +34,10 @@ type nodeCredentialsResponse struct {
 	Notice    string `json:"notice"`
 }
 
+// runningCommand is the name of the command this process is running,
+// recorded by the root command before it runs.
+var runningCommand string
+
 // fetchNodeCredentials asks the remote server for the secrets this node is
 // entitled to at run time.
 //
@@ -45,8 +49,15 @@ func fetchNodeCredentials(ctx context.Context, serverURL, nodeID, token string) 
 	if err := refuseInsecureServerURL(serverURL); err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, "GET",
-		fmt.Sprintf("%s/api/v1/nodes/%s/credentials", strings.TrimRight(serverURL, "/"), nodeID), nil)
+	// The command asking is named, so the remote server's record of who took
+	// a credential can tell a `doctor` check from a backup. It is still a
+	// release either way: doctor really does fetch the secret to prove it
+	// resolves.
+	u := fmt.Sprintf("%s/api/v1/nodes/%s/credentials", strings.TrimRight(serverURL, "/"), nodeID)
+	if runningCommand != "" {
+		u += "?purpose=" + url.QueryEscape(runningCommand)
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
 	if err != nil {
 		return nil, err
 	}
