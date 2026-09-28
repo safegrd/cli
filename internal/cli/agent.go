@@ -456,6 +456,7 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 			} else {
 				fmt.Printf("⏰ Surface %s (%s) is due for backup.\n", surface.ID, surface.Type)
 			}
+			fetchHeldSurfaceSecret(ctx, c, nodeID, &surface)
 			if err := backupSurfaceNow(ctx, c, &surface, sState, nodeID, lockDir, statePath, agentState); err != nil {
 				hasErrors = true
 			}
@@ -468,6 +469,11 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 		if hb != nil {
 			if hb.TriggerFireDrill && hb.DrillSnapshotID != "" {
 				s := surface
+				// A sandbox drill checks the sandbox is not the surface's own
+				// database, which needs the surface's credential.
+				if s.Drill != nil {
+					fetchHeldSurfaceSecret(ctx, c, nodeID, &s)
+				}
 				d := pendingDrill{surface: &s, state: sState, nodeID: nodeID, snapshotID: hb.DrillSnapshotID}
 				if hb.DrillRequestID != "" && hb.DrillRequestID != sState.LastDrillRequestID {
 					d.requestID = hb.DrillRequestID

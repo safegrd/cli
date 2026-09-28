@@ -21,16 +21,17 @@ type claimSurface struct {
 	Name        string `json:"name"`
 	SurfaceType string `json:"surface_type"`
 	Config      struct {
-		Schedule      string   `json:"schedule"`
-		RetentionDays int      `json:"retention_days"`
-		CredentialEnv string   `json:"credential_env"`
-		Path          string   `json:"path"`
-		Roots         []string `json:"roots"`
-		Excludes      []string `json:"excludes"`
-		Host          string   `json:"host"`
-		Port          int      `json:"port"`
-		Username      string   `json:"username"`
-		Folders       []string `json:"folders"`
+		Schedule       string   `json:"schedule"`
+		RetentionDays  int      `json:"retention_days"`
+		CredentialEnv  string   `json:"credential_env"`
+		CredentialHeld bool     `json:"credential_held"`
+		Path           string   `json:"path"`
+		Roots          []string `json:"roots"`
+		Excludes       []string `json:"excludes"`
+		Host           string   `json:"host"`
+		Port           int      `json:"port"`
+		Username       string   `json:"username"`
+		Folders        []string `json:"folders"`
 	} `json:"config"`
 }
 
@@ -93,6 +94,7 @@ func surfaceConfigFor(s claimSurface) config.SurfaceConfig {
 	switch s.SurfaceType {
 	case "postgres", "mysql", "mongodb":
 		sc.DatabaseURLEnv = s.Config.CredentialEnv
+		sc.CredentialHeld = s.Config.CredentialHeld
 	case "sqlite":
 		sc.DatabaseURL = "sqlite://" + s.Config.Path
 	case "files":
@@ -100,6 +102,7 @@ func surfaceConfigFor(s claimSurface) config.SurfaceConfig {
 	case "email":
 		sc.Host, sc.Port, sc.Username, sc.Folders = s.Config.Host, s.Config.Port, s.Config.Username, s.Config.Folders
 		sc.PasswordEnv = s.Config.CredentialEnv
+		sc.CredentialHeld = s.Config.CredentialHeld
 	}
 	return sc
 }
@@ -123,6 +126,8 @@ func addClaimSurfaces(c *config.CLIConfig, surfaces []claimSurface) {
 		}
 		c.Surfaces = append(c.Surfaces, surfaceConfigFor(s))
 		switch {
+		case s.Config.CredentialHeld:
+			fmt.Printf("   %-20s %s: the remote server holds its credential; the agent fetches it when it backs up\n", s.Key, s.SurfaceType)
 		case s.Config.CredentialEnv != "":
 			fmt.Printf("   %-20s %s: set %s on this host (the credential never leaves it)\n", s.Key, s.SurfaceType, s.Config.CredentialEnv)
 		default:

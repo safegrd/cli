@@ -212,7 +212,7 @@ func runValidationChecks(path string, c *config.CLIConfig) []CheckResult {
 		for _, s := range c.Surfaces {
 			switch strings.ToLower(s.Type) {
 			case "postgres", "mysql", "mongodb", "sqlite":
-				if s.DatabaseURL == "" && s.DatabaseURLEnv == "" && s.CredentialCommand == "" && c.DatabaseURL == "" {
+				if s.DatabaseURL == "" && s.DatabaseURLEnv == "" && s.CredentialCommand == "" && !s.CredentialHeld && c.DatabaseURL == "" {
 					results = append(results, CheckResult{
 						Name:    fmt.Sprintf("Surface %s (%s)", s.ID, strings.ToLower(s.Type)),
 						Status:  "FAIL",
@@ -565,9 +565,29 @@ func unusedAlertBlock(c *config.CLIConfig) string {
 // daemon. Only doctor runs these: `config validate` stays free of side effects.
 func surfaceCredentialChecks(c *config.CLIConfig) []CheckResult {
 	var results []CheckResult
+	// A credential the remote server holds is fetched for the surface's own
+	// node, which the agent learned when it registered the surface.
+	var agentState *AgentState
 	for i := range c.Surfaces {
 		s := &c.Surfaces[i]
 		name := fmt.Sprintf("Surface %s credentials", s.ID)
+		if s.CredentialHeld {
+			if agentState == nil {
+				agentState = loadAgentState(filepath.Join(resolveStateDir("", c), "agent_state.json"))
+			}
+			var nodeID string
+			if st, ok := agentState.Surfaces[s.ID]; ok && st != nil {
+				nodeID = st.ServerNodeID
+			}
+			if nodeID == "" {
+				results = append(results, CheckResult{Name: name, Status: "WARN",
+					Message: "held by the remote server; the agent fetches it once the surface is registered (run 'safegrd agent run --once')"})
+				continue
+			}
+			fctx, fcancel := context.WithTimeout(context.Background(), credentialCommandTimeout)
+			fetchHeldSurfaceSecret(fctx, c, nodeID, s)
+			fcancel()
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), credentialCommandTimeout)
 		var secret string
 		var err error
@@ -590,6 +610,8 @@ func surfaceCredentialChecks(c *config.CLIConfig) []CheckResult {
 			source := "config"
 			if s.CredentialCommand != "" && (s.Type == "email" || (s.DatabaseURL == "" && s.DatabaseURLEnv == "")) {
 				source = "credential_command"
+			} else if s.HeldSecret != "" && secret == s.HeldSecret {
+				source = "the remote server, which holds it"
 			}
 			results = append(results, CheckResult{Name: name, Status: "PASS", Message: "resolve (from " + source + ")"})
 		}

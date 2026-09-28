@@ -141,6 +141,14 @@ type SurfaceConfig struct {
 	CredentialCommand string   `yaml:"credential_command,omitempty" json:"credential_command,omitempty"`
 	PasswordEnv       string   `yaml:"password_env,omitempty" json:"password_env,omitempty"`
 
+	// CredentialHeld says the remote server holds this surface's credential
+	// (its database URL, or its mailbox password), and the agent fetches it
+	// when the surface backs up. Anything set locally still wins.
+	CredentialHeld bool `yaml:"credential_held,omitempty" json:"credential_held,omitempty"`
+	// HeldSecret is that credential once fetched. Memory only: the tags keep
+	// it out of the file, so withdrawing it on the server withdraws it here.
+	HeldSecret string `yaml:"-" json:"-"`
+
 	// Storage & Encryption overrides
 	Storage    *StorageConfig    `yaml:"storage,omitempty" json:"storage,omitempty"`
 	Encryption *EncryptionConfig `yaml:"encryption,omitempty" json:"encryption,omitempty"`

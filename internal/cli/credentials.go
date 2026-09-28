@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -26,6 +27,7 @@ type nodeCredentialsResponse struct {
 	NodeID      string `json:"node_id"`
 	ProjectID   string `json:"project_id"`
 	DatabaseURL string `json:"database_url"`
+	Password    string `json:"password"`
 	Sink        *struct {
 		AccessKeyID     string `json:"access_key_id"`
 		SecretAccessKey string `json:"secret_access_key"`
@@ -259,4 +261,39 @@ func resolveManagedIdentity(ctx context.Context, cfg *config.CLIConfig, verbose 
 		}
 	}
 	return res.Identity
+}
+
+// fetchHeldSurfaceSecret fills in the credential the remote server holds for
+// a surface, when its config says so and nothing local provides one. It asks
+// as the host, for the surface's own node: the server releases a surface's
+// credential to the host that registered it and to nothing else. A failure is
+// said out loud and the backup goes on to fail on the missing credential,
+// rather than on a guess.
+func fetchHeldSurfaceSecret(ctx context.Context, c *config.CLIConfig, nodeID string, s *config.SurfaceConfig) {
+	if !s.CredentialHeld || s.HeldSecret != "" || s.CredentialCommand != "" || s.DatabaseURL != "" {
+		return
+	}
+	if s.DatabaseURLEnv != "" && os.Getenv(s.DatabaseURLEnv) != "" {
+		return
+	}
+	if s.PasswordEnv != "" && os.Getenv(s.PasswordEnv) != "" {
+		return
+	}
+	if c.ServerURL == "" || c.ServerToken == "" || nodeID == "" || nodeID == s.ID {
+		fmt.Fprintf(os.Stderr, "⚠️  Surface %s: its credential is held by the remote server, but this surface is not registered with it yet.\n", s.ID)
+		return
+	}
+	creds, err := fetchNodeCredentials(ctx, c.ServerURL, nodeID, c.ServerToken)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "⚠️  Surface %s: could not fetch the credential the remote server holds for it: %v\n", s.ID, err)
+		return
+	}
+	if strings.ToLower(s.Type) == "email" {
+		s.HeldSecret = creds.Password
+	} else {
+		s.HeldSecret = creds.DatabaseURL
+	}
+	if s.HeldSecret == "" {
+		fmt.Fprintf(os.Stderr, "⚠️  Surface %s: the remote server holds no credential for it. Set one in the console, or name a variable on this host.\n", s.ID)
+	}
 }

@@ -97,6 +97,9 @@ func surfaceEmailPassword(ctx context.Context, s *config.SurfaceConfig) (string,
 			return v, nil
 		}
 	}
+	if s.HeldSecret != "" {
+		return s.HeldSecret, nil
+	}
 	return os.Getenv("SAFEGRD_EMAIL_PASSWORD"), nil
 }
 
@@ -110,6 +113,9 @@ func resolveSurfaceDatabaseURL(ctx context.Context, c *config.CLIConfig, s *conf
 	}
 	if url == "" && s.CredentialCommand != "" {
 		return runCredentialCommand(ctx, s.ID, s.CredentialCommand)
+	}
+	if url == "" && s.HeldSecret != "" {
+		return s.HeldSecret, nil
 	}
 	if url == "" {
 		url = c.DatabaseURL
