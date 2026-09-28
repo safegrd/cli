@@ -17,13 +17,15 @@ import (
 
 func newEnrollCmd() *cobra.Command {
 	var (
-		token      string
-		apiKey     string
-		nodeName   string
-		projectID  string
-		orgID      string
-		nodeIDFlag string
-		keyCustody string
+		token             string
+		apiKey            string
+		nodeName          string
+		projectID         string
+		orgID             string
+		nodeIDFlag        string
+		keyCustody        string
+		storageFlag       string
+		allowUnconfigured bool
 	)
 
 	cmd := &cobra.Command{
@@ -64,9 +66,25 @@ With neither, it uses the login saved by 'safegrd login'.`,
 			// cfg.NodeID out of a config LoadCLIConfig had invented from
 			// defaults, which registered a node with an empty identity and no
 			// keypair: enrolled, and unable to encrypt anything.
+			if storageFlag != "" && storageFlag != string(config.StorageTypeHosted) && storageFlag != string(config.StorageTypeLocal) {
+				return fmt.Errorf("--storage %q: enroll can choose hosted or local; configure a bucket in the console "+
+					"or with 'safegrd init --storage s3'. Nothing was changed", storageFlag)
+			}
+
 			created, adopted, err := ensureLocalSetup(nodeName)
 			if err != nil {
 				return err
+			}
+			switch storageFlag {
+			case string(config.StorageTypeHosted):
+				// The lease supplies the bucket, the prefix, the credential
+				// and the plan's retention; nothing about it belongs in the file.
+				cfg.Storage = config.StorageConfig{Type: config.StorageTypeHosted, WORMMode: config.WORMModeCompliance}
+			case string(config.StorageTypeLocal):
+				// A directory on this host, chosen: for a trial or an
+				// air-gapped host. It keeps the path the local setup pinned
+				// next to the config.
+				cfg.Storage.Type = config.StorageTypeLocal
 			}
 			if created {
 				fmt.Printf("📁 No local setup found, so it was created before enrolling.\n\n")
@@ -216,9 +234,14 @@ With neither, it uses the login saved by 'safegrd login'.`,
 					DatabaseName:  "postgres",
 					StorageBucket: cfg.Storage.Bucket,
 					RetentionDays: cfg.Storage.RetentionDays,
-					OS:            runtime.GOOS,
-					Arch:          runtime.GOARCH,
-					CLIVersion:    Version,
+					// Where this host's own config sends backups, so the
+					// remote server can refuse a host that has nowhere to
+					// send them rather than enroll it to back up nothing.
+					LocalStorage:      localStorageKind(cfg.Storage, created, storageFlag != ""),
+					AllowUnconfigured: allowUnconfigured,
+					OS:                runtime.GOOS,
+					Arch:              runtime.GOARCH,
+					CLIVersion:        Version,
 
 					// The recipient is public and always sent: the remote
 					// server needs it to record which key this node uses and to
@@ -329,6 +352,12 @@ With neither, it uses the login saved by 'safegrd login'.`,
 	cmd.Flags().StringVar(&orgID, "org", "",
 		"Organization to enrol this node into. Only needed when the credential can see more than one: "+
 			"with a single organization it is resolved automatically.")
+	cmd.Flags().StringVar(&storageFlag, "storage", "",
+		"Where this host's backups go, when the project has no bucket: 'hosted' uses SafeGrd's hosted "+
+			"storage, where your plan includes it; 'local' keeps them in a directory on this host")
+	cmd.Flags().BoolVar(&allowUnconfigured, "allow-unconfigured", false,
+		"Enroll even though neither this host's config nor its project says where backups go. "+
+			"Without it enrollment is refused, because the host would back up nothing until storage is set")
 	cmd.Flags().StringVar(&keyCustody, "key-custody", "",
 		"Who holds the encryption key when this command generates one: "+
 			"'safegrd' (default) sends it to the remote server, so losing this host does not lose the backups, "+
@@ -428,4 +457,21 @@ func resolveEnrollmentOrg(serverURL, credential string) (string, error) {
 		return "", fmt.Errorf("this credential can see %d organizations, so which one this node "+
 			"belongs to is not ours to choose. Re-run with --org <id>:%s", len(orgs), lines.String())
 	}
+}
+
+// localStorageKind says where a host's own config sends its backups, for the
+// remote server's check that an enrolling host has somewhere to back up to.
+// The default local directory counts only when an operator chose it: when
+// this enrollment wrote the config itself, those settings are placeholders,
+// not a decision, and the answer is "none".
+func localStorageKind(st config.StorageConfig, createdByEnroll, chosenByFlag bool) string {
+	switch {
+	case st.Type == config.StorageTypeHosted:
+		return "hosted"
+	case st.Type == config.StorageTypeS3 && st.Bucket != "":
+		return "s3"
+	case st.Type == config.StorageTypeLocal && (!createdByEnroll || chosenByFlag):
+		return "local"
+	}
+	return "none"
 }

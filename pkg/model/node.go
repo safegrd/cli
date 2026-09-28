@@ -136,10 +136,22 @@ type NodeRegisterRequest struct {
 	// backups become ciphertext nobody can read.
 	ManagedIdentity string `json:"managed_identity,omitempty"`
 	Schedule        string `json:"schedule"`
-	RetentionDays   int    `json:"retention_days"`
-	OS              string `json:"os,omitempty"`
-	Arch            string `json:"arch,omitempty"`
-	CLIVersion      string `json:"cli_version,omitempty"`
+
+	// LocalStorage says where this host's own config sends its backups: "s3",
+	// "hosted" or "local" when the operator configured one, "none" when the
+	// only storage settings are the defaults enrollment itself just wrote.
+	// With "none" the remote server refuses the enrollment unless the project
+	// has a bucket, because a host with nowhere to send its backups would
+	// look enrolled and back up nothing. Empty (a CLI that predates this
+	// field) is never refused on this account.
+	LocalStorage string `json:"local_storage,omitempty"`
+	// AllowUnconfigured enrolls a host with nowhere to send its backups yet,
+	// on purpose: storage is configured after enrollment.
+	AllowUnconfigured bool   `json:"allow_unconfigured,omitempty"`
+	RetentionDays     int    `json:"retention_days"`
+	OS                string `json:"os,omitempty"`
+	Arch              string `json:"arch,omitempty"`
+	CLIVersion        string `json:"cli_version,omitempty"`
 }
 
 // NodeRegisterResponse returns API credentials and registration confirmation.

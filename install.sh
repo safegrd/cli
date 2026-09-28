@@ -23,6 +23,7 @@
 #   SAFEGRD_INSTALL_DIR  where to put the binary (default: /usr/local/bin, or ~/.local/bin without sudo)
 #   SAFEGRD_NO_SETUP=1   install only; do not offer to log in and enroll
 #   SAFEGRD_PROJECT      project ID or slug to enroll this host into
+#   SAFEGRD_STORAGE      where backups go when the project has no bucket: 'hosted' or 'local'
 #   SAFEGRD_NODE_NAME    name this host is shown under
 #   SAFEGRD_KEY_CUSTODY  'safegrd' or 'local'; answers the key question in advance
 #   SAFEGRD_SERVER_URL   remote server to log in and enroll with (default: https://safegrd.dev)
@@ -385,6 +386,9 @@ if [ -n "${SAFEGRD_PROJECT:-}" ]; then
 fi
 if [ -n "${SAFEGRD_NODE_NAME:-}" ]; then
   set -- "$@" --node-name "$SAFEGRD_NODE_NAME"
+fi
+if [ -n "${SAFEGRD_STORAGE:-}" ]; then
+  set -- "$@" --storage "$SAFEGRD_STORAGE"
 fi
 
 printf "\n"
