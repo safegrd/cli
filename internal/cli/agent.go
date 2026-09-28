@@ -66,6 +66,13 @@ type SurfaceState struct {
 	LastDailySlot   string `json:"last_daily_slot,omitempty"`
 	LastWeeklySlot  string `json:"last_weekly_slot,omitempty"`
 	LastMonthlySlot string `json:"last_monthly_slot,omitempty"`
+
+	// ConsoleSchedule and ConsoleRetentionDays are what the console last set
+	// for this surface, in place of the config's. Kept here so a remote
+	// server that cannot be reached for a while does not quietly put the
+	// surface back on its config's schedule.
+	ConsoleSchedule      string `json:"console_schedule,omitempty"`
+	ConsoleRetentionDays int    `json:"console_retention_days,omitempty"`
 }
 
 // AgentState persists state across daemon ticks.
@@ -330,6 +337,52 @@ func effectiveSchedule(c *config.CLIConfig, s config.SurfaceConfig) string {
 	return s.Schedule
 }
 
+// applyConsoleSettings puts the console's schedule and retention, as last
+// heard, over the config's. configured is the surface as its config has it.
+func applyConsoleSettings(s, configured *config.SurfaceConfig, st *SurfaceState) {
+	if st.ConsoleSchedule != "" {
+		if _, err := model.ScheduleInterval(st.ConsoleSchedule); err == nil {
+			s.Schedule = st.ConsoleSchedule
+		} else {
+			s.Schedule = configured.Schedule
+		}
+	}
+	if st.ConsoleRetentionDays > 0 {
+		s.RetentionDays = st.ConsoleRetentionDays
+	}
+}
+
+// noteConsoleSettings records what the remote server's heartbeat says the
+// console chose, and says so once when it changes. A schedule this agent
+// cannot parse is refused out loud and the config's is kept.
+func noteConsoleSettings(st *SurfaceState, configured *config.SurfaceConfig, hb *model.HeartbeatResponse) {
+	if hb.Schedule != st.ConsoleSchedule {
+		switch {
+		case hb.Schedule == "":
+			fmt.Printf("🛠  Surface %s: the schedule set in the console was cleared; back to the config's %s.\n",
+				st.SurfaceID, configured.Schedule)
+		default:
+			if _, err := model.ScheduleInterval(hb.Schedule); err != nil {
+				fmt.Fprintf(os.Stderr, "⚠️  Surface %s: the console set the schedule %q, which this agent cannot run (%v). "+
+					"Keeping the config's %s; update safegrd.\n", st.SurfaceID, hb.Schedule, err, configured.Schedule)
+			} else {
+				fmt.Printf("🛠  Surface %s: the console set its schedule to %s, in place of the config's %s.\n",
+					st.SurfaceID, hb.Schedule, configured.Schedule)
+			}
+		}
+		st.ConsoleSchedule = hb.Schedule
+	}
+	if hb.RetentionDays != st.ConsoleRetentionDays {
+		if hb.RetentionDays == 0 {
+			fmt.Printf("🛠  Surface %s: the retention set in the console was cleared; new backups follow the config again.\n", st.SurfaceID)
+		} else {
+			fmt.Printf("🛠  Surface %s: the console set its retention to %d days. New backups are locked that long; "+
+				"backups already taken keep the lock they were written with.\n", st.SurfaceID, hb.RetentionDays)
+		}
+		st.ConsoleRetentionDays = hb.RetentionDays
+	}
+}
+
 // warnAboutSchedules says out loud, once per agent start, every surface whose
 // schedule the agent will not run as written. The agent still protects the
 // surface (at the floor, or daily) because refusing over a typo would leave
@@ -436,7 +489,17 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 
 		surface.Schedule = effectiveSchedule(c, surface)
 		nodeID := surfaceNodeID(ctx, c, &surface, sState, registered)
-		hb := sendHeartbeat(ctx, c, nodeID, sState, tick)
+		// The console's settings as last heard, so the heartbeat reports
+		// what this surface actually runs on; then whatever this heartbeat
+		// says, which takes effect on this same tick.
+		configured := surface
+		applyConsoleSettings(&surface, &configured, sState)
+		hb := sendHeartbeat(ctx, c, nodeID, sState, tick, &surface)
+		if hb != nil {
+			noteConsoleSettings(sState, &configured, hb)
+			surface = configured
+			applyConsoleSettings(&surface, &configured, sState)
+		}
 
 		if clockWentBackwards(sState, now) {
 			fmt.Fprintf(os.Stderr, "⚠️  Surface %s: this host's clock is behind the last backup it recorded (%s); "+
@@ -913,6 +976,9 @@ func newAgentStatusCmd() *cobra.Command {
 				// schedule as written (clamped to the floor, or unreadable
 				// and fallback to daily).
 				ScheduleProblem string `json:"schedule_problem,omitempty"`
+				// ScheduleSource is "console" when the schedule was set there
+				// in place of the config's.
+				ScheduleSource string `json:"schedule_source,omitempty"`
 			}
 
 			views := make([]SurfaceStatusView, 0, len(cfg.Surfaces))
@@ -949,13 +1015,21 @@ func newAgentStatusCmd() *cobra.Command {
 				}
 
 				sched := effectiveSchedule(cfg, s)
-				schedProblem := ""
+				schedProblem, schedSource := "", ""
 				if _, err := model.ScheduleInterval(sched); err != nil {
 					schedProblem = err.Error()
+				}
+				// A schedule set in the console is the one the agent runs,
+				// so it is the one shown, with where it came from.
+				if ok && st != nil && st.ConsoleSchedule != "" {
+					if _, err := model.ScheduleInterval(st.ConsoleSchedule); err == nil {
+						sched, schedProblem, schedSource = st.ConsoleSchedule, "", "console"
+					}
 				}
 
 				views = append(views, SurfaceStatusView{
 					ScheduleProblem: schedProblem,
+					ScheduleSource:  schedSource,
 					ID:              s.ID,
 					Type:            s.Type,
 					Schedule:        sched,
@@ -992,8 +1066,12 @@ func newAgentStatusCmd() *cobra.Command {
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
 			fmt.Fprintln(w, "SURFACE ID\tTYPE\tSCHEDULE\tLAST SUCCESS\tNEXT DUE\tSTATUS")
 			for _, v := range views {
+				sched := v.Schedule
+				if v.ScheduleSource == "console" {
+					sched += " (console)"
+				}
 				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
-					v.ID, v.Type, v.Schedule, v.LastSuccess, v.NextDue, v.Status)
+					v.ID, v.Type, sched, v.LastSuccess, v.NextDue, v.Status)
 			}
 			w.Flush()
 			return nil

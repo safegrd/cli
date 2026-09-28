@@ -67,6 +67,16 @@ type Node struct {
 	// this node now. Filled in when nodes are listed; never stored.
 	CredentialHeld bool `json:"credential_held,omitempty" yaml:"-"`
 
+	// Set from the console, and never by a host registering its surfaces.
+	// Schedule and WORMRetentionDays are what the host's agent last said it
+	// runs; ConsoleSchedule and ConsoleRetentionDays are what the console
+	// asked for, sent to the agent on every heartbeat until cleared. Empty or
+	// zero means the host's own config decides. NamedInConsole keeps a name
+	// given in the console from being replaced by the host's config.
+	ConsoleSchedule      string `json:"console_schedule,omitempty" yaml:"console_schedule,omitempty"`
+	ConsoleRetentionDays int    `json:"console_retention_days,omitempty" yaml:"console_retention_days,omitempty"`
+	NamedInConsole       bool   `json:"named_in_console,omitempty" yaml:"named_in_console,omitempty"`
+
 	// BackupRequestedAt is a one-shot "back up now" from the console or API,
 	// cleared when the next snapshot for this node arrives. Never inferred
 	// from due-ness: see HeartbeatResponse.BackupRequestID.
@@ -237,6 +247,11 @@ type HeartbeatRequest struct {
 	ConsecutiveFailures int    `json:"consecutive_failures,omitempty"`
 	LastError           string `json:"last_error,omitempty"`
 	DrillStatus         string `json:"drill_status,omitempty"`
+	// Schedule and RetentionDays are what the agent runs this surface on,
+	// after any setting from the console, so the remote server measures
+	// "overdue" against the schedule actually in force.
+	Schedule      string `json:"schedule,omitempty"`
+	RetentionDays int    `json:"retention_days,omitempty"`
 }
 
 // HeartbeatResponse instructs the node on next actions.
@@ -270,6 +285,12 @@ type HeartbeatResponse struct {
 	// DrillRequestID names a one-shot "drill now". The agent runs each id once,
 	// even inside its usual spacing between drills: someone asked for it.
 	DrillRequestID string `json:"drill_request_id,omitempty"`
+
+	// Schedule and RetentionDays, when set, were chosen in the console and
+	// replace the host's config for this surface. Absent means the config
+	// decides.
+	Schedule      string `json:"schedule,omitempty"`
+	RetentionDays int    `json:"retention_days,omitempty"`
 
 	// LatestCLIVersion and UpgradeAvailable inform the client when a newer
 	// version of SafeGrd CLI is released.

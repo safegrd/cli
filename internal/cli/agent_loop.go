@@ -142,7 +142,7 @@ func surfaceRef(s *config.SurfaceConfig) string {
 
 // sendHeartbeat reports one surface and returns what the remote server asks
 // of it, or nil when it could not be asked.
-func sendHeartbeat(ctx context.Context, c *config.CLIConfig, nodeID string, st *SurfaceState, tick time.Duration) *model.HeartbeatResponse {
+func sendHeartbeat(ctx context.Context, c *config.CLIConfig, nodeID string, st *SurfaceState, tick time.Duration, s *config.SurfaceConfig) *model.HeartbeatResponse {
 	if !canReport(c) {
 		return nil
 	}
@@ -159,6 +159,8 @@ func sendHeartbeat(ctx context.Context, c *config.CLIConfig, nodeID string, st *
 		ConsecutiveFailures: st.ConsecutiveFailures,
 		LastError:           st.LastError,
 		DrillStatus:         st.DrillStatus,
+		Schedule:            s.Schedule,
+		RetentionDays:       s.RetentionDays,
 	}, &resp)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "⚠️  Surface %s: heartbeat failed (%v). Backups carry on; the console will show this host as silent if it persists.\n", st.SurfaceID, err)
