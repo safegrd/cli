@@ -46,10 +46,16 @@ func TestARejectedAttestationIsReported(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	var reason string
 	out := captureStderr(t, func() {
-		sendMetadataToServer(context.Background(), srv.URL, "sg_tok_stale",
+		reason = sendMetadataToServer(context.Background(), srv.URL, "sg_tok_stale",
 			&model.SnapshotMetadata{SnapshotID: "snap-1", NodeID: "node-1"}, true)
 	})
+	// The agent carries this in its last error, which is how a host running
+	// as a service tells the console its backup was never recorded.
+	if !strings.Contains(reason, "403") || !strings.Contains(reason, "node token does not match node_id") {
+		t.Errorf("the reason returned for the agent is %q", reason)
+	}
 
 	if !strings.Contains(out, "NOT RECORDED") {
 		t.Fatalf("a 403 from the remote server was not reported at all; output was %q", out)
@@ -105,12 +111,36 @@ func TestASuccessfulAttestationWarnsAboutNothing(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	var reason string
 	out := captureStderr(t, func() {
-		sendMetadataToServer(context.Background(), srv.URL, "sg_tok_fine",
+		reason = sendMetadataToServer(context.Background(), srv.URL, "sg_tok_fine",
 			&model.SnapshotMetadata{SnapshotID: "snap-4", NodeID: "node-1"}, true)
 	})
-	if strings.Contains(out, "NOT RECORDED") {
-		t.Errorf("a successful report produced a failure warning: %q", out)
+	if strings.Contains(out, "NOT RECORDED") || strings.Contains(out, "OUTSIDE") || reason != "" {
+		t.Errorf("a successful report produced a warning: %q, reason %q", out, reason)
+	}
+}
+
+// A report the remote server records but marks as outside the project's
+// storage is said on the host: the console shows the project's storage, and
+// this backup is somewhere else.
+func TestABackupOutsideTheProjectsStorageIsSaid(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"snapshot_id":"snap-5","outside_project_storage":true}`))
+	}))
+	defer srv.Close()
+
+	meta := &model.SnapshotMetadata{SnapshotID: "snap-5", NodeID: "node-1", StorageURI: "file:///var/backups/snap-5"}
+	var reason string
+	out := captureStderr(t, func() {
+		reason = sendMetadataToServer(context.Background(), srv.URL, "sg_tok_fine", meta, false)
+	})
+	if !strings.Contains(out, "OUTSIDE THE PROJECT'S STORAGE") || !strings.Contains(out, "file:///var/backups/snap-5") {
+		t.Errorf("a backup outside the project's storage was not said: %q", out)
+	}
+	if reason != "" || !meta.OutsideProjectStorage {
+		t.Errorf("recorded, so no reason (got %q), and the mark is kept on the metadata (got %v)", reason, meta.OutsideProjectStorage)
 	}
 }
 

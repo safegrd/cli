@@ -35,6 +35,11 @@ type SurfaceState struct {
 	ConsecutiveFailures int       `json:"consecutive_failures"`
 	NextDue             time.Time `json:"next_due,omitempty"`
 	LastError           string    `json:"last_error,omitempty"`
+	// notRecorded is why the remote server does not have the last backup's
+	// record, for this run only. A backup that succeeded but was never
+	// recorded is still reported as an error, because the console shows no
+	// backup for it.
+	notRecorded string
 
 	// The remote server's side. ServerNodeID is the child node
 	// this surface reports as. LastBackupRequestID is the last console
@@ -544,6 +549,7 @@ func backupSurfaceNow(ctx context.Context, c *config.CLIConfig, surface *config.
 		}
 	}
 	if backupErr == nil {
+		sState.notRecorded = ""
 		meta, plan, backupErr = runSurfaceBackup(ctx, c, surface, nodeID, sState)
 	}
 	// post_backup runs after every attempt, so whatever pre_backup paused is
@@ -576,6 +582,9 @@ func backupSurfaceNow(ctx context.Context, c *config.CLIConfig, surface *config.
 		// since it may have left the application paused.
 		if postErr != nil {
 			sState.LastError = "post_backup: " + postErr.Error()
+		}
+		if sState.notRecorded != "" {
+			sState.LastError = "not recorded: " + sState.notRecorded
 		}
 		sState.LastSuccess = time.Now().UTC()
 		if meta != nil {
@@ -704,7 +713,7 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 
 		warnIfManifestFailed(storageProvider.UploadMetadata(ctx, snapshotID, meta), snapshotID)
 		if hostIsEnrolled(c) {
-			sendMetadataToServer(ctx, c.ServerURL, c.ServerToken, meta, false)
+			st.notRecorded = sendMetadataToServer(ctx, c.ServerURL, c.ServerToken, meta, false)
 		}
 		return meta, plan, nil
 
@@ -785,7 +794,7 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 
 		warnIfManifestFailed(storageProvider.UploadMetadata(ctx, snapshotID, meta), snapshotID)
 		if hostIsEnrolled(c) {
-			sendMetadataToServer(ctx, c.ServerURL, c.ServerToken, meta, false)
+			st.notRecorded = sendMetadataToServer(ctx, c.ServerURL, c.ServerToken, meta, false)
 		}
 		return meta, plan, nil
 
@@ -865,7 +874,7 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 
 		warnIfManifestFailed(storageProvider.UploadMetadata(ctx, snapshotID, dumpMeta), snapshotID)
 		if hostIsEnrolled(c) {
-			sendMetadataToServer(ctx, c.ServerURL, c.ServerToken, dumpMeta, false)
+			st.notRecorded = sendMetadataToServer(ctx, c.ServerURL, c.ServerToken, dumpMeta, false)
 		}
 		return dumpMeta, plan, nil
 	}

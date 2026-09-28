@@ -506,7 +506,13 @@ Plaintext data NEVER touches disk or third-party networks.`,
 // server that is unreachable must not cause the backup command to report failure.
 // Failures to deliver metadata are reported as warnings to stderr so that
 // the operator is aware the server has not received the snapshot record.
-func sendMetadataToServer(ctx context.Context, serverURL, token string, meta *model.SnapshotMetadata, verbose bool) {
+//
+// It returns why the remote server does not have the record, or "" when it
+// does or was never meant to (no server configured, a standalone host, or an
+// unreachable network the next run reconciles). The agent carries that reason
+// in its last error, which its heartbeat reports, because a warning on the
+// host's stderr is seen by nobody when the agent runs as a service.
+func sendMetadataToServer(ctx context.Context, serverURL, token string, meta *model.SnapshotMetadata, verbose bool) string {
 	warn := func(format string, args ...any) {
 		// Printed even when quiet. --json suppresses the decorative lines
 		// above; it must not suppress "the remote server does not know about
@@ -519,7 +525,7 @@ func sendMetadataToServer(ctx context.Context, serverURL, token string, meta *mo
 		if verbose {
 			fmt.Printf("   Remote Server:   Not configured (metadata stored locally in WORM manifest)\n")
 		}
-		return
+		return ""
 	}
 	// No token: a standalone host, which the CLI supports without an
 	// account. That is a choice, not a failure, and not a reason to contact
@@ -529,24 +535,24 @@ func sendMetadataToServer(ctx context.Context, serverURL, token string, meta *mo
 	if token == "" {
 		warn("not reported: no server_token in this config, so this host is standalone.\n" +
 			"                    The backup is in your bucket. Run 'safegrd enroll' to report to the console.")
-		return
+		return ""
 	}
 	if meta.NodeID == "" {
 		warn("NOT RECORDED: this config has no node_id, so the report names no node.\n" +
 			"                    The backup itself is fine. Add node_id, or re-run 'safegrd enroll'.")
-		return
+		return "this config has no node_id"
 	}
 
 	body, err := json.Marshal(meta)
 	if err != nil {
 		warn("NOT RECORDED: could not encode the snapshot metadata: %v", err)
-		return
+		return "could not encode the snapshot metadata: " + err.Error()
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", serverURL+"/api/v1/snapshots", bytes.NewReader(body))
 	if err != nil {
 		warn("NOT RECORDED: %v", err)
-		return
+		return err.Error()
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -560,7 +566,7 @@ func sendMetadataToServer(ctx context.Context, serverURL, token string, meta *mo
 		if verbose {
 			fmt.Printf("   Remote Server:   Offline (metadata stored locally in WORM manifest)\n")
 		}
-		return
+		return ""
 	}
 	defer resp.Body.Close()
 
@@ -568,10 +574,18 @@ func sendMetadataToServer(ctx context.Context, serverURL, token string, meta *mo
 		var serverMeta model.SnapshotMetadata
 		_ = json.NewDecoder(resp.Body).Decode(&serverMeta)
 		meta.IsPoisonPillFrozen = serverMeta.IsPoisonPillFrozen
+		meta.OutsideProjectStorage = serverMeta.OutsideProjectStorage
 		if verbose {
 			fmt.Printf("   Remote Server:   Synced with %s\n", serverURL)
 		}
-		return
+		// Recorded, but not where the project keeps its backups: the console
+		// shows the project's storage, and this backup is somewhere else.
+		if serverMeta.OutsideProjectStorage {
+			warn("OUTSIDE THE PROJECT'S STORAGE: this backup went to %s, which is not the storage\n"+
+				"                    its project uses. It is recorded, and a restore has to read it from there.\n"+
+				"                    Point this host at the project's storage, or change the project's.", meta.StorageURI)
+		}
+		return ""
 	}
 
 	// A refusal is not an outage. It means this host is misconfigured or its
@@ -590,6 +604,7 @@ func sendMetadataToServer(ctx context.Context, serverURL, token string, meta *mo
 		"                    The backup itself is fine and the manifest is beside it, but the\n"+
 		"                    console will show this node as never having backed up.",
 		serverURL, resp.StatusCode, detail)
+	return fmt.Sprintf("the remote server rejected the report: HTTP %d %s", resp.StatusCode, detail)
 }
 
 func reportBackupFailure(ctx context.Context, cfg *config.CLIConfig, snapshotID string, surfaceType model.SurfaceType, dbName string, backupErr error, verbose bool) {

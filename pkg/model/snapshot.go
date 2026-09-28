@@ -107,13 +107,18 @@ type SnapshotMetadata struct {
 	// WORMMode is the Object Lock mode the snapshot was written under:
 	// COMPLIANCE, GOVERNANCE, or NONE. Empty on snapshots written before
 	// this field existed.
-	WORMMode        string      `json:"worm_mode,omitempty" yaml:"worm_mode,omitempty"`
-	TotalItems      int64       `json:"total_items" yaml:"total_items"`           // rows, files, or emails
-	TotalContainers int         `json:"total_containers" yaml:"total_containers"` // tables, directories, or folders
-	TableStats      []TableStat `json:"table_stats,omitempty" yaml:"table_stats,omitempty"`
-	TotalTables     int         `json:"total_tables,omitempty" yaml:"total_tables,omitempty"`
-	TotalRows       int64       `json:"total_rows,omitempty" yaml:"total_rows,omitempty"`
-	Extensions      []string    `json:"extensions,omitempty" yaml:"extensions,omitempty"`
+	WORMMode string `json:"worm_mode,omitempty" yaml:"worm_mode,omitempty"`
+	// OutsideProjectStorage is decided by the remote server, never by the
+	// host: the report named a location other than the storage its project
+	// uses, so the project's storage does not hold this backup, and a restore
+	// has to fetch it from where the host put it.
+	OutsideProjectStorage bool        `json:"outside_project_storage,omitempty" yaml:"outside_project_storage,omitempty"`
+	TotalItems            int64       `json:"total_items" yaml:"total_items"`           // rows, files, or emails
+	TotalContainers       int         `json:"total_containers" yaml:"total_containers"` // tables, directories, or folders
+	TableStats            []TableStat `json:"table_stats,omitempty" yaml:"table_stats,omitempty"`
+	TotalTables           int         `json:"total_tables,omitempty" yaml:"total_tables,omitempty"`
+	TotalRows             int64       `json:"total_rows,omitempty" yaml:"total_rows,omitempty"`
+	Extensions            []string    `json:"extensions,omitempty" yaml:"extensions,omitempty"`
 	// SchemaSource says how a Postgres snapshot's schema was captured:
 	// "pg_dump 18.6", or "native" when no usable pg_dump was on the host and
 	// the schema was re-derived without foreign keys, views, triggers or enum
