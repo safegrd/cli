@@ -420,6 +420,15 @@ if ! "$SAFEGRD_BIN" "$@" </dev/tty; then
 fi
 
 printf "\n"
-log_success "This host is enrolled. Take the first backup with:"
-printf "      ${CYAN}safegrd backup --database-url \"\$DATABASE_URL\"${RESET}\n"
-printf "   or run it unattended: ${CYAN}https://safegrd.dev/docs/agent${RESET}\n\n"
+# A claimed host already has its surfaces in its config, so the agent is what
+# runs them; a one-off backup command would ignore every choice made in the
+# console.
+if [ -n "$CLAIM" ]; then
+  log_success "This host is enrolled with the surfaces named in the console. Take the first backups with:"
+  printf "      ${CYAN}safegrd agent run --once${RESET}\n"
+  printf "   then keep it running: ${CYAN}safegrd agent install${RESET} (see https://safegrd.dev/docs/agent)\n\n"
+else
+  log_success "This host is enrolled. Take the first backup with:"
+  printf "      ${CYAN}safegrd backup --database-url \"\$DATABASE_URL\"${RESET}\n"
+  printf "   or run it unattended: ${CYAN}https://safegrd.dev/docs/agent${RESET}\n\n"
+fi
