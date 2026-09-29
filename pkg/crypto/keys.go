@@ -103,12 +103,25 @@ func LoadPrivateKey(path string) (string, error) {
 		return "", fmt.Errorf("failed to read private key file %s: %w", path, err)
 	}
 
-	key := strings.TrimSpace(string(data))
+	key := IdentityInFile(data)
 	if !strings.HasPrefix(key, "AGE-SECRET-KEY-1") {
 		return "", fmt.Errorf("file %s does not contain a valid Age private key", path)
 	}
 
 	return key, nil
+}
+
+// IdentityInFile returns the identity in an Age identity file: the first line
+// that is not blank or a # comment. age-keygen writes "# created:" and
+// "# public key:" lines above the key, and SafeGrd writes the key alone.
+func IdentityInFile(data []byte) string {
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" && !strings.HasPrefix(line, "#") {
+			return line
+		}
+	}
+	return ""
 }
 
 // ParseRecipient parses an Age public key recipient.

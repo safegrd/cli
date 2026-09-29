@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/mail"
+	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -23,6 +24,9 @@ import (
 
 // EmailMessageManifest records individual email details sealed inside the archive.
 type EmailMessageManifest struct {
+	// Path is the message's entry in the archive. The verifier looks entries
+	// up by it rather than rebuilding the name from the Message-ID.
+	Path      string    `json:"path"`
 	Folder    string    `json:"folder"`
 	UID       uint32    `json:"uid"`
 	MessageID string    `json:"message_id"`
@@ -31,23 +35,31 @@ type EmailMessageManifest struct {
 	Date      time.Time `json:"date"`
 	SizeBytes int64     `json:"size_bytes"`
 	Sha256    string    `json:"sha256"`
+	// Labels are the message's Gmail labels (X-GM-LABELS) as the server sent
+	// them, system labels such as \Inbox included. Empty for other providers.
+	Labels []string `json:"labels,omitempty"`
 }
 
 // SealedEmailManifest is stored as .safegrd-email-manifest.json inside the sealed archive.
 type SealedEmailManifest struct {
-	Version      string                  `json:"version"`
-	Account      string                  `json:"account"`
-	Host         string                  `json:"host"`
-	CreatedAt    time.Time               `json:"created_at"`
-	TotalEmails  int64                   `json:"total_emails"`
-	TotalFolders int                     `json:"total_folders"`
-	RawSizeBytes int64                   `json:"raw_size_bytes"`
+	Version      string    `json:"version"`
+	Account      string    `json:"account"`
+	Host         string    `json:"host"`
+	CreatedAt    time.Time `json:"created_at"`
+	TotalEmails  int64     `json:"total_emails"`
+	TotalFolders int       `json:"total_folders"`
+	RawSizeBytes int64     `json:"raw_size_bytes"`
+	// GmailAllMail is set when the archive holds only Gmail's All Mail, one
+	// copy per message, and each message's labels stand in for its folders.
+	GmailAllMail bool                    `json:"gmail_all_mail,omitempty"`
 	Folders      []model.EmailFolderStat `json:"folders"`
 	Messages     []EmailMessageManifest  `json:"messages"`
 }
 
 // EmailCollectorConfig configures Universal IMAP extraction.
 type EmailCollectorConfig struct {
+	// Warn reports a condition that does not fail the backup. Defaults to stderr.
+	Warn           func(msg string)
 	Host           string
 	Port           int
 	Username       string
@@ -70,6 +82,9 @@ func NewEmailCollector(cfg EmailCollectorConfig) *EmailCollector {
 	if cfg.Port == 0 {
 		cfg.Port = 993
 	}
+	if cfg.Warn == nil {
+		cfg.Warn = func(msg string) { fmt.Fprintf(os.Stderr, "⚠️  %s\n", msg) }
+	}
 	return &EmailCollector{cfg: cfg}
 }
 
@@ -83,6 +98,7 @@ type FetchedEmail struct {
 	Date      time.Time
 	Body      []byte
 	Sha256    string
+	Labels    []string
 }
 
 // IMAPSource abstracts the IMAP connection to enable hermetic testing and modularity.
@@ -93,6 +109,14 @@ type IMAPSource interface {
 	Close() error
 }
 
+// GmailSource is implemented by an IMAPSource that can tell whether it is
+// talking to Gmail.
+type GmailSource interface {
+	// GmailAllMail reports whether the server advertises X-GM-EXT-1, and the
+	// mailbox it flags \All, if it lists one. Valid after ListFolders.
+	GmailAllMail() (allMail string, gmail bool)
+}
+
 // StandardIMAPClient implements pure Go RFC 3501 IMAP client over TLS.
 type StandardIMAPClient struct {
 	cfg               EmailCollectorConfig
@@ -101,6 +125,8 @@ type StandardIMAPClient struct {
 	tagSeq            int
 	FolderUIDValidity map[string]uint32
 	FolderHighestUID  map[string]uint32
+	gmail             bool
+	allMail           string
 }
 
 func NewStandardIMAPClient(cfg EmailCollectorConfig) *StandardIMAPClient {
@@ -177,7 +203,45 @@ func (c *StandardIMAPClient) Connect(ctx context.Context) error {
 		}
 	}
 
+	// Capabilities can change once authenticated, so ask again now.
+	caps, err := c.capabilities()
+	if err != nil {
+		c.conn.Close()
+		return err
+	}
+	c.gmail = caps["X-GM-EXT-1"]
 	return nil
+}
+
+func (c *StandardIMAPClient) capabilities() (map[string]bool, error) {
+	tag := c.nextTag()
+	if _, err := c.conn.Write([]byte(tag + " CAPABILITY\r\n")); err != nil {
+		return nil, fmt.Errorf("failed sending CAPABILITY: %w", err)
+	}
+	caps := make(map[string]bool)
+	for {
+		line, err := c.reader.ReadString('\n')
+		if err != nil {
+			return nil, fmt.Errorf("failed reading CAPABILITY response: %w", err)
+		}
+		line = strings.TrimRight(line, "\r\n")
+		if strings.HasPrefix(line, tag+" OK") {
+			return caps, nil
+		}
+		if strings.HasPrefix(line, tag+" NO") || strings.HasPrefix(line, tag+" BAD") {
+			return nil, fmt.Errorf("CAPABILITY rejected: %s", line)
+		}
+		if rest, ok := strings.CutPrefix(line, "* CAPABILITY "); ok {
+			for _, capability := range strings.Fields(rest) {
+				caps[strings.ToUpper(capability)] = true
+			}
+		}
+	}
+}
+
+// GmailAllMail implements GmailSource.
+func (c *StandardIMAPClient) GmailAllMail() (string, bool) {
+	return c.allMail, c.gmail
 }
 
 func quoteIMAP(s string) string {
@@ -207,8 +271,11 @@ func (c *StandardIMAPClient) ListFolders(ctx context.Context) ([]string, error) 
 			return nil, fmt.Errorf("LIST command rejected: %s", line)
 		}
 
-		if folder, ok := parseListLine(line); ok {
+		if folder, flags, ok := parseListLine(line); ok {
 			folders = append(folders, folder)
+			if hasFlag(flags, `\All`) {
+				c.allMail = folder
+			}
 		}
 	}
 
@@ -217,22 +284,70 @@ func (c *StandardIMAPClient) ListFolders(ctx context.Context) ([]string, error) 
 
 var listLineRegex = regexp.MustCompile(`^\*\s+LIST\s+\((.*?)\)\s+(?:"(?:[^"\\]|\\.)*"|NIL)\s+(.*)$`)
 
-// parseListLine returns the mailbox named by one untagged LIST response, or
-// false when the line is not one or names a mailbox that cannot be selected.
-// Gmail's "[Gmail]" is such a container (\Noselect); selecting it fails with
-// NONEXISTENT.
-func parseListLine(line string) (string, bool) {
+// parseListLine returns the mailbox named by one untagged LIST response and
+// its flags, or false when the line is not one or names a mailbox that cannot
+// be selected. Gmail's "[Gmail]" is such a container (\Noselect); selecting it
+// fails with NONEXISTENT.
+func parseListLine(line string) (string, []string, bool) {
 	matches := listLineRegex.FindStringSubmatch(line)
 	if len(matches) != 3 {
-		return "", false
+		return "", nil, false
 	}
-	for _, flag := range strings.Fields(matches[1]) {
-		if strings.EqualFold(flag, `\Noselect`) || strings.EqualFold(flag, `\NonExistent`) {
-			return "", false
-		}
+	flags := strings.Fields(matches[1])
+	if hasFlag(flags, `\Noselect`) || hasFlag(flags, `\NonExistent`) {
+		return "", nil, false
 	}
 	folder := strings.Trim(strings.TrimSpace(matches[2]), `"`)
-	return folder, folder != ""
+	return folder, flags, folder != ""
+}
+
+func hasFlag(flags []string, want string) bool {
+	for _, f := range flags {
+		if strings.EqualFold(f, want) {
+			return true
+		}
+	}
+	return false
+}
+
+// cutGmailLabels removes the X-GM-LABELS list from a FETCH response and
+// returns its labels, unquoted, and the response without it. Labels are
+// atoms (\Inbox, Work) or quoted strings with \" and \\ escapes.
+func cutGmailLabels(s string) ([]string, string) {
+	start := strings.Index(strings.ToUpper(s), "X-GM-LABELS (")
+	if start < 0 {
+		return nil, s
+	}
+	i := start + len("X-GM-LABELS (")
+	labels := []string{}
+	for i < len(s) {
+		switch s[i] {
+		case ' ':
+			i++
+		case ')':
+			return labels, s[:start] + s[i+1:]
+		case '"':
+			var b strings.Builder
+			i++
+			for i < len(s) && s[i] != '"' {
+				if s[i] == '\\' && i+1 < len(s) {
+					i++
+				}
+				b.WriteByte(s[i])
+				i++
+			}
+			i++
+			labels = append(labels, b.String())
+		default:
+			j := i
+			for j < len(s) && s[j] != ' ' && s[j] != ')' {
+				j++
+			}
+			labels = append(labels, s[i:j])
+			i = j
+		}
+	}
+	return nil, s
 }
 
 func (c *StandardIMAPClient) FetchFolderMessages(ctx context.Context, folder string) ([]FetchedEmail, error) {
@@ -280,19 +395,20 @@ func (c *StandardIMAPClient) FetchFolderMessages(ctx context.Context, folder str
 
 	lastHighest := c.FolderHighestUID[folder]
 	fetchTag := c.nextTag()
-	var fetchCmd string
-	if lastHighest > 0 {
-		fetchCmd = fmt.Sprintf("%s UID FETCH %d:* (UID BODY.PEEK[])\r\n", fetchTag, lastHighest+1)
-	} else {
-		fetchCmd = fmt.Sprintf("%s UID FETCH 1:* (UID BODY.PEEK[])\r\n", fetchTag)
+	items := "UID BODY.PEEK[]"
+	if c.gmail {
+		items = "UID X-GM-LABELS BODY.PEEK[]"
 	}
+	fetchCmd := fmt.Sprintf("%s UID FETCH %d:* (%s)\r\n", fetchTag, lastHighest+1, items)
 	if _, err := c.conn.Write([]byte(fetchCmd)); err != nil {
 		return nil, fmt.Errorf("failed sending UID FETCH: %w", err)
 	}
 
 	var messages []FetchedEmail
-	uidRegex := regexp.MustCompile(`UID\s+(\d+)`)
-	literalRegex := regexp.MustCompile(`\{(\d+)\}$`)
+	uidRegex := regexp.MustCompile(`(?:^|[\s(])UID\s+(\d+)`)
+	// Only a literal that follows BODY[] is the message. Gmail does not keep
+	// the requested item order, so UID and labels may sit on either side of it.
+	bodyLiteralRegex := regexp.MustCompile(`BODY\[\]\s+\{(\d+)\}$`)
 
 	for {
 		line, err := c.reader.ReadString('\n')
@@ -309,18 +425,24 @@ func (c *StandardIMAPClient) FetchFolderMessages(ctx context.Context, folder str
 		}
 
 		if strings.HasPrefix(line, "* ") && strings.Contains(line, "FETCH") {
-			var uid uint32
-			if matches := uidRegex.FindStringSubmatch(line); len(matches) == 2 {
-				val, _ := strconv.ParseUint(matches[1], 10, 32)
-				uid = uint32(val)
-			}
 
-			// Check for literal size {N}
-			if matches := literalRegex.FindStringSubmatch(line); len(matches) == 2 {
+			if matches := bodyLiteralRegex.FindStringSubmatch(line); len(matches) == 2 {
 				litSize, _ := strconv.ParseInt(matches[1], 10, 64)
 				body := make([]byte, litSize)
 				if _, err := io.ReadFull(c.reader, body); err != nil {
 					return nil, fmt.Errorf("failed reading message body literal (%d bytes): %w", litSize, err)
+				}
+				// The rest of the response: ")" or the items after the body.
+				rest, err := c.reader.ReadString('\n')
+				if err != nil {
+					return nil, fmt.Errorf("failed reading FETCH response: %w", err)
+				}
+				labels, others := cutGmailLabels(line + " " + strings.TrimRight(rest, "\r\n"))
+
+				var uid uint32
+				if matches := uidRegex.FindStringSubmatch(others); len(matches) == 2 {
+					val, _ := strconv.ParseUint(matches[1], 10, 32)
+					uid = uint32(val)
 				}
 
 				if uid > c.FolderHighestUID[folder] {
@@ -365,6 +487,7 @@ func (c *StandardIMAPClient) FetchFolderMessages(ctx context.Context, folder str
 					Date:      date,
 					Body:      body,
 					Sha256:    sumHex,
+					Labels:    labels,
 				})
 			}
 		}
@@ -409,6 +532,30 @@ func (ec *EmailCollector) ScanAndStream(ctx context.Context, source IMAPSource) 
 		targetFolders = append(targetFolders, f)
 	}
 	sort.Strings(targetFolders)
+
+	// Gmail shows each label as a folder, so a message with three labels would
+	// be fetched and stored three times. All Mail holds every message once
+	// (Spam and Trash aside, which are left out anyway) and X-GM-LABELS carries
+	// the labels, so back up that mailbox alone. A surface that names its
+	// folders keeps them.
+	//
+	// If another provider turns out to show one message in several folders,
+	// do not add a second provider branch here. Deduplicate by content
+	// instead: store each body once, keyed by the SHA-256 already taken for
+	// every message, and list in the manifest every folder that holds it.
+	// That still downloads each copy, but it works for any server.
+	gmailAllMail := false
+	if gs, ok := source.(GmailSource); ok && len(ec.cfg.IncludeFolders) == 0 {
+		switch allMail, gmail := gs.GmailAllMail(); {
+		case gmail && allMail != "":
+			targetFolders = []string{allMail}
+			gmailAllMail = true
+		case gmail:
+			ec.cfg.Warn(fmt.Sprintf("%s lists no All Mail folder over IMAP, so each label is backed up as its own folder "+
+				"and a message with several labels is stored once per label. Turn on \"Show in IMAP\" for All Mail "+
+				"in Gmail's settings (Labels tab).", ec.cfg.Host))
+		}
+	}
 
 	var (
 		allEmails     []FetchedEmail
@@ -471,6 +618,7 @@ func (ec *EmailCollector) ScanAndStream(ctx context.Context, source IMAPSource) 
 	var manifestMessages []EmailMessageManifest
 	for _, em := range allEmails {
 		manifestMessages = append(manifestMessages, EmailMessageManifest{
+			Path:      emailEntryName(em),
 			Folder:    em.Folder,
 			UID:       em.UID,
 			MessageID: em.MessageID,
@@ -479,6 +627,7 @@ func (ec *EmailCollector) ScanAndStream(ctx context.Context, source IMAPSource) 
 			Date:      em.Date,
 			SizeBytes: int64(len(em.Body)),
 			Sha256:    em.Sha256,
+			Labels:    em.Labels,
 		})
 	}
 
@@ -490,6 +639,7 @@ func (ec *EmailCollector) ScanAndStream(ctx context.Context, source IMAPSource) 
 		TotalEmails:  int64(len(allEmails)),
 		TotalFolders: len(targetFolders),
 		RawSizeBytes: totalRawBytes,
+		GmailAllMail: gmailAllMail,
 		Folders:      folderStats,
 		Messages:     manifestMessages,
 	}
@@ -560,7 +710,6 @@ func (ec *EmailCollector) ScanAndStream(ctx context.Context, source IMAPSource) 
 			}
 		}
 
-		cleanRegex := regexp.MustCompile(`[^a-zA-Z0-9_-]`)
 		for _, em := range allEmails {
 			select {
 			case <-ctx.Done():
@@ -569,11 +718,7 @@ func (ec *EmailCollector) ScanAndStream(ctx context.Context, source IMAPSource) 
 			default:
 			}
 
-			cleanMsgID := cleanRegex.ReplaceAllString(em.MessageID, "_")
-			if len(cleanMsgID) > 32 {
-				cleanMsgID = cleanMsgID[:32]
-			}
-			entryName := fmt.Sprintf("%s/%d-%s.eml", filepath.ToSlash(em.Folder), em.UID, cleanMsgID)
+			entryName := emailEntryName(em)
 
 			msgHdr := &tar.Header{
 				Name:     entryName,
@@ -595,4 +740,16 @@ func (ec *EmailCollector) ScanAndStream(ctx context.Context, source IMAPSource) 
 	}()
 
 	return pr, meta, nil
+}
+
+var entryNameUnsafe = regexp.MustCompile(`[^a-zA-Z0-9_-]`)
+
+// emailEntryName is a message's path in the archive: its folder, then its UID
+// and up to 32 characters of its Message-ID.
+func emailEntryName(em FetchedEmail) string {
+	id := entryNameUnsafe.ReplaceAllString(em.MessageID, "_")
+	if len(id) > 32 {
+		id = id[:32]
+	}
+	return fmt.Sprintf("%s/%d-%s.eml", filepath.ToSlash(em.Folder), em.UID, id)
 }

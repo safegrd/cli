@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/safegrd/cli/pkg/crypto"
 )
 
 // StorageType enumerates supported storage backends.
@@ -318,7 +320,7 @@ func readPrivateKeyFile(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("could not read the private key file %s: %w", path, err)
 	}
-	return strings.TrimSpace(string(data)), nil
+	return crypto.IdentityInFile(data), nil
 }
 
 // DefaultServerURL points to the production SafeGrd remote server.

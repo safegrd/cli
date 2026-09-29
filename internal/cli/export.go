@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/safegrd/cli/pkg/config"
@@ -25,6 +26,7 @@ import (
 // each object's SHA-256 to the digest recorded at backup time.
 func newExportCmd() *cobra.Command {
 	var toDir, toBucket, toEndpoint, toRegion, toPrefix, toWORM string
+	var onlySnapshots, onlyNodes []string
 	cmd := &cobra.Command{
 		Use:   "export",
 		Short: "Copy every snapshot, still encrypted, to a directory or your own bucket",
@@ -35,6 +37,10 @@ Use it to move from hosted storage to your own bucket, or to keep an offline
 copy. Nothing is decrypted and no key is needed. Each copied object is checked
 against the digest recorded when it was backed up. A snapshot already at the
 destination is skipped, so an interrupted export can simply be run again.
+
+--snapshot and --node narrow it to those snapshots, or to the snapshots of
+those nodes. Both can be repeated or given as a comma-separated list.
+Restore from an export with 'safegrd restore --from'.
 
 Credentials for --to-bucket come from the standard AWS environment
 (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, or a profile). A copy into a bucket
@@ -87,6 +93,11 @@ keeps each snapshot's lock: it is locked there until the same date.`,
 				}
 			}
 
+			ids, err = filterExport(ids, nodes, srcCfg.NodeID, onlySnapshots, onlyNodes)
+			if err != nil {
+				return err
+			}
+
 			copied, skipped, failed := 0, 0, 0
 			for _, id := range ids {
 				node := nodes[id]
@@ -118,7 +129,59 @@ keeps each snapshot's lock: it is locked there until the same date.`,
 	cmd.Flags().StringVar(&toRegion, "to-region", "us-east-1", "Region of --to-bucket")
 	cmd.Flags().StringVar(&toPrefix, "to-prefix", "safegrd/snapshots", "Key prefix in --to-bucket")
 	cmd.Flags().StringVar(&toWORM, "to-worm-mode", "COMPLIANCE", "Object Lock mode in --to-bucket: COMPLIANCE, GOVERNANCE or NONE")
+	cmd.Flags().StringSliceVar(&onlySnapshots, "snapshot", nil, "Export only this snapshot ID (repeatable)")
+	cmd.Flags().StringSliceVar(&onlyNodes, "node", nil, "Export only this node's snapshots (repeatable)")
 	return cmd
+}
+
+// filterExport keeps the snapshots --snapshot and --node ask for. A snapshot
+// asked for by ID that is not in storage is an error, not an empty export.
+func filterExport(ids []string, nodes map[string]string, fallbackNode string, onlySnapshots, onlyNodes []string) ([]string, error) {
+	if len(onlySnapshots) == 0 && len(onlyNodes) == 0 {
+		return ids, nil
+	}
+	wantID := map[string]bool{}
+	for _, id := range onlySnapshots {
+		wantID[strings.TrimSpace(id)] = true
+	}
+	wantNode := map[string]bool{}
+	for _, n := range onlyNodes {
+		wantNode[strings.TrimSpace(n)] = true
+	}
+	var kept []string
+	found := map[string]bool{}
+	for _, id := range ids {
+		node := nodes[id]
+		if node == "" {
+			node = fallbackNode
+		}
+		if len(wantID) > 0 && !wantID[id] {
+			continue
+		}
+		if len(wantNode) > 0 && !wantNode[node] {
+			continue
+		}
+		kept = append(kept, id)
+		found[id] = true
+	}
+	var missing []string
+	for id := range wantID {
+		if !found[id] {
+			missing = append(missing, id)
+		}
+	}
+	if len(missing) > 0 {
+		sort.Strings(missing)
+		where := "not in this host's storage"
+		if len(wantNode) > 0 {
+			where += " under --node " + strings.Join(onlyNodes, ", ")
+		}
+		return nil, fmt.Errorf("%s: %s", where, strings.Join(missing, ", "))
+	}
+	if len(kept) == 0 {
+		return nil, fmt.Errorf("no snapshots in this host's storage belong to --node %s", strings.Join(onlyNodes, ", "))
+	}
+	return kept, nil
 }
 
 // setNode points a provider at the node a snapshot was filed under.

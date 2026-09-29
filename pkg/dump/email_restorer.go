@@ -35,6 +35,12 @@ type EmailExtractionResult struct {
 	EmailsExtracted      int64 `json:"emails_extracted"`
 	DirectoriesExtracted int   `json:"directories_extracted"`
 	TotalBytesWritten    int64 `json:"total_bytes_written"`
+	// ManifestPath is where the sealed manifest was written. It carries what
+	// the .eml files cannot, such as each message's Gmail labels.
+	ManifestPath string `json:"manifest_path,omitempty"`
+	// GmailLabels is set when the archive is Gmail's All Mail and the labels
+	// in the manifest stand in for folders.
+	GmailLabels bool `json:"gmail_labels,omitempty"`
 }
 
 // EmailRestorer provides in-memory verification and EML folder extraction for email backups.
@@ -66,8 +72,14 @@ func (er *EmailRestorer) InspectEmailArchive(ctx context.Context, src io.Reader,
 		mimeParsedOK   = true
 		mimeErr        string
 		expectedHashes = make(map[string]string)
-		folderCounts   = make(map[string]int64)
+		entriesSeen    = make(map[string]bool)
 	)
+	integrityFail := func(msg string) {
+		if checksumsOK {
+			checksumsOK = false
+			checksumErr = msg
+		}
+	}
 
 	for {
 		select {
@@ -103,13 +115,7 @@ func (er *EmailRestorer) InspectEmailArchive(ctx context.Context, src io.Reader,
 			}
 			result.SealedManifest = &sealed
 			for _, msg := range sealed.Messages {
-				cleanRegex := strings.NewReplacer("<", "_", ">", "_", "@", "_", ".", "_")
-				sanitized := cleanRegex.Replace(msg.MessageID)
-				if len(sanitized) > 32 {
-					sanitized = sanitized[:32]
-				}
-				key := fmt.Sprintf("%s/%d-%s.eml", filepath.ToSlash(msg.Folder), msg.UID, sanitized)
-				expectedHashes[key] = msg.Sha256
+				expectedHashes[msg.Path] = msg.Sha256
 			}
 			continue
 		}
@@ -122,9 +128,7 @@ func (er *EmailRestorer) InspectEmailArchive(ctx context.Context, src io.Reader,
 		if hdr.Typeflag == tar.TypeReg && strings.HasSuffix(cleanName, ".eml") {
 			emailsFound++
 			bytesFound += hdr.Size
-
-			dir := filepath.Dir(cleanName)
-			folderCounts[dir]++
+			entriesSeen[cleanName] = true
 
 			body, err := io.ReadAll(tarReader)
 			if err != nil {
@@ -135,17 +139,25 @@ func (er *EmailRestorer) InspectEmailArchive(ctx context.Context, src io.Reader,
 
 			sum := sha256.Sum256(body)
 			sumHex := hex.EncodeToString(sum[:])
-			if exp, ok := expectedHashes[cleanName]; ok {
-				if sumHex != exp {
-					checksumsOK = false
-					checksumErr = fmt.Sprintf("hash mismatch for %s: got %s, want %s", cleanName, sumHex, exp)
-				}
+			// Every message is held to the manifest: one it does not list is
+			// as much a failure as one whose digest differs.
+			if exp, ok := expectedHashes[cleanName]; !ok {
+				integrityFail(fmt.Sprintf("%s is in the archive but not in the sealed manifest", cleanName))
+			} else if sumHex != exp {
+				integrityFail(fmt.Sprintf("hash mismatch for %s: got %s, want %s", cleanName, sumHex, exp))
 			}
 
 			if _, err := mail.ReadMessage(bytes.NewReader(body)); err != nil {
 				mimeParsedOK = false
 				mimeErr = fmt.Sprintf("invalid RFC 5322 MIME structure in %s: %v", cleanName, err)
 			}
+		}
+	}
+
+	for _, msg := range sealed.Messages {
+		if !entriesSeen[msg.Path] {
+			integrityFail(fmt.Sprintf("the sealed manifest lists %s, which is not in the archive", msg.Path))
+			break
 		}
 	}
 
@@ -278,6 +290,24 @@ func (er *EmailRestorer) ExtractEmailArchive(ctx context.Context, src io.Reader,
 
 		cleanRel := filepath.Clean(hdr.Name)
 		if cleanRel == ".safegrd-email-manifest.json" {
+			// Written out, not skipped: Gmail labels exist only in here.
+			data, err := io.ReadAll(tarReader)
+			if err != nil {
+				return nil, fmt.Errorf("failed reading sealed email manifest: %w", err)
+			}
+			var sealed SealedEmailManifest
+			if err := json.Unmarshal(data, &sealed); err != nil {
+				return nil, fmt.Errorf("failed parsing sealed email manifest: %w", err)
+			}
+			if err := refuseSymlinkPath(absTarget, cleanRel, false); err != nil {
+				return nil, fmt.Errorf("refusing email manifest: %w", err)
+			}
+			manifestPath := filepath.Join(absTarget, cleanRel)
+			if err := os.WriteFile(manifestPath, data, 0600); err != nil {
+				return nil, fmt.Errorf("failed writing email manifest %s: %w", manifestPath, err)
+			}
+			res.ManifestPath = manifestPath
+			res.GmailLabels = sealed.GmailAllMail
 			continue
 		}
 

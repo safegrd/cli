@@ -280,7 +280,7 @@ func TestParseListLineSkipsMailboxesThatCannotBeSelected(t *testing.T) {
 		{`* OK done`, "", false},
 	}
 	for _, c := range cases {
-		folder, ok := parseListLine(c.line)
+		folder, _, ok := parseListLine(c.line)
 		if folder != c.folder || ok != c.ok {
 			t.Errorf("parseListLine(%q) = %q, %v; want %q, %v", c.line, folder, ok, c.folder, c.ok)
 		}

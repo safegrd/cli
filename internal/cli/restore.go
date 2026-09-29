@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -24,19 +25,33 @@ func newRestoreCmd() *cobra.Command {
 		engineStr  string
 		keyPath    string
 		privKey    string
+		fromPath   string
 	)
 
 	cmd := &cobra.Command{
 		Use:   "restore",
-		Short: "Restore an encrypted snapshot into a PostgreSQL target or destination directory",
-		Long: `Downloads encrypted ciphertext from immutable WORM storage, decrypts client-side
-using the private key, decompresses stream, and restores to PostgreSQL or extracts to disk.`,
+		Short: "Restore an encrypted snapshot into a database target or destination directory",
+		Long: `Read a snapshot from this host's storage, decrypt it here with the private key,
+and restore it into a database (--target) or a directory (--target-dir).
+
+--from reads a copy made by 'safegrd export --to-dir' instead: the export
+directory with --snapshot, or one .safegrd file, whose name gives the snapshot ID.
+The copy is checked against the digest recorded at backup time, as a restore
+from storage is.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			fromDir := ""
+			if fromPath != "" {
+				dir, id, err := resolveRestoreFrom(fromPath, snapshotID)
+				if err != nil {
+					return err
+				}
+				fromDir, snapshotID = dir, id
+			}
 			if snapshotID == "" {
 				return fmt.Errorf("--snapshot flag is required")
 			}
 			if targetURL == "" && targetDir == "" {
-				return fmt.Errorf("either --target (for PostgreSQL database) or --target-dir (for files or email) is required")
+				return fmt.Errorf("either --target (for a database) or --target-dir (for files or email) is required")
 			}
 
 			if targetURL != "" {
@@ -87,29 +102,39 @@ using the private key, decompresses stream, and restores to PostgreSQL or extrac
 				return fmt.Errorf("decryption key required: specify --private-key or configure ~/.safegrd/keys/agent.key")
 			}
 
-			// Routed and credentialed exactly as backup does, because a node
-			// enrolled with a centrally-managed sink has no bucket or sink secret locally
-			// either; restoring from a centrally-configured sink must work.
-			storageCfg, routeErr := resolveStorageRouting(ctx, cfg, "", "", "", "", false)
-			if routeErr != nil {
-				return routeErr
-			}
-			if _, err := resolveHostedStorage(ctx, cfg, &storageCfg, false); err != nil {
-				return err
-			}
-			resolveRuntimeCredentials(ctx, cfg, &storageCfg, false)
-			if cfg.NodeID != "" && storageCfg.NodeID == "" {
-				storageCfg.NodeID = cfg.NodeID
-			}
-			// A surface the agent backs up lives under its own node, not the
-			// host's, so the bucket is searched under the node the remote
-			// server recorded this snapshot for.
-			if recorded := recordedNodeID(ctx, cfg, snapshotID); recorded != "" && recorded != storageCfg.NodeID {
-				storageCfg.NodeID = recorded
-			}
-			storageProvider, err := openStorage(ctx, cfg, storageCfg)
-			if err != nil {
-				return fmt.Errorf("storage initialization failed: %w", err)
+			var storageProvider storage.StorageProvider
+			if fromDir != "" {
+				local, err := storage.NewLocalStorage(fromDir)
+				if err != nil {
+					return err
+				}
+				storageProvider = local
+			} else {
+				// Routed and credentialed exactly as backup does, because a node
+				// enrolled with a centrally-managed sink has no bucket or sink secret locally
+				// either; restoring from a centrally-configured sink must work.
+				storageCfg, routeErr := resolveStorageRouting(ctx, cfg, "", "", "", "", false)
+				if routeErr != nil {
+					return routeErr
+				}
+				if _, err := resolveHostedStorage(ctx, cfg, &storageCfg, false); err != nil {
+					return err
+				}
+				resolveRuntimeCredentials(ctx, cfg, &storageCfg, false)
+				if cfg.NodeID != "" && storageCfg.NodeID == "" {
+					storageCfg.NodeID = cfg.NodeID
+				}
+				// A surface the agent backs up lives under its own node, not the
+				// host's, so the bucket is searched under the node the remote
+				// server recorded this snapshot for.
+				if recorded := recordedNodeID(ctx, cfg, snapshotID); recorded != "" && recorded != storageCfg.NodeID {
+					storageCfg.NodeID = recorded
+				}
+				opened, err := openStorage(ctx, cfg, storageCfg)
+				if err != nil {
+					return fmt.Errorf("storage initialization failed: %w", err)
+				}
+				storageProvider = opened
 			}
 			// Not where this config looks: a recovery machine rebuilding a lost
 			// host does not know the node id its backups were filed under.
@@ -261,6 +286,9 @@ using the private key, decompresses stream, and restores to PostgreSQL or extrac
 					fmt.Printf("   Emails:         %d\n", emailRes.EmailsExtracted)
 					fmt.Printf("   Folders:        %d\n", emailRes.DirectoriesExtracted)
 					fmt.Printf("   Bytes Written:  %d\n", emailRes.TotalBytesWritten)
+					if emailRes.GmailLabels {
+						fmt.Printf("   Gmail labels:   %s (one copy of each message, in All Mail)\n", emailRes.ManifestPath)
+					}
 				}
 				fmt.Printf("   Destination:    %s\n", targetDir)
 			default:
@@ -282,6 +310,7 @@ using the private key, decompresses stream, and restores to PostgreSQL or extrac
 	_ = cmd.Flags().MarkDeprecated("engine", "there is one Postgres restore path; the flag is ignored")
 	cmd.Flags().StringVar(&keyPath, "key-path", "", "Path to Age private identity file")
 	cmd.Flags().StringVar(&privKey, "private-key", "", "Age private identity key string (AGE-SECRET-KEY-1...)")
+	cmd.Flags().StringVar(&fromPath, "from", "", "Restore from an export: the directory 'safegrd export --to-dir' wrote, or one .safegrd file in it")
 
 	return cmd
 }
@@ -354,4 +383,29 @@ func checkRestoreDigest(ctx context.Context, meta *model.SnapshotMetadata, snaps
 		fmt.Printf("   Digest:          matches the remote server's record from backup time\n")
 	}
 	return nil
+}
+
+// resolveRestoreFrom turns --from into the directory to read and the snapshot
+// ID. A directory needs --snapshot. A .safegrd file names its snapshot, and
+// its metadata sidecar sits next to it.
+func resolveRestoreFrom(from, snapshotID string) (string, string, error) {
+	info, err := os.Stat(from)
+	if err != nil {
+		return "", "", fmt.Errorf("--from %s: %w", from, err)
+	}
+	if info.IsDir() {
+		if snapshotID == "" {
+			return "", "", fmt.Errorf("--from names a directory; add --snapshot with the ID to restore (the file names in it, without .safegrd)")
+		}
+		return from, snapshotID, nil
+	}
+	base := filepath.Base(from)
+	id, ok := strings.CutSuffix(base, ".safegrd")
+	if !ok || id == "" {
+		return "", "", fmt.Errorf("--from %s is not a .safegrd snapshot file", from)
+	}
+	if snapshotID != "" && snapshotID != id {
+		return "", "", fmt.Errorf("--snapshot %s does not match --from %s", snapshotID, base)
+	}
+	return filepath.Dir(from), id, nil
 }

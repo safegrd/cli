@@ -155,7 +155,7 @@ executes a full active restore drill into the target ephemeral database.`,
 					fmt.Printf("   Storage Source: %s (local WORM repository)\n", cfg.Storage.LocalPath)
 				}
 				fmt.Printf("   Decryption Key: %s...\n", resolvedKey[:16])
-				fmt.Printf("   Engine:         Pure Go in-memory catalog & COPY inspector (no Postgres target required)\n\n")
+				fmt.Printf("   Engine:         Pure in-memory catalog & COPY inspector (no real target required)\n\n")
 
 				report, dryResult, err := verifier.RunDryRestore(ctx, snapshotID, resolvedKey)
 				if err != nil {
@@ -266,7 +266,7 @@ executes a full active restore drill into the target ephemeral database.`,
 	}
 
 	cmd.Flags().StringVar(&snapshotID, "snapshot", "", "Snapshot ID to verify (required)")
-	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Perform pure Go in-memory dry restore without target database")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Perform pure in-memory dry restore without a real target")
 	cmd.Flags().StringVar(&sandboxURL, "sandbox-target", "", "An empty database to restore the snapshot into for a full Fire Drill: postgres://…, mysql://…, or sqlite:///path/to/absent.db")
 	cmd.Flags().StringVar(&keyPath, "key-path", "", "Path to Age private identity file")
 	cmd.Flags().StringVar(&privKey, "private-key", "", "Age private identity key string")
