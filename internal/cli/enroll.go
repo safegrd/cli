@@ -328,8 +328,7 @@ With neither, it uses the login saved by 'safegrd login'.`,
 					fmt.Printf("\n❌ The server did NOT store your encryption key.\n\n")
 					fmt.Printf("   This node is enrolled, but the key below exists in exactly one place:\n")
 					fmt.Printf("   %s\n\n", cfg.Encryption.KeyPath)
-					fmt.Printf("   SAVE IT NOW. Without it every backup this node takes is unreadable,\n")
-					fmt.Printf("   by you and by us. Nobody can recover it for you.\n\n")
+					fmt.Printf("   Save a copy now. It is the only key that decrypts this node's backups.\n\n")
 					fmt.Printf("   Public key:  %s\n", cfg.Encryption.PublicKey)
 					fmt.Printf("   Fingerprint: %s\n", crypto.Fingerprint(cfg.Encryption.PublicKey))
 					return fmt.Errorf("enrollment completed but key escrow failed: save the key above before running a backup")
@@ -342,18 +341,19 @@ With neither, it uses the login saved by 'safegrd login'.`,
 				// Report key custody mode.
 				switch {
 				case regResp.KeyEscrowed:
-					fmt.Printf("   Custody:     SafeGrd holds a copy of this key and CAN decrypt these backups.\n")
-					fmt.Printf("                It was generated here just now; --key-custody=local keeps the next one to yourself.\n")
+					fmt.Printf("   Custody:     SafeGrd keeps this key sealed and releases it only to your enrolled hosts,\n")
+					fmt.Printf("                so you can restore these backups even after losing this host.\n")
+					fmt.Printf("                To hold the next key yourself, enrol with --key-custody=local.\n")
 				case keyExistedBeforeEnroll:
-					fmt.Printf("   Custody:     you hold this key. SafeGrd has only the public half and CANNOT decrypt these backups.\n")
+					fmt.Printf("   Custody:     you hold this key, and only you can decrypt these backups. SafeGrd has the public half.\n")
 					if adopted {
 						fmt.Printf("                It was already at %s, so it was not sent: a key we find on a host\n", cfg.Encryption.KeyPath)
 						fmt.Printf("                is yours. To have SafeGrd hold one instead, move that file aside and\n")
 						fmt.Printf("                re-run with --key-custody=safegrd.\n")
 					}
 				default:
-					fmt.Printf("   Custody:     you hold this key (--key-custody=local). SafeGrd CANNOT decrypt these backups.\n")
-					fmt.Printf("                Back up %s; nobody can recover it for you.\n", cfg.Encryption.KeyPath)
+					fmt.Printf("   Custody:     you hold this key (--key-custody=local). Only you can decrypt these backups.\n")
+					fmt.Printf("                Keep a copy of %s somewhere safe: it is the key that opens them.\n", cfg.Encryption.KeyPath)
 				}
 				if cfg.ProjectID != "" {
 					fmt.Printf("   Project ID:  %s\n", cfg.ProjectID)
@@ -400,10 +400,10 @@ With neither, it uses the login saved by 'safegrd login'.`,
 			"Without it enrollment is refused, because the host would back up nothing until storage is set")
 	cmd.Flags().StringVar(&keyCustody, "key-custody", "",
 		"Who holds the encryption key when this command generates one: "+
-			"'safegrd' (default) sends it to the remote server, so losing this host does not lose the backups, "+
-			"and SafeGrd can decrypt them; "+
-			"'local' writes it to key_path and sends only the public half, so nobody but you can ever read them "+
-			"and nobody can recover it if you lose it. "+
+			"'safegrd' (default) keeps it sealed on the remote server and releases it only to your enrolled hosts, "+
+			"so losing this host never loses the backups; "+
+			"'local' writes it to key_path and sends only the public half, so only you can decrypt the backups "+
+			"and you keep a copy of the key safe. "+
 			"Ignored when you supplied your own key (an existing key is never sent).")
 
 	return cmd

@@ -177,9 +177,9 @@ config when it starts, so run `safegrd agent restart` after changing it.
 ## Core Features
 
 - **Postgres, restored whole:** the schema comes from `pg_dump` and the rows stream over binary `COPY` from the same snapshot, so arrays, enums, foreign keys, views, triggers and sequence positions all come back. Needs a `pg_dump` at least as new as the server on the host.
-- **Client-Side Zero-Knowledge:** Plaintext data is encrypted using Age (X25519) before leaving your machine. Private keys never leave your infrastructure.
+- **Encrypted before it leaves the host:** backups are encrypted with age (X25519) on your machine. You choose who holds the private key: keep it on your hosts, or have the remote server keep it sealed for your enrolled hosts.
 - **Immutable WORM Storage:** Supports AWS S3 Object Lock (Governance and Compliance modes) and local filesystem WORM locking.
-- **Fire Drill Sandbox Restores:** Tests backups automatically to guarantee recoverability and generate cryptographic audit certificates.
+- **Fire Drill restores:** restores backups on a schedule, counts what came back, and signs a certificate of each test.
 
 ---
 
