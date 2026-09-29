@@ -352,11 +352,41 @@ func applyConsoleSettings(s, configured *config.SurfaceConfig, st *SurfaceState)
 	}
 }
 
+// consoleSettingsSaid is the surfaces this process has already said run on
+// the console's settings, so it is said once per start and not every tick.
+var consoleSettingsSaid = map[string]bool{}
+
+// sayConsoleSettingsInForce says, once per start, that the console's
+// settings replace the config's. Otherwise an operator who edits the
+// config's schedule and restarts the agent would see nothing change and
+// nothing said.
+func sayConsoleSettingsInForce(s, configured *config.SurfaceConfig, st *SurfaceState) {
+	if consoleSettingsSaid[st.SurfaceID] {
+		return
+	}
+	var parts []string
+	if s.Schedule != configured.Schedule {
+		parts = append(parts, fmt.Sprintf("schedule %s (config: %s)", s.Schedule, configured.Schedule))
+	}
+	if s.RetentionDays != configured.RetentionDays {
+		parts = append(parts, fmt.Sprintf("retention %d days", s.RetentionDays))
+	}
+	if len(parts) == 0 {
+		return
+	}
+	consoleSettingsSaid[st.SurfaceID] = true
+	fmt.Printf("🛠  Surface %s runs on settings from the console: %s. Clear them in the console to use the config.\n",
+		st.SurfaceID, strings.Join(parts, ", "))
+}
+
 // noteConsoleSettings records what the remote server's heartbeat says the
-// console chose, and says so once when it changes. A schedule this agent
-// cannot parse is refused out loud and the config's is kept.
-func noteConsoleSettings(st *SurfaceState, configured *config.SurfaceConfig, hb *model.HeartbeatResponse) {
+// console chose, and says so once when it changes, reporting whether it did.
+// A schedule this agent cannot parse is refused out loud and the config's
+// is kept.
+func noteConsoleSettings(st *SurfaceState, configured *config.SurfaceConfig, hb *model.HeartbeatResponse) bool {
+	changed := false
 	if hb.Schedule != st.ConsoleSchedule {
+		changed = true
 		switch {
 		case hb.Schedule == "":
 			fmt.Printf("🛠  Surface %s: the schedule set in the console was cleared; back to the config's %s.\n",
@@ -373,6 +403,7 @@ func noteConsoleSettings(st *SurfaceState, configured *config.SurfaceConfig, hb 
 		st.ConsoleSchedule = hb.Schedule
 	}
 	if hb.RetentionDays != st.ConsoleRetentionDays {
+		changed = true
 		if hb.RetentionDays == 0 {
 			fmt.Printf("🛠  Surface %s: the retention set in the console was cleared; new backups follow the config again.\n", st.SurfaceID)
 		} else {
@@ -381,6 +412,7 @@ func noteConsoleSettings(st *SurfaceState, configured *config.SurfaceConfig, hb 
 		}
 		st.ConsoleRetentionDays = hb.RetentionDays
 	}
+	return changed
 }
 
 // warnAboutSchedules says out loud, once per agent start, every surface whose
@@ -496,10 +528,13 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 		applyConsoleSettings(&surface, &configured, sState)
 		hb := sendHeartbeat(ctx, c, nodeID, sState, tick, &surface)
 		if hb != nil {
-			noteConsoleSettings(sState, &configured, hb)
+			if noteConsoleSettings(sState, &configured, hb) {
+				consoleSettingsSaid[surface.ID] = true
+			}
 			surface = configured
 			applyConsoleSettings(&surface, &configured, sState)
 		}
+		sayConsoleSettingsInForce(&surface, &configured, sState)
 
 		if clockWentBackwards(sState, now) {
 			fmt.Fprintf(os.Stderr, "⚠️  Surface %s: this host's clock is behind the last backup it recorded (%s); "+
