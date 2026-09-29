@@ -167,10 +167,10 @@ type SurfaceConfig struct {
 	Excludes []string `yaml:"excludes,omitempty" json:"excludes,omitempty"`
 
 	// Email fields
-	Host              string   `yaml:"host,omitempty" json:"host,omitempty"`
-	Port              int      `yaml:"port,omitempty" json:"port,omitempty"`
-	Username          string   `yaml:"username,omitempty" json:"username,omitempty"`
-	Folders           []string `yaml:"folders,omitempty" json:"folders,omitempty"`
+	Host     string   `yaml:"host,omitempty" json:"host,omitempty"`
+	Port     int      `yaml:"port,omitempty" json:"port,omitempty"`
+	Username string   `yaml:"username,omitempty" json:"username,omitempty"`
+	Folders  []string `yaml:"folders,omitempty" json:"folders,omitempty"`
 
 	// Credential is where this surface's credential comes from: a
 	// database's whole connection URL, or a mailbox's password. One block,
