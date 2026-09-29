@@ -213,7 +213,7 @@ type CLIConfig struct {
 	Alert       AlertConfig      `yaml:"alert,omitempty" json:"alert,omitempty"`
 
 	// Daemon & Multi-Surface Unattended Protection
-	Daemon    DaemonConfig     `yaml:"daemon,omitempty" json:"daemon,omitempty"`
+	Daemon   DaemonConfig    `yaml:"daemon,omitempty" json:"daemon,omitempty"`
 	Defaults DefaultsConfig  `yaml:"defaults,omitempty" json:"defaults,omitempty"`
 	Surfaces []SurfaceConfig `yaml:"surfaces,omitempty" json:"surfaces,omitempty"`
 

@@ -80,7 +80,7 @@ type SurfaceState struct {
 
 // DaemonState persists state across daemon ticks.
 type DaemonState struct {
-	DaemonID   string                   `json:"daemon_id"`
+	DaemonID  string                   `json:"daemon_id"`
 	UpdatedAt time.Time                `json:"updated_at"`
 	Surfaces  map[string]*SurfaceState `json:"surfaces"`
 	// LastPrune is when the daemon last pruned the bucket
@@ -255,7 +255,7 @@ func loadDaemonState(statePath string) *DaemonState {
 	data, err := os.ReadFile(statePath)
 	if err != nil {
 		return &DaemonState{
-			DaemonID:   uuid.New().String()[:8],
+			DaemonID:  uuid.New().String()[:8],
 			UpdatedAt: time.Now().UTC(),
 			Surfaces:  make(map[string]*SurfaceState),
 		}
@@ -263,7 +263,7 @@ func loadDaemonState(statePath string) *DaemonState {
 	var state DaemonState
 	if err := json.Unmarshal(data, &state); err != nil {
 		return &DaemonState{
-			DaemonID:   uuid.New().String()[:8],
+			DaemonID:  uuid.New().String()[:8],
 			UpdatedAt: time.Now().UTC(),
 			Surfaces:  make(map[string]*SurfaceState),
 		}
@@ -1121,7 +1121,7 @@ func newDaemonStatusCmd() *cobra.Command {
 				enc := json.NewEncoder(os.Stdout)
 				enc.SetIndent("", "  ")
 				return enc.Encode(map[string]any{
-					"daemon_id":  daemonState.DaemonID,
+					"daemon_id": daemonState.DaemonID,
 					"surfaces":  views,
 					"state_dir": resolvedStateDir,
 				})

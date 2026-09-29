@@ -92,7 +92,7 @@ type Node struct {
 	DaemonIntervalSeconds int    `json:"daemon_interval_seconds,omitempty" yaml:"daemon_interval_seconds,omitempty"`
 	DaemonFailures        int    `json:"daemon_failures,omitempty" yaml:"daemon_failures,omitempty"`
 	DaemonLastError       string `json:"daemon_last_error,omitempty" yaml:"daemon_last_error,omitempty"`
-	DrillStatus          string `json:"drill_status,omitempty" yaml:"drill_status,omitempty"`
+	DrillStatus           string `json:"drill_status,omitempty" yaml:"drill_status,omitempty"`
 
 	// Platform telemetry (OS / Arch) and update notification.
 	OS               string `json:"os,omitempty" yaml:"os,omitempty"`
