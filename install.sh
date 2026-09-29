@@ -312,6 +312,23 @@ case ":$PATH:" in
     ;;
 esac
 
+# Another safegrd earlier on PATH (a package manager's, an older copy) is the
+# one every command typed after this script runs, so the next steps would run
+# a different release from the one just set up, and a config it does not
+# understand. Said as the last thing printed, whichever way the script ends.
+warn_if_shadowed() {
+  ON_PATH="$(command -v safegrd 2>/dev/null || true)"
+  if [ -z "$ON_PATH" ] || [ "$ON_PATH" -ef "$SAFEGRD_BIN" ]; then
+    return 0
+  fi
+  ON_PATH_VERSION="$("$ON_PATH" --version 2>/dev/null | head -n 1 || true)"
+  printf "\n" >&2
+  log_warn "Typing 'safegrd' runs ${ON_PATH} (${ON_PATH_VERSION:-unknown version}), not ${SAFEGRD_BIN} (${TAG})."
+  printf "   Every safegrd command you type uses that one. Remove it (for Homebrew: brew uninstall safegrd),\n" >&2
+  printf "   or put %s before it in PATH, then open a new shell.\n\n" "$(dirname "$SAFEGRD_BIN")" >&2
+}
+trap warn_if_shadowed EXIT
+
 # 13. Connect this host, or say how to
 # A binary older than this script (a pinned VERSION, or a release published
 # before it) has an enroll that ignores the saved login, so `login` then

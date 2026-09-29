@@ -479,6 +479,16 @@ func isSurfaceDue(s *config.SurfaceConfig, state *SurfaceState, now time.Time) (
 	return now.After(nextDue) || now.Equal(nextDue), nextDue
 }
 
+// sayNotDue tells a single pass why a surface was skipped: it is not yet at
+// its next scheduled backup, and the last attempt's failure if there was one.
+func sayNotDue(s *config.SurfaceConfig, state *SurfaceState, now time.Time) {
+	fmt.Printf("✓  Surface %s (%s): not due; the next backup is at %s, in %s.\n",
+		s.ID, s.Type, state.NextDue.Local().Format("2006-01-02 15:04"), state.NextDue.Sub(now).Round(time.Minute))
+	if state.ConsecutiveFailures > 0 && state.LastError != "" {
+		fmt.Printf("   The last attempt failed: %s\n", state.LastError)
+	}
+}
+
 // clockWentBackwards reports whether a surface's recorded times are ahead of
 // this host's clock.
 func clockWentBackwards(state *SurfaceState, now time.Time) bool {
@@ -542,6 +552,15 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 				surface.ID, sState.LastAttempt.UTC().Format(time.RFC3339))
 		}
 		due, nextDue := isSurfaceDue(&surface, sState, now)
+		if !due && tick == 0 && sState.ConsecutiveFailures > 0 {
+			// The backoff keeps a resident agent from retrying a broken
+			// surface every few minutes. Someone running one pass by hand
+			// has usually just fixed it, and wants it tried now; the
+			// schedule still holds.
+			retry := *sState
+			retry.ConsecutiveFailures = 0
+			due, nextDue = isSurfaceDue(&surface, &retry, now)
+		}
 		sState.NextDue = nextDue
 
 		// A console "back up now" is run once, by its id. TriggerBackup is
@@ -551,6 +570,12 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 		requested := hb != nil && hb.BackupRequestID != "" && hb.BackupRequestID != sState.LastBackupRequestID
 		if requested {
 			sState.LastBackupRequestID = hb.BackupRequestID
+		}
+
+		if !due && !requested && tick == 0 {
+			// A single pass that does nothing must say why, or it looks
+			// like a run that hung or lost its output.
+			sayNotDue(&surface, sState, now)
 		}
 
 		if due || requested {
