@@ -135,18 +135,18 @@ func TestAnUnusedAlertBlockIsNamed(t *testing.T) {
 	}
 }
 
-// Keys the agent accepts and ignores are named when set, and only then.
+// Keys the daemon accepts and ignores are named when set, and only then.
 func TestIgnoredConfigKeysAreNamed(t *testing.T) {
 	c := config.NewDefaultCLIConfig()
-	c.Agent.LogFormat, c.Agent.LogLevel, c.Defaults.Timezone = "text", "info", "UTC"
+	c.Daemon.LogFormat, c.Daemon.LogLevel, c.Defaults.Timezone = "text", "info", "UTC"
 	if got := ignoredConfigKeys(c); len(got) != 0 {
 		t.Errorf("defaults were reported as ignored: %v", got)
 	}
-	c.Agent.MaxConcurrent = 4
-	c.Agent.MetricsAddr = "127.0.0.1:9847"
+	c.Daemon.MaxConcurrent = 4
+	c.Daemon.MetricsAddr = "127.0.0.1:9847"
 	c.Defaults.Timezone = "Asia/Kolkata"
 	got := strings.Join(ignoredConfigKeys(c), "\n")
-	for _, want := range []string{"agent.max_concurrent", "agent.metrics_addr", "defaults.timezone"} {
+	for _, want := range []string{"daemon.max_concurrent", "daemon.metrics_addr", "defaults.timezone"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("%s not named:\n%s", want, got)
 		}

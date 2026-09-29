@@ -78,12 +78,12 @@ type SurfaceState struct {
 	ConsoleRetentionDays int    `json:"console_retention_days,omitempty"`
 }
 
-// AgentState persists state across daemon ticks.
-type AgentState struct {
-	AgentID   string                   `json:"agent_id"`
+// DaemonState persists state across daemon ticks.
+type DaemonState struct {
+	DaemonID   string                   `json:"daemon_id"`
 	UpdatedAt time.Time                `json:"updated_at"`
 	Surfaces  map[string]*SurfaceState `json:"surfaces"`
-	// LastPrune is when the agent last pruned the bucket
+	// LastPrune is when the daemon last pruned the bucket
 	// (storage.expire_after_lock).
 	LastPrune time.Time `json:"last_prune,omitempty"`
 }
@@ -96,25 +96,25 @@ type LockInfo struct {
 	SurfaceID  string    `json:"surface_id"`
 }
 
-func newAgentCmd() *cobra.Command {
+func newDaemonCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "agent",
-		Short: "Run and manage the background backup agent",
-		Long: `The agent runs as a background service. It backs up every configured surface
+		Use:   "daemon",
+		Short: "Run and manage the background backup daemon",
+		Long: `The daemon runs as a background service. It backs up every configured surface
 (databases, directories, IMAP mailboxes) on its schedule, encrypted and locked, and runs
 Fire Drills when the remote server asks for them.`,
 	}
 
-	cmd.AddCommand(newAgentRunCmd())
-	cmd.AddCommand(newAgentStatusCmd())
-	cmd.AddCommand(newAgentInstallCmd())
-	cmd.AddCommand(newAgentUninstallCmd())
-	cmd.AddCommand(newAgentRestartCmd())
+	cmd.AddCommand(newDaemonRunCmd())
+	cmd.AddCommand(newDaemonStatusCmd())
+	cmd.AddCommand(newDaemonInstallCmd())
+	cmd.AddCommand(newDaemonUninstallCmd())
+	cmd.AddCommand(newDaemonRestartCmd())
 
 	return cmd
 }
 
-func newAgentRunCmd() *cobra.Command {
+func newDaemonRunCmd() *cobra.Command {
 	var (
 		once        bool
 		intervalStr string
@@ -124,7 +124,7 @@ func newAgentRunCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "run",
 		Short: "Run the resident backup daemon (or run once with --once)",
-		Long: `Executes the unattended agent loop. Supervised by systemd or launchd,
+		Long: `Executes the daemon loop. Supervised by systemd or launchd,
 evaluates due surfaces based on local state, acquires per-surface single-flight locks,
 and performs streaming backups to immutable WORM storage.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -148,18 +148,18 @@ and performs streaming backups to immutable WORM storage.`,
 				return fmt.Errorf("failed to create locks directory: %w", err)
 			}
 
-			// Singleton agent process lock
-			agentLockPath := filepath.Join(lockDir, "agent.lock")
-			releaseAgentLock, err := acquireLock(agentLockPath, "agent", "")
+			// Singleton daemon process lock
+			daemonLockPath := filepath.Join(lockDir, "daemon.lock")
+			releaseDaemonLock, err := acquireLock(daemonLockPath, "daemon", "")
 			if err != nil {
-				return fmt.Errorf("agent is already running: %w", err)
+				return fmt.Errorf("daemon is already running: %w", err)
 			}
-			defer releaseAgentLock()
+			defer releaseDaemonLock()
 
-			fmt.Println("🛡️  SafeGrd Always-On Agent Started")
+			fmt.Println("🛡️  SafeGrd Always-On Daemon Started")
 			fmt.Printf("   Configured Surfaces: %d\n", len(cfg.Surfaces))
 			fmt.Printf("   State Directory:     %s\n", resolvedStateDir)
-			// Said once, at start: an agent with no token reports nothing, and
+			// Said once, at start: a daemon with no token reports nothing, and
 			// an enrolled host that lost its token must not look the same as
 			// one reporting fine.
 			if !hostIsEnrolled(cfg) {
@@ -174,7 +174,7 @@ and performs streaming backups to immutable WORM storage.`,
 			warnAboutSchedules(cfg)
 
 			if len(cfg.Surfaces) == 0 {
-				fmt.Println("ℹ️  No surfaces defined in config. Agent is idling.")
+				fmt.Println("ℹ️  No surfaces defined in config. Daemon is idling.")
 				if once {
 					return nil
 				}
@@ -187,7 +187,7 @@ and performs streaming backups to immutable WORM storage.`,
 
 			if once {
 				// No tick: a cron-driven run must not look like a resident
-				// agent, or it would be reported silent between runs and a
+				// daemon, or it would be reported silent between runs and a
 				// console "back up now" would wait for a daemon that does
 				// not exist.
 				return reconcileSurfaces(ctx, cfg, resolvedStateDir, 0, registered)
@@ -199,8 +199,8 @@ and performs streaming backups to immutable WORM storage.`,
 				if d, err := time.ParseDuration(intervalStr); err == nil && d > 0 {
 					interval = d
 				}
-			} else if cfg.Agent.Interval != "" {
-				if d, err := time.ParseDuration(cfg.Agent.Interval); err == nil && d > 0 {
+			} else if cfg.Daemon.Interval != "" {
+				if d, err := time.ParseDuration(cfg.Daemon.Interval); err == nil && d > 0 {
 					interval = d
 				}
 			}
@@ -219,7 +219,7 @@ and performs streaming backups to immutable WORM storage.`,
 
 				select {
 				case <-ctx.Done():
-					fmt.Println("Agent stopped gracefully.")
+					fmt.Println("Daemon stopped gracefully.")
 					return nil
 				case <-time.After(sleepDur):
 					if err := reconcileSurfaces(ctx, cfg, resolvedStateDir, interval, registered); err != nil {
@@ -241,8 +241,8 @@ func resolveStateDir(explicit string, c *config.CLIConfig) string {
 	if explicit != "" {
 		return explicit
 	}
-	if c.Agent.StateDir != "" {
-		return c.Agent.StateDir
+	if c.Daemon.StateDir != "" {
+		return c.Daemon.StateDir
 	}
 	home, err := os.UserHomeDir()
 	if err == nil {
@@ -251,19 +251,19 @@ func resolveStateDir(explicit string, c *config.CLIConfig) string {
 	return "/var/lib/safegrd"
 }
 
-func loadAgentState(statePath string) *AgentState {
+func loadDaemonState(statePath string) *DaemonState {
 	data, err := os.ReadFile(statePath)
 	if err != nil {
-		return &AgentState{
-			AgentID:   uuid.New().String()[:8],
+		return &DaemonState{
+			DaemonID:   uuid.New().String()[:8],
 			UpdatedAt: time.Now().UTC(),
 			Surfaces:  make(map[string]*SurfaceState),
 		}
 	}
-	var state AgentState
+	var state DaemonState
 	if err := json.Unmarshal(data, &state); err != nil {
-		return &AgentState{
-			AgentID:   uuid.New().String()[:8],
+		return &DaemonState{
+			DaemonID:   uuid.New().String()[:8],
 			UpdatedAt: time.Now().UTC(),
 			Surfaces:  make(map[string]*SurfaceState),
 		}
@@ -274,7 +274,7 @@ func loadAgentState(statePath string) *AgentState {
 	return &state
 }
 
-func saveAgentState(statePath string, state *AgentState) error {
+func saveDaemonState(statePath string, state *DaemonState) error {
 	state.UpdatedAt = time.Now().UTC()
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
@@ -361,7 +361,7 @@ var consoleSettingsSaid = map[string]bool{}
 
 // sayConsoleSettingsInForce says, once per start, that the console's
 // settings replace the config's. Otherwise an operator who edits the
-// config's schedule and restarts the agent would see nothing change and
+// config's schedule and restarts the daemon would see nothing change and
 // nothing said.
 func sayConsoleSettingsInForce(s, configured *config.SurfaceConfig, st *SurfaceState) {
 	if consoleSettingsSaid[st.SurfaceID] {
@@ -384,7 +384,7 @@ func sayConsoleSettingsInForce(s, configured *config.SurfaceConfig, st *SurfaceS
 
 // noteConsoleSettings records what the remote server's heartbeat says the
 // console chose, and says so once when it changes, reporting whether it did.
-// A schedule this agent cannot parse is refused out loud and the config's
+// A schedule this daemon cannot parse is refused out loud and the config's
 // is kept.
 func noteConsoleSettings(st *SurfaceState, configured *config.SurfaceConfig, hb *model.HeartbeatResponse) bool {
 	changed := false
@@ -396,7 +396,7 @@ func noteConsoleSettings(st *SurfaceState, configured *config.SurfaceConfig, hb 
 				st.SurfaceID, configured.Schedule)
 		default:
 			if _, err := model.ScheduleInterval(hb.Schedule); err != nil {
-				fmt.Fprintf(os.Stderr, "⚠️  Surface %s: the console set the schedule %q, which this agent cannot run (%v). "+
+				fmt.Fprintf(os.Stderr, "⚠️  Surface %s: the console set the schedule %q, which this daemon cannot run (%v). "+
 					"Keeping the config's %s; update safegrd.\n", st.SurfaceID, hb.Schedule, err, configured.Schedule)
 			} else {
 				fmt.Printf("🛠  Surface %s: the console set its schedule to %s, in place of the config's %s.\n",
@@ -418,8 +418,8 @@ func noteConsoleSettings(st *SurfaceState, configured *config.SurfaceConfig, hb 
 	return changed
 }
 
-// warnAboutSchedules says out loud, once per agent start, every surface whose
-// schedule the agent will not run as written. The agent still protects the
+// warnAboutSchedules says out loud, once per daemon start, every surface whose
+// schedule the daemon will not run as written. The daemon still protects the
 // surface (at the floor, or daily) because refusing over a typo would leave
 // it unprotected; but a substitution should be surfaced to the operator.
 func warnAboutSchedules(c *config.CLIConfig) {
@@ -432,7 +432,7 @@ func warnAboutSchedules(c *config.CLIConfig) {
 	}
 }
 
-// warnIfStateUnsaved says out loud that the agent could not record what it did.
+// warnIfStateUnsaved says out loud that the daemon could not record what it did.
 //
 // Both saves were `_ =`. The state file is what tells the next tick a surface
 // was backed up, so a save that fails silently makes every surface look
@@ -443,19 +443,19 @@ func warnIfStateUnsaved(err error, path string) {
 	if err == nil {
 		return
 	}
-	fmt.Fprintf(os.Stderr, "❌ Could not save agent state to %s: %v\n"+
+	fmt.Fprintf(os.Stderr, "❌ Could not save daemon state to %s: %v\n"+
 		"   The next tick will not know this run happened and will back up again.\n", path, err)
 }
 
 func isSurfaceDue(s *config.SurfaceConfig, state *SurfaceState, now time.Time) (bool, time.Time) {
-	// The problem, if any, is reported once at agent start by
+	// The problem, if any, is reported once at daemon start by
 	// warnAboutSchedules rather than on every tick.
 	interval, _ := model.ScheduleInterval(s.Schedule)
 
 	// A last attempt or success in the future means this host's clock went
 	// backwards (a bad NTP step, a VM restored from an image). Waiting for
 	// the clock to catch up would stop backups for as long as it jumped, so
-	// the surface is due now; the agent says why once (clockWentBackwards).
+	// the surface is due now; the daemon says why once (clockWentBackwards).
 	if now.Before(state.LastAttempt) || now.Before(state.LastSuccess) {
 		return true, now
 	}
@@ -499,21 +499,21 @@ func clockWentBackwards(state *SurfaceState, now time.Time) bool {
 }
 
 func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string, tick time.Duration, registered map[string]bool) error {
-	statePath := filepath.Join(stateDir, "agent_state.json")
+	statePath := filepath.Join(stateDir, "daemon_state.json")
 	lockDir := filepath.Join(stateDir, "locks")
-	agentState := loadAgentState(statePath)
+	daemonState := loadDaemonState(statePath)
 	now := time.Now().UTC()
 
 	var hasErrors bool
 	var drills []pendingDrill
 
 	// A drill still marked in flight took the last process down with it.
-	for _, st := range agentState.Surfaces {
+	for _, st := range daemonState.Surfaces {
 		if st.DrillInFlight {
 			st.DrillInFlight = false
 			st.DrillFailures++
 			st.DrillStatus = model.DrillStatusFailed
-			fmt.Fprintf(os.Stderr, "❌ Surface %s: the last Fire Drill did not finish; the agent stopped during it. "+
+			fmt.Fprintf(os.Stderr, "❌ Surface %s: the last Fire Drill did not finish; the daemon stopped during it. "+
 				"Counted as a failure; the next is at least %s away.\n", st.SurfaceID, drillBackoff(st.DrillFailures))
 		}
 	}
@@ -523,13 +523,13 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 			continue
 		}
 
-		sState, exists := agentState.Surfaces[surface.ID]
+		sState, exists := daemonState.Surfaces[surface.ID]
 		if !exists {
 			sState = &SurfaceState{
 				SurfaceID:   surface.ID,
 				SurfaceType: surface.Type,
 			}
-			agentState.Surfaces[surface.ID] = sState
+			daemonState.Surfaces[surface.ID] = sState
 		}
 
 		surface.Schedule = effectiveSchedule(c, surface)
@@ -537,11 +537,11 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 		nodeID := surfaceNodeID(ctx, c, &surface, sState, registered)
 		if nodeID == "" {
 			// Retired in the console. Said to a single pass every time, and
-			// to the resident agent when it first hears it, not every tick.
+			// to the daemon when it first hears it, not every tick.
 			if tick == 0 || wasRetired != sState.Retired {
 				fmt.Fprintf(os.Stderr, "⛔ Surface %s: %s.\n", surface.ID, sState.Retired)
 			}
-			warnIfStateUnsaved(saveAgentState(statePath, agentState), statePath)
+			warnIfStateUnsaved(saveDaemonState(statePath, daemonState), statePath)
 			continue
 		}
 		// The console's settings as last heard, so the heartbeat reports
@@ -566,7 +566,7 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 		}
 		due, nextDue := isSurfaceDue(&surface, sState, now)
 		if !due && tick == 0 && sState.ConsecutiveFailures > 0 {
-			// The backoff keeps a resident agent from retrying a broken
+			// The backoff keeps a daemon from retrying a broken
 			// surface every few minutes. Someone running one pass by hand
 			// has usually just fixed it, and wants it tried now; the
 			// schedule still holds.
@@ -598,7 +598,7 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 				fmt.Printf("⏰ Surface %s (%s) is due for backup.\n", surface.ID, surface.Type)
 			}
 			fetchHeldSurfaceSecret(ctx, c, nodeID, &surface)
-			if err := backupSurfaceNow(ctx, c, &surface, sState, nodeID, lockDir, statePath, agentState); err != nil {
+			if err := backupSurfaceNow(ctx, c, &surface, sState, nodeID, lockDir, statePath, daemonState); err != nil {
 				hasErrors = true
 			}
 		}
@@ -624,7 +624,7 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 				sState.DrillStatus = ""
 			}
 		}
-		warnIfStateUnsaved(saveAgentState(statePath, agentState), statePath)
+		warnIfStateUnsaved(saveDaemonState(statePath, daemonState), statePath)
 	}
 
 	for _, d := range drills {
@@ -632,14 +632,14 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 			break
 		}
 		runUnattendedDrill(ctx, c, d.surface, d.state, d.nodeID, d.snapshotID, d.requestID, func() {
-			warnIfStateUnsaved(saveAgentState(statePath, agentState), statePath)
+			warnIfStateUnsaved(saveDaemonState(statePath, daemonState), statePath)
 		})
 	}
 
 	// Expiry in the customer's own bucket, when they opted in: once a day.
 	// A failure is said and retried tomorrow; it never fails the backups.
-	if c.Storage.ExpireAfterLock && c.Storage.Type == config.StorageTypeS3 && time.Since(agentState.LastPrune) >= pruneEvery {
-		agentState.LastPrune = time.Now().UTC()
+	if c.Storage.ExpireAfterLock && c.Storage.Type == config.StorageTypeS3 && time.Since(daemonState.LastPrune) >= pruneEvery {
+		daemonState.LastPrune = time.Now().UTC()
 		if r, err := pruneOwnBucket(ctx, c, pruneGrace, false, os.Stderr); err != nil {
 			fmt.Fprintf(os.Stderr, "❌ Prune (storage.expire_after_lock): %v\n", err)
 		} else {
@@ -647,7 +647,7 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 		}
 	}
 
-	warnIfStateUnsaved(saveAgentState(statePath, agentState), statePath)
+	warnIfStateUnsaved(saveDaemonState(statePath, daemonState), statePath)
 
 	if hasErrors {
 		return fmt.Errorf("one or more surface backups failed during reconciliation")
@@ -656,9 +656,9 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 }
 
 // backupSurfaceNow runs one surface's backup under its lock and records the
-// outcome in the agent's state. It returns the backup's error, if any.
+// outcome in the daemon's state. It returns the backup's error, if any.
 func backupSurfaceNow(ctx context.Context, c *config.CLIConfig, surface *config.SurfaceConfig, sState *SurfaceState,
-	nodeID, lockDir, statePath string, agentState *AgentState) error {
+	nodeID, lockDir, statePath string, daemonState *DaemonState) error {
 	now := time.Now().UTC()
 
 	// Acquire single-flight surface lock
@@ -733,7 +733,7 @@ func backupSurfaceNow(ctx context.Context, c *config.CLIConfig, surface *config.
 	// so status reflects the next cycle.
 	_, sState.NextDue = isSurfaceDue(surface, sState, time.Now().UTC())
 
-	warnIfStateUnsaved(saveAgentState(statePath, agentState), statePath)
+	warnIfStateUnsaved(saveDaemonState(statePath, daemonState), statePath)
 	return backupErr
 }
 
@@ -872,7 +872,7 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 		}
 
 		// The same private-CA trust `backup --email-ca-file` has: without it a
-		// self-hosted mailbox could be backed up by hand and never by the agent.
+		// self-hosted mailbox could be backed up by hand and never by the daemon.
 		tlsCfg, err := emailTLSConfig(host, os.Getenv("SAFEGRD_EMAIL_CA_FILE"))
 		if err != nil {
 			return nil, plan, fmt.Errorf("surface %s: %w", s.ID, err)
@@ -1016,7 +1016,7 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 	}
 }
 
-func newAgentStatusCmd() *cobra.Command {
+func newDaemonStatusCmd() *cobra.Command {
 	var (
 		jsonOut  bool
 		stateDir string
@@ -1024,11 +1024,11 @@ func newAgentStatusCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "status",
-		Short: "View live status of all configured surfaces and the agent daemon",
+		Short: "View live status of all configured surfaces and the daemon",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			resolvedStateDir := resolveStateDir(stateDir, cfg)
-			statePath := filepath.Join(resolvedStateDir, "agent_state.json")
-			agentState := loadAgentState(statePath)
+			statePath := filepath.Join(resolvedStateDir, "daemon_state.json")
+			daemonState := loadDaemonState(statePath)
 
 			// last_success and next_due are human-readable summary strings
 			// ("Never", "Due now", or timestamp string).
@@ -1045,7 +1045,7 @@ func newAgentStatusCmd() *cobra.Command {
 				Status        string `json:"status"`
 				LastSnapshot  string `json:"last_snapshot_id,omitempty"`
 				LastError     string `json:"last_error,omitempty"`
-				// ScheduleProblem is set when the agent is not running the
+				// ScheduleProblem is set when the daemon is not running the
 				// schedule as written (clamped to the floor, or unreadable
 				// and fallback to daily).
 				ScheduleProblem string `json:"schedule_problem,omitempty"`
@@ -1056,7 +1056,7 @@ func newAgentStatusCmd() *cobra.Command {
 
 			views := make([]SurfaceStatusView, 0, len(cfg.Surfaces))
 			for _, s := range cfg.Surfaces {
-				st, ok := agentState.Surfaces[s.ID]
+				st, ok := daemonState.Surfaces[s.ID]
 				lastSucc := "Never"
 				lastSuccAt := ""
 				nextDueStr := "Due now"
@@ -1092,7 +1092,7 @@ func newAgentStatusCmd() *cobra.Command {
 				if _, err := model.ScheduleInterval(sched); err != nil {
 					schedProblem = err.Error()
 				}
-				// A schedule set in the console is the one the agent runs,
+				// A schedule set in the console is the one the daemon runs,
 				// so it is the one shown, with where it came from.
 				if ok && st != nil && st.ConsoleSchedule != "" {
 					if _, err := model.ScheduleInterval(st.ConsoleSchedule); err == nil {
@@ -1121,14 +1121,14 @@ func newAgentStatusCmd() *cobra.Command {
 				enc := json.NewEncoder(os.Stdout)
 				enc.SetIndent("", "  ")
 				return enc.Encode(map[string]any{
-					"agent_id":  agentState.AgentID,
+					"daemon_id":  daemonState.DaemonID,
 					"surfaces":  views,
 					"state_dir": resolvedStateDir,
 				})
 			}
 
-			fmt.Println("🛡️  SafeGrd Always-On Agent Status")
-			fmt.Printf("   Agent ID:    %s\n", agentState.AgentID)
+			fmt.Println("🛡️  SafeGrd Always-On Daemon Status")
+			fmt.Printf("   Daemon ID:    %s\n", daemonState.DaemonID)
 			fmt.Printf("   State Dir:   %s\n\n", resolvedStateDir)
 
 			if len(views) == 0 {
@@ -1157,7 +1157,7 @@ func newAgentStatusCmd() *cobra.Command {
 	return cmd
 }
 
-func newAgentInstallCmd() *cobra.Command {
+func newDaemonInstallCmd() *cobra.Command {
 	var (
 		printOnly bool
 		userScope bool
@@ -1167,7 +1167,7 @@ func newAgentInstallCmd() *cobra.Command {
 		Use:   "install",
 		Short: "Generate or install SafeGrd system service (systemd / launchd)",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			svc, err := agentServiceSpec(userScope)
+			svc, err := daemonServiceSpec(userScope)
 			if err != nil {
 				return err
 			}
@@ -1189,7 +1189,7 @@ func newAgentInstallCmd() *cobra.Command {
 				return fmt.Errorf("failed to create %s: %w", filepath.Dir(targetPath), err)
 			}
 			// The service's filesystem is read-only except for these, so the
-			// agent cannot create them itself. Made now, owned by whoever owns
+			// daemon cannot create them itself. Made now, owned by whoever owns
 			// the config, so the same person's own safegrd commands can write
 			// there too.
 			for _, w := range svc.writable {
@@ -1197,7 +1197,7 @@ func newAgentInstallCmd() *cobra.Command {
 					continue
 				}
 				if err := os.MkdirAll(w, 0700); err != nil {
-					return fmt.Errorf("failed to create %s, which the agent writes to: %w", w, err)
+					return fmt.Errorf("failed to create %s, which the daemon writes to: %w", w, err)
 				}
 				if err := chownLike(w, svc.configPath); err != nil {
 					fmt.Fprintf(os.Stderr, "[!] Created %s but could not give it to the config's owner: %v\n", w, err)
@@ -1228,22 +1228,22 @@ func newAgentInstallCmd() *cobra.Command {
 	return cmd
 }
 
-// agentService is what a service definition needs to run the agent exactly
-// as `safegrd agent run` runs here: the same binary, config and state.
-type agentService struct {
+// daemonService is what a service definition needs to run the daemon exactly
+// as `safegrd daemon run` runs here: the same binary, config and state.
+type daemonService struct {
 	exe, configPath, stateDir, home string
 	writable                        []string
 }
 
-// agentServiceSpec resolves the paths a service definition names, all
-// absolute. The unit used to run "safegrd agent run" with no --config, so a
+// daemonServiceSpec resolves the paths a service definition names, all
+// absolute. The unit used to run "safegrd daemon run" with no --config, so a
 // system service looked for /root/.safegrd/config.yaml instead of the config
 // of the person who enrolled, and with ProtectSystem=strict and no
 // ReadWritePaths it could not write its own state.
-func agentServiceSpec(userScope bool) (agentService, error) {
+func daemonServiceSpec(userScope bool) (daemonService, error) {
 	exe, err := os.Executable()
 	if err != nil {
-		return agentService{}, fmt.Errorf("cannot find the safegrd binary to run: %w", err)
+		return daemonService{}, fmt.Errorf("cannot find the safegrd binary to run: %w", err)
 	}
 	if real, err := filepath.EvalSymlinks(exe); err == nil {
 		exe = real
@@ -1251,22 +1251,22 @@ func agentServiceSpec(userScope bool) (agentService, error) {
 	configPath := cfgFile
 	if configPath == "" {
 		if configPath, err = config.DefaultConfigFile(); err != nil {
-			return agentService{}, fmt.Errorf("cannot find the config to run with: %w", err)
+			return daemonService{}, fmt.Errorf("cannot find the config to run with: %w", err)
 		}
 	}
 	if configPath, err = filepath.Abs(configPath); err != nil {
-		return agentService{}, err
+		return daemonService{}, err
 	}
 	if _, err := os.Stat(configPath); err != nil {
-		return agentService{}, fmt.Errorf("the service would run with %s, which cannot be read (%v); run 'safegrd enroll' or pass --config", configPath, err)
+		return daemonService{}, fmt.Errorf("the service would run with %s, which cannot be read (%v); run 'safegrd enroll' or pass --config", configPath, err)
 	}
 	stateDir, err := filepath.Abs(resolveStateDir("", cfg))
 	if err != nil {
-		return agentService{}, err
+		return daemonService{}, err
 	}
 	home, _ := os.UserHomeDir()
-	svc := agentService{exe: exe, configPath: configPath, stateDir: stateDir, home: home, writable: []string{stateDir}}
-	// A local sink is written to by the agent, so it must be writable under
+	svc := daemonService{exe: exe, configPath: configPath, stateDir: stateDir, home: home, writable: []string{stateDir}}
+	// A local sink is written to by the daemon, so it must be writable under
 	// the unit's read-only filesystem too.
 	addLocal := func(sc config.StorageConfig) {
 		if sc.Type == config.StorageTypeLocal && sc.LocalPath != "" {
@@ -1284,8 +1284,8 @@ func agentServiceSpec(userScope bool) (agentService, error) {
 	return svc, nil
 }
 
-func (s agentService) args() []string {
-	return []string{s.exe, "--config", s.configPath, "agent", "run", "--state-dir", s.stateDir}
+func (s daemonService) args() []string {
+	return []string{s.exe, "--config", s.configPath, "daemon", "run", "--state-dir", s.stateDir}
 }
 
 func systemdPath(userScope bool) string {
@@ -1301,26 +1301,26 @@ func systemdPath(userScope bool) string {
 
 func launchdPath(userScope bool) string {
 	if !userScope {
-		return "/Library/LaunchDaemons/dev.safegrd.agent.plist"
+		return "/Library/LaunchDaemons/dev.safegrd.daemon.plist"
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, "Library/LaunchAgents/dev.safegrd.agent.plist")
+	return filepath.Join(home, "Library/LaunchAgents/dev.safegrd.daemon.plist")
 }
 
 // systemdUnit is a unit for this host. A system unit keeps the hardening and
-// names every path the agent writes; a user unit cannot use ProtectSystem, and
+// names every path the daemon writes; a user unit cannot use ProtectSystem, and
 // is wanted by default.target because multi-user.target does not exist in a user
 // manager.
-func systemdUnit(s agentService, userScope bool) string {
+func systemdUnit(s daemonService, userScope bool) string {
 	quoted := make([]string, 0, 7)
 	for _, a := range s.args() {
 		quoted = append(quoted, systemdQuote(a))
 	}
 	var b strings.Builder
-	b.WriteString("[Unit]\nDescription=SafeGrd backup agent\n")
+	b.WriteString("[Unit]\nDescription=SafeGrd backup daemon\n")
 	if !userScope {
 		b.WriteString("Wants=network-online.target\nAfter=network-online.target\n")
 	}
@@ -1331,7 +1331,7 @@ func systemdUnit(s agentService, userScope bool) string {
 		fmt.Fprintf(&b, "Environment=%s\n", systemdQuote("HOME="+s.home))
 	}
 	if !userScope {
-		// The filesystem is read-only to the agent except for what it
+		// The filesystem is read-only to the daemon except for what it
 		// writes: its state and locks, and a local sink if it has one.
 		b.WriteString("ProtectSystem=strict\nPrivateTmp=true\n")
 		// "-": a path that does not exist is skipped rather than failing the
@@ -1368,23 +1368,23 @@ func launchctlCommand(verb string, userScope bool, plist string) string {
 	if verb == "bootstrap" {
 		return fmt.Sprintf("%slaunchctl bootstrap %s %s", sudo, domain, plist)
 	}
-	return fmt.Sprintf("%slaunchctl %s %s/dev.safegrd.agent", sudo, verb, domain)
+	return fmt.Sprintf("%slaunchctl %s %s/dev.safegrd.daemon", sudo, verb, domain)
 }
 
 // launchdPlist logs beside the state rather than to /tmp, where the log was
 // readable by every user on the machine.
-func launchdPlist(s agentService) string {
+func launchdPlist(s daemonService) string {
 	var args strings.Builder
 	for _, a := range s.args() {
 		fmt.Fprintf(&args, "        <string>%s</string>\n", html.EscapeString(a))
 	}
-	logPath := html.EscapeString(filepath.Join(s.stateDir, "agent.log"))
+	logPath := html.EscapeString(filepath.Join(s.stateDir, "daemon.log"))
 	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>dev.safegrd.agent</string>
+    <string>dev.safegrd.daemon</string>
     <key>ProgramArguments</key>
     <array>
 %s    </array>
@@ -1401,7 +1401,7 @@ func launchdPlist(s agentService) string {
 `, args.String(), logPath, logPath)
 }
 
-func newAgentUninstallCmd() *cobra.Command {
+func newDaemonUninstallCmd() *cobra.Command {
 	var userScope bool
 	cmd := &cobra.Command{
 		Use:   "uninstall",
@@ -1432,21 +1432,21 @@ func newAgentUninstallCmd() *cobra.Command {
 	return cmd
 }
 
-func newAgentRestartCmd() *cobra.Command {
+func newDaemonRestartCmd() *cobra.Command {
 	var userScope bool
 	cmd := &cobra.Command{
 		Use:   "restart",
-		Short: "Restart the installed agent service",
+		Short: "Restart the installed daemon service",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// It printed "Signaling agent service restart..." and restarted
+			// It printed "Signaling daemon service restart..." and restarted
 			// nothing; it now runs the service manager and says what happened.
 			var name string
 			var argv []string
 			switch {
 			case runtime.GOOS == "darwin" && userScope:
-				name, argv = "launchctl", []string{"kickstart", "-k", fmt.Sprintf("gui/%d/dev.safegrd.agent", os.Getuid())}
+				name, argv = "launchctl", []string{"kickstart", "-k", fmt.Sprintf("gui/%d/dev.safegrd.daemon", os.Getuid())}
 			case runtime.GOOS == "darwin":
-				name, argv = "launchctl", []string{"kickstart", "-k", "system/dev.safegrd.agent"}
+				name, argv = "launchctl", []string{"kickstart", "-k", "system/dev.safegrd.daemon"}
 			case userScope:
 				name, argv = "systemctl", []string{"--user", "restart", "safegrd"}
 			default:
@@ -1465,7 +1465,7 @@ func newAgentRestartCmd() *cobra.Command {
 	return cmd
 }
 
-// hostIsEnrolled decides whether the agent reports at all: a host with a
+// hostIsEnrolled decides whether the daemon reports at all: a host with a
 // configured server URL and token.
 func hostIsEnrolled(c *config.CLIConfig) bool {
 	return c.ServerURL != "" && c.ServerToken != ""

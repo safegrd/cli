@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// NodeStatus tracks agent node connectivity status.
+// NodeStatus tracks daemon node connectivity status.
 type NodeStatus string
 
 const (
@@ -15,7 +15,7 @@ const (
 	NodeStatusOffline  NodeStatus = "offline"
 )
 
-// Node represents an enrolled CLI agent or backup runner.
+// Node represents an enrolled CLI daemon or backup runner.
 type Node struct {
 	ID                string     `json:"id" yaml:"id"`
 	OrgID             string     `json:"org_id" yaml:"org_id"`
@@ -52,7 +52,7 @@ type Node struct {
 	LastBackupTotalContainers int            `json:"last_backup_total_containers,omitempty" yaml:"last_backup_total_containers,omitempty"`
 	LastBackupSnapshotID      string         `json:"last_backup_snapshot_id,omitempty" yaml:"last_backup_snapshot_id,omitempty"`
 
-	// ParentNodeID is set on a surface an agent registered under its host's
+	// ParentNodeID is set on a surface a daemon registered under its host's
 	// node. The host's token acts for its children and no other node, so one
 	// token per host covers every surface on it.
 	ParentNodeID string `json:"parent_node_id,omitempty" yaml:"parent_node_id,omitempty"`
@@ -60,7 +60,7 @@ type Node struct {
 	// CredentialSource is where a surface's own credential comes from, as its
 	// host's config says: "held" (the remote server holds it and the host
 	// fetches it), "host" (the host's config or environment has it), or
-	// empty (the surface needs none, or its agent is too old to say). A
+	// empty (the surface needs none, or its daemon is too old to say). A
 	// credential has one origin, and only that side may change it.
 	CredentialSource string `json:"credential_source,omitempty" yaml:"credential_source,omitempty"`
 	// CredentialHeld is whether the remote server holds a credential for
@@ -68,9 +68,9 @@ type Node struct {
 	CredentialHeld bool `json:"credential_held,omitempty" yaml:"-"`
 
 	// Set from the console, and never by a host registering its surfaces.
-	// Schedule and WORMRetentionDays are what the host's agent last said it
+	// Schedule and WORMRetentionDays are what the host's daemon last said it
 	// runs; ConsoleSchedule and ConsoleRetentionDays are what the console
-	// asked for, sent to the agent on every heartbeat until cleared. Empty or
+	// asked for, sent to the daemon on every heartbeat until cleared. Empty or
 	// zero means the host's own config decides. NamedInConsole keeps a name
 	// given in the console from being replaced by the host's config.
 	ConsoleSchedule      string `json:"console_schedule,omitempty" yaml:"console_schedule,omitempty"`
@@ -86,12 +86,12 @@ type Node struct {
 	// and the next drill report clears it.
 	DrillRequestedAt *time.Time `json:"drill_requested_at,omitempty" yaml:"drill_requested_at,omitempty"`
 
-	// What the agent said on its last heartbeat. Absent for a node that has
+	// What the daemon said on its last heartbeat. Absent for a node that has
 	// never sent a heartbeat (for example, one run manually or from cron).
-	AgentVersion         string `json:"agent_version,omitempty" yaml:"agent_version,omitempty"`
-	AgentIntervalSeconds int    `json:"agent_interval_seconds,omitempty" yaml:"agent_interval_seconds,omitempty"`
-	AgentFailures        int    `json:"agent_failures,omitempty" yaml:"agent_failures,omitempty"`
-	AgentLastError       string `json:"agent_last_error,omitempty" yaml:"agent_last_error,omitempty"`
+	DaemonVersion         string `json:"daemon_version,omitempty" yaml:"daemon_version,omitempty"`
+	DaemonIntervalSeconds int    `json:"daemon_interval_seconds,omitempty" yaml:"daemon_interval_seconds,omitempty"`
+	DaemonFailures        int    `json:"daemon_failures,omitempty" yaml:"daemon_failures,omitempty"`
+	DaemonLastError       string `json:"daemon_last_error,omitempty" yaml:"daemon_last_error,omitempty"`
 	DrillStatus          string `json:"drill_status,omitempty" yaml:"drill_status,omitempty"`
 
 	// Platform telemetry (OS / Arch) and update notification.
@@ -109,16 +109,16 @@ type Node struct {
 
 // Alert episodes a node can be in. Empty means none.
 const (
-	// AlertStateSilent: an agent that has heartbeated has stopped.
+	// AlertStateSilent: a daemon that has heartbeated has stopped.
 	AlertStateSilent = "silent"
 	// AlertStateOverdue: no backup for twice the schedule's interval.
 	AlertStateOverdue = "overdue"
 )
 
-// Drill statuses an agent reports. Empty means nothing to report.
+// Drill statuses a daemon reports. Empty means nothing to report.
 const (
 	// DrillStatusNoKey: a drill is due and this host does not hold the
-	// private key, which the agent never copies.
+	// private key, which the daemon never copies.
 	DrillStatusNoKey = "no_key"
 	// DrillStatusFailed: the last unattended drill did not pass.
 	DrillStatusFailed = "failed"
@@ -193,7 +193,7 @@ type NodeRegisterResponse struct {
 	KeyFingerprint string `json:"key_fingerprint,omitempty"`
 }
 
-// SurfaceRegisterRequest is sent by `agent run` for each surface in its
+// SurfaceRegisterRequest is sent by `daemon run` for each surface in its
 // config, under the host's enrolled node. Idempotent: the same
 // surface id always names the same child node.
 type SurfaceRegisterRequest struct {
@@ -240,14 +240,14 @@ type HeartbeatRequest struct {
 	StorageUp    bool   `json:"storage_up"`
 	LastSnapshot string `json:"last_snapshot,omitempty"`
 
-	// Sent by `agent run`, so the console can tell "the agent is dead" from
-	// "the agent is alive and this surface is failing".
-	// TickSeconds is how often the agent looks; silence is measured in it.
+	// Sent by `daemon run`, so the console can tell "the daemon is dead" from
+	// "the daemon is alive and this surface is failing".
+	// TickSeconds is how often the daemon looks; silence is measured in it.
 	TickSeconds         int    `json:"tick_seconds,omitempty"`
 	ConsecutiveFailures int    `json:"consecutive_failures,omitempty"`
 	LastError           string `json:"last_error,omitempty"`
 	DrillStatus         string `json:"drill_status,omitempty"`
-	// Schedule and RetentionDays are what the agent runs this surface on,
+	// Schedule and RetentionDays are what the daemon runs this surface on,
 	// after any setting from the console, so the remote server measures
 	// "overdue" against the schedule actually in force.
 	Schedule      string `json:"schedule,omitempty"`
@@ -273,8 +273,8 @@ type HeartbeatResponse struct {
 	// the remote server will reject with 402.
 	FireDrillsIncluded bool `json:"fire_drills_included"`
 
-	// BackupRequestID names a one-shot "back up now". The agent runs each id
-	// once and remembers it. TriggerBackup is NOT this and an agent must not
+	// BackupRequestID names a one-shot "back up now". The daemon runs each id
+	// once and remembers it. TriggerBackup is NOT this and a daemon must not
 	// act on it: it is true whenever the server has not heard of a recent
 	// success, so obeying it would back up on every tick whenever a report
 	// failed (creating excess objects under Object Lock).
@@ -282,7 +282,7 @@ type HeartbeatResponse struct {
 	// DrillSnapshotID is the snapshot a triggered drill should restore: the
 	// latest the remote server has recorded for this node.
 	DrillSnapshotID string `json:"drill_snapshot_id,omitempty"`
-	// DrillRequestID names a one-shot "drill now". The agent runs each id once,
+	// DrillRequestID names a one-shot "drill now". The daemon runs each id once,
 	// even inside its usual spacing between drills: someone asked for it.
 	DrillRequestID string `json:"drill_request_id,omitempty"`
 

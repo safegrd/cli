@@ -85,7 +85,7 @@ func TestIsSurfaceDue(t *testing.T) {
 	}
 }
 
-func TestAgentLockingAndStaleRecovery(t *testing.T) {
+func TestDaemonLockingAndStaleRecovery(t *testing.T) {
 	tempDir := t.TempDir()
 	lockPath := filepath.Join(tempDir, "test.lock")
 
@@ -126,13 +126,13 @@ func TestAgentLockingAndStaleRecovery(t *testing.T) {
 	release2()
 }
 
-func TestAgentStatePersistence(t *testing.T) {
+func TestDaemonStatePersistence(t *testing.T) {
 	tempDir := t.TempDir()
-	statePath := filepath.Join(tempDir, "agent_state.json")
+	statePath := filepath.Join(tempDir, "daemon_state.json")
 
-	state := loadAgentState(statePath)
-	if state.AgentID == "" {
-		t.Errorf("expected non-empty agent ID generated")
+	state := loadDaemonState(statePath)
+	if state.DaemonID == "" {
+		t.Errorf("expected non-empty daemon ID generated")
 	}
 
 	now := time.Now().UTC()
@@ -143,14 +143,14 @@ func TestAgentStatePersistence(t *testing.T) {
 		LastSnapshotID: "snap-abc",
 	}
 
-	if err := saveAgentState(statePath, state); err != nil {
-		t.Fatalf("failed to save agent state: %v", err)
+	if err := saveDaemonState(statePath, state); err != nil {
+		t.Fatalf("failed to save daemon state: %v", err)
 	}
 
 	// Reload state
-	loaded := loadAgentState(statePath)
-	if loaded.AgentID != state.AgentID {
-		t.Errorf("expected agent ID %s, got %s", state.AgentID, loaded.AgentID)
+	loaded := loadDaemonState(statePath)
+	if loaded.DaemonID != state.DaemonID {
+		t.Errorf("expected daemon ID %s, got %s", state.DaemonID, loaded.DaemonID)
 	}
 	surf := loaded.Surfaces["surf-01"]
 	if surf == nil || surf.LastSnapshotID != "snap-abc" {
@@ -178,7 +178,7 @@ func TestABackwardsClockDoesNotStallTheSchedule(t *testing.T) {
 }
 
 // A backup that finished inside a millisecond still took time. Truncating it to
-// 0 wrote manifests that read as a backup that never ran, and the agent-loop
+// 0 wrote manifests that read as a backup that never ran, and the daemon-loop
 // end-to-end test caught one.
 func TestBackupMillisecondsRoundsUpNeverDown(t *testing.T) {
 	if got := backupMilliseconds(time.Now()); got < 1 {

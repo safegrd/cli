@@ -39,7 +39,7 @@ func GenerateKeyPair() (*KeyPair, error) {
 // stopped `init` from destroying a *config*, which made this worse rather than
 // better: the guard people now trust does not cover the one file that cannot be
 // regenerated. `safegrd init --config some-other-file.yaml` passed that check
-// and clobbered ~/.safegrd/keys/agent.key on the way past, and `enroll` did the
+// and clobbered ~/.safegrd/keys/daemon.key on the way past, and `enroll` did the
 // same for any config whose public_key was empty.
 //
 // After that, every snapshot ever written was sealed to a recipient nothing on
@@ -134,14 +134,26 @@ func ParseRecipient(publicKey string) (age.Recipient, error) {
 	return recipient, nil
 }
 
-// ParseIdentity parses an Age private key identity.
-func ParseIdentity(privateKey string) (age.Identity, error) {
-	privateKey = strings.TrimSpace(privateKey)
-	identity, err := age.ParseX25519Identity(privateKey)
-	if err != nil {
-		return nil, fmt.Errorf("invalid Age private key identity: %w", err)
+// ParseIdentities parses one or more Age identities, one per line. Blank lines
+// and lines starting with # are skipped. More than one arrives when the remote
+// server holds several keys for an organization, one per host that enrolled.
+func ParseIdentities(privateKeys string) ([]age.Identity, error) {
+	var out []age.Identity
+	for _, line := range strings.Split(privateKeys, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		identity, err := age.ParseX25519Identity(line)
+		if err != nil {
+			return nil, fmt.Errorf("invalid Age private key identity: %w", err)
+		}
+		out = append(out, identity)
 	}
-	return identity, nil
+	if len(out) == 0 {
+		return nil, fmt.Errorf("invalid Age private key identity: none given")
+	}
+	return out, nil
 }
 
 // Fingerprint returns a stable, displayable identifier for an Age recipient.

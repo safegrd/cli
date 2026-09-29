@@ -169,7 +169,7 @@ func (fc *FileCollector) ScanAndStream(ctx context.Context) (io.Reader, *model.S
 		isSym := (info.Mode() & os.ModeSymlink) != 0
 		// A FIFO, socket or device node is not data to back up, and each one
 		// broke the backup differently: hashing a FIFO blocked forever, which
-		// hangs the agent; tar refuses sockets, which failed the whole run; a
+		// hangs the daemon; tar refuses sockets, which failed the whole run; a
 		// character device such as /dev/zero reads without end.
 		if !isSym && !d.IsDir() && !info.Mode().IsRegular() {
 			fc.skipped = append(fc.skipped, relSlash+" ("+specialKind(info.Mode())+")")

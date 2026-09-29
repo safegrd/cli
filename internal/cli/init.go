@@ -86,7 +86,7 @@ you if you have not already).`,
 				return fmt.Errorf("failed generating asymmetric keypair: %w", err)
 			}
 
-			keyPath := filepath.Join(configDir, "keys", "agent.key")
+			keyPath := filepath.Join(configDir, "keys", "daemon.key")
 			// --force means "replace the config", and replaces the key as well.
 			save := crypto.SavePrivateKey
 			if initForce {

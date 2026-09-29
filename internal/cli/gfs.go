@@ -16,7 +16,7 @@ import (
 // what makes an hourly schedule affordable: the hourly copies need only a
 // short lock, and a day's first backup carries the longer history.
 //
-// "First" comes from the agent's state. If the state is lost, the next backup
+// "First" comes from the daemon's state. If the state is lost, the next backup
 // is promoted again: that keeps a backup longer than planned, never shorter,
 // which is the only safe way to be wrong about a lock nobody can lift.
 

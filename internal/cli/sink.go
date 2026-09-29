@@ -112,7 +112,7 @@ func routeStorage(ctx context.Context, cfg *config.CLIConfig, flagBucket, flagPr
 
 // routeProjectSink points storageCfg at the project's bucket when the remote
 // server has one for this host's project. Every command that opens storage
-// for this host goes through it, the agent included: a host whose project
+// for this host goes through it, the daemon included: a host whose project
 // has a bucket must not back up to its own disk while the console shows the
 // bucket. Not for hosted storage: that is an explicit choice, leased
 // separately (hosted.go), and a project sink must not silently redirect it.
@@ -271,7 +271,7 @@ func registerOwnBucket(ctx context.Context, cfg *config.CLIConfig, st *config.St
 }
 
 // applyHeldSinkKey fills in the bucket key the remote server holds for this
-// host's project, when the host's config has none. Only the key: the agent
+// host's project, when the host's config has none. Only the key: the daemon
 // resolves its surfaces' own credentials separately, per surface. A failure
 // is said out loud; the backup then fails on the missing key, not on a guess.
 func applyHeldSinkKey(ctx context.Context, cfg *config.CLIConfig, storageCfg *config.StorageConfig) {

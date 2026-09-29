@@ -430,7 +430,7 @@ fi
 # A key already on this host (from `safegrd init`, or a key you put there) is
 # yours and is never sent, so there is nothing to ask; enroll says so.
 KEY_ON_HOST=""
-if [ -f "${HOME}/.safegrd/keys/agent.key" ] || grep -q '^ *public_key: *age1' "${HOME}/.safegrd/config.yaml" 2>/dev/null; then
+if [ -f "${HOME}/.safegrd/keys/daemon.key" ] || grep -q '^ *public_key: *age1' "${HOME}/.safegrd/config.yaml" 2>/dev/null; then
   KEY_ON_HOST=1
 fi
 
@@ -492,15 +492,15 @@ if ! "$SAFEGRD_BIN" "$@" </dev/tty; then
 fi
 
 printf "\n"
-# A claimed host already has its surfaces in its config, so the agent is what
+# A claimed host already has its surfaces in its config, so the daemon is what
 # runs them; a one-off backup command would ignore every choice made in the
 # console.
 if [ -n "$CLAIM" ]; then
   log_success "This host is enrolled with the surfaces named in the console. Take the first backups with:"
-  printf "      ${CYAN}safegrd agent run --once${RESET}\n"
-  printf "   then keep it running: ${CYAN}safegrd agent install${RESET} (see https://safegrd.dev/docs/agent)\n\n"
+  printf "      ${CYAN}safegrd daemon run --once${RESET}\n"
+  printf "   then keep it running: ${CYAN}safegrd daemon install${RESET} (see https://safegrd.dev/docs/daemon)\n\n"
 else
   log_success "This host is enrolled. Take the first backup with:"
   printf "      ${CYAN}safegrd backup --database-url \"\$DATABASE_URL\"${RESET}\n"
-  printf "   or run it unattended: ${CYAN}https://safegrd.dev/docs/agent${RESET}\n\n"
+  printf "   or run it unattended: ${CYAN}https://safegrd.dev/docs/daemon${RESET}\n\n"
 fi

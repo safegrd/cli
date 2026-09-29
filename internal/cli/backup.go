@@ -513,9 +513,9 @@ and never leaves this host.`,
 //
 // It returns why the remote server does not have the record, or "" when it
 // does or was never meant to (no server configured, a standalone host, or an
-// unreachable network the next run reconciles). The agent carries that reason
+// unreachable network the next run reconciles). The daemon carries that reason
 // in its last error, which its heartbeat reports, because a warning on the
-// host's stderr is seen by nobody when the agent runs as a service.
+// host's stderr is seen by nobody when the daemon runs as a service.
 func sendMetadataToServer(ctx context.Context, serverURL, token string, meta *model.SnapshotMetadata, verbose bool) string {
 	warn := func(format string, args ...any) {
 		// Printed even when quiet. --json suppresses the decorative lines
@@ -566,7 +566,7 @@ func sendMetadataToServer(ctx context.Context, serverURL, token string, meta *mo
 	resp, err := client.Do(req)
 	if err != nil {
 		// The one genuinely benign case: the network is down, the manifest is
-		// beside the snapshot, and a later run or the agent reconciles.
+		// beside the snapshot, and a later run or the daemon reconciles.
 		if verbose {
 			fmt.Printf("   Remote Server:   Offline (metadata stored locally in WORM manifest)\n")
 		}

@@ -133,9 +133,10 @@ func EncryptStream(src io.Reader, dst io.Writer, publicKey string) (*StreamMetri
 }
 
 // DecryptStream streams ciphertext from src, decrypts with Age, decompresses with zstd,
-// and writes plaintext to dst.
+// and writes plaintext to dst. privateKey may hold several identities, one per
+// line; age uses whichever one the snapshot was sealed to.
 func DecryptStream(src io.Reader, dst io.Writer, privateKey string) (*StreamMetrics, error) {
-	identity, err := ParseIdentity(privateKey)
+	identities, err := ParseIdentities(privateKey)
 	if err != nil {
 		return nil, fmt.Errorf("invalid identity key: %w", err)
 	}
@@ -144,7 +145,7 @@ func DecryptStream(src io.Reader, dst io.Writer, privateKey string) (*StreamMetr
 	cipherCountingReader := newCountingReader(src)
 
 	// Age decryption reader
-	ageReader, err := age.Decrypt(cipherCountingReader, identity)
+	ageReader, err := age.Decrypt(cipherCountingReader, identities...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize age decryptor (bad key or corrupt stream): %w", err)
 	}

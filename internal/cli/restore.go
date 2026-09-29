@@ -99,7 +99,7 @@ from storage is.`,
 			}
 
 			if resolvedKey == "" {
-				return fmt.Errorf("decryption key required: specify --private-key or configure ~/.safegrd/keys/agent.key")
+				return fmt.Errorf("decryption key required: specify --private-key or configure ~/.safegrd/keys/daemon.key")
 			}
 
 			var storageProvider storage.StorageProvider
@@ -124,7 +124,7 @@ from storage is.`,
 				if cfg.NodeID != "" && storageCfg.NodeID == "" {
 					storageCfg.NodeID = cfg.NodeID
 				}
-				// A surface the agent backs up lives under its own node, not the
+				// A surface the daemon backs up lives under its own node, not the
 				// host's, so the bucket is searched under the node the remote
 				// server recorded this snapshot for.
 				if recorded := recordedNodeID(ctx, cfg, snapshotID); recorded != "" && recorded != storageCfg.NodeID {

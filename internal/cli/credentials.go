@@ -3,7 +3,9 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -191,12 +193,20 @@ func resolveRuntimeCredentials(ctx context.Context, cfg *config.CLIConfig, stora
 
 // managedIdentityFetchResponse is the payload of GET /nodes/{id}/identity.
 type managedIdentityFetchResponse struct {
-	OrgID      string `json:"org_id"`
-	PublicKey  string `json:"public_key"`
-	Identity   string `json:"identity"`
+	OrgID string `json:"org_id"`
+	// One per key the organization holds: each managed host that enrolled
+	// added its own. A snapshot opens with the one it was sealed to.
+	Identities []struct {
+		PublicKey string `json:"public_key"`
+		Identity  string `json:"identity"`
+	} `json:"identities"`
 	KeyCustody string `json:"key_custody"`
 	Notice     string `json:"notice"`
 }
+
+// errNoManagedKey is the remote server's 404: the organization holds its own
+// key, so there is nothing to fetch. An ordinary answer, not a fault.
+var errNoManagedKey = errors.New("the remote server holds no key for this organization")
 
 // fetchManagedIdentity asks the remote server for the Age identity it holds for
 // this node's organization.
@@ -228,7 +238,17 @@ func fetchManagedIdentity(ctx context.Context, serverURL, nodeID, token string) 
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, errNoManagedKey
+	}
 	if resp.StatusCode != http.StatusOK {
+		var e struct {
+			Error string `json:"error"`
+		}
+		_ = json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&e)
+		if e.Error != "" {
+			return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, e.Error)
+		}
 		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 	var res managedIdentityFetchResponse
@@ -248,7 +268,21 @@ func resolveManagedIdentity(ctx context.Context, cfg *config.CLIConfig, verbose 
 		return ""
 	}
 	res, err := fetchManagedIdentity(ctx, cfg.ServerURL, cfg.NodeID, cfg.ServerToken)
-	if err != nil || res == nil || res.Identity == "" {
+	if err != nil && !errors.Is(err, errNoManagedKey) {
+		// The caller goes on to report that no key was found, which is true
+		// but not why. Say why first.
+		fmt.Fprintf(os.Stderr, "⚠️  Could not fetch the key the remote server holds: %v\n", err)
+	}
+	if err != nil || res == nil {
+		return ""
+	}
+	var keys []string
+	for _, id := range res.Identities {
+		if id.Identity != "" {
+			keys = append(keys, id.Identity)
+		}
+	}
+	if len(keys) == 0 {
 		return ""
 	}
 	if verbose {
@@ -260,7 +294,8 @@ func resolveManagedIdentity(ctx context.Context, cfg *config.CLIConfig, verbose 
 			fmt.Printf("   Notice:          %s\n", res.Notice)
 		}
 	}
-	return res.Identity
+	// One per line; the decryptor uses whichever the snapshot was sealed to.
+	return strings.Join(keys, "\n")
 }
 
 // fetchHeldSurfaceSecret fills in the credential the remote server holds for

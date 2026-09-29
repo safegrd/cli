@@ -13,10 +13,10 @@ import (
 	"github.com/safegrd/cli/pkg/config"
 )
 
-// A single pass says why each surface it skips was skipped: `agent run
+// A single pass says why each surface it skips was skipped: `daemon run
 // --once` used to print its banner and exit, which reads as a run that hung
 // or lost its output. And it retries a failed surface at once: the backoff is
-// for the resident agent, not for someone who has just fixed the problem.
+// for the daemon, not for someone who has just fixed the problem.
 func TestASinglePassRetriesAFailureAndSaysWhyItSkipsTheRest(t *testing.T) {
 	dir := t.TempDir()
 	stateDir := filepath.Join(dir, "state")
@@ -31,11 +31,11 @@ func TestASinglePassRetriesAFailureAndSaysWhyItSkipsTheRest(t *testing.T) {
 		},
 	}
 	now := time.Now().UTC()
-	st := loadAgentState(filepath.Join(stateDir, "agent_state.json"))
+	st := loadDaemonState(filepath.Join(stateDir, "daemon_state.json"))
 	st.Surfaces["moneydb"] = &SurfaceState{SurfaceID: "moneydb", SurfaceType: "postgres", LastAttempt: now.Add(-time.Minute),
 		ConsecutiveFailures: 1, LastError: "database URL unresolved for surface moneydb"}
 	st.Surfaces["docs"] = &SurfaceState{SurfaceID: "docs", SurfaceType: "files", LastAttempt: now.Add(-time.Hour), LastSuccess: now.Add(-time.Hour)}
-	if err := saveAgentState(filepath.Join(stateDir, "agent_state.json"), st); err != nil {
+	if err := saveDaemonState(filepath.Join(stateDir, "daemon_state.json"), st); err != nil {
 		t.Fatal(err)
 	}
 
@@ -72,21 +72,21 @@ func TestASinglePassRetriesAFailureAndSaysWhyItSkipsTheRest(t *testing.T) {
 	if !strings.Contains(out, "Surface docs (files): not due; the next backup is at") {
 		t.Errorf("a surface not yet due was skipped without saying so:\n%s", out)
 	}
-	// The resident agent keeps the backoff, and does not repeat why
+	// The daemon keeps the backoff, and does not repeat why
 	// nothing is due on every tick.
-	st = loadAgentState(filepath.Join(stateDir, "agent_state.json"))
+	st = loadDaemonState(filepath.Join(stateDir, "daemon_state.json"))
 	st.Surfaces["moneydb"].LastAttempt = time.Now().UTC().Add(-time.Minute)
-	if err := saveAgentState(filepath.Join(stateDir, "agent_state.json"), st); err != nil {
+	if err := saveDaemonState(filepath.Join(stateDir, "daemon_state.json"), st); err != nil {
 		t.Fatal(err)
 	}
 	if out := run(time.Minute); strings.Contains(out, "is due for backup") || strings.Contains(out, "not due") {
-		t.Errorf("the resident agent retried inside its backoff, or said why nothing is due:\n%s", out)
+		t.Errorf("the daemon retried inside its backoff, or said why nothing is due:\n%s", out)
 	}
 }
 
-// A surface retired in the console is not backed up by the resident agent,
+// A surface retired in the console is not backed up by the daemon,
 // which says so when it first hears it, not on every tick.
-func TestTheResidentAgentStopsARetiredSurfaceAndSaysSoOnce(t *testing.T) {
+func TestTheResidentDaemonStopsARetiredSurfaceAndSaysSoOnce(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/surfaces") {
 			w.WriteHeader(http.StatusGone)
@@ -112,12 +112,12 @@ func TestTheResidentAgentStopsARetiredSurfaceAndSaysSoOnce(t *testing.T) {
 		})
 	}
 	if out := tick(); !strings.Contains(out, "Surface docs: surface docs was retired in the console") {
-		t.Errorf("the agent did not say the surface was retired:\n%s", out)
+		t.Errorf("the daemon did not say the surface was retired:\n%s", out)
 	}
 	if out := tick(); strings.Contains(out, "retired") {
-		t.Errorf("the resident agent repeats that a surface is retired on every tick:\n%s", out)
+		t.Errorf("the daemon repeats that a surface is retired on every tick:\n%s", out)
 	}
-	st := loadAgentState(filepath.Join(stateDir, "agent_state.json"))
+	st := loadDaemonState(filepath.Join(stateDir, "daemon_state.json"))
 	if s := st.Surfaces["docs"]; s == nil || s.LastSnapshotID != "" || !s.LastAttempt.IsZero() || s.Retired == "" {
 		t.Errorf("a retired surface was attempted or not recorded as retired: %+v", s)
 	}

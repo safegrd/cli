@@ -123,7 +123,7 @@ func runValidationChecks(path string, c *config.CLIConfig) []CheckResult {
 	// remote server. A host config that sets it believes it is alerting and is
 	// not.
 	if c.Storage.ExpireAfterLock {
-		msg := "on: the agent deletes snapshots from this bucket a day after their lock ends (never the newest, " +
+		msg := "on: the daemon deletes snapshots from this bucket a day after their lock ends (never the newest, " +
 			"never the last known good one). The key needs s3:DeleteObjectVersion and s3:GetObjectRetention; " +
 			"run 'safegrd prune --dry-run' to see what it would do"
 		status := "PASS"
@@ -188,9 +188,9 @@ func runValidationChecks(path string, c *config.CLIConfig) []CheckResult {
 	}
 
 	// Schedules are checked on their own line per surface, and fail rather than
-	// warn: a schedule the agent cannot run as written is either a surface on
+	// warn: a schedule the daemon cannot run as written is either a surface on
 	// a cadence nobody chose or, below the floor, a bill in undeletable
-	// objects. The agent still runs it safely; this is where the
+	// objects. The daemon still runs it safely; this is where the
 	// operator finds out.
 	if strings.TrimSpace(c.Defaults.Schedule) != "" {
 		results = append(results, scheduleCheck("defaults.schedule", c.Defaults.Schedule))
@@ -564,29 +564,29 @@ func unusedAlertBlock(c *config.CLIConfig) string {
 		"(safegrd.dev/docs/alerts)"
 }
 
-// surfaceCredentialChecks resolves each surface's secret the way the agent
+// surfaceCredentialChecks resolves each surface's secret the way the daemon
 // will, so a credential.run that is not signed in, or a credential.name that
 // names an unset variable, is found at the terminal rather than at 3am by a
 // daemon. Only doctor runs these: `config validate` stays free of side effects.
 func surfaceCredentialChecks(c *config.CLIConfig) []CheckResult {
 	var results []CheckResult
 	// A credential the remote server holds is fetched for the surface's own
-	// node, which the agent learned when it registered the surface.
-	var agentState *AgentState
+	// node, which the daemon learned when it registered the surface.
+	var daemonState *DaemonState
 	for i := range c.Surfaces {
 		s := &c.Surfaces[i]
 		name := fmt.Sprintf("Surface %s credentials", s.ID)
 		if s.FromSafeGrd() {
-			if agentState == nil {
-				agentState = loadAgentState(filepath.Join(resolveStateDir("", c), "agent_state.json"))
+			if daemonState == nil {
+				daemonState = loadDaemonState(filepath.Join(resolveStateDir("", c), "daemon_state.json"))
 			}
 			var nodeID string
-			if st, ok := agentState.Surfaces[s.ID]; ok && st != nil {
+			if st, ok := daemonState.Surfaces[s.ID]; ok && st != nil {
 				nodeID = st.ServerNodeID
 			}
 			if nodeID == "" {
 				results = append(results, CheckResult{Name: name, Status: "WARN",
-					Message: "held by the remote server; the agent fetches it once the surface is registered (run 'safegrd agent run --once')"})
+					Message: "held by the remote server; the daemon fetches it once the surface is registered (run 'safegrd daemon run --once')"})
 				continue
 			}
 			fctx, fcancel := context.WithTimeout(context.Background(), credentialCommandTimeout)
@@ -629,7 +629,7 @@ func surfaceCredentialChecks(c *config.CLIConfig) []CheckResult {
 	return results
 }
 
-// ignoredConfigKeys names each key this config sets that the agent accepts and
+// ignoredConfigKeys names each key this config sets that the daemon accepts and
 // does not yet act on. The config reference says so too, but a person who set
 // max_concurrent: 4 believes four surfaces run at once, and only a message at
 // the moment it matters corrects that.
@@ -640,12 +640,12 @@ func ignoredConfigKeys(c *config.CLIConfig) []string {
 			out = append(out, key+" is not acted on yet: "+what)
 		}
 	}
-	add(c.Agent.MaxConcurrent > 1, "agent.max_concurrent", "surfaces run one at a time")
-	add(c.Agent.RetryBackoffMin != "" || c.Agent.RetryBackoffMax != "", "agent.retry_backoff_min/max",
+	add(c.Daemon.MaxConcurrent > 1, "daemon.max_concurrent", "surfaces run one at a time")
+	add(c.Daemon.RetryBackoffMin != "" || c.Daemon.RetryBackoffMax != "", "daemon.retry_backoff_min/max",
 		"a failing surface retries after 5 minutes, doubling to at most 1 hour")
-	add(c.Agent.LogFormat != "" && c.Agent.LogFormat != "text", "agent.log_format", "logs are plain text")
-	add(c.Agent.LogLevel != "" && c.Agent.LogLevel != "info", "agent.log_level", "the agent logs at one level")
-	add(c.Agent.MetricsAddr != "", "agent.metrics_addr", "there is no metrics endpoint")
+	add(c.Daemon.LogFormat != "" && c.Daemon.LogFormat != "text", "daemon.log_format", "logs are plain text")
+	add(c.Daemon.LogLevel != "" && c.Daemon.LogLevel != "info", "daemon.log_level", "the daemon logs at one level")
+	add(c.Daemon.MetricsAddr != "", "daemon.metrics_addr", "there is no metrics endpoint")
 	add(c.Defaults.Timezone != "" && !strings.EqualFold(c.Defaults.Timezone, "UTC"), "defaults.timezone",
 		"schedules are intervals from the last success, not wall-clock times")
 	return out

@@ -18,9 +18,9 @@ import (
 // and every surface behind it waiting, indefinitely.
 const hookTimeout = 10 * time.Minute
 
-// runHook runs one of a surface's hooks under the shell, as the agent's user,
+// runHook runs one of a surface's hooks under the shell, as the daemon's user,
 // with the surface described in its environment. Its output is echoed to the
-// agent's log with the surface and hook named, so a hook that fails at 3am
+// daemon's log with the surface and hook named, so a hook that fails at 3am
 // leaves its own explanation behind.
 func runHook(ctx context.Context, s *config.SurfaceConfig, which, command string, env ...string) error {
 	ctx, cancel := context.WithTimeout(ctx, hookTimeout)

@@ -10,12 +10,12 @@ import (
 // The Age identity is the only thing that can decrypt a snapshot, and it used
 // to be written with a plain os.WriteFile. Anything that generated a keypair
 // replaced it silently: `safegrd init --config elsewhere.yaml` passed the
-// config-exists guard and clobbered ~/.safegrd/keys/agent.key
+// config-exists guard and clobbered ~/.safegrd/keys/daemon.key
 // on the way past. Every snapshot already written was then sealed to a
 // recipient nothing on the machine held, and the next backup still succeeded.
 func TestSavePrivateKeyRefusesToOverwriteAnIdentity(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "keys", "agent.key")
+	path := filepath.Join(dir, "keys", "daemon.key")
 
 	first, err := GenerateKeyPair()
 	if err != nil {
@@ -59,7 +59,7 @@ func TestSavePrivateKeyRefusesToOverwriteAnIdentity(t *testing.T) {
 // Replacing a key stays possible, but only by asking for it by name.
 func TestOverwritePrivateKeyReplacesDeliberately(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "agent.key")
+	path := filepath.Join(dir, "daemon.key")
 
 	first, _ := GenerateKeyPair()
 	if err := SavePrivateKey(first.PrivateKey, path); err != nil {
@@ -81,7 +81,7 @@ func TestOverwritePrivateKeyReplacesDeliberately(t *testing.T) {
 // A refused write must not leave the key world-readable or half-written.
 func TestSavePrivateKeyKeepsPermissionsTight(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "keys", "agent.key")
+	path := filepath.Join(dir, "keys", "daemon.key")
 
 	kp, _ := GenerateKeyPair()
 	if err := SavePrivateKey(kp.PrivateKey, path); err != nil {

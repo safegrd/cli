@@ -162,7 +162,7 @@ func credentialFromHost(ctx context.Context, s *config.SurfaceConfig) (string, e
 		v := os.Getenv(c.Name)
 		if v == "" {
 			return "", fmt.Errorf("surface %s: credential.name is %s, and that environment variable is not set for this process. "+
-				"Under a service, set it in the service's environment (see safegrd.dev/docs/agent)", s.ID, c.Name)
+				"Under a service, set it in the service's environment (see safegrd.dev/docs/daemon)", s.ID, c.Name)
 		}
 		return v, nil
 	case config.CredentialFromCommand:

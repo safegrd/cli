@@ -87,7 +87,7 @@ func TestCLIConfigPrivateKeyNeverSavedToYAML(t *testing.T) {
 		Encryption: EncryptionConfig{
 			PublicKey:  "age1testrecipient...",
 			PrivateKey: "AGE-SECRET-KEY-1SECRETPLAINTEXTNOTSAVED",
-			KeyPath:    filepath.Join(tempDir, "keys", "agent.key"),
+			KeyPath:    filepath.Join(tempDir, "keys", "daemon.key"),
 		},
 	}
 
@@ -108,7 +108,7 @@ func TestCLIConfigPrivateKeyNeverSavedToYAML(t *testing.T) {
 func TestCLIConfigInlinePrivateKeyMigration(t *testing.T) {
 	tempDir := t.TempDir()
 	configPath := filepath.Join(tempDir, "config.yaml")
-	targetKeyPath := filepath.Join(tempDir, "keys", "agent.key")
+	targetKeyPath := filepath.Join(tempDir, "keys", "daemon.key")
 
 	// Simulate legacy insecure config file containing inline private_key
 	legacyYAML := `node_id: node-mig-01
@@ -158,7 +158,7 @@ func TestCLIConfigResolvesPrivateKeyFromKeyPath(t *testing.T) {
 	tempDir := t.TempDir()
 	keyDir := filepath.Join(tempDir, "keys")
 	_ = os.MkdirAll(keyDir, 0700)
-	keyPath := filepath.Join(keyDir, "agent.key")
+	keyPath := filepath.Join(keyDir, "daemon.key")
 	_ = os.WriteFile(keyPath, []byte("AGE-SECRET-KEY-1FROMFILETEST\n"), 0600)
 
 	configPath := filepath.Join(tempDir, "config.yaml")
@@ -313,7 +313,7 @@ func TestSaveCLIConfigNeverWritesThePrivateKey(t *testing.T) {
 		Encryption: EncryptionConfig{
 			PublicKey:  "age1example",
 			PrivateKey: identity,
-			KeyPath:    "~/.safegrd/keys/agent.key",
+			KeyPath:    "~/.safegrd/keys/daemon.key",
 		},
 	}
 	if err := SaveCLIConfig(cfg, path); err != nil {

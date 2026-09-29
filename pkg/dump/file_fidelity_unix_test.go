@@ -203,7 +203,7 @@ func TestBackupSkipsSpecialFilesAndSaysSo(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer l.Close()
-	if err := os.Rename(filepath.Join(sockDir, "s"), filepath.Join(dir, "agent.sock")); err != nil {
+	if err := os.Rename(filepath.Join(sockDir, "s"), filepath.Join(dir, "daemon.sock")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -229,7 +229,7 @@ func TestBackupSkipsSpecialFilesAndSaysSo(t *testing.T) {
 		t.Fatal("the backup hung on a FIFO")
 	}
 	got := strings.Join(collector.Skipped(), ",")
-	if !strings.Contains(got, "pipe (named pipe)") || !strings.Contains(got, "agent.sock (socket)") {
+	if !strings.Contains(got, "pipe (named pipe)") || !strings.Contains(got, "daemon.sock (socket)") {
 		t.Errorf("skipped entries not reported: %q", got)
 	}
 }

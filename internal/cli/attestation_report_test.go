@@ -51,10 +51,10 @@ func TestARejectedAttestationIsReported(t *testing.T) {
 		reason = sendMetadataToServer(context.Background(), srv.URL, "sg_tok_stale",
 			&model.SnapshotMetadata{SnapshotID: "snap-1", NodeID: "node-1"}, true)
 	})
-	// The agent carries this in its last error, which is how a host running
+	// The daemon carries this in its last error, which is how a host running
 	// as a service tells the console its backup was never recorded.
 	if !strings.Contains(reason, "403") || !strings.Contains(reason, "node token does not match node_id") {
-		t.Errorf("the reason returned for the agent is %q", reason)
+		t.Errorf("the reason returned for the daemon is %q", reason)
 	}
 
 	if !strings.Contains(out, "NOT RECORDED") {

@@ -32,7 +32,7 @@ func newEnrollCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "enroll",
 		Short: "Register this host with the remote server, using an access token or a node token",
-		Long: `Authenticates the local CLI agent with the SafeGrd remote server.
+		Long: `Authenticates the local CLI daemon with the SafeGrd remote server.
 You can either provide a direct Node Token or an Organization API Key to register this node.
 With neither, it uses the login saved by 'safegrd login'.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -360,8 +360,8 @@ With neither, it uses the login saved by 'safegrd login'.`,
 				}
 				if claim != nil {
 					addClaimSurfaces(cfg, claim.Surfaces)
-					fmt.Printf("\n   Next: run 'safegrd doctor', then 'sudo safegrd agent install --system'\n")
-					fmt.Printf("   (on macOS: 'safegrd agent install'). The agent registers each surface and\n")
+					fmt.Printf("\n   Next: run 'safegrd doctor', then 'sudo safegrd daemon install --system'\n")
+					fmt.Printf("   (on macOS: 'safegrd daemon install'). The daemon registers each surface and\n")
 					fmt.Printf("   takes its first backup; the console shows each as it lands.\n")
 				}
 			}

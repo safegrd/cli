@@ -114,12 +114,12 @@ safegrd enroll --token "sg_pat_..."
 # Or with the claim code the console's setup shows: the project, where backups go and
 # the surfaces are written into ~/.safegrd/config.yaml, and the key stays on this machine
 safegrd enroll --claim <code>
-safegrd agent run --once
+safegrd daemon run --once
 
 # Later, on an enrolled host: add the surfaces named for it in the console
 # (Add surface on its row). Only adds; the old config is kept as config.yaml.bak
 safegrd claim
-safegrd agent restart
+safegrd daemon restart
 
 # Verify the active session
 safegrd whoami
@@ -152,7 +152,7 @@ safegrd restore \
 ### 6. Protect several things on one host, unattended
 
 Each entry under `surfaces:` in `~/.safegrd/config.yaml` is one protected thing, and
-`safegrd agent install` runs them on their schedules. A surface's `credential` block says
+`safegrd daemon install` runs them on their schedules. A surface's `credential` block says
 where its secret comes from; the config never holds it:
 
 ```yaml
@@ -169,8 +169,8 @@ surfaces:
     roots: ["/var/www/uploads"]
 ```
 
-[`safegrd.example.yaml`](safegrd.example.yaml) is the annotated version. The agent reads its
-config when it starts, so run `safegrd agent restart` after changing it.
+[`safegrd.example.yaml`](safegrd.example.yaml) is the annotated version. The daemon reads its
+config when it starts, so run `safegrd daemon restart` after changing it.
 
 ---
 

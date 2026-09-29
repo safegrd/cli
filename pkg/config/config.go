@@ -53,7 +53,7 @@ type StorageConfig struct {
 	Prefix        string      `yaml:"prefix" json:"prefix"`
 	RetentionDays int         `yaml:"retention_days" json:"retention_days"`
 	WORMMode      WORMMode    `yaml:"worm_mode" json:"worm_mode"`
-	// ExpireAfterLock lets the agent delete snapshots from this bucket once
+	// ExpireAfterLock lets the daemon delete snapshots from this bucket once
 	// their Object Lock has ended (a day of grace, by the bucket's clock),
 	// never the newest of a surface and never one the remote server keeps as
 	// last known good. Off by default: it needs s3:DeleteObjectVersion, which
@@ -83,8 +83,8 @@ type AlertConfig struct {
 	DiscordWebhookURL string `yaml:"discord_webhook_url,omitempty" json:"discord_webhook_url,omitempty"`
 }
 
-// AgentConfig configures the resident unattended daemon.
-type AgentConfig struct {
+// DaemonConfig configures the resident unattended daemon.
+type DaemonConfig struct {
 	Interval        string `yaml:"interval,omitempty" json:"interval,omitempty"`                   // Poll interval, default "5m"
 	MaxConcurrent   int    `yaml:"max_concurrent,omitempty" json:"max_concurrent,omitempty"`       // Max concurrent backups, default 1
 	RetryBackoffMin string `yaml:"retry_backoff_min,omitempty" json:"retry_backoff_min,omitempty"` // Min retry backoff, default "5m"
@@ -113,7 +113,7 @@ type DefaultsConfig struct {
 // Where a surface's credential comes from (CredentialConfig.From).
 const (
 	// CredentialFromSafeGrd: the remote server holds it, sealed, and the
-	// agent fetches it when the surface backs up. Nothing is set on the host.
+	// daemon fetches it when the surface backs up. Nothing is set on the host.
 	CredentialFromSafeGrd = "safegrd"
 	// CredentialFromEnv: an environment variable on the host, named by Name.
 	CredentialFromEnv = "env"
@@ -155,9 +155,9 @@ type SurfaceConfig struct {
 	KeepWeekly    int    `yaml:"keep_weekly,omitempty" json:"keep_weekly,omitempty"`
 	KeepMonthly   int    `yaml:"keep_monthly,omitempty" json:"keep_monthly,omitempty"`
 
-	// PreBackup runs before each of the agent's backups of this surface and
+	// PreBackup runs before each of the daemon's backups of this surface and
 	// must succeed for the backup to happen; PostBackup runs after every
-	// attempt, successful or not. Both are shell commands, run as the agent.
+	// attempt, successful or not. Both are shell commands, run as the daemon.
 	PreBackup  string `yaml:"pre_backup,omitempty" json:"pre_backup,omitempty"`
 	PostBackup string `yaml:"post_backup,omitempty" json:"post_backup,omitempty"`
 
@@ -186,7 +186,7 @@ type SurfaceConfig struct {
 	Storage    *StorageConfig    `yaml:"storage,omitempty" json:"storage,omitempty"`
 	Encryption *EncryptionConfig `yaml:"encryption,omitempty" json:"encryption,omitempty"`
 
-	// Drill configures how the agent proves this surface restores.
+	// Drill configures how the daemon proves this surface restores.
 	Drill *DrillConfig `yaml:"drill,omitempty" json:"drill,omitempty"`
 }
 
@@ -212,8 +212,8 @@ type CLIConfig struct {
 	Encryption  EncryptionConfig `yaml:"encryption" json:"encryption"`
 	Alert       AlertConfig      `yaml:"alert,omitempty" json:"alert,omitempty"`
 
-	// Agent & Multi-Surface Unattended Protection
-	Agent    AgentConfig     `yaml:"agent,omitempty" json:"agent,omitempty"`
+	// Daemon & Multi-Surface Unattended Protection
+	Daemon    DaemonConfig     `yaml:"daemon,omitempty" json:"daemon,omitempty"`
 	Defaults DefaultsConfig  `yaml:"defaults,omitempty" json:"defaults,omitempty"`
 	Surfaces []SurfaceConfig `yaml:"surfaces,omitempty" json:"surfaces,omitempty"`
 
@@ -230,7 +230,7 @@ var unknownFieldRe = regexp.MustCompile(`line (\d+): field (\S+) not found in ty
 // line number says which.
 var sectionOfType = map[string]string{
 	"CLIConfig": "", "StorageConfig": "storage.", "EncryptionConfig": "encryption.", "AlertConfig": "alert.",
-	"AgentConfig": "agent.", "DefaultsConfig": "defaults.", "SurfaceConfig": "surfaces[].", "DrillConfig": "surfaces[].drill.",
+	"DaemonConfig": "daemon.", "DefaultsConfig": "defaults.", "SurfaceConfig": "surfaces[].", "DrillConfig": "surfaces[].drill.",
 }
 
 // unknownKeys decodes the file again, strictly, and names every key the
@@ -380,7 +380,7 @@ func LoadCLIConfig(path string) (*CLIConfig, error) {
 					inlineKey = strings.TrimSpace(inlineKey)
 					keyPath := cfg.Encryption.KeyPath
 					if keyPath == "" {
-						keyPath = filepath.Join(filepath.Dir(path), "keys", "agent.key")
+						keyPath = filepath.Join(filepath.Dir(path), "keys", "daemon.key")
 						cfg.Encryption.KeyPath = keyPath
 					}
 					// Persist key to keyPath with 0600 permissions if not already present

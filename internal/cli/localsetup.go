@@ -38,7 +38,7 @@ func ensureLocalSetup(nodeName string) (created bool, adopted bool, err error) {
 	}
 
 	if cfg.Encryption.PublicKey == "" {
-		keyPath := filepath.Join(configDir, "keys", "agent.key")
+		keyPath := filepath.Join(configDir, "keys", "daemon.key")
 
 		// Adopt an identity that is already present before generating one.
 		// This handles the retry scenario after a previously interrupted enrollment.
@@ -69,7 +69,6 @@ func ensureLocalSetup(nodeName string) (created bool, adopted bool, err error) {
 			fmt.Printf("🔑 Generated Age X25519 asymmetric keypair\n")
 			fmt.Printf("   Public Key:  %s\n", kp.PublicKey)
 			fmt.Printf("   Private Key: %s (locked to 0600)\n", keyPath)
-			fmt.Printf("   Back this file up now. Without it no snapshot can ever be read again.\n")
 			created = true
 		}
 	}

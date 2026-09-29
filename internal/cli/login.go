@@ -32,7 +32,7 @@ For CI/CD or headless environments, pass your Personal Access Token via '--token
 			serverURL := resolveServerURL()
 
 			// An enrolled host authenticates as its node. Writing a personal
-			// token over that one would leave the agent unable to fetch the
+			// token over that one would leave the daemon unable to fetch the
 			// credentials and key the remote server holds for it, which only a
 			// node token may fetch.
 			if err := refuseOverNodeToken(cfg); err != nil {
@@ -180,7 +180,7 @@ func refuseOverNodeToken(c *config.CLIConfig) error {
 		node = "a node"
 	}
 	return fmt.Errorf("this host is enrolled as %s, and its config holds that node's token.\n"+
-		"  Logging in would replace it, and the agent could no longer fetch the credentials\n"+
+		"  Logging in would replace it, and the daemon could no longer fetch the credentials\n"+
 		"  and key the remote server holds for this host.\n"+
 		"  To use your account here, keep it in its own config:\n"+
 		"    safegrd --config ~/.safegrd/operator.yaml login\n"+

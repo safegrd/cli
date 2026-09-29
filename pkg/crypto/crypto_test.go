@@ -28,12 +28,47 @@ func TestKeyPairGeneration(t *testing.T) {
 		t.Fatal("expected non-nil recipient")
 	}
 
-	ident, err := ParseIdentity(kp.PrivateKey)
+	idents, err := ParseIdentities(kp.PrivateKey)
 	if err != nil {
-		t.Fatalf("ParseIdentity failed: %v", err)
+		t.Fatalf("ParseIdentities failed: %v", err)
 	}
-	if ident == nil {
-		t.Fatal("expected non-nil identity")
+	if len(idents) != 1 {
+		t.Fatalf("expected one identity, got %d", len(idents))
+	}
+}
+
+// An organization under managed custody holds one key per host that enrolled,
+// and the host restoring a snapshot is often not the one that sealed it. The
+// remote server hands over every key, one per line; the snapshot must open
+// with whichever of them it was sealed to, wherever it sits in the list.
+func TestDecryptStreamTriesEveryIdentity(t *testing.T) {
+	sealer, err := GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sealed bytes.Buffer
+	if _, err := EncryptStream(strings.NewReader("snapshot body"), &sealed, sealer.PublicKey); err != nil {
+		t.Fatalf("EncryptStream: %v", err)
+	}
+	for name, keys := range map[string]string{
+		"sealing key last":  other.PrivateKey + "\n" + sealer.PrivateKey + "\n",
+		"sealing key first": sealer.PrivateKey + "\n\n# comment\n" + other.PrivateKey,
+	} {
+		var out bytes.Buffer
+		if _, err := DecryptStream(bytes.NewReader(sealed.Bytes()), &out, keys); err != nil {
+			t.Fatalf("%s: DecryptStream: %v", name, err)
+		}
+		if out.String() != "snapshot body" {
+			t.Fatalf("%s: got %q", name, out.String())
+		}
+	}
+	var out bytes.Buffer
+	if _, err := DecryptStream(bytes.NewReader(sealed.Bytes()), &out, other.PrivateKey); err == nil {
+		t.Fatal("a key the snapshot was not sealed to opened it")
 	}
 }
 

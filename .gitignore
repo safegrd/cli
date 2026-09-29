@@ -17,15 +17,15 @@ coverage.html
 *.safegrd
 
 # Local configuration, Age keypairs, and secrets.
-# The CLI writes ~/.safegrd/config.yaml and ~/.safegrd/keys/agent.key, but a
-# node agent is often run from inside a checkout with a local --config, which
+# The CLI writes ~/.safegrd/config.yaml and ~/.safegrd/keys/daemon.key, but a
+# node daemon is often run from inside a checkout with a local --config, which
 # carries database_url and key paths in cleartext.
 .safegrd/
 *.key
 .env
 
 # Unanchored config patterns so operator configs at any depth (such as
-# configs/prod.yaml or agent-config.yaml) are ignored.
+# configs/prod.yaml or daemon-config.yaml) are ignored.
 config.yaml
 *-config.yaml
 config.*.yaml
@@ -42,7 +42,7 @@ safegrd.yaml
 prod.yaml
 **/prod.yaml
 
-# Local state and scratch output a node agent writes when it is run from inside
+# Local state and scratch output a node daemon writes when it is run from inside
 # a checkout.
 safegrd-data/
 *.tmp

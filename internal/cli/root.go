@@ -50,7 +50,7 @@ var RootCmd = &cobra.Command{
 	Use:   "safegrd",
 	Short: "SafeGrd: encrypted, locked backups of databases, files and mail, with scheduled restore tests",
 	Long: `SafeGrd (https://safegrd.dev)
-Agent-safe, cryptographically air-gapped PostgreSQL backups with
+Daemon-safe, cryptographically air-gapped PostgreSQL backups with
 client-side Age encryption and WORM storage immutability.`,
 }
 
@@ -113,7 +113,7 @@ func init() {
 	RootCmd.AddCommand(newWhoamiCmd())
 	RootCmd.AddCommand(newOrgsCmd())
 	RootCmd.AddCommand(newProjectsCmd())
-	RootCmd.AddCommand(newAgentCmd())
+	RootCmd.AddCommand(newDaemonCmd())
 	RootCmd.AddCommand(newDoctorCmd())
 	RootCmd.AddCommand(newConfigCmd())
 	RootCmd.AddCommand(newVerifyHistoryCmd())

@@ -1,6 +1,6 @@
 package cli
 
-// The reporting half of the agent:
+// The reporting half of the daemon:
 // each surface registered as its own node under the host's, a heartbeat per
 // surface per tick, the one-shot "back up now", and unattended Fire Drills
 // where the private key already is.
@@ -84,7 +84,7 @@ func postJSON(ctx context.Context, c *config.CLIConfig, path string, body, out a
 
 // surfaceNodeID is the node a surface reports as. With a remote server and an
 // enrolled node it is the child the remote server assigned; registered once
-// per agent process, so a changed schedule or name in the config reaches the
+// per daemon process, so a changed schedule or name in the config reaches the
 // console on the next start. Without one it is the surface's own id, which is
 // what every backup reported as before surfaces were children.
 func surfaceNodeID(ctx context.Context, c *config.CLIConfig, s *config.SurfaceConfig, st *SurfaceState, registered map[string]bool) string {
@@ -172,7 +172,7 @@ func sendHeartbeat(ctx context.Context, c *config.CLIConfig, nodeID string, st *
 	}, &resp)
 	if status == http.StatusNotFound && st.ServerNodeID != "" && st.ServerNodeID == nodeID && nodeID != c.NodeID {
 		// The surface's node is gone: retired in the console while this
-		// agent ran. Registering it again, next tick, hears why.
+		// daemon ran. Registering it again, next tick, hears why.
 		st.ServerNodeID = ""
 		return nil
 	}
@@ -214,12 +214,12 @@ func drillBackoff(failures int) time.Duration {
 	return d
 }
 
-// agentPrivateKey is the identity this host already holds, if any. The agent
+// daemonPrivateKey is the identity this host already holds, if any. The daemon
 // never fetches or copies one to make a drill possible: every surface of an
 // organization is sealed to one key, so a key on every host would let one
 // compromised host read every other host's backups. Managed
 // custody is the exception the customer chose.
-func agentPrivateKey(ctx context.Context, c *config.CLIConfig) string {
+func daemonPrivateKey(ctx context.Context, c *config.CLIConfig) string {
 	if c.Encryption.PrivateKey != "" {
 		return c.Encryption.PrivateKey
 	}
@@ -240,7 +240,7 @@ func agentPrivateKey(ctx context.Context, c *config.CLIConfig) string {
 // the report says which.
 //
 // requestID is a "drill now" not yet run: it goes ahead inside the usual
-// spacing, once, because a person or an agent asked for it.
+// spacing, once, because a person or a daemon asked for it.
 func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, s *config.SurfaceConfig, st *SurfaceState, nodeID, snapshotID, requestID string, save func()) {
 	now := time.Now().UTC()
 	if requestID != "" {
@@ -257,11 +257,11 @@ func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, s *config.Surf
 			return
 		}
 	}
-	key := agentPrivateKey(ctx, c)
+	key := daemonPrivateKey(ctx, c)
 	if key == "" {
 		if st.DrillStatus != model.DrillStatusNoKey {
 			fmt.Fprintf(os.Stderr, "⚠️  Surface %s: a Fire Drill is due and this host does not hold the private key.\n"+
-				"   The agent never copies it here. Run 'safegrd verify --snapshot %s' where the key is,\n"+
+				"   The daemon never copies it here. Run 'safegrd verify --snapshot %s' where the key is,\n"+
 				"   or set key_path / SAFEGRD_PRIVATE_KEY on this host. The console shows this surface as unproven.\n", s.ID, snapshotID)
 		}
 		st.DrillStatus = model.DrillStatusNoKey

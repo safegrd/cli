@@ -134,7 +134,7 @@ func addClaimSurfaces(c *config.CLIConfig, surfaces []claimSurface) {
 		c.Surfaces = append(c.Surfaces, surfaceConfigFor(s))
 		switch {
 		case s.Config.CredentialHeld:
-			fmt.Printf("   %-20s %s: the remote server holds its credential; the agent fetches it when it backs up\n", s.Key, s.SurfaceType)
+			fmt.Printf("   %-20s %s: the remote server holds its credential; the daemon fetches it when it backs up\n", s.Key, s.SurfaceType)
 		case s.Config.CredentialEnv != "":
 			fmt.Printf("   %-20s %s: set %s on this host (the credential never leaves it)\n", s.Key, s.SurfaceType, s.Config.CredentialEnv)
 		default:

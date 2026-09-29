@@ -12,7 +12,7 @@ import (
 func writeConfigWithKey(t *testing.T, mode os.FileMode) (cfgPath, keyPath string) {
 	t.Helper()
 	dir := t.TempDir()
-	keyPath = filepath.Join(dir, "agent.key")
+	keyPath = filepath.Join(dir, "daemon.key")
 	if err := os.WriteFile(keyPath, []byte("AGE-SECRET-KEY-1TEST\n"), 0600); err != nil {
 		t.Fatal(err)
 	}

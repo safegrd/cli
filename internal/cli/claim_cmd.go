@@ -40,7 +40,7 @@ func newClaimCmd() *cobra.Command {
 this runs, and it only adds: a surface the config already has is left as it is.
 The previous config is kept as config.yaml.bak.
 
-The agent reads its config when it starts, so restart it afterwards.
+The daemon reads its config when it starts, so restart it afterwards.
 
 A new host enrolls with a claim code instead: safegrd enroll --claim <code>.`,
 		Args: cobra.NoArgs,
@@ -87,7 +87,7 @@ A new host enrolls with a claim code instead: safegrd enroll --claim <code>.`,
 			}
 			if len(add) == 0 {
 				fmt.Println("\nNothing to add: every surface named for this host is already in its config.")
-				fmt.Println("   If the agent is running, restart it so it reads the config: safegrd agent restart")
+				fmt.Println("   If the daemon is running, restart it so it reads the config: safegrd daemon restart")
 				return nil
 			}
 
@@ -96,8 +96,8 @@ A new host enrolls with a claim code instead: safegrd enroll --claim <code>.`,
 				return err
 			}
 			fmt.Printf("\n💾 Added %d surface%s to %s (the previous config is at %s).\n", len(add), plural(len(add)), path, backup)
-			fmt.Println("   The agent reads its config when it starts. Restart it: safegrd agent restart")
-			fmt.Println("   or take the first backups now: safegrd agent run --once")
+			fmt.Println("   The daemon reads its config when it starts. Restart it: safegrd daemon restart")
+			fmt.Println("   or take the first backups now: safegrd daemon run --once")
 			return nil
 		},
 	}
@@ -114,9 +114,9 @@ func plural(n int) string {
 func claimedSurfaceWords(s claimSurface) string {
 	switch {
 	case s.Config.CredentialHeld:
-		return s.SurfaceType + ": SafeGrd holds its credential; the agent fetches it when it backs up"
+		return s.SurfaceType + ": SafeGrd holds its credential; the daemon fetches it when it backs up"
 	case s.Config.CredentialEnv != "":
-		return s.SurfaceType + ": set " + s.Config.CredentialEnv + " where the agent runs (the credential never leaves this host)"
+		return s.SurfaceType + ": set " + s.Config.CredentialEnv + " where the daemon runs (the credential never leaves this host)"
 	}
 	return s.SurfaceType
 }
@@ -229,7 +229,7 @@ func appendSurfacesToConfig(path string, add []claimSurface) (string, error) {
 	if err := os.Rename(tmp.Name(), path); err != nil {
 		return "", err
 	}
-	// What was written must load, as the agent will load it.
+	// What was written must load, as the daemon will load it.
 	if _, err := config.LoadCLIConfig(path); err != nil {
 		if rerr := os.WriteFile(path, raw, 0o600); rerr != nil {
 			return "", fmt.Errorf("the new config does not load (%v), and putting the previous one back failed (%v); it is at %s", err, rerr, backup)

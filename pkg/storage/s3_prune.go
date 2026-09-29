@@ -83,7 +83,7 @@ func noLockConfigured(err error) bool {
 
 // RecordedRetainUntil reads the "kept until" date written in the snapshot
 // metadata at key, which is what decides expiry under worm_mode: NONE. It
-// takes the key as listed, not a snapshot id: the agent files each surface
+// takes the key as listed, not a snapshot id: the daemon files each surface
 // under its own node, which is not the node this provider was opened for.
 func (s *S3StorageProvider) RecordedRetainUntil(ctx context.Context, key string) (time.Time, error) {
 	out, err := s.client.GetObject(ctx, &s3.GetObjectInput{Bucket: &s.bucket, Key: &key})

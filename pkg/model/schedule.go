@@ -57,7 +57,7 @@ func ParseSchedule(schedule string) (time.Duration, error) {
 }
 
 // ScheduleInterval is ParseSchedule for code that executes scheduled tasks
-// (such as agent intervals and heartbeat checks).
+// (such as daemon intervals and heartbeat checks).
 //
 // It falls back to safe defaults rather than failing outright. A schedule that
 // is too frequent runs at the floor, and an unparseable schedule runs daily.

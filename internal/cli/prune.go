@@ -33,7 +33,7 @@ import (
 // pruneGrace is how long after a lock ends a snapshot is kept anyway.
 const pruneGrace = 24 * time.Hour
 
-// pruneEvery is how often the agent prunes when expire_after_lock is on.
+// pruneEvery is how often the daemon prunes when expire_after_lock is on.
 const pruneEvery = 24 * time.Hour
 
 type pruneReport struct {
@@ -338,7 +338,7 @@ by the bucket's clock. Never the newest snapshot of a surface, and never the las
 good one the remote server keeps while Threat Shield has an open anomaly on it.
 
 Needs s3:DeleteObjectVersion and s3:GetObjectRetention on this host's key, which the
-recommended bucket policy denies. Set storage.expire_after_lock: true for the agent to
+recommended bucket policy denies. Set storage.expire_after_lock: true for the daemon to
 prune once a day.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if grace < 0 {

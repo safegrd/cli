@@ -1,4 +1,4 @@
-# SafeGrd CLI (node agent) Configuration Example - safegrd.dev
+# SafeGrd CLI (node daemon) Configuration Example - safegrd.dev
 #
 # For the `safegrd` binary. Copy to ~/.safegrd/config.yaml (the default
 # location) or pass it with `safegrd --config <path>`.
@@ -44,7 +44,7 @@ encryption:
   # Recipient public key for encryption (never exposes the private key to the runner or the remote server)
   public_key: "age1..."
   # Path to local identity file containing private key (for restores/verifications)
-  key_path: "~/.safegrd/keys/agent.key"
+  key_path: "~/.safegrd/keys/daemon.key"
 
 # Alerts are not configured here. The remote server sends notifications
 # (failed backups, failed or blocked Fire Drills, silent hosts, overdue surfaces, recoveries)
@@ -52,18 +52,18 @@ encryption:
 # See https://safegrd.dev/docs/alerts.
 
 # ===========================================================================
-# Unattended multi-surface agent: `safegrd agent run`.
+# Unattended multi-surface daemon: `safegrd daemon run`.
 #
-# `agent run` reads everything below. A few keys are accepted but not yet
+# `daemon run` reads everything below. A few keys are accepted but not yet
 # acted on; each says so where it appears, and says what happens instead.
-# See https://safegrd.dev/docs/agent.
+# See https://safegrd.dev/docs/daemon.
 #
 # The keys above stay valid: a config with no `surfaces:` list loads as a
 # single implicit `postgres` surface, so no existing install needs an edit.
 # ===========================================================================
 
-# agent:
-#   # How often the agent wakes to look for work. This is a POLL, not the
+# daemon:
+#   # How often the daemon wakes to look for work. This is a POLL, not the
 #   # schedule; per-surface `schedule` below decides when a backup actually
 #   # runs. ±10% jitter is applied so a fleet does not stampede on the minute.
 #   interval: "5m"
@@ -83,7 +83,7 @@ encryption:
 #   # the in-progress lock depends on working flock semantics.
 #   state_dir: "~/.safegrd"
 #
-#   # NOT YET ACTED ON: the agent logs plain text at one level.
+#   # NOT YET ACTED ON: the daemon logs plain text at one level.
 #   log_format: "text"   # "text" | "json"
 #   log_level: "info"
 #
@@ -95,7 +95,7 @@ encryption:
 #   schedule: "@daily"        # "@hourly" | "@daily" | "@weekly" | "6h" | "2d" (one hour minimum)
 #   timezone: "UTC"           # NOT YET ACTED ON: schedules are intervals, not wall-clock times
 #   retention_days: 30
-#   # Grandfather-father-son, applied by the agent at upload: the first backup of
+#   # Grandfather-father-son, applied by the daemon at upload: the first backup of
 #   # each UTC day is locked keep_daily days, of each ISO week keep_weekly weeks,
 #   # of each month keep_monthly months, every other one retention_days. 0 turns
 #   # a tier off. An hourly schedule stays cheap with a short retention_days and
@@ -126,14 +126,14 @@ encryption:
 #     # ...or, instead of a credential block, inline a URL with no secret in it,
 #     # for a passwordless local socket:
 #     # database_url: "postgres://postgres@localhost:5432/myapp?sslmode=disable"
-#     # Commands run around each of the agent's backups of this surface.
+#     # Commands run around each of the daemon's backups of this surface.
 #     # pre_backup must succeed or the backup is skipped; post_backup always
 #     # runs, with SAFEGRD_BACKUP_STATUS=success|failed.
 #     # pre_backup: "psql \"$APP_DB\" -c 'CHECKPOINT'"
 #     # post_backup: "logger safegrd backup $SAFEGRD_BACKUP_STATUS"
 #     # A scratch database for Fire Drills: the drill restores the snapshot into
 #     # it and counts what came back. It must hold nothing and be used for
-#     # nothing else: the agent refuses one with tables in it, refuses the
+#     # nothing else: the daemon refuses one with tables in it, refuses the
 #     # database above, and empties it after each drill. Without it, drills
 #     # replay the snapshot in memory.
 #     # drill:
@@ -170,7 +170,7 @@ encryption:
 #     credential:
 #       from: command
 #       run: "op read op://vault/support-mail/password"
-#     # It runs under /bin/sh as the agent's user, has 30 seconds, and a
+#     # It runs under /bin/sh as the daemon's user, has 30 seconds, and a
 #     # failure fails this surface; it never falls back to anything else.
 #     # `safegrd doctor` runs it, so check it there first. from: env (with
 #     # name), from: file (with path) and from: safegrd work as above.

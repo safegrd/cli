@@ -17,7 +17,7 @@ import (
 	"github.com/safegrd/cli/pkg/model"
 )
 
-// fakeRemoteServer answers the agent's calls and counts backups and drills.
+// fakeRemoteServer answers the daemon's calls and counts backups and drills.
 type fakeRemoteServer struct {
 	mu        sync.Mutex
 	trigger   bool   // HeartbeatResponse.TriggerBackup
@@ -25,7 +25,7 @@ type fakeRemoteServer struct {
 	snapshots int
 
 	drill        bool   // ask for a drill of the last snapshot on every heartbeat
-	lastSnapshot string // the last snapshot the agent reported
+	lastSnapshot string // the last snapshot the daemon reported
 	drillReports int    // POST /api/v1/verifications, each answered 500
 }
 
@@ -69,11 +69,11 @@ func (f *fakeRemoteServer) backups() int {
 }
 
 // TriggerBackup is true whenever the remote server has not heard of a recent
-// success, including when this host's report of one was lost. An agent that
+// success, including when this host's report of one was lost. A daemon that
 // obeyed it would back up on every tick, and under Object Lock every one of
 // those is an object nobody can delete. Only a
 // one-shot request id starts an unscheduled backup, and each id runs once.
-func TestTheAgentIgnoresTriggerBackupAndRunsARequestOnce(t *testing.T) {
+func TestTheDaemonIgnoresTriggerBackupAndRunsARequestOnce(t *testing.T) {
 	fake := &fakeRemoteServer{}
 	ts := httptest.NewServer(fake)
 	defer ts.Close()
@@ -118,7 +118,7 @@ func TestTheAgentIgnoresTriggerBackupAndRunsARequestOnce(t *testing.T) {
 	tick()
 	tick()
 	if got := fake.backups(); got != 1 {
-		t.Fatalf("the agent obeyed TriggerBackup: %d backups after two ticks of it, want 1", got)
+		t.Fatalf("the daemon obeyed TriggerBackup: %d backups after two ticks of it, want 1", got)
 	}
 
 	fake.set(true, "req-1")
@@ -138,7 +138,7 @@ func TestTheAgentIgnoresTriggerBackupAndRunsARequestOnce(t *testing.T) {
 
 // A drill that passes but whose report never lands leaves the remote server
 // asking for it on every heartbeat. Each attempt downloads the whole snapshot,
-// so the agent must not drill again every tick however often it is asked.
+// so the daemon must not drill again every tick however often it is asked.
 func TestALostDrillReportDoesNotBecomeADrillEveryTick(t *testing.T) {
 	fake := &fakeRemoteServer{drill: true}
 	ts := httptest.NewServer(fake)
@@ -149,7 +149,7 @@ func TestALostDrillReportDoesNotBecomeADrillEveryTick(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	keyPath := filepath.Join(dir, "agent.key")
+	keyPath := filepath.Join(dir, "daemon.key")
 	if err := os.WriteFile(keyPath, []byte(id.String()+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -179,18 +179,18 @@ func TestALostDrillReportDoesNotBecomeADrillEveryTick(t *testing.T) {
 	reports := fake.drillReports
 	fake.mu.Unlock()
 	if reports != 1 {
-		t.Fatalf("the agent drilled %d times in five ticks while every report was lost, want 1", reports)
+		t.Fatalf("the daemon drilled %d times in five ticks while every report was lost, want 1", reports)
 	}
 
 	// A drill that took the process down is found at the next start and
 	// counted as a failure, rather than started again at once.
-	st := loadAgentState(filepath.Join(stateDir, "agent_state.json"))
+	st := loadDaemonState(filepath.Join(stateDir, "daemon_state.json"))
 	st.Surfaces["docs"].DrillInFlight = true
-	if err := saveAgentState(filepath.Join(stateDir, "agent_state.json"), st); err != nil {
+	if err := saveDaemonState(filepath.Join(stateDir, "daemon_state.json"), st); err != nil {
 		t.Fatal(err)
 	}
 	_ = reconcileSurfaces(context.Background(), c, stateDir, time.Minute, map[string]bool{})
-	st = loadAgentState(filepath.Join(stateDir, "agent_state.json"))
+	st = loadDaemonState(filepath.Join(stateDir, "daemon_state.json"))
 	if got := st.Surfaces["docs"]; got.DrillInFlight || got.DrillFailures != 1 || got.DrillStatus != model.DrillStatusFailed {
 		t.Errorf("an interrupted drill: in_flight=%t failures=%d status=%q, want it counted as one failure",
 			got.DrillInFlight, got.DrillFailures, got.DrillStatus)
