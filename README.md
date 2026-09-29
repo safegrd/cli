@@ -149,6 +149,29 @@ safegrd restore \
   --target "postgres://postgres:password@localhost:5432/myapp_recovered"
 ```
 
+### 6. Protect several things on one host, unattended
+
+Each entry under `surfaces:` in `~/.safegrd/config.yaml` is one protected thing, and
+`safegrd agent install` runs them on their schedules. A surface's `credential` block says
+where its secret comes from; the config never holds it:
+
+```yaml
+surfaces:
+  - id: app-primary
+    type: postgres
+    schedule: "@daily"
+    credential:
+      from: env                 # or: command (with run), file (with path),
+      name: APP_DATABASE_URL    # or safegrd: the remote server holds it for this host
+  - id: user-uploads
+    type: files
+    schedule: "6h"
+    roots: ["/var/www/uploads"]
+```
+
+[`safegrd.example.yaml`](safegrd.example.yaml) is the annotated version. The agent reads its
+config when it starts, so run `safegrd agent restart` after changing it.
+
 ---
 
 ## Core Features
