@@ -322,7 +322,11 @@ esac
 same_file() {
   [ "$1" = "$2" ] && return 0
   # An inode is unique only within its filesystem, so both are compared.
+  # Only ls -Li's first field, the inode, is read, so SC2012's concern about
+  # unusual file names does not apply; POSIX has no stat to ask instead.
+  # shellcheck disable=SC2012
   a="$(ls -Li "$1" 2>/dev/null | awk '{print $1}'):$(df -P "$1" 2>/dev/null | awk 'NR==2 {print $1}')"
+  # shellcheck disable=SC2012
   b="$(ls -Li "$2" 2>/dev/null | awk '{print $1}'):$(df -P "$2" 2>/dev/null | awk 'NR==2 {print $1}')"
   [ "${a%%:*}" != "" ] && [ "$a" = "$b" ]
 }
