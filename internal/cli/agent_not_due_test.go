@@ -2,6 +2,8 @@ package cli
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -79,5 +81,44 @@ func TestASinglePassRetriesAFailureAndSaysWhyItSkipsTheRest(t *testing.T) {
 	}
 	if out := run(time.Minute); strings.Contains(out, "is due for backup") || strings.Contains(out, "not due") {
 		t.Errorf("the resident agent retried inside its backoff, or said why nothing is due:\n%s", out)
+	}
+}
+
+// A surface retired in the console is not backed up by the resident agent,
+// which says so when it first hears it, not on every tick.
+func TestTheResidentAgentStopsARetiredSurfaceAndSaysSoOnce(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/surfaces") {
+			w.WriteHeader(http.StatusGone)
+			_, _ = w.Write([]byte(`{"error":"surface docs was retired in the console on 2026-09-29, so it is not backed up. Remove it from this host's config; to protect it again, give it a new id there"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer ts.Close()
+	dir := t.TempDir()
+	stateDir := filepath.Join(dir, "state")
+	if err := os.MkdirAll(filepath.Join(stateDir, "locks"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	c := &config.CLIConfig{
+		ServerURL: ts.URL, ServerToken: "tok", NodeID: "host-1",
+		Storage:  config.StorageConfig{Type: config.StorageTypeLocal, LocalPath: filepath.Join(dir, "worm"), RetentionDays: 1},
+		Surfaces: []config.SurfaceConfig{{ID: "docs", Type: "files", Schedule: "@daily", Roots: []string{dir}}},
+	}
+	tick := func() string {
+		return captureStderr(t, func() {
+			_ = reconcileSurfaces(context.Background(), c, stateDir, time.Minute, map[string]bool{})
+		})
+	}
+	if out := tick(); !strings.Contains(out, "Surface docs: surface docs was retired in the console") {
+		t.Errorf("the agent did not say the surface was retired:\n%s", out)
+	}
+	if out := tick(); strings.Contains(out, "retired") {
+		t.Errorf("the resident agent repeats that a surface is retired on every tick:\n%s", out)
+	}
+	st := loadAgentState(filepath.Join(stateDir, "agent_state.json"))
+	if s := st.Surfaces["docs"]; s == nil || s.LastSnapshotID != "" || !s.LastAttempt.IsZero() || s.Retired == "" {
+		t.Errorf("a retired surface was attempted or not recorded as retired: %+v", s)
 	}
 }

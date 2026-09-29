@@ -35,6 +35,9 @@ type SurfaceState struct {
 	ConsecutiveFailures int       `json:"consecutive_failures"`
 	NextDue             time.Time `json:"next_due,omitempty"`
 	LastError           string    `json:"last_error,omitempty"`
+	// Retired is the remote server's word that this surface was retired in
+	// the console. It is not backed up while the config still names it.
+	Retired string `json:"retired,omitempty"`
 	// notRecorded is why the remote server does not have the last backup's
 	// record, for this run only. A backup that succeeded but was never
 	// recorded is still reported as an error, because the console shows no
@@ -530,7 +533,17 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 		}
 
 		surface.Schedule = effectiveSchedule(c, surface)
+		wasRetired := sState.Retired
 		nodeID := surfaceNodeID(ctx, c, &surface, sState, registered)
+		if nodeID == "" {
+			// Retired in the console. Said to a single pass every time, and
+			// to the resident agent when it first hears it, not every tick.
+			if tick == 0 || wasRetired != sState.Retired {
+				fmt.Fprintf(os.Stderr, "⛔ Surface %s: %s.\n", surface.ID, sState.Retired)
+			}
+			warnIfStateUnsaved(saveAgentState(statePath, agentState), statePath)
+			continue
+		}
 		// The console's settings as last heard, so the heartbeat reports
 		// what this surface actually runs on; then whatever this heartbeat
 		// says, which takes effect on this same tick.

@@ -103,7 +103,7 @@ func surfaceNodeID(ctx context.Context, c *config.CLIConfig, s *config.SurfaceCo
 		pub = s.Encryption.PublicKey
 	}
 	var resp model.SurfaceRegisterResponse
-	_, err := postJSON(ctx, c, "/api/v1/nodes/"+url.PathEscape(c.NodeID)+"/surfaces", model.SurfaceRegisterRequest{
+	status, err := postJSON(ctx, c, "/api/v1/nodes/"+url.PathEscape(c.NodeID)+"/surfaces", model.SurfaceRegisterRequest{
 		SurfaceID:     s.ID,
 		Name:          s.Name,
 		SurfaceType:   model.SurfaceType(strings.ToLower(s.Type)),
@@ -115,6 +115,14 @@ func surfaceNodeID(ctx context.Context, c *config.CLIConfig, s *config.SurfaceCo
 		// only for a surface that fetches it (one origin per credential).
 		CredentialSource: credentialSourceOf(s),
 	}, &resp)
+	if status == http.StatusGone {
+		// Retired in the console. The surface is not backed up; "" tells
+		// the caller to skip it, and the caller says why.
+		st.Retired = strings.TrimPrefix(err.Error(), "HTTP 410: ")
+		st.ServerNodeID = ""
+		return ""
+	}
+	st.Retired = ""
 	if err != nil || resp.NodeID == "" {
 		// The backup still runs. Its report will be refused, and the backup
 		// path says so; this says why.
@@ -147,7 +155,7 @@ func sendHeartbeat(ctx context.Context, c *config.CLIConfig, nodeID string, st *
 		return nil
 	}
 	var resp model.HeartbeatResponse
-	_, err := postJSON(ctx, c, "/api/v1/nodes/heartbeat", model.HeartbeatRequest{
+	status, err := postJSON(ctx, c, "/api/v1/nodes/heartbeat", model.HeartbeatRequest{
 		NodeID:              nodeID,
 		CLI_Version:         Version,
 		OS:                  runtime.GOOS,
@@ -162,6 +170,12 @@ func sendHeartbeat(ctx context.Context, c *config.CLIConfig, nodeID string, st *
 		Schedule:            s.Schedule,
 		RetentionDays:       s.RetentionDays,
 	}, &resp)
+	if status == http.StatusNotFound && st.ServerNodeID != "" && st.ServerNodeID == nodeID && nodeID != c.NodeID {
+		// The surface's node is gone: retired in the console while this
+		// agent ran. Registering it again, next tick, hears why.
+		st.ServerNodeID = ""
+		return nil
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "⚠️  Surface %s: heartbeat failed (%v). Backups carry on; the console will show this host as silent if it persists.\n", st.SurfaceID, err)
 		return nil
