@@ -345,6 +345,10 @@ Plaintext data NEVER touches disk or third-party networks.`,
 				}
 				cfg.DatabaseURL = resolvedDB
 			}
+			// In memory only, like the resolved secret above.
+			var dropped []string
+			cfg.DatabaseURL, dropped = cleanPostgresURL(cfg.DatabaseURL)
+			sayDroppedURLParams("The database", dropped)
 
 			if err := cfg.ValidateForBackup(); err != nil {
 				return err

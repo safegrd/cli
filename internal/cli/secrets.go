@@ -155,6 +155,16 @@ func surfaceEmailPassword(ctx context.Context, s *config.SurfaceConfig) (string,
 // database_url, database_url_env, then credential_command (whose output is
 // the whole URL), then the host's database_url.
 func resolveSurfaceDatabaseURL(ctx context.Context, c *config.CLIConfig, s *config.SurfaceConfig) (string, error) {
+	u, err := resolveSurfaceDatabaseURLAsGiven(ctx, c, s)
+	if err != nil {
+		return "", err
+	}
+	u, dropped := cleanPostgresURL(u)
+	sayDroppedURLParams("Surface "+s.ID, dropped)
+	return u, nil
+}
+
+func resolveSurfaceDatabaseURLAsGiven(ctx context.Context, c *config.CLIConfig, s *config.SurfaceConfig) (string, error) {
 	if err := heldConflict(s); err != nil {
 		return "", err
 	}
