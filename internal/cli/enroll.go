@@ -381,7 +381,7 @@ With neither, it uses the login saved by 'safegrd login'.`,
 
 	cmd.Flags().StringVar(&token, "token", "", "Pre-issued Node Token from dashboard")
 	cmd.Flags().StringVar(&apiKey, "api-key", "", "Organization/Admin API Key for dynamic registration")
-	cmd.Flags().StringVar(&nodeName, "node-name", "", "Human-readable name for this node")
+	cmd.Flags().StringVar(&nodeName, "node-name", "", "Name this host is shown under (default: the hostname)")
 	cmd.Flags().StringVar(&projectID, "project", "", "Project ID or slug to attach this node to (defaults to org default project)")
 	cmd.Flags().StringVar(&nodeIDFlag, "node-id", "",
 		"The node this token belongs to, for --token. The console shows it beside the token. "+

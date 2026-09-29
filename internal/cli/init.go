@@ -102,7 +102,7 @@ you if you have not already).`,
 			// 2. Prepare Config
 			nodeID := "node-" + uuid.New().String()[:8]
 			if nodeName == "" {
-				nodeName = "pg-node-primary"
+				nodeName = defaultNodeName()
 			}
 
 			cfg = &config.CLIConfig{
@@ -186,7 +186,7 @@ you if you have not already).`,
 	cmd.Flags().StringVar(&s3Endpoint, "s3-endpoint", "", "S3 custom endpoint (for MinIO / R2)")
 	cmd.Flags().StringVar(&localPath, "local-path", "", "Local storage directory path")
 	cmd.Flags().IntVar(&retentionDays, "retention-days", 14, "WORM immutability retention in days")
-	cmd.Flags().StringVar(&nodeName, "node-name", "", "Human-readable name for this database node")
+	cmd.Flags().StringVar(&nodeName, "node-name", "", "Name this host is shown under (default: the hostname)")
 	cmd.Flags().BoolVar(&initForce, "force", false,
 		"Overwrite an existing config. This discards the settings in it and generates a NEW "+
 			"keypair, after which snapshots taken under the old key can only be read with the "+

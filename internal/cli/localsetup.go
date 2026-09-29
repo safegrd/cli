@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -81,7 +82,7 @@ func ensureLocalSetup(nodeName string) (created bool, adopted bool, err error) {
 		if nodeName != "" {
 			cfg.NodeName = nodeName
 		} else {
-			cfg.NodeName = "pg-node-primary"
+			cfg.NodeName = defaultNodeName()
 		}
 	}
 	// The built-in default is "./safegrd-storage", relative to wherever the
@@ -123,4 +124,22 @@ func recipientFor(identity string) (string, error) {
 		return "", err
 	}
 	return parsed.Recipient().String(), nil
+}
+
+// defaultNodeName is the name a host is shown under when neither --node-name
+// nor SAFEGRD_NODE_NAME gives one: the machine's hostname, without its domain
+// ("web-01.example.internal" becomes "web-01"), so two hosts enrolled without
+// a name can still be told apart in the console.
+func defaultNodeName() string {
+	h, err := os.Hostname()
+	if err != nil {
+		return "safegrd-host"
+	}
+	if i := strings.IndexByte(h, '.'); i > 0 {
+		h = h[:i]
+	}
+	if h = strings.TrimSpace(h); h == "" {
+		return "safegrd-host"
+	}
+	return h
 }

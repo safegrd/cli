@@ -30,7 +30,7 @@
 #   SAFEGRD_STORAGE      where backups go when the project has no bucket: 'hosted' or 'local'
 #   SAFEGRD_CLAIM        the code the console shows for this host: the project, where backups
 #                        go and the surfaces to protect, as chosen in the browser
-#   SAFEGRD_NODE_NAME    name this host is shown under
+#   SAFEGRD_NODE_NAME    name this host is shown under (default: its hostname)
 #   SAFEGRD_KEY_CUSTODY  'safegrd' or 'local'; answers the key question in advance
 #   SAFEGRD_SERVER_URL   remote server to log in and enroll with (default: https://safegrd.dev)
 #   SAFEGRD_DOWNLOAD_BASE  where release archives are fetched from, for testing a
