@@ -192,7 +192,6 @@ func (c *StandardIMAPClient) ListFolders(ctx context.Context) ([]string, error) 
 	}
 
 	var folders []string
-	listRegex := regexp.MustCompile(`^\*\s+LIST\s+\(.*?\)\s+"(.*?)"\s+(.*)$`)
 
 	for {
 		line, err := c.reader.ReadString('\n')
@@ -208,15 +207,32 @@ func (c *StandardIMAPClient) ListFolders(ctx context.Context) ([]string, error) 
 			return nil, fmt.Errorf("LIST command rejected: %s", line)
 		}
 
-		if matches := listRegex.FindStringSubmatch(line); len(matches) == 3 {
-			folder := strings.Trim(strings.TrimSpace(matches[2]), `"`)
-			if folder != "" {
-				folders = append(folders, folder)
-			}
+		if folder, ok := parseListLine(line); ok {
+			folders = append(folders, folder)
 		}
 	}
 
 	return folders, nil
+}
+
+var listLineRegex = regexp.MustCompile(`^\*\s+LIST\s+\((.*?)\)\s+(?:"(?:[^"\\]|\\.)*"|NIL)\s+(.*)$`)
+
+// parseListLine returns the mailbox named by one untagged LIST response, or
+// false when the line is not one or names a mailbox that cannot be selected.
+// Gmail's "[Gmail]" is such a container (\Noselect); selecting it fails with
+// NONEXISTENT.
+func parseListLine(line string) (string, bool) {
+	matches := listLineRegex.FindStringSubmatch(line)
+	if len(matches) != 3 {
+		return "", false
+	}
+	for _, flag := range strings.Fields(matches[1]) {
+		if strings.EqualFold(flag, `\Noselect`) || strings.EqualFold(flag, `\NonExistent`) {
+			return "", false
+		}
+	}
+	folder := strings.Trim(strings.TrimSpace(matches[2]), `"`)
+	return folder, folder != ""
 }
 
 func (c *StandardIMAPClient) FetchFolderMessages(ctx context.Context, folder string) ([]FetchedEmail, error) {

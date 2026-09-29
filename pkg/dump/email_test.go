@@ -263,3 +263,26 @@ func TestIncrementalUIDSynchronization(t *testing.T) {
 		t.Fatalf("expected new UIDVALIDITY 99999, got %d", client.FolderUIDValidity["INBOX"])
 	}
 }
+
+func TestParseListLineSkipsMailboxesThatCannotBeSelected(t *testing.T) {
+	cases := []struct {
+		line   string
+		folder string
+		ok     bool
+	}{
+		{`* LIST (\HasNoChildren) "/" "INBOX"`, "INBOX", true},
+		{`* LIST (\HasChildren \Noselect) "/" "[Gmail]"`, "", false},
+		{`* LIST (\HasNoChildren \All) "/" "[Gmail]/All Mail"`, "[Gmail]/All Mail", true},
+		{`* LIST (\NoSelect) "." "Archive"`, "", false},
+		{`* LIST (\NonExistent) "/" "Gone"`, "", false},
+		{`* LIST (\HasNoChildren) NIL "Flat"`, "Flat", true},
+		{`* LIST () "." Drafts`, "Drafts", true},
+		{`* OK done`, "", false},
+	}
+	for _, c := range cases {
+		folder, ok := parseListLine(c.line)
+		if folder != c.folder || ok != c.ok {
+			t.Errorf("parseListLine(%q) = %q, %v; want %q, %v", c.line, folder, ok, c.folder, c.ok)
+		}
+	}
+}
