@@ -116,6 +116,11 @@ safegrd enroll --token "sg_pat_..."
 safegrd enroll --claim <code>
 safegrd agent run --once
 
+# Later, on an enrolled host: add the surfaces named for it in the console
+# (Add surface on its row). Only adds; the old config is kept as config.yaml.bak
+safegrd claim
+safegrd agent restart
+
 # Verify the active session
 safegrd whoami
 ```

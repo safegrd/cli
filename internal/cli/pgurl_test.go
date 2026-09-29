@@ -35,7 +35,7 @@ func TestAConnectionURLKeepsOnlyWhatPostgreSQLTakes(t *testing.T) {
 		}
 	}
 	out := captureStderr(t, func() { sayDroppedURLParams("Surface moneydb", []string{"schema"}) })
-	if !strings.Contains(out, "Surface moneydb: its connection URL has parameters PostgreSQL does not take, so they are left out: schema (Prisma's; a backup takes every schema)") {
+	if !strings.Contains(out, "Surface moneydb: its connection URL has parameters PostgreSQL does not accept, so they are left out: schema (Prisma's; a backup takes every schema)") {
 		t.Errorf("the note does not say what was left out and why:\n%s", out)
 	}
 	if strings.Contains(out, "localhost") {

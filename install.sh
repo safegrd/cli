@@ -392,7 +392,8 @@ fi
 # A host that is already enrolled keeps its key and its node: re-running the
 # installer is how people upgrade, and it must not re-register anything.
 if [ -f "${HOME}/.safegrd/config.yaml" ] && grep -q '^server_token: *sg_tok_' "${HOME}/.safegrd/config.yaml" 2>/dev/null; then
-  printf "   This host is already enrolled (%s). Nothing else to do.\n" "${HOME}/.safegrd/config.yaml"
+  printf "   This host is already enrolled (%s).\n" "${HOME}/.safegrd/config.yaml"
+  printf "   To add the surfaces named for it in the console: ${CYAN}safegrd claim${RESET}\n"
   printf "   Check it with: ${CYAN}safegrd status${RESET}\n\n"
   exit 0
 fi

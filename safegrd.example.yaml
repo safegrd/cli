@@ -112,19 +112,25 @@ encryption:
 #     type: "postgres"
 #     name: "Production PostgreSQL"
 #     schedule: "@daily"
-#     # Reference an environment variable rather than inlining the DSN when the
-#     # connection string carries a password.
-#     database_url_env: "APP_DATABASE_URL"
-#     # ...or inline it, for a passwordless local socket:
+#     # Where the connection URL comes from. It carries a password, so the
+#     # config names where to find it rather than holding it:
+#     credential:
+#       from: env                 # an environment variable on this host...
+#       name: "APP_DATABASE_URL"
+#     #   from: command           # ...your secret manager's output...
+#     #   run: "op read op://vault/app-db/url"
+#     #   from: file              # ...a mounted secret...
+#     #   path: "/run/secrets/app-db-url"
+#     #   from: safegrd           # ...or the remote server holds it, encrypted,
+#     #                           # and gives it only to this host at backup time.
+#     # ...or, instead of a credential block, inline a URL with no secret in it,
+#     # for a passwordless local socket:
 #     # database_url: "postgres://postgres@localhost:5432/myapp?sslmode=disable"
 #     # Commands run around each of the agent's backups of this surface.
 #     # pre_backup must succeed or the backup is skipped; post_backup always
 #     # runs, with SAFEGRD_BACKUP_STATUS=success|failed.
 #     # pre_backup: "psql \"$APP_DB\" -c 'CHECKPOINT'"
 #     # post_backup: "logger safegrd backup $SAFEGRD_BACKUP_STATUS"
-#     # ...or read the whole URL from your secret manager, used only when
-#     # neither of the above is set:
-#     # credential_command: "op read op://vault/app-db/url"
 #     # A scratch database for Fire Drills: the drill restores the snapshot into
 #     # it and counts what came back. It must hold nothing and be used for
 #     # nothing else: the agent refuses one with tables in it, refuses the
@@ -157,18 +163,17 @@ encryption:
 #     port: 993
 #     username: "support@example.com"
 #     folders: ["INBOX", "Sent", "Archive"]
-#     # The config NEVER holds the password itself. Resolve it
-#     # through one of these, in order of preference:
-#     #
-#     # 1. A command whose stdout is the secret. Works identically under
-#     #    launchd, systemd and an interactive shell; a daemon inherits no
-#     #    login shell, so a bare env var is usually empty under a service.
-#     credential_command: "op read op://vault/support-mail/password"
-#     #    It runs under /bin/sh as the agent's user, has 30 seconds, and a
-#     #    failure fails this surface; it never falls back to a variable.
-#     #    `safegrd doctor` runs it, so check it there first.
-#     # 2. An environment variable NAME: the variable, never the value:
-#     # password_env: "SUPPORT_MAILBOX_PASSWORD"
+#     # The config NEVER holds the password itself. A command whose stdout is
+#     # the secret works identically under launchd, systemd and a shell; a
+#     # daemon inherits no login shell, so a bare variable is usually empty
+#     # under a service.
+#     credential:
+#       from: command
+#       run: "op read op://vault/support-mail/password"
+#     # It runs under /bin/sh as the agent's user, has 30 seconds, and a
+#     # failure fails this surface; it never falls back to anything else.
+#     # `safegrd doctor` runs it, so check it there first. from: env (with
+#     # name), from: file (with path) and from: safegrd work as above.
 #
 #     # Per-surface storage override. Omit to inherit the top-level `storage`.
 #     # storage:

@@ -108,6 +108,7 @@ func init() {
 	RootCmd.AddCommand(newUndeleteCmd())
 	RootCmd.AddCommand(newVerifyCmd())
 	RootCmd.AddCommand(newEnrollCmd())
+	RootCmd.AddCommand(newClaimCmd())
 	RootCmd.AddCommand(newLoginCmd())
 	RootCmd.AddCommand(newWhoamiCmd())
 	RootCmd.AddCommand(newOrgsCmd())

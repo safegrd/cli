@@ -48,6 +48,9 @@ func TestCLIConfigLoadSave(t *testing.T) {
 }
 
 func TestCLIConfigEnvOverrides(t *testing.T) {
+	// LoadCLIConfig("") reads ~/.safegrd/config.yaml. An empty home, so the
+	// test reads defaults rather than whatever the machine running it has.
+	t.Setenv("HOME", t.TempDir())
 	// 1. Verify default server URL is https://safegrd.dev
 	defaultCfg := NewDefaultCLIConfig()
 	if defaultCfg.ServerURL != DefaultServerURL {

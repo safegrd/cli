@@ -47,7 +47,7 @@ func ResolveSecretRef(flagName, val string) (string, error) {
 // daemon would otherwise stall every surface behind it.
 const credentialCommandTimeout = 30 * time.Second
 
-// runCredentialCommand runs a surface's credential_command and returns its
+// runCredentialCommand runs a surface's credential.run command and returns its
 // stdout, less trailing newlines, as the secret. The command is a
 // config value, so a writable config is code execution: that is why the config
 // loader refuses a file anyone but its owner can read. Stdout is the secret and
@@ -66,94 +66,141 @@ func runCredentialCommand(ctx context.Context, surfaceID, command string) (strin
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
-			return "", fmt.Errorf("surface %s: credential_command did not finish within %s", surfaceID, credentialCommandTimeout)
+			return "", fmt.Errorf("surface %s: credential.run did not finish within %s", surfaceID, credentialCommandTimeout)
 		}
 		msg := strings.TrimSpace(stderr.String())
 		if len(msg) > 300 {
 			msg = msg[:300] + "..."
 		}
 		if msg != "" {
-			return "", fmt.Errorf("surface %s: credential_command failed: %v: %s", surfaceID, err, msg)
+			return "", fmt.Errorf("surface %s: credential.run failed: %v: %s", surfaceID, err, msg)
 		}
-		return "", fmt.Errorf("surface %s: credential_command failed: %v", surfaceID, err)
+		return "", fmt.Errorf("surface %s: credential.run failed: %v", surfaceID, err)
 	}
 	secret := strings.TrimRight(stdout.String(), "\r\n")
 	if secret == "" {
-		return "", fmt.Errorf("surface %s: credential_command printed nothing", surfaceID)
+		return "", fmt.Errorf("surface %s: credential.run printed nothing", surfaceID)
 	}
 	return secret, nil
 }
 
-// localCredentialField names the credential a surface's config sets on the
-// host itself, or "" when it sets none.
-func localCredentialField(s *config.SurfaceConfig) string {
-	switch {
-	case s.CredentialCommand != "":
-		return "credential_command"
+// validCredential checks a surface's credential block: a known source, the
+// one field that source needs, and one origin. A credential that comes from
+// SafeGrd and a database_url that could also win is how a host backs up
+// something other than what the console shows, so it is refused, never
+// resolved quietly.
+func validCredential(s *config.SurfaceConfig) error {
+	c := s.Credential
+	if c == nil {
+		return nil
+	}
+	switch c.From {
+	case config.CredentialFromSafeGrd:
+		if s.DatabaseURL != "" {
+			return fmt.Errorf("surface %s: credential.from is safegrd and database_url is set as well. A credential has one origin: "+
+				"remove database_url to use the one SafeGrd holds, or set credential.from to where it is on this host", s.ID)
+		}
+	case config.CredentialFromEnv:
+		if c.Name == "" {
+			return fmt.Errorf("surface %s: credential.from is env, so credential.name must name the environment variable", s.ID)
+		}
+	case config.CredentialFromCommand:
+		if c.Run == "" {
+			return fmt.Errorf("surface %s: credential.from is command, so credential.run must be the command to run", s.ID)
+		}
+	case config.CredentialFromFile:
+		if c.Path == "" {
+			return fmt.Errorf("surface %s: credential.from is file, so credential.path must be the file to read", s.ID)
+		}
+	case "":
+		return fmt.Errorf("surface %s: credential has no from. Set it to safegrd, env, command or file", s.ID)
+	default:
+		return fmt.Errorf("surface %s: credential.from is %q; it must be safegrd, env, command or file", s.ID, c.From)
+	}
+	if c.From != config.CredentialFromSafeGrd && s.DatabaseURL != "" {
+		return fmt.Errorf("surface %s: credential.from is %s and database_url is set as well. A credential has one origin: remove one", s.ID, c.From)
+	}
+	return nil
+}
+
+// credentialOnHost says where on the host a surface's credential comes
+// from, for messages, or "" when the host supplies none of its own.
+func credentialOnHost(s *config.SurfaceConfig) string {
+	switch from := s.CredentialFrom(); {
+	case from != "" && from != config.CredentialFromSafeGrd:
+		return "credential.from: " + from
 	case s.DatabaseURL != "":
 		return "database_url"
-	case s.DatabaseURLEnv != "":
-		return "database_url_env"
-	case s.PasswordEnv != "":
-		return "password_env"
 	}
 	return ""
 }
 
 // credentialSourceOf is what the host tells the remote server about where a
 // surface's credential comes from: "held", "host", or "" for a surface that
-// needs none.
+// names none.
 func credentialSourceOf(s *config.SurfaceConfig) string {
-	if s.CredentialHeld {
+	if s.FromSafeGrd() {
 		return "held"
 	}
 	switch strings.ToLower(s.Type) {
 	case "postgres", "mysql", "mongodb", "email":
-		if localCredentialField(s) != "" {
+		if credentialOnHost(s) != "" {
 			return "host"
 		}
 	}
 	return ""
 }
 
-// heldConflict refuses a surface that says its credential is held and also
-// names one on the host. A credential has one origin: two that can each win
-// is how a host backs up something other than what the console shows.
-func heldConflict(s *config.SurfaceConfig) error {
-	if f := localCredentialField(s); s.CredentialHeld && f != "" {
-		return fmt.Errorf("surface %s: credential_held is set and so is %s. A credential has one origin: "+
-			"remove %s to use the one the remote server holds, or remove credential_held to keep it on this host", s.ID, f, f)
+// credentialFromHost resolves a credential block that points at the host:
+// an environment variable, a command's output, or a file. What it names and
+// cannot deliver is an error that says which, never a fallback: a missing
+// variable once backed up whatever the host's own database_url pointed at.
+func credentialFromHost(ctx context.Context, s *config.SurfaceConfig) (string, error) {
+	c := s.Credential
+	switch c.From {
+	case config.CredentialFromEnv:
+		v := os.Getenv(c.Name)
+		if v == "" {
+			return "", fmt.Errorf("surface %s: credential.name is %s, and that environment variable is not set for this process. "+
+				"Under a service, set it in the service's environment (see safegrd.dev/docs/agent)", s.ID, c.Name)
+		}
+		return v, nil
+	case config.CredentialFromCommand:
+		return runCredentialCommand(ctx, s.ID, c.Run)
+	case config.CredentialFromFile:
+		data, err := os.ReadFile(c.Path)
+		if err != nil {
+			return "", fmt.Errorf("surface %s: credential.path %s could not be read: %w", s.ID, c.Path, err)
+		}
+		v := strings.TrimRight(string(data), "\r\n")
+		if v == "" {
+			return "", fmt.Errorf("surface %s: credential.path %s is empty", s.ID, c.Path)
+		}
+		return v, nil
 	}
-	return nil
+	return "", nil
 }
 
-// surfaceEmailPassword resolves a mailbox password. A held surface uses only
-// the password the remote server holds. Otherwise, in this order:
-// credential_command, then password_env, then SAFEGRD_EMAIL_PASSWORD. A
-// command that is set and fails is the answer: it is never papered over by an
-// environment variable left behind from an older setup.
+// surfaceEmailPassword resolves a mailbox password: the one SafeGrd holds,
+// the credential block's source on the host, or SAFEGRD_EMAIL_PASSWORD when
+// the surface names none.
 func surfaceEmailPassword(ctx context.Context, s *config.SurfaceConfig) (string, error) {
-	if err := heldConflict(s); err != nil {
+	if err := validCredential(s); err != nil {
 		return "", err
 	}
-	if s.CredentialHeld {
+	switch s.CredentialFrom() {
+	case config.CredentialFromSafeGrd:
 		return s.HeldSecret, nil
+	case "":
+		return os.Getenv("SAFEGRD_EMAIL_PASSWORD"), nil
 	}
-	if s.CredentialCommand != "" {
-		return runCredentialCommand(ctx, s.ID, s.CredentialCommand)
-	}
-	if s.PasswordEnv != "" {
-		if v := os.Getenv(s.PasswordEnv); v != "" {
-			return v, nil
-		}
-	}
-	return os.Getenv("SAFEGRD_EMAIL_PASSWORD"), nil
+	return credentialFromHost(ctx, s)
 }
 
-// resolveSurfaceDatabaseURL is the database a Postgres surface backs up. A
-// held surface uses only the URL the remote server holds. Otherwise:
-// database_url, database_url_env, then credential_command (whose output is
-// the whole URL), then the host's database_url.
+// resolveSurfaceDatabaseURL is the database a surface backs up. A surface
+// whose credential comes from SafeGrd uses only the URL SafeGrd holds.
+// Otherwise the credential block's source on the host, then the surface's
+// database_url, then the host's.
 func resolveSurfaceDatabaseURL(ctx context.Context, c *config.CLIConfig, s *config.SurfaceConfig) (string, error) {
 	u, err := resolveSurfaceDatabaseURLAsGiven(ctx, c, s)
 	if err != nil {
@@ -165,20 +212,18 @@ func resolveSurfaceDatabaseURL(ctx context.Context, c *config.CLIConfig, s *conf
 }
 
 func resolveSurfaceDatabaseURLAsGiven(ctx context.Context, c *config.CLIConfig, s *config.SurfaceConfig) (string, error) {
-	if err := heldConflict(s); err != nil {
+	if err := validCredential(s); err != nil {
 		return "", err
 	}
-	if s.CredentialHeld {
-		// Held means held: never the host's database_url behind it.
+	switch s.CredentialFrom() {
+	case config.CredentialFromSafeGrd:
+		// Never the host's database_url behind it.
 		return s.HeldSecret, nil
+	case "":
+	default:
+		return credentialFromHost(ctx, s)
 	}
 	url := s.DatabaseURL
-	if url == "" && s.DatabaseURLEnv != "" {
-		url = os.Getenv(s.DatabaseURLEnv)
-	}
-	if url == "" && s.CredentialCommand != "" {
-		return runCredentialCommand(ctx, s.ID, s.CredentialCommand)
-	}
 	if url == "" {
 		url = c.DatabaseURL
 	}

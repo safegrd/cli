@@ -10,45 +10,101 @@ import (
 	"github.com/safegrd/cli/pkg/config"
 )
 
+var fromSafeGrd = &config.CredentialConfig{From: config.CredentialFromSafeGrd}
+
 // A surface whose credential the remote server holds is written into the
-// config as held, with no secret and no variable name.
-func TestAClaimedSurfaceWithAHeldCredentialIsWrittenAsHeld(t *testing.T) {
+// config as credential.from: safegrd, with no secret and no variable name;
+// one whose credential stays on the host names its variable.
+func TestAClaimedSurfaceIsWrittenWithWhereItsCredentialComesFrom(t *testing.T) {
 	var s claimSurface
 	s.Key, s.Name, s.SurfaceType = "app-db", "App DB", "postgres"
 	s.Config.CredentialHeld = true
 	sc := surfaceConfigFor(s)
-	if !sc.CredentialHeld || sc.DatabaseURLEnv != "" || sc.DatabaseURL != "" {
+	if !sc.FromSafeGrd() || sc.Credential.Name != "" || sc.DatabaseURL != "" {
 		t.Errorf("a held database credential was written as %+v", sc)
 	}
 	s.SurfaceType = "email"
-	if sc := surfaceConfigFor(s); !sc.CredentialHeld || sc.PasswordEnv != "" {
+	if sc := surfaceConfigFor(s); !sc.FromSafeGrd() {
 		t.Errorf("a held mailbox password was written as %+v", sc)
+	}
+	s.Config.CredentialHeld, s.Config.CredentialEnv, s.SurfaceType = false, "APP_DATABASE_URL", "postgres"
+	if sc := surfaceConfigFor(s); sc.CredentialFrom() != config.CredentialFromEnv || sc.Credential.Name != "APP_DATABASE_URL" {
+		t.Errorf("a host credential was written as %+v", sc.Credential)
 	}
 }
 
-// A held credential is used as held, and a surface that also names one on the
-// host is refused: a credential has one origin.
-func TestAHeldSurfaceCredentialHasOneOrigin(t *testing.T) {
+// A credential from SafeGrd is used as it is, and a surface that also names
+// one on the host is refused: a credential has one origin.
+func TestASurfaceCredentialHasOneOrigin(t *testing.T) {
 	ctx := context.Background()
 	c := &config.CLIConfig{DatabaseURL: "postgres://host-default"}
-	s := &config.SurfaceConfig{ID: "app-db", Type: "postgres", CredentialHeld: true, HeldSecret: "postgres://held"}
+	s := &config.SurfaceConfig{ID: "app-db", Type: "postgres", Credential: fromSafeGrd, HeldSecret: "postgres://held"}
 	if got, err := resolveSurfaceDatabaseURL(ctx, c, s); err != nil || got != "postgres://held" {
 		t.Errorf("a held database URL resolved to %q (%v), not the held one", got, err)
 	}
 	if credentialSourceOf(s) != "held" {
 		t.Errorf("a held surface reports its source as %q", credentialSourceOf(s))
 	}
-	s.DatabaseURLEnv = "APP_DATABASE_URL"
+	s.DatabaseURL = "postgres://also-here"
 	if _, err := resolveSurfaceDatabaseURL(ctx, c, s); err == nil || !strings.Contains(err.Error(), "one origin") {
-		t.Errorf("a surface both held and named on the host was not refused: %v", err)
+		t.Errorf("a surface both from SafeGrd and with a database_url was not refused: %v", err)
 	}
-	m := &config.SurfaceConfig{ID: "support", Type: "email", CredentialHeld: true, HeldSecret: "held-pass"}
+	m := &config.SurfaceConfig{ID: "support", Type: "email", Credential: fromSafeGrd, HeldSecret: "held-pass"}
 	if got, _ := surfaceEmailPassword(ctx, m); got != "held-pass" {
 		t.Errorf("a held mailbox password resolved to %q", got)
 	}
-	host := &config.SurfaceConfig{ID: "db", Type: "mysql", DatabaseURLEnv: "DB_URL"}
+	host := &config.SurfaceConfig{ID: "db", Type: "mysql", Credential: &config.CredentialConfig{From: "env", Name: "DB_URL"}}
 	if credentialSourceOf(host) != "host" || credentialSourceOf(&config.SurfaceConfig{Type: "files"}) != "" {
 		t.Error("the credential source is not reported as the config says")
+	}
+}
+
+// A credential block that is incomplete or names an unknown source is
+// refused in words, before anything is fetched or run.
+func TestACredentialBlockSaysWhatIsMissing(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		cred *config.CredentialConfig
+		want string
+	}{
+		{&config.CredentialConfig{}, "has no from"},
+		{&config.CredentialConfig{From: "vault"}, `"vault"; it must be safegrd, env, command or file`},
+		{&config.CredentialConfig{From: "env"}, "credential.name must name"},
+		{&config.CredentialConfig{From: "command"}, "credential.run must be"},
+		{&config.CredentialConfig{From: "file"}, "credential.path must be"},
+	} {
+		s := &config.SurfaceConfig{ID: "db", Type: "postgres", Credential: tc.cred}
+		if _, err := resolveSurfaceDatabaseURL(ctx, &config.CLIConfig{}, s); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%+v: %v, want an error saying %q", tc.cred, err, tc.want)
+		}
+	}
+}
+
+// A variable or file the block names and cannot deliver is an error that says
+// which, never a quiet fall back to the host's own database_url.
+func TestACredentialOnTheHostDoesNotFallBack(t *testing.T) {
+	ctx := context.Background()
+	c := &config.CLIConfig{DatabaseURL: "postgres://host-default/other"}
+	t.Setenv("SAFEGRD_TEST_DB_URL", "")
+	s := &config.SurfaceConfig{ID: "db", Type: "postgres", Credential: &config.CredentialConfig{From: "env", Name: "SAFEGRD_TEST_DB_URL"}}
+	if got, err := resolveSurfaceDatabaseURL(ctx, c, s); err == nil || got != "" || !strings.Contains(err.Error(), "SAFEGRD_TEST_DB_URL") {
+		t.Errorf("an unset variable resolved to %q (%v); want an error naming it", got, err)
+	}
+	t.Setenv("SAFEGRD_TEST_DB_URL", "postgres://from-env/app")
+	if got, err := resolveSurfaceDatabaseURL(ctx, c, s); err != nil || got != "postgres://from-env/app" {
+		t.Errorf("from env: %q, %v", got, err)
+	}
+	path := filepath.Join(t.TempDir(), "db-url")
+	if err := os.WriteFile(path, []byte("postgres://from-file/app\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s.Credential = &config.CredentialConfig{From: "file", Path: path}
+	if got, err := resolveSurfaceDatabaseURL(ctx, c, s); err != nil || got != "postgres://from-file/app" {
+		t.Errorf("from file: %q, %v", got, err)
+	}
+	s.Credential.Path = filepath.Join(t.TempDir(), "missing")
+	if _, err := resolveSurfaceDatabaseURL(ctx, c, s); err == nil || !strings.Contains(err.Error(), "could not be read") {
+		t.Errorf("a missing file: %v", err)
 	}
 }
 
@@ -58,7 +114,7 @@ func TestAHeldSurfaceCredentialHasOneOrigin(t *testing.T) {
 func TestAHeldSurfaceCredentialNeverReachesTheConfigFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	cfg := &config.CLIConfig{Surfaces: []config.SurfaceConfig{{ID: "app-db", Type: "postgres",
-		CredentialHeld: true, HeldSecret: "postgres://app:s3cret@db/app"}}}
+		Credential: fromSafeGrd, HeldSecret: "postgres://app:s3cret@db/app"}}}
 	if err := config.SaveCLIConfig(cfg, path); err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +125,7 @@ func TestAHeldSurfaceCredentialNeverReachesTheConfigFile(t *testing.T) {
 	if strings.Contains(string(raw), "s3cret") {
 		t.Fatalf("the held credential was written to the config file:\n%s", raw)
 	}
-	if !strings.Contains(string(raw), "credential_held: true") {
-		t.Errorf("the config does not say the credential is held:\n%s", raw)
+	if !strings.Contains(string(raw), "from: safegrd") {
+		t.Errorf("the config does not say the credential comes from SafeGrd:\n%s", raw)
 	}
 }

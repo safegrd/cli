@@ -108,6 +108,40 @@ type DefaultsConfig struct {
 	KeepMonthly int `yaml:"keep_monthly,omitempty" json:"keep_monthly,omitempty"`
 }
 
+// Where a surface's credential comes from (CredentialConfig.From).
+const (
+	// CredentialFromSafeGrd: the remote server holds it, sealed, and the
+	// agent fetches it when the surface backs up. Nothing is set on the host.
+	CredentialFromSafeGrd = "safegrd"
+	// CredentialFromEnv: an environment variable on the host, named by Name.
+	CredentialFromEnv = "env"
+	// CredentialFromCommand: the output of a command run on the host (Run),
+	// such as a secret manager's CLI.
+	CredentialFromCommand = "command"
+	// CredentialFromFile: a file on the host (Path), such as a mounted secret.
+	CredentialFromFile = "file"
+)
+
+// CredentialConfig says where a surface's credential comes from.
+type CredentialConfig struct {
+	From string `yaml:"from" json:"from"`
+	Name string `yaml:"name,omitempty" json:"name,omitempty"` // from: env
+	Run  string `yaml:"run,omitempty" json:"run,omitempty"`   // from: command
+	Path string `yaml:"path,omitempty" json:"path,omitempty"` // from: file
+}
+
+// CredentialFrom is where the surface's credential comes from, or "" when
+// it names none.
+func (s *SurfaceConfig) CredentialFrom() string {
+	if s == nil || s.Credential == nil {
+		return ""
+	}
+	return s.Credential.From
+}
+
+// FromSafeGrd says the remote server holds this surface's credential.
+func (s *SurfaceConfig) FromSafeGrd() bool { return s.CredentialFrom() == CredentialFromSafeGrd }
+
 // SurfaceConfig defines a protected surface on a host.
 type SurfaceConfig struct {
 	ID            string `yaml:"id" json:"id"`     // Stable identifier
@@ -126,8 +160,7 @@ type SurfaceConfig struct {
 	PostBackup string `yaml:"post_backup,omitempty" json:"post_backup,omitempty"`
 
 	// Postgres fields
-	DatabaseURL    string `yaml:"database_url,omitempty" json:"database_url,omitempty"`
-	DatabaseURLEnv string `yaml:"database_url_env,omitempty" json:"database_url_env,omitempty"`
+	DatabaseURL string `yaml:"database_url,omitempty" json:"database_url,omitempty"`
 
 	// Files fields
 	Roots    []string `yaml:"roots,omitempty" json:"roots,omitempty"`
@@ -138,14 +171,11 @@ type SurfaceConfig struct {
 	Port              int      `yaml:"port,omitempty" json:"port,omitempty"`
 	Username          string   `yaml:"username,omitempty" json:"username,omitempty"`
 	Folders           []string `yaml:"folders,omitempty" json:"folders,omitempty"`
-	CredentialCommand string   `yaml:"credential_command,omitempty" json:"credential_command,omitempty"`
-	PasswordEnv       string   `yaml:"password_env,omitempty" json:"password_env,omitempty"`
 
-	// CredentialHeld says the remote server holds this surface's credential
-	// (its database URL, or its mailbox password), and the agent fetches it
-	// when the surface backs up. It is the only origin: a surface that also
-	// names a credential on the host is refused, never resolved quietly.
-	CredentialHeld bool `yaml:"credential_held,omitempty" json:"credential_held,omitempty"`
+	// Credential is where this surface's credential comes from: a
+	// database's whole connection URL, or a mailbox's password. One block,
+	// so there is one place to look and one origin.
+	Credential *CredentialConfig `yaml:"credential,omitempty" json:"credential,omitempty"`
 	// HeldSecret is that credential once fetched. Memory only: the tags keep
 	// it out of the file, so withdrawing it on the server withdraws it here.
 	HeldSecret string `yaml:"-" json:"-"`
@@ -221,6 +251,28 @@ func unknownKeys(data []byte) []string {
 		out = append(out, "line "+m[1]+": "+sectionOfType[m[3]]+m[2])
 	}
 	return out
+}
+
+// replacedCredentialKeys refuses a config that names a surface's credential
+// the way it used to be named. Ignored like any other unknown key, such a
+// surface would have no credential, and a database surface would then back up
+// whatever the host's own database_url points at.
+func replacedCredentialKeys(unknown []string) error {
+	replaced := map[string]string{
+		"credential_held":    "credential: {from: safegrd}",
+		"database_url_env":   "credential: {from: env, name: VARIABLE}",
+		"password_env":       "credential: {from: env, name: VARIABLE}",
+		"credential_command": "credential: {from: command, run: \"...\"}",
+	}
+	for _, k := range unknown {
+		for old, now := range replaced {
+			if strings.HasSuffix(k, "surfaces[]."+old) {
+				return fmt.Errorf("%s: %s is no longer read; a surface says where its credential comes from with %s. "+
+					"See safegrd.dev/docs/config", k, old, now)
+			}
+		}
+	}
+	return nil
 }
 
 // DefaultConfigDir returns ~/.safegrd.
@@ -312,6 +364,9 @@ func LoadCLIConfig(path string) (*CLIConfig, error) {
 			return nil, fmt.Errorf("failed to parse config file %s: %w", path, err)
 		}
 		cfg.UnknownKeys = unknownKeys(data)
+		if err := replacedCredentialKeys(cfg.UnknownKeys); err != nil {
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
 
 		// Security migration:
 		// Check for legacy inline private_key in config.yaml.

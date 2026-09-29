@@ -212,11 +212,11 @@ func runValidationChecks(path string, c *config.CLIConfig) []CheckResult {
 		for _, s := range c.Surfaces {
 			switch strings.ToLower(s.Type) {
 			case "postgres", "mysql", "mongodb", "sqlite":
-				if s.DatabaseURL == "" && s.DatabaseURLEnv == "" && s.CredentialCommand == "" && !s.CredentialHeld && c.DatabaseURL == "" {
+				if s.DatabaseURL == "" && s.Credential == nil && c.DatabaseURL == "" {
 					results = append(results, CheckResult{
 						Name:    fmt.Sprintf("Surface %s (%s)", s.ID, strings.ToLower(s.Type)),
 						Status:  "FAIL",
-						Message: "missing database_url, database_url_env or credential_command",
+						Message: "missing credential (from: safegrd, env, command or file) or database_url",
 					})
 				} else {
 					results = append(results, CheckResult{
@@ -565,7 +565,7 @@ func unusedAlertBlock(c *config.CLIConfig) string {
 }
 
 // surfaceCredentialChecks resolves each surface's secret the way the agent
-// will, so a credential_command that is not signed in, or a password_env that
+// will, so a credential.run that is not signed in, or a credential.name that
 // names an unset variable, is found at the terminal rather than at 3am by a
 // daemon. Only doctor runs these: `config validate` stays free of side effects.
 func surfaceCredentialChecks(c *config.CLIConfig) []CheckResult {
@@ -576,7 +576,7 @@ func surfaceCredentialChecks(c *config.CLIConfig) []CheckResult {
 	for i := range c.Surfaces {
 		s := &c.Surfaces[i]
 		name := fmt.Sprintf("Surface %s credentials", s.ID)
-		if s.CredentialHeld {
+		if s.FromSafeGrd() {
 			if agentState == nil {
 				agentState = loadAgentState(filepath.Join(resolveStateDir("", c), "agent_state.json"))
 			}
@@ -610,13 +610,18 @@ func surfaceCredentialChecks(c *config.CLIConfig) []CheckResult {
 		case err != nil:
 			results = append(results, CheckResult{Name: name, Status: "FAIL", Message: err.Error()})
 		case secret == "":
-			results = append(results, CheckResult{Name: name, Status: "FAIL", Message: "resolve to nothing: set credential_command, or name a variable in password_env or database_url_env that is set in the agent's environment"})
+			results = append(results, CheckResult{Name: name, Status: "FAIL", Message: "resolve to nothing: add a credential block (from: safegrd, env, command or file)"})
 		default:
 			source := "config"
-			if s.CredentialCommand != "" && (s.Type == "email" || (s.DatabaseURL == "" && s.DatabaseURLEnv == "")) {
-				source = "credential_command"
-			} else if s.HeldSecret != "" && secret == s.HeldSecret {
+			switch s.CredentialFrom() {
+			case config.CredentialFromSafeGrd:
 				source = "the remote server, which holds it"
+			case config.CredentialFromEnv:
+				source = "the environment variable " + s.Credential.Name
+			case config.CredentialFromCommand:
+				source = "credential.run"
+			case config.CredentialFromFile:
+				source = "the file " + s.Credential.Path
 			}
 			results = append(results, CheckResult{Name: name, Status: "PASS", Message: "resolve (from " + source + ")"})
 		}

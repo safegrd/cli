@@ -265,13 +265,13 @@ func resolveManagedIdentity(ctx context.Context, cfg *config.CLIConfig, verbose 
 
 // fetchHeldSurfaceSecret fills in the credential the remote server holds for
 // a surface, when its config says so. A surface that also names a credential
-// on the host is refused when it resolves (heldConflict), not fetched. It asks
+// on the host is refused when it resolves (validCredential), not fetched. It asks
 // as the host, for the surface's own node: the server releases a surface's
 // credential to the host that registered it and to nothing else. A failure is
 // said out loud and the backup goes on to fail on the missing credential,
 // rather than on a guess.
 func fetchHeldSurfaceSecret(ctx context.Context, c *config.CLIConfig, nodeID string, s *config.SurfaceConfig) {
-	if !s.CredentialHeld || s.HeldSecret != "" || localCredentialField(s) != "" {
+	if !s.FromSafeGrd() || s.HeldSecret != "" || credentialOnHost(s) != "" {
 		return
 	}
 	if c.ServerURL == "" || c.ServerToken == "" || nodeID == "" || nodeID == s.ID {

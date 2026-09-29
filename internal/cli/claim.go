@@ -84,25 +84,32 @@ func fetchClaim(serverURL, credential, code string) (*claimPreview, error) {
 }
 
 // surfaceConfigFor is the host's config stanza for a surface named in the
-// console. It holds no secret: a credential is the name of an environment
-// variable this host sets.
+// console. It holds no secret: a credential comes from SafeGrd, or from an
+// environment variable this host sets.
 func surfaceConfigFor(s claimSurface) config.SurfaceConfig {
 	sc := config.SurfaceConfig{
 		ID: s.Key, Type: s.SurfaceType, Name: s.Name,
 		Schedule: s.Config.Schedule, RetentionDays: s.Config.RetentionDays,
 	}
+	credential := func() *config.CredentialConfig {
+		switch {
+		case s.Config.CredentialHeld:
+			return &config.CredentialConfig{From: config.CredentialFromSafeGrd}
+		case s.Config.CredentialEnv != "":
+			return &config.CredentialConfig{From: config.CredentialFromEnv, Name: s.Config.CredentialEnv}
+		}
+		return nil
+	}
 	switch s.SurfaceType {
 	case "postgres", "mysql", "mongodb":
-		sc.DatabaseURLEnv = s.Config.CredentialEnv
-		sc.CredentialHeld = s.Config.CredentialHeld
+		sc.Credential = credential()
 	case "sqlite":
 		sc.DatabaseURL = "sqlite://" + s.Config.Path
 	case "files":
 		sc.Roots, sc.Excludes = s.Config.Roots, s.Config.Excludes
 	case "email":
 		sc.Host, sc.Port, sc.Username, sc.Folders = s.Config.Host, s.Config.Port, s.Config.Username, s.Config.Folders
-		sc.PasswordEnv = s.Config.CredentialEnv
-		sc.CredentialHeld = s.Config.CredentialHeld
+		sc.Credential = credential()
 	}
 	return sc
 }
