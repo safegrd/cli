@@ -58,7 +58,7 @@ func newDoctorCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "doctor",
-		Short: "Diagnose configuration, cryptographic keys, storage sinks, and surface targets",
+		Short: "Check the config, keys, storage and every surface before you rely on them",
 		Long: `Performs deep preflight diagnostics of your SafeGrd environment:
 - Configuration file permissions (enforces 0600 on POSIX)
 - Age keypair integrity and presence

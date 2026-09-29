@@ -259,7 +259,7 @@ from storage is.`,
 
 			elapsed := time.Since(startTime)
 
-			fmt.Println("\n✅ Restore Completed Successfully!")
+			fmt.Println("\n✅ Restore complete")
 			fmt.Printf("   Duration:       %s\n", elapsed.Round(time.Millisecond))
 			switch surface {
 			case model.SurfaceTypeFiles:

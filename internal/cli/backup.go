@@ -51,10 +51,10 @@ func newBackupCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "backup",
-		Short: "Execute an encrypted, immutable backup (Postgres, Files, or Email)",
-		Long: `Performs a zero-knowledge streaming backup, compresses with zstandard,
-encrypts client-side using asymmetric Age encryption, and ships ciphertext directly to immutable WORM storage.
-Plaintext data NEVER touches disk or third-party networks.`,
+		Short: "Take an encrypted, locked backup of a database, directory or mailbox",
+		Long: `Streams a backup, compresses it with zstd, encrypts it on this host with age,
+and writes it to locked (WORM) storage. The unencrypted data is never written to disk
+and never leaves this host.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
 
@@ -186,7 +186,7 @@ Plaintext data NEVER touches disk or third-party networks.`,
 					return enc.Encode(meta)
 				}
 
-				fmt.Println("\n✅ File Backup Completed Successfully!")
+				fmt.Printf("\n✅ Backed up %d files\n", meta.TotalItems)
 				fmt.Printf("   Snapshot ID:     %s\n", meta.SnapshotID)
 				fmt.Printf("   Files Backed Up: %d\n", meta.TotalItems)
 				fmt.Printf("   Directories:     %d\n", meta.TotalContainers)
@@ -324,7 +324,7 @@ Plaintext data NEVER touches disk or third-party networks.`,
 					return enc.Encode(meta)
 				}
 
-				fmt.Println("\n✅ Email Backup Completed Successfully!")
+				fmt.Printf("\n✅ Backed up %d emails\n", meta.TotalItems)
 				fmt.Printf("   Snapshot ID:     %s\n", meta.SnapshotID)
 				fmt.Printf("   Emails Saved:    %d\n", meta.TotalItems)
 				fmt.Printf("   Mailbox Folders: %d\n", meta.TotalContainers)
@@ -449,7 +449,7 @@ Plaintext data NEVER touches disk or third-party networks.`,
 				return enc.Encode(dumpMeta)
 			}
 
-			fmt.Println("\n✅ Backup Completed Successfully!")
+			fmt.Printf("\n✅ Backed up %d tables, %d rows\n", dumpMeta.TotalTables, dumpMeta.TotalRows)
 			fmt.Printf("   Snapshot ID:     %s\n", dumpMeta.SnapshotID)
 			fmt.Printf("   Tables Dumped:   %d\n", dumpMeta.TotalTables)
 			fmt.Printf("   Total Rows:      %d\n", dumpMeta.TotalRows)

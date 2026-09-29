@@ -18,7 +18,7 @@ func newOrgsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "org",
 		Aliases: []string{"orgs"},
-		Short:   "View organization details, subscription billing plan, and quotas",
+		Short:   "Show your organization, plan and quotas",
 		Long: `In SafeGrd, a user belongs to an Organization where billing, subscription tier,
 and database quotas are attached (similar to GCP). Multiple projects can be created
 under your organization to segment environments (production, staging, etc.).`,

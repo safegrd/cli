@@ -12,7 +12,7 @@ import (
 func newWhoamiCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "whoami",
-		Short: "Display the currently authenticated user and active server session",
+		Short: "Show who you are signed in as, and on which server",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if cfg.ServerToken == "" {
 				fmt.Println("Not logged in. Run 'safegrd login' to authenticate with the SafeGrd Remote Server.")

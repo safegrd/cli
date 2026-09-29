@@ -31,7 +31,7 @@ func newEnrollCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "enroll",
-		Short: "Enroll this node with the SafeGrd Remote Server using an API key or node token",
+		Short: "Register this host with the remote server, using an access token or a node token",
 		Long: `Authenticates the local CLI agent with the SafeGrd remote server.
 You can either provide a direct Node Token or an Organization API Key to register this node.
 With neither, it uses the login saved by 'safegrd login'.`,
@@ -191,7 +191,7 @@ With neither, it uses the login saved by 'safegrd login'.`,
 					fmt.Printf("   The config below is being written unverified. Run 'safegrd status' once\n")
 					fmt.Printf("   the remote server is reachable to confirm this node is enrolled.\n")
 				default:
-					fmt.Printf("✅ Node token authenticated successfully!\n")
+					fmt.Printf("✅ Node token accepted\n")
 					fmt.Printf("   Node:        %s\n", cfg.NodeID)
 				}
 			} else {
@@ -335,7 +335,7 @@ With neither, it uses the login saved by 'safegrd login'.`,
 					return fmt.Errorf("enrollment completed but key escrow failed: save the key above before running a backup")
 				}
 
-				fmt.Printf("✅ Successfully enrolled node '%s'!\n", regResp.NodeID)
+				fmt.Printf("✅ Enrolled node '%s'\n", regResp.NodeID)
 				fmt.Printf("   Node Token:  %s\n", regResp.Token)
 				fmt.Printf("   Key:         %s\n", crypto.Fingerprint(cfg.Encryption.PublicKey))
 

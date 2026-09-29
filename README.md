@@ -128,7 +128,7 @@ safegrd whoami
 ### 3. Create an Encrypted Immutable Backup
 
 ```bash
-# Zero-knowledge streaming: dumps, compresses, encrypts with Age, and locks in WORM storage
+# dumps, compresses, encrypts with age on this host, and writes to locked storage
 safegrd backup
 ```
 

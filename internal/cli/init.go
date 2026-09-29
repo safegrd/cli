@@ -27,8 +27,8 @@ func newInitCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "init",
-		Short: "Initialize SafeGrd node, asymmetric keys, and storage settings",
-		Long: `Generates a zero-knowledge Age asymmetric keypair and writes local configuration.
+		Short: "Set up this host: generate a keypair and write the config",
+		Long: `Generates an age keypair and writes the local configuration.
 
 Nothing leaves this machine: init is the offline half of setup, and a node set up
 this way can back up and restore standalone. To register it with a remote server

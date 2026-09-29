@@ -48,7 +48,7 @@ var (
 // RootCmd is the base command for the safegrd CLI.
 var RootCmd = &cobra.Command{
 	Use:   "safegrd",
-	Short: "SafeGrd: Immutable Postgres Backup & Verification Engine",
+	Short: "SafeGrd: encrypted, locked backups of databases, files and mail, with scheduled restore tests",
 	Long: `SafeGrd (https://safegrd.dev)
 Agent-safe, cryptographically air-gapped PostgreSQL backups with
 client-side Age encryption and WORM storage immutability.`,

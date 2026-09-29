@@ -99,10 +99,10 @@ type LockInfo struct {
 func newAgentCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "agent",
-		Short: "Manage the SafeGrd unattended always-on backup daemon",
-		Long: `The SafeGrd Agent runs as a resident background service, monitoring
-all configured surfaces (PostgreSQL, Files, IMAP Email) and performing
-zero-knowledge WORM backups on their scheduled intervals without manual intervention.`,
+		Short: "Run and manage the background backup agent",
+		Long: `The agent runs as a background service. It backs up every configured surface
+(databases, directories, IMAP mailboxes) on its schedule, encrypted and locked, and runs
+Fire Drills when the remote server asks for them.`,
 	}
 
 	cmd.AddCommand(newAgentRunCmd())
@@ -727,7 +727,7 @@ func backupSurfaceNow(ctx context.Context, c *config.CLIConfig, surface *config.
 			sState.LastSnapshotID = meta.SnapshotID
 		}
 		plan.record(sState)
-		fmt.Printf("✅ Surface %s backup completed successfully.\n", surface.ID)
+		fmt.Printf("✅ Backed up surface %s\n", surface.ID)
 	}
 	// Recomputed from the attempt just made. Reset next due after success
 	// so status reflects the next cycle.

@@ -37,4 +37,7 @@ type CLISession struct {
 	UserEmail string           `json:"user_email,omitempty"`
 	CreatedAt time.Time        `json:"created_at"`
 	ExpiresAt time.Time        `json:"expires_at"`
+	// TokenExpiresAt is when the token handed back by this session stops
+	// working. ExpiresAt is the session's own ten-minute window.
+	TokenExpiresAt *time.Time `json:"token_expires_at,omitempty"`
 }

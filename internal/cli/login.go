@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/safegrd/cli/pkg/config"
@@ -30,6 +31,14 @@ For CI/CD or headless environments, pass your Personal Access Token via '--token
 		RunE: func(cmd *cobra.Command, args []string) error {
 			serverURL := resolveServerURL()
 
+			// An enrolled host authenticates as its node. Writing a personal
+			// token over that one would leave the agent unable to fetch the
+			// credentials and key the remote server holds for it, which only a
+			// node token may fetch.
+			if err := refuseOverNodeToken(cfg); err != nil {
+				return err
+			}
+
 			// Mode 1: Direct API Key / Personal Access Token provided
 			if token != "" {
 				fmt.Printf("🔑 Verifying provided token with %s...\n", serverURL)
@@ -48,7 +57,7 @@ For CI/CD or headless environments, pass your Personal Access Token via '--token
 					return fmt.Errorf("failed saving config: %w", err)
 				}
 
-				fmt.Printf("✅ Authenticated successfully as '%s'!\n", profile)
+				fmt.Printf("✅ Signed in as '%s'\n", profile)
 				fmt.Printf("💾 Config updated: %s\n", targetConfig)
 				return nil
 			}
@@ -113,7 +122,7 @@ For CI/CD or headless environments, pass your Personal Access Token via '--token
 			for {
 				select {
 				case <-ctx.Done():
-					fmt.Println("\n❌ Login timed out. Please run 'safegrd login' again.")
+					fmt.Println("\n❌ Login timed out. Run 'safegrd login' again.")
 					return fmt.Errorf("authorization timed out")
 				case <-ticker.C:
 					fmt.Print(".")
@@ -143,6 +152,9 @@ For CI/CD or headless environments, pass your Personal Access Token via '--token
 
 						fmt.Printf("   User:   %s\n", pollSession.UserEmail)
 						fmt.Printf("   Token:  %s...\n", pollSession.Token[:14])
+						if pollSession.TokenExpiresAt != nil {
+							fmt.Printf("   Expires: %s. Run 'safegrd login' again after that.\n", pollSession.TokenExpiresAt.Local().Format("2006-01-02"))
+						}
 						fmt.Printf("💾 Config updated: %s\n", targetConfig)
 						return nil
 					}
@@ -155,6 +167,24 @@ For CI/CD or headless environments, pass your Personal Access Token via '--token
 	cmd.Flags().BoolVar(&noBrowser, "no-browser", false, "Do not attempt to open browser automatically")
 
 	return cmd
+}
+
+// refuseOverNodeToken stops a login from replacing the node token of an
+// enrolled host. The login still works from a separate config.
+func refuseOverNodeToken(c *config.CLIConfig) error {
+	if c == nil || !strings.HasPrefix(c.ServerToken, "sg_tok_") {
+		return nil
+	}
+	node := c.NodeID
+	if node == "" {
+		node = "a node"
+	}
+	return fmt.Errorf("this host is enrolled as %s, and its config holds that node's token.\n"+
+		"  Logging in would replace it, and the agent could no longer fetch the credentials\n"+
+		"  and key the remote server holds for this host.\n"+
+		"  To use your account here, keep it in its own config:\n"+
+		"    safegrd --config ~/.safegrd/operator.yaml login\n"+
+		"  Nothing was changed", node)
 }
 
 func fetchProfile(serverURL, token string) (string, error) {

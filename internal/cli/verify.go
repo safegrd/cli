@@ -37,7 +37,7 @@ func newVerifyCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "verify",
-		Short: "Verify backup integrity via in-memory dry restore or sandbox Fire Drill",
+		Short: "Test a backup by restoring it in memory, or into a sandbox database",
 		Long: `Pulls an encrypted snapshot from storage (S3 or local WORM), decrypts it in-memory
 using your private Age encryption key, and verifies table counts, row counts,
 column counts, and extensions.
@@ -198,7 +198,7 @@ executes a full active restore drill into the target ephemeral database.`,
 						}
 					}
 
-					fmt.Printf("\n✅ Dry Restore Verified Successfully!\n")
+					fmt.Printf("\n✅ Dry restore verified\n")
 					fmt.Printf("   Verification ID: %s\n", report.VerificationID)
 					fmt.Printf("   Duration:        %s\n", time.Duration(report.DurationMs*int64(time.Millisecond)).Round(time.Millisecond))
 					if report.SurfaceType == model.SurfaceTypeFiles {

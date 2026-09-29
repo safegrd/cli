@@ -17,7 +17,7 @@ import (
 func newListCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
-		Short: "List immutable snapshots stored in WORM storage",
+		Short: "List snapshots in storage and when each lock ends",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
 			// Routed and credentialed like backup and restore. A node enrolled
