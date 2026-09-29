@@ -316,9 +316,20 @@ esac
 # one every command typed after this script runs, so the next steps would run
 # a different release from the one just set up, and a config it does not
 # understand. Said as the last thing printed, whichever way the script ends.
+# same_file says whether two paths are one file, following symlinks (a
+# Homebrew binary is a symlink into its Cellar). `test -ef` does this but is
+# not POSIX, and dash is what runs `curl | sh` on Debian and Ubuntu.
+same_file() {
+  [ "$1" = "$2" ] && return 0
+  # An inode is unique only within its filesystem, so both are compared.
+  a="$(ls -Li "$1" 2>/dev/null | awk '{print $1}'):$(df -P "$1" 2>/dev/null | awk 'NR==2 {print $1}')"
+  b="$(ls -Li "$2" 2>/dev/null | awk '{print $1}'):$(df -P "$2" 2>/dev/null | awk 'NR==2 {print $1}')"
+  [ "${a%%:*}" != "" ] && [ "$a" = "$b" ]
+}
+
 warn_if_shadowed() {
   ON_PATH="$(command -v safegrd 2>/dev/null || true)"
-  if [ -z "$ON_PATH" ] || [ "$ON_PATH" -ef "$SAFEGRD_BIN" ]; then
+  if [ -z "$ON_PATH" ] || same_file "$ON_PATH" "$SAFEGRD_BIN"; then
     return 0
   fi
   ON_PATH_VERSION="$("$ON_PATH" --version 2>/dev/null | head -n 1 || true)"
