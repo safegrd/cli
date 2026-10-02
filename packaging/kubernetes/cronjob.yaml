@@ -1,0 +1,89 @@
+# SafeGrd as a Kubernetes CronJob: one `safegrd daemon run --once` pass each
+# hour. A pass backs up every surface that is due, runs a Fire Drill when the
+# remote server asks for one, and exits.
+#
+# The config and the key come from a Secret. Enrol on any machine first, then:
+#
+#   kubectl create secret generic safegrd \
+#     --from-file=config.yaml=$HOME/.safegrd/config.yaml \
+#     --from-file=daemon.key=$HOME/.safegrd/keys/daemon.key
+#
+# and set `encryption.key_path: /home/safegrd/.safegrd/keys/daemon.key` in that
+# config. Leave daemon.key out when the remote server holds the key for you.
+#
+# The CLI refuses a config or key that group or others can read, and a Secret
+# volume cannot be both 0600 and owned by the container's user. So an init
+# container copies both into the pod's own directory at 0600 as that user.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: safegrd-state
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 64Mi
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: safegrd
+spec:
+  schedule: "0 * * * *"
+  # Two passes at once would back up the same surface twice.
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        spec:
+          restartPolicy: Never
+          securityContext:
+            runAsUser: 10001
+            runAsGroup: 10001
+            runAsNonRoot: true
+            # Makes the state volume writable by uid 10001. The copies the
+            # init container makes keep their 0600.
+            fsGroup: 10001
+            fsGroupChangePolicy: OnRootMismatch
+          initContainers:
+            - name: install-config
+              image: ghcr.io/safegrd/cli:latest
+              command: ["sh", "-c"]
+              args:
+                - >-
+                  install -d -m 0700 /home/safegrd/.safegrd/keys &&
+                  install -m 0600 /secret/config.yaml /home/safegrd/.safegrd/config.yaml &&
+                  if [ -f /secret/daemon.key ]; then install -m 0600 /secret/daemon.key /home/safegrd/.safegrd/keys/daemon.key; fi
+              volumeMounts:
+                - { name: secret, mountPath: /secret, readOnly: true }
+                - { name: home, mountPath: /home/safegrd/.safegrd }
+          containers:
+            - name: safegrd
+              image: ghcr.io/safegrd/cli:latest
+              args: ["daemon", "run", "--once", "--state-dir", "/var/lib/safegrd"]
+              # A surface with `credential: {from: env, name: APP_DATABASE_URL}`
+              # reads its connection string from here.
+              env:
+                - name: APP_DATABASE_URL
+                  valueFrom:
+                    secretKeyRef: { name: app-database, key: url }
+              volumeMounts:
+                - { name: home, mountPath: /home/safegrd/.safegrd }
+                - { name: state, mountPath: /var/lib/safegrd }
+              resources:
+                requests: { cpu: 100m, memory: 128Mi }
+                limits: { memory: 1Gi }
+          volumes:
+            - name: secret
+              secret:
+                secretName: safegrd
+                # Readable inside this pod only, by the init container that
+                # copies it. The CLI never reads this copy.
+                defaultMode: 0444
+            - name: home
+              emptyDir: { medium: Memory }
+            - name: state
+              persistentVolumeClaim: { claimName: safegrd-state }

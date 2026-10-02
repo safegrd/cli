@@ -1,0 +1,88 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "safegrd.fullname" . }}
+  labels:
+    {{- include "safegrd.labels" . | nindent 4 }}
+spec:
+  # One daemon per config: two would back up the same surfaces twice.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Chart.Name }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        {{- include "safegrd.labels" . | nindent 8 }}
+      annotations:
+        checksum/values: {{ toJson .Values | sha256sum }}
+    spec:
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        runAsNonRoot: true
+        # Makes the state volume writable by uid 10001. The copies the init
+        # container makes keep their 0600.
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
+      # The CLI refuses a config or key that group or others can read, and a
+      # Secret volume cannot be both 0600 and owned by the container's user,
+      # so the init container copies both at 0600 as that user.
+      initContainers:
+        - name: install-config
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["sh", "-c"]
+          args:
+            - >-
+              install -d -m 0700 /home/safegrd/.safegrd/keys &&
+              install -m 0600 /secret/config.yaml /home/safegrd/.safegrd/config.yaml &&
+              if [ -f /secret/daemon.key ]; then install -m 0600 /secret/daemon.key /home/safegrd/.safegrd/keys/daemon.key; fi
+          volumeMounts:
+            - { name: secret, mountPath: /secret, readOnly: true }
+            - { name: home, mountPath: /home/safegrd/.safegrd }
+      containers:
+        - name: safegrd
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["daemon", "run", "--state-dir", "/var/lib/safegrd"]
+          {{- with .Values.env }}
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - { name: home, mountPath: /home/safegrd/.safegrd }
+            - { name: state, mountPath: /var/lib/safegrd }
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: secret
+          secret:
+            secretName: {{ .Values.existingSecret }}
+            # Readable inside this pod only, by the init container that copies
+            # it. The CLI never reads this copy.
+            defaultMode: 0444
+        - name: home
+          emptyDir: { medium: Memory }
+        - name: state
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "safegrd.fullname" . }}-state
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

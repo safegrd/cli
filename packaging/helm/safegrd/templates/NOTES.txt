@@ -1,0 +1,6 @@
+The SafeGrd daemon is starting with the config from Secret {{ .Values.existingSecret }}.
+
+Check it:
+  kubectl logs deploy/{{ include "safegrd.fullname" . }}
+  kubectl exec deploy/{{ include "safegrd.fullname" . }} -- safegrd doctor
+  kubectl exec deploy/{{ include "safegrd.fullname" . }} -- safegrd list

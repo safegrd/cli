@@ -1,0 +1,40 @@
+image:
+  repository: ghcr.io/safegrd/cli
+  # The tag names the Postgres client the image carries, e.g. 0.4.0-pg18.
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# The Secret holding config.yaml and, when you hold the key yourself,
+# daemon.key. Create it from a config written by `safegrd enroll`:
+#
+#   kubectl create secret generic safegrd \
+#     --from-file=config.yaml=$HOME/.safegrd/config.yaml \
+#     --from-file=daemon.key=$HOME/.safegrd/keys/daemon.key
+#
+# with encryption.key_path set to /home/safegrd/.safegrd/keys/daemon.key.
+existingSecret: safegrd
+
+# Extra environment, such as the variable a surface's
+# `credential: {from: env, name: ...}` reads.
+env: []
+#  - name: APP_DATABASE_URL
+#    valueFrom:
+#      secretKeyRef: { name: app-database, key: url }
+
+# The daemon's state: last backup per surface and the long-term retention
+# slots. Kept on a volume so a restart does not take an extra backup.
+persistence:
+  enabled: true
+  size: 64Mi
+  storageClass: ""
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    memory: 1Gi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
