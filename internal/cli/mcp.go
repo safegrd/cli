@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/spf13/cobra"
 )
@@ -55,20 +56,58 @@ directory or an empty database.`,
 }
 
 type localArgs struct {
-	SnapshotID string `json:"snapshot_id,omitempty" jsonschema:"snapshot id, from the list tool"`
-	Surface    string `json:"surface,omitempty" jsonschema:"for backup: the id of one surface in this host's config to back up now"`
-	Files      string `json:"files,omitempty" jsonschema:"for backup: a directory tree to back up instead of the configured database"`
-	SandboxURL string `json:"sandbox_url,omitempty" jsonschema:"for verify: an empty database to restore into for a full Fire Drill"`
-	TargetDir  string `json:"target_dir,omitempty" jsonschema:"for restore: a new or empty directory to restore files or mail into"`
-	TargetURL  string `json:"target_url,omitempty" jsonschema:"for restore: an empty database URL to restore into"`
-	ToDir      string `json:"to_dir,omitempty" jsonschema:"for export: a directory to copy every snapshot into, still encrypted"`
-	ToBucket   string `json:"to_bucket,omitempty" jsonschema:"for export: your own S3 bucket to copy every snapshot into"`
-	ToEndpoint string `json:"to_endpoint,omitempty" jsonschema:"for export: the S3 endpoint of to_bucket"`
+	SnapshotID string `json:"snapshot_id,omitempty"`
+	Surface    string `json:"surface,omitempty"`
+	Files      string `json:"files,omitempty"`
+	SandboxURL string `json:"sandbox_url,omitempty"`
+	TargetDir  string `json:"target_dir,omitempty"`
+	TargetURL  string `json:"target_url,omitempty"`
+	ToDir      string `json:"to_dir,omitempty"`
+	ToBucket   string `json:"to_bucket,omitempty"`
+	ToEndpoint string `json:"to_endpoint,omitempty"`
+}
+
+// localArgDescriptions describes each argument once. A tool's schema offers
+// only the arguments that tool reads, so an agent is never shown target_url
+// on backup, and a missing snapshot_id is refused before anything runs.
+var localArgDescriptions = map[string]string{
+	"snapshot_id": "Snapshot id, from the list tool.",
+	"surface":     "The id of one surface in this host's config to back up now.",
+	"files":       "A directory tree to back up instead of the configured database.",
+	"sandbox_url": "An empty database to restore into for a full Fire Drill. Without it the snapshot is replayed in memory.",
+	"target_dir":  "A new or empty directory to restore files or mail into.",
+	"target_url":  "An empty database URL to restore into.",
+	"to_dir":      "A directory to copy every snapshot into, still encrypted.",
+	"to_bucket":   "Your own S3 bucket to copy every snapshot into, still encrypted.",
+	"to_endpoint": "The S3 endpoint of to_bucket.",
+}
+
+func localSchema(required, optional []string) *jsonschema.Schema {
+	s := &jsonschema.Schema{Type: "object", Properties: map[string]*jsonschema.Schema{},
+		Required: required, AdditionalProperties: &jsonschema.Schema{Not: &jsonschema.Schema{}}}
+	for _, k := range append(append([]string{}, required...), optional...) {
+		s.Properties[k] = &jsonschema.Schema{Type: "string", Description: localArgDescriptions[k]}
+	}
+	return s
+}
+
+// localTool is one tool's shape. readOnly tools only report; the others write
+// a new snapshot or a copy, or restore into an empty target. None deletes or
+// overwrites anything, and none reaches past this host's own storage and
+// remote server.
+type localTool struct {
+	name, title, desc  string
+	required, optional []string
+	readOnly           bool
 }
 
 func addLocalTools(server *mcp.Server, self string) {
-	tool := func(name, desc string, build func(a localArgs) ([]string, error)) {
-		mcp.AddTool(server, &mcp.Tool{Name: name, Description: desc},
+	tool := func(t localTool, build func(a localArgs) ([]string, error)) {
+		no := false
+		mcp.AddTool(server, &mcp.Tool{Name: t.name, Title: t.title, Description: t.desc,
+			InputSchema: localSchema(t.required, t.optional),
+			Annotations: &mcp.ToolAnnotations{Title: t.title, ReadOnlyHint: t.readOnly, IdempotentHint: t.readOnly,
+				DestructiveHint: &no, OpenWorldHint: &no}},
 			func(ctx context.Context, _ *mcp.CallToolRequest, a localArgs) (*mcp.CallToolResult, any, error) {
 				argv, err := build(a)
 				if err != nil {
@@ -85,13 +124,17 @@ func addLocalTools(server *mcp.Server, self string) {
 		return nil
 	}
 
-	tool("status", "This host's storage and remote server connection, and its latest snapshot.",
+	tool(localTool{name: "status", title: "Status", readOnly: true,
+		desc: "This host's storage and remote server connection, and its latest snapshot."},
 		func(localArgs) ([]string, error) { return []string{"status"}, nil })
-	tool("list", "Every snapshot in this host's storage: when, what it holds, and until when it is locked.",
+	tool(localTool{name: "list", title: "List snapshots", readOnly: true,
+		desc: "Every snapshot in this host's storage: when, what it holds, and until when it is locked."},
 		func(localArgs) ([]string, error) { return []string{"list"}, nil })
-	tool("doctor", "Check this host's configuration, key, storage and database access, and say what is wrong.",
+	tool(localTool{name: "doctor", title: "Doctor", readOnly: true,
+		desc: "Check this host's configuration, key, storage and database access, and say what is wrong."},
 		func(localArgs) ([]string, error) { return []string{"doctor"}, nil })
-	tool("backup", "Back up now: one surface of this host's config by id (surface), the configured database, or a directory tree given as files. Take one before changing a database. The snapshot is encrypted and locked; it cannot be deleted early.",
+	tool(localTool{name: "backup", title: "Back up now", optional: []string{"surface", "files"},
+		desc: "Back up now: one surface of this host's config by id (surface), the configured database, or a directory tree given as files. Take one before changing a database. The snapshot is encrypted and locked, and cannot be deleted early."},
 		func(a localArgs) ([]string, error) {
 			if a.Surface != "" && a.Files != "" {
 				return nil, fmt.Errorf("give surface or files, not both")
@@ -104,7 +147,8 @@ func addLocalTools(server *mcp.Server, self string) {
 			}
 			return []string{"backup"}, nil
 		})
-	tool("verify", "Prove a snapshot restores (a Fire Drill): replayed in memory, or restored into sandbox_url, an empty database, for a full drill.",
+	tool(localTool{name: "verify", title: "Run a Fire Drill", required: []string{"snapshot_id"}, optional: []string{"sandbox_url"},
+		desc: "Prove a snapshot restores (a Fire Drill): replayed in memory, or restored into sandbox_url, an empty database, for a full drill."},
 		func(a localArgs) ([]string, error) {
 			if err := need(a.SnapshotID, "snapshot_id"); err != nil {
 				return nil, err
@@ -114,7 +158,8 @@ func addLocalTools(server *mcp.Server, self string) {
 			}
 			return []string{"verify", "--snapshot", a.SnapshotID, "--dry-run"}, nil
 		})
-	tool("restore", "Restore a snapshot into a new or empty directory (target_dir) or an empty database (target_url). Never over existing data.",
+	tool(localTool{name: "restore", title: "Restore into an empty target", required: []string{"snapshot_id"}, optional: []string{"target_dir", "target_url"},
+		desc: "Restore a snapshot into a new or empty directory (target_dir) or an empty database (target_url). Never over existing data."},
 		func(a localArgs) ([]string, error) {
 			if err := need(a.SnapshotID, "snapshot_id"); err != nil {
 				return nil, err
@@ -132,7 +177,8 @@ func addLocalTools(server *mcp.Server, self string) {
 				return nil, fmt.Errorf("give exactly one of target_dir or target_url")
 			}
 		})
-	tool("export", "Copy every snapshot, still encrypted, to a directory (to_dir) or your own bucket (to_bucket). Nothing is decrypted or deleted.",
+	tool(localTool{name: "export", title: "Export snapshots", optional: []string{"to_dir", "to_bucket", "to_endpoint"},
+		desc: "Copy every snapshot, still encrypted, to a directory (to_dir) or your own bucket (to_bucket). Nothing is decrypted or deleted."},
 		func(a localArgs) ([]string, error) {
 			switch {
 			case a.ToDir != "" && a.ToBucket == "":
