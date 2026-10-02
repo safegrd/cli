@@ -25,6 +25,8 @@ type CheckResult struct {
 	Name    string `json:"name"`
 	Status  string `json:"status"` // "PASS", "WARN", "FAIL"
 	Message string `json:"message"`
+	// Fix is the command or step that fixes a failure, when there is one.
+	Fix string `json:"fix,omitempty"`
 }
 
 func newConfigCmd() *cobra.Command {
@@ -54,7 +56,7 @@ func newConfigValidateCmd() *cobra.Command {
 }
 
 func newDoctorCmd() *cobra.Command {
-	var jsonOut bool
+	var jsonOut, agentProof bool
 
 	cmd := &cobra.Command{
 		Use:   "doctor",
@@ -64,14 +66,23 @@ func newDoctorCmd() *cobra.Command {
 - Age keypair integrity and presence
 - Immutable WORM storage connectivity and S3 Object Lock compliance
 - Remote server reachability and host clock skew
-- Surface reachability (PostgreSQL, Filesystem roots, IMAP email)`,
+- Surface reachability (PostgreSQL, Filesystem roots, IMAP email)
+
+--agent-proof checks instead whether the backups survive an AI agent on this
+host: the bucket is in another account from the database, this host's storage
+key cannot delete, Object Lock is in compliance mode, a drill passed within 7
+days, and an agent is given a personal access token. Each failure names its fix.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if agentProof {
+				return printAndEvaluateResults("SafeGrd agent-proof check", runAgentProofChecks(cfg), jsonOut)
+			}
 			results := runDoctorChecks(cfgFile, cfg)
 			return printAndEvaluateResults("SafeGrd Doctor Diagnostic Report", results, jsonOut)
 		},
 	}
 
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Output diagnostic report in JSON format")
+	cmd.Flags().BoolVar(&agentProof, "agent-proof", false, "Check that an AI agent on this host could not destroy the backups")
 	return cmd
 }
 
@@ -502,6 +513,9 @@ func printAndEvaluateResults(title string, results []CheckResult, jsonOut bool) 
 			icon = "❌"
 		}
 		fmt.Printf("   [%s] %-30s : %s\n", icon, r.Name, r.Message)
+		if r.Fix != "" && r.Status != "PASS" {
+			fmt.Printf("        %-30s   Fix: %s\n", "", r.Fix)
+		}
 	}
 	fmt.Println()
 
