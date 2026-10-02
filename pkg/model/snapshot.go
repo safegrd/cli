@@ -43,10 +43,6 @@ type ExtensionStat struct {
 	Extension string `json:"extension" yaml:"extension"`
 	Count     int64  `json:"count" yaml:"count"`
 	SizeBytes int64  `json:"size_bytes" yaml:"size_bytes"`
-	// RowSecurity is set when row-level security applied to the role that
-	// took the backup, so RowCount is the rows that role could see, which
-	// may be fewer than the table holds.
-	RowSecurity bool `json:"row_security,omitempty" yaml:"row_security,omitempty"`
 }
 
 // FileStatsSummary captures aggregate metrics for a file-based snapshot.
