@@ -166,12 +166,17 @@ from storage is.`,
 			warnAboutShadowedSnapshots(ctx, storageProvider)
 
 			// Fetch metadata to detect surface type and checksum
-			meta, _ := storageProvider.DownloadMetadata(ctx, snapshotID)
+			meta, metaErr := storageProvider.DownloadMetadata(ctx, snapshotID)
 			surface := model.SurfaceTypePostgres
 			if meta != nil && meta.SurfaceType != "" {
 				surface = meta.SurfaceType
 			} else if targetDir != "" && targetURL == "" {
 				surface = model.SurfaceTypeFiles
+			}
+			if metaErr != nil {
+				// Without the sidecar the surface type is a guess from the
+				// flags, and the digest cannot be checked against it.
+				fmt.Fprintf(os.Stderr, "⚠️  Could not read the metadata for %s: %v\n   Restoring it as a %s snapshot, going by the flags given.\n", snapshotID, metaErr, surface)
 			}
 
 			fmt.Printf("🛡️  SafeGrd Emergency Restore Initiated\n")
@@ -215,6 +220,10 @@ from storage is.`,
 
 			// 2. Setup streaming decryption pipe
 			plainReader, plainWriter := io.Pipe()
+			// Every return closes the read end, so a decrypt goroutine still
+			// writing gets an error and exits instead of blocking on the
+			// pipe, with the storage stream, for the life of the process.
+			defer plainReader.Close()
 
 			decryptErrChan := make(chan error, 1)
 			var decMetrics *crypto.StreamMetrics

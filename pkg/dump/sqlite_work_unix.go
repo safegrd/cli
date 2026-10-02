@@ -13,3 +13,7 @@ func processGone(pid int) bool {
 	err := syscall.Kill(pid, 0)
 	return errors.Is(err, syscall.ESRCH)
 }
+
+// processCheckable says whether processGone can tell a live process from a
+// dead one on this platform.
+const processCheckable = true

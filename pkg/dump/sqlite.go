@@ -69,8 +69,8 @@ func SQLitePath(u string) (string, error) {
 // can tell a leftover from one in use.
 const sqliteWorkPrefix = ".safegrd-sqlite-"
 
-// sqliteWorkMaxAge is when a leftover is removed even if its process cannot
-// be checked.
+// sqliteWorkMaxAge is when a leftover is removed if its process cannot be
+// checked.
 const sqliteWorkMaxAge = 24 * time.Hour
 
 // sqliteWorkDir makes a private (0700) directory under parent (the system
@@ -86,28 +86,51 @@ func sqliteWorkDir(parent string) (string, error) {
 	return os.MkdirTemp(parent, fmt.Sprintf("%s%d-", sqliteWorkPrefix, os.Getpid()))
 }
 
-// sweepSQLiteWork removes work directories under parent whose process is no
-// longer running, or that are older than sqliteWorkMaxAge.
-func sweepSQLiteWork(parent string) {
+// sweepSQLiteWork removes SQLite work directories left by a process that is gone.
+func sweepSQLiteWork(parent string) { sweepWorkDirs(parent, sqliteWorkPrefix) }
+
+// sweepWorkDirs removes directories under parent named prefix<pid>-... whose
+// process is no longer running, or, where that cannot be checked, that are
+// older than sqliteWorkMaxAge. They hold plaintext copies or credentials, and
+// a process killed outright (SIGKILL, the OOM killer, power loss) never runs
+// its deferred cleanup.
+func sweepWorkDirs(parent, prefix string) {
 	entries, err := os.ReadDir(parent)
 	if err != nil {
 		return
 	}
 	for _, e := range entries {
 		name := e.Name()
-		if !e.IsDir() || !strings.HasPrefix(name, sqliteWorkPrefix) {
+		if !e.IsDir() || !strings.HasPrefix(name, prefix) {
 			continue
 		}
-		pidPart, _, _ := strings.Cut(strings.TrimPrefix(name, sqliteWorkPrefix), "-")
+		pidPart, _, _ := strings.Cut(strings.TrimPrefix(name, prefix), "-")
 		pid, err := strconv.Atoi(pidPart)
-		stale := err == nil && pid != os.Getpid() && processGone(pid)
-		if info, ierr := e.Info(); ierr == nil && time.Since(info.ModTime()) > sqliteWorkMaxAge {
-			stale = true
+		if err == nil && pid == os.Getpid() {
+			continue
+		}
+		// A directory whose process can be checked is removed only once that
+		// process is gone, however old it is: a long drill on a slow host
+		// had its copy deleted from under it at 24 hours. Age decides only
+		// where the process cannot be checked.
+		var stale bool
+		if err == nil && processCheckable {
+			stale = processGone(pid)
+		} else if info, ierr := e.Info(); ierr == nil {
+			stale = time.Since(info.ModTime()) > sqliteWorkMaxAge
 		}
 		if stale {
 			_ = os.RemoveAll(filepath.Join(parent, name))
 		}
 	}
+}
+
+// privateWorkDir sweeps leftovers named prefix<pid>- from the system
+// temporary directory, then makes a 0700 directory of its own there.
+func privateWorkDir(prefix string) (string, error) {
+	parent := os.TempDir()
+	sweepWorkDirs(parent, prefix)
+	return os.MkdirTemp(parent, fmt.Sprintf("%s%d-", prefix, os.Getpid()))
 }
 
 // openSQLite opens path through the pure-Go driver. readOnly never creates a
@@ -303,16 +326,7 @@ func (d *SQLiteDumper) Dump(ctx context.Context, databaseName string, dst io.Wri
 	for i := range meta.TableStats {
 		meta.TableStats[i].SizeBytes = 0
 	}
-	meta.CalculateTotals()
-	meta.DurationMs = elapsedMilliseconds(start)
-	manifest, err := json.MarshalIndent(meta, "", "  ")
-	if err != nil {
-		return nil, err
-	}
-	if err := writeTarEntry(tw, entryManifest, manifest); err != nil {
-		return nil, err
-	}
-	if err := tw.Close(); err != nil {
+	if err := finishArchive(tw, meta, start); err != nil {
 		return nil, err
 	}
 	return meta, nil

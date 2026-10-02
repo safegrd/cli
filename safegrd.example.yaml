@@ -68,24 +68,10 @@ encryption:
 #   # runs. ±10% jitter is applied so a fleet does not stampede on the minute.
 #   interval: "5m"
 #
-#   # Backups running at once across all surfaces. NOT YET ACTED ON: surfaces
-#   # run one at a time whatever this says.
-#   max_concurrent: 1
-#
-#   # Per-surface exponential backoff after a failure, capped, so a failing
-#   # surface does not retry every tick forever. NOT YET ACTED ON:
-#   # the backoff is fixed at 5m doubling to 1h, the values shown.
-#   retry_backoff_min: "5m"
-#   retry_backoff_max: "1h"
-#
 #   # State, locks and logs. Defaults to ~/.safegrd (user scope) or
 #   # /var/lib/safegrd (system scope). Never put this on a network filesystem;
 #   # the in-progress lock depends on working flock semantics.
 #   state_dir: "~/.safegrd"
-#
-#   # NOT YET ACTED ON: the daemon logs plain text at one level.
-#   log_format: "text"   # "text" | "json"
-#   log_level: "info"
 #
 #   # Prometheus counters. NOT YET ACTED ON: no metrics endpoint exists.
 #   metrics_addr: ""     # e.g. "127.0.0.1:9847"

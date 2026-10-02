@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -216,33 +217,44 @@ func (l *LocalStorageProvider) DeleteSnapshot(ctx context.Context, snapshotID st
 	if err := ValidateSnapshotID(snapshotID); err != nil {
 		return err
 	}
-	// Check retention first
-	meta, err := l.DownloadMetadata(ctx, snapshotID)
-	if err == nil && meta != nil && !meta.WORMRetentionUntil.IsZero() {
-		if meta.WORMRetentionUntil.After(time.Now().UTC()) {
-			return fmt.Errorf("WORM compliance refusal: snapshot %s is locked under WORM retention until %s", snapshotID, meta.WORMRetentionUntil.Format(time.RFC3339))
-		}
-	}
-
 	snapPath := l.snapshotPath(snapshotID)
 	metaPath := l.metadataPath(snapshotID)
-
-	removeFile := func(p string) error {
-		if _, err := os.Stat(p); err == nil {
-			_ = os.Chmod(p, 0600)
-			return os.Remove(p)
-		}
-		return nil
-	}
-
-	_ = removeFile(snapPath)
-	_ = removeFile(metaPath)
-
+	paths := []string{snapPath, metaPath}
 	if l.nodeID != "" {
-		_ = removeFile(filepath.Join(l.baseDir, snapshotID+".safegrd"))
-		_ = removeFile(filepath.Join(l.baseDir, snapshotID+".meta.json"))
+		paths = append(paths, filepath.Join(l.baseDir, snapshotID+".safegrd"), filepath.Join(l.baseDir, snapshotID+".meta.json"))
 	}
-	return nil
+
+	// Local storage has no Object Lock behind it: this check is the whole
+	// retention guarantee, so it fails closed. A sidecar that cannot be
+	// read used to skip the check and delete a locked snapshot.
+	meta, err := l.DownloadMetadata(ctx, snapshotID)
+	if err != nil {
+		// Nothing to protect only if no payload is left.
+		for _, p := range paths {
+			if _, statErr := os.Stat(p); statErr == nil && strings.HasSuffix(p, ".safegrd") {
+				return fmt.Errorf("refusing to delete snapshot %s: its retention cannot be read (%v)", snapshotID, err)
+			}
+		}
+	} else if !meta.WORMRetentionUntil.IsZero() && meta.WORMRetentionUntil.After(time.Now().UTC()) {
+		return fmt.Errorf("WORM compliance refusal: snapshot %s is locked under WORM retention until %s", snapshotID, meta.WORMRetentionUntil.Format(time.RFC3339))
+	}
+
+	// Every removal error is returned: the caller has to be able to tell
+	// "expired and removed" from "still there".
+	var errs []error
+	for _, p := range paths {
+		if _, statErr := os.Stat(p); statErr != nil {
+			continue
+		}
+		if err := os.Chmod(p, 0600); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if err := os.Remove(p); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func (l *LocalStorageProvider) Type() string {

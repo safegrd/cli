@@ -154,12 +154,9 @@ you if you have not already).`,
 			}
 
 			// 4. Save Config File
-			targetConfig := cfgFile
-			if targetConfig == "" {
-				targetConfig, _ = config.DefaultConfigFile()
-			}
-			if err := config.SaveCLIConfig(cfg, targetConfig); err != nil {
-				return fmt.Errorf("failed to save config file: %w", err)
+			targetConfig, err := saveConfig()
+			if err != nil {
+				return err
 			}
 			fmt.Printf("💾 Configuration written to: %s\n\n", targetConfig)
 			fmt.Println("🚀 Local setup complete.")

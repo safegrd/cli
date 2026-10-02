@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -189,5 +190,29 @@ func TestBackupMillisecondsRoundsUpNeverDown(t *testing.T) {
 	}
 	if got := backupMilliseconds(time.Now().Add(time.Hour)); got != 0 {
 		t.Errorf("a start in the future gave %d ms, want 0", got)
+	}
+}
+
+// Two daemons starting together both used to proceed: the lock was read,
+// checked and then written. Exactly one of many concurrent takers wins.
+func TestDaemonLockHasOneWinnerUnderContention(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "race.lock")
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	wins := 0
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := acquireLock(lockPath, "race", ""); err == nil {
+				mu.Lock()
+				wins++
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	if wins != 1 {
+		t.Fatalf("%d takers held the lock at once, want 1", wins)
 	}
 }

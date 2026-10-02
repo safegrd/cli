@@ -366,12 +366,9 @@ With neither, it uses the login saved by 'safegrd login'.`,
 				}
 			}
 
-			targetConfig := cfgFile
-			if targetConfig == "" {
-				targetConfig, _ = config.DefaultConfigFile()
-			}
-			if err := config.SaveCLIConfig(cfg, targetConfig); err != nil {
-				return fmt.Errorf("failed updating config: %w", err)
+			targetConfig, err := saveConfig()
+			if err != nil {
+				return err
 			}
 
 			fmt.Printf("💾 Configuration updated at: %s\n", targetConfig)

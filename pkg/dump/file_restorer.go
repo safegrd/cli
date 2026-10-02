@@ -406,12 +406,16 @@ func (fr *FileRestorer) ExtractArchive(ctx context.Context, src io.Reader, targe
 		cleanRel := filepath.Clean(hdr.Name)
 		if cleanRel == ".safegrd-manifest.json" {
 			// Not extracted into the target, but read: it carries the owners.
+			// A manifest that does not parse fails the restore. Skipped, it
+			// left ownership unapplied and every file unchecked, and the
+			// result blamed the snapshot's age.
 			var m SealedFileManifest
-			if err := json.NewDecoder(tarReader).Decode(&m); err == nil {
-				sealed = &m
-				for _, e := range m.Entries {
-					owners[filepath.Clean(filepath.FromSlash(e.Path))] = e
-				}
+			if err := json.NewDecoder(tarReader).Decode(&m); err != nil {
+				return nil, fmt.Errorf("the archive's sealed manifest does not parse: %w", err)
+			}
+			sealed = &m
+			for _, e := range m.Entries {
+				owners[filepath.Clean(filepath.FromSlash(e.Path))] = e
 			}
 			continue
 		}
@@ -442,18 +446,37 @@ func (fr *FileRestorer) ExtractArchive(ctx context.Context, src io.Reader, targe
 				return nil, fmt.Errorf("failed creating parent directory for %s: %w", destPath, err)
 			}
 
-			outFile, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+			// The collector writes the sealed manifest first, so every file
+			// has a digest to meet. The bytes go to a temporary name and
+			// take the real one only once they match: a corrupt or
+			// truncated entry never replaces what is at destPath.
+			if sealed == nil {
+				return nil, fmt.Errorf("archive entry %s comes before any sealed manifest; refusing to restore unverified files", hdr.Name)
+			}
+			want, ok := owners[cleanRel]
+			if !ok || want.IsDir || want.IsSymlink {
+				return nil, fmt.Errorf("archive entry %s is not a file in the sealed manifest", hdr.Name)
+			}
+			outFile, err := os.CreateTemp(filepath.Dir(destPath), ".safegrd-restore-*")
 			if err != nil {
 				return nil, fmt.Errorf("failed creating file %s: %w", destPath, err)
 			}
-
-			copied, err := io.Copy(outFile, tarReader)
+			tmpPath := outFile.Name()
+			h := sha256.New()
+			copied, err := io.Copy(io.MultiWriter(outFile, h), tarReader)
 			closeErr := outFile.Close()
-			if err != nil {
-				return nil, fmt.Errorf("failed writing file %s: %w", destPath, err)
+			if err == nil {
+				err = closeErr
 			}
-			if closeErr != nil {
-				return nil, fmt.Errorf("failed writing file %s: %w", destPath, closeErr)
+			if err == nil && want.Sha256 != "" && hex.EncodeToString(h.Sum(nil)) != want.Sha256 {
+				err = fmt.Errorf("its SHA-256 is %s, the sealed manifest says %s", hex.EncodeToString(h.Sum(nil)), want.Sha256)
+			}
+			if err == nil {
+				err = os.Rename(tmpPath, destPath)
+			}
+			if err != nil {
+				_ = os.Remove(tmpPath) // best effort: the restore is already failing
+				return nil, fmt.Errorf("failed restoring file %s: %w", destPath, err)
 			}
 			if err := applyOwner(destPath, cleanRel); err != nil {
 				return nil, err

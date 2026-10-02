@@ -49,12 +49,9 @@ For CI/CD or headless environments, pass your Personal Access Token via '--token
 
 				cfg.ServerURL = serverURL
 				cfg.ServerToken = token
-				targetConfig := cfgFile
-				if targetConfig == "" {
-					targetConfig, _ = config.DefaultConfigFile()
-				}
-				if err := config.SaveCLIConfig(cfg, targetConfig); err != nil {
-					return fmt.Errorf("failed saving config: %w", err)
+				targetConfig, err := saveConfig()
+				if err != nil {
+					return err
 				}
 
 				fmt.Printf("✅ Signed in as '%s'\n", profile)
@@ -142,12 +139,9 @@ For CI/CD or headless environments, pass your Personal Access Token via '--token
 						cfg.ServerURL = serverURL
 						cfg.ServerToken = pollSession.Token
 
-						targetConfig := cfgFile
-						if targetConfig == "" {
-							targetConfig, _ = config.DefaultConfigFile()
-						}
-						if err := config.SaveCLIConfig(cfg, targetConfig); err != nil {
-							return fmt.Errorf("failed saving config: %w", err)
+						targetConfig, err := saveConfig()
+						if err != nil {
+							return err
 						}
 
 						fmt.Printf("   User:   %s\n", pollSession.UserEmail)

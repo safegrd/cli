@@ -130,7 +130,7 @@ func (t *mysqlTarget) open() (*sql.DB, error) {
 // only one of MySQL's and MariaDB's clients knows are written loose-, which
 // the other skips instead of refusing to start.
 func (t *mysqlTarget) defaultsFile() (path string, cleanup func(), err error) {
-	dir, err := os.MkdirTemp("", "safegrd-mysql-")
+	dir, err := privateWorkDir(".safegrd-mysql-")
 	if err != nil {
 		return "", nil, err
 	}
@@ -354,33 +354,16 @@ func (d *MySQLDumper) Dump(ctx context.Context, databaseName string, dst io.Writ
 		"--single-transaction", "--quick", "--routines", "--triggers", "--events",
 		"--hex-blob", "--no-tablespaces", "--default-character-set=utf8mb4",
 		target.Database)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, err
-	}
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("starting %s: %w", tool, err)
-	}
 	tw := tar.NewWriter(dst)
 	cw := &chunkWriter{tw: tw, name: mysqlChunkName}
 	counter := newMySQLDumpCounter()
-	_, copyErr := io.Copy(io.MultiWriter(cw, counter), stdout)
-	waitErr := cmd.Wait()
-	if waitErr != nil {
-		msg := strings.TrimSpace(stderr.String())
-		if len(msg) > 500 {
-			msg = msg[:500] + "..."
-		}
-		return nil, fmt.Errorf("%s failed: %v: %s", tool, waitErr, msg)
-	}
-	if copyErr != nil {
-		return nil, fmt.Errorf("writing the dump to the archive: %w", copyErr)
+	stderr, err := runDumpTool(cmd, tool, io.MultiWriter(cw, counter))
+	if err != nil {
+		return nil, err
 	}
 	// mysqldump reports some failures on stderr and still exits 0 (MySQL 9
 	// does, for masking policies a non-admin cannot read). Pass them on.
-	if msg := strings.TrimSpace(stderr.String()); msg != "" {
+	if msg := stderr; msg != "" {
 		d.Warn(fmt.Sprintf("%s said, while succeeding: %s", tool, msg))
 	}
 	if !counter.Completed {
@@ -405,16 +388,7 @@ func (d *MySQLDumper) Dump(ctx context.Context, databaseName string, dst io.Writ
 			Schema: target.Database, TableName: t, RowCount: counter.Rows[t], SizeBytes: sizes[t],
 		})
 	}
-	meta.CalculateTotals()
-	meta.DurationMs = elapsedMilliseconds(start)
-	manifest, err := json.MarshalIndent(meta, "", "  ")
-	if err != nil {
-		return nil, err
-	}
-	if err := writeTarEntry(tw, entryManifest, manifest); err != nil {
-		return nil, err
-	}
-	if err := tw.Close(); err != nil {
+	if err := finishArchive(tw, meta, start); err != nil {
 		return nil, err
 	}
 	return meta, nil

@@ -145,7 +145,7 @@ func findMongoTool(ctx context.Context, name string) (*MongoTool, error) {
 // file in a private directory for --config. On the command line it would be
 // readable by every user on the host.
 func mongoToolConfig(uri string) (string, func(), error) {
-	dir, err := os.MkdirTemp("", "safegrd-mongo-")
+	dir, err := privateWorkDir(".safegrd-mongo-")
 	if err != nil {
 		return "", nil, err
 	}
@@ -330,15 +330,6 @@ func (d *MongoDumper) Dump(ctx context.Context, databaseName string, dst io.Writ
 	defer cleanup()
 
 	cmd := exec.CommandContext(ctx, tool.Path, "--config="+cfgPath, "--archive", "--quiet")
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, err
-	}
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("starting %s: %w", tool, err)
-	}
 	tw := tar.NewWriter(dst)
 	cw := &chunkWriter{tw: tw, name: mongoChunkName}
 	pr, pw := io.Pipe()
@@ -350,19 +341,11 @@ func (d *MongoDumper) Dump(ctx context.Context, databaseName string, dst io.Writ
 		statsCh <- st
 		parseErrCh <- err
 	}()
-	_, copyErr := io.Copy(io.MultiWriter(cw, pw), stdout)
-	_ = pw.Close()
-	waitErr := cmd.Wait()
+	stderr, runErr := runDumpTool(cmd, tool, io.MultiWriter(cw, pw))
+	_ = pw.Close() // ends the parser's input; it has no error to give
 	st, parseErr := <-statsCh, <-parseErrCh
-	if waitErr != nil {
-		msg := strings.TrimSpace(stderr.String())
-		if len(msg) > 500 {
-			msg = msg[:500] + "..."
-		}
-		return nil, fmt.Errorf("%s failed: %v: %s", tool, waitErr, msg)
-	}
-	if copyErr != nil {
-		return nil, fmt.Errorf("writing the dump to the archive: %w", copyErr)
+	if runErr != nil {
+		return nil, runErr
 	}
 	if parseErr != nil {
 		return nil, fmt.Errorf("%s wrote an archive SafeGrd cannot read: %w", tool, parseErr)
@@ -370,7 +353,7 @@ func (d *MongoDumper) Dump(ctx context.Context, databaseName string, dst io.Writ
 	if missing := st.missingEnds(); len(missing) > 0 {
 		return nil, fmt.Errorf("%s exited cleanly but the archive never finished %s: the dump is incomplete", tool, strings.Join(missing, ", "))
 	}
-	if msg := strings.TrimSpace(stderr.String()); msg != "" {
+	if msg := stderr; msg != "" {
 		d.Warn(fmt.Sprintf("%s said, while succeeding: %s", tool, msg))
 	}
 	if err := cw.Close(); err != nil {
@@ -391,16 +374,7 @@ func (d *MongoDumper) Dump(ctx context.Context, databaseName string, dst io.Writ
 		db, coll, _ := strings.Cut(ns, ".")
 		meta.TableStats = append(meta.TableStats, model.TableStat{Schema: db, TableName: coll, RowCount: st.Docs[ns], SizeBytes: st.DocBytes[ns]})
 	}
-	meta.CalculateTotals()
-	meta.DurationMs = elapsedMilliseconds(start)
-	manifest, err := json.MarshalIndent(meta, "", "  ")
-	if err != nil {
-		return nil, err
-	}
-	if err := writeTarEntry(tw, entryManifest, manifest); err != nil {
-		return nil, err
-	}
-	if err := tw.Close(); err != nil {
+	if err := finishArchive(tw, meta, start); err != nil {
 		return nil, err
 	}
 	return meta, nil

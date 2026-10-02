@@ -6,6 +6,9 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"net"
 	"os"
 	"path/filepath"
@@ -28,8 +31,34 @@ type tarEntry struct {
 
 func craftTar(t *testing.T, entries ...tarEntry) *bytes.Buffer {
 	t.Helper()
+	return craftTarWithDigests(t, nil, entries...)
+}
+
+// craftTarWithDigests writes the sealed manifest first, as the collector
+// does, with each regular file's real digest unless digests overrides it.
+func craftTarWithDigests(t *testing.T, digests map[string]string, entries ...tarEntry) *bytes.Buffer {
+	t.Helper()
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
+	var m SealedFileManifest
+	for _, e := range entries {
+		entry := FileEntryManifest{Path: filepath.Clean(e.name), IsDir: e.typ == tar.TypeDir, IsSymlink: e.typ == tar.TypeSymlink, LinkTarget: e.link}
+		if e.typ == tar.TypeReg {
+			sum := sha256.Sum256([]byte(e.body))
+			entry.Sha256 = hex.EncodeToString(sum[:])
+			if d, ok := digests[e.name]; ok {
+				entry.Sha256 = d
+			}
+		}
+		m.Entries = append(m.Entries, entry)
+	}
+	mb, _ := json.Marshal(m)
+	if err := tw.WriteHeader(&tar.Header{Name: ".safegrd-manifest.json", Typeflag: tar.TypeReg, Mode: 0o600, Size: int64(len(mb))}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write(mb); err != nil {
+		t.Fatal(err)
+	}
 	for _, e := range entries {
 		hdr := &tar.Header{Name: e.name, Typeflag: e.typ, Mode: e.mode, Linkname: e.link, Size: int64(len(e.body)), ModTime: time.Unix(1_700_000_000, 0)}
 		if err := tw.WriteHeader(hdr); err != nil {
@@ -321,5 +350,46 @@ func TestMailIsRestoredPrivateAndNeverThroughASymlink(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(outside, "1.eml")); !os.IsNotExist(err) {
 		t.Errorf("the mail restore wrote outside its target: %v", err)
+	}
+}
+
+// A file whose bytes do not match the sealed digest is refused, and nothing
+// is left at its name.
+func TestRestoreRefusesAFileThatDoesNotMatchItsDigest(t *testing.T) {
+	target := t.TempDir()
+	archive := craftTarWithDigests(t, map[string]string{"f": strings.Repeat("0", 64)},
+		tarEntry{name: "f", typ: tar.TypeReg, mode: 0o644, body: "tampered"})
+	_, err := NewFileRestorer().ExtractArchive(context.Background(), archive, target)
+	if err == nil || !strings.Contains(err.Error(), "SHA-256") {
+		t.Fatalf("a file with the wrong digest: err = %v, want a refusal", err)
+	}
+	left, _ := os.ReadDir(target)
+	if len(left) != 0 {
+		t.Fatalf("a refused file left %d entries in the target", len(left))
+	}
+}
+
+// A manifest that does not parse fails the restore rather than leaving
+// ownership and digests unchecked.
+func TestRestoreRefusesACorruptManifest(t *testing.T) {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	_ = tw.WriteHeader(&tar.Header{Name: ".safegrd-manifest.json", Typeflag: tar.TypeReg, Mode: 0o600, Size: 5})
+	_, _ = tw.Write([]byte("{not "))
+	_ = tw.Close()
+	if _, err := NewFileRestorer().ExtractArchive(context.Background(), &buf, t.TempDir()); err == nil {
+		t.Fatal("a corrupt sealed manifest was restored past")
+	}
+}
+
+// An archive with no manifest at all is refused before any file is written.
+func TestRestoreRefusesFilesWithNoManifest(t *testing.T) {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	_ = tw.WriteHeader(&tar.Header{Name: "f", Typeflag: tar.TypeReg, Mode: 0o644, Size: 1})
+	_, _ = tw.Write([]byte("x"))
+	_ = tw.Close()
+	if _, err := NewFileRestorer().ExtractArchive(context.Background(), &buf, t.TempDir()); err == nil {
+		t.Fatal("files with no sealed manifest were restored")
 	}
 }

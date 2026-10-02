@@ -56,6 +56,7 @@ directory or an empty database.`,
 
 type localArgs struct {
 	SnapshotID string `json:"snapshot_id,omitempty" jsonschema:"snapshot id, from the list tool"`
+	Surface    string `json:"surface,omitempty" jsonschema:"for backup: the id of one surface in this host's config to back up now"`
 	Files      string `json:"files,omitempty" jsonschema:"for backup: a directory tree to back up instead of the configured database"`
 	SandboxURL string `json:"sandbox_url,omitempty" jsonschema:"for verify: an empty database to restore into for a full Fire Drill"`
 	TargetDir  string `json:"target_dir,omitempty" jsonschema:"for restore: a new or empty directory to restore files or mail into"`
@@ -90,8 +91,14 @@ func addLocalTools(server *mcp.Server, self string) {
 		func(localArgs) ([]string, error) { return []string{"list"}, nil })
 	tool("doctor", "Check this host's configuration, key, storage and database access, and say what is wrong.",
 		func(localArgs) ([]string, error) { return []string{"doctor"}, nil })
-	tool("backup", "Back up now: the configured database, or a directory tree given as files. The snapshot is encrypted and locked; it cannot be deleted early.",
+	tool("backup", "Back up now: one surface of this host's config by id (surface), the configured database, or a directory tree given as files. Take one before changing a database. The snapshot is encrypted and locked; it cannot be deleted early.",
 		func(a localArgs) ([]string, error) {
+			if a.Surface != "" && a.Files != "" {
+				return nil, fmt.Errorf("give surface or files, not both")
+			}
+			if a.Surface != "" {
+				return []string{"backup", "--surface", a.Surface}, nil
+			}
 			if a.Files != "" {
 				return []string{"backup", "--files", a.Files}, nil
 			}

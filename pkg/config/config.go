@@ -85,14 +85,9 @@ type AlertConfig struct {
 
 // DaemonConfig configures the resident unattended daemon.
 type DaemonConfig struct {
-	Interval        string `yaml:"interval,omitempty" json:"interval,omitempty"`                   // Poll interval, default "5m"
-	MaxConcurrent   int    `yaml:"max_concurrent,omitempty" json:"max_concurrent,omitempty"`       // Max concurrent backups, default 1
-	RetryBackoffMin string `yaml:"retry_backoff_min,omitempty" json:"retry_backoff_min,omitempty"` // Min retry backoff, default "5m"
-	RetryBackoffMax string `yaml:"retry_backoff_max,omitempty" json:"retry_backoff_max,omitempty"` // Max retry backoff, default "1h"
-	StateDir        string `yaml:"state_dir,omitempty" json:"state_dir,omitempty"`                 // Directory for state & locks
-	LogFormat       string `yaml:"log_format,omitempty" json:"log_format,omitempty"`               // "text" or "json"
-	LogLevel        string `yaml:"log_level,omitempty" json:"log_level,omitempty"`                 // "info", "warn", "debug"
-	MetricsAddr     string `yaml:"metrics_addr,omitempty" json:"metrics_addr,omitempty"`           // e.g. "127.0.0.1:9847"
+	Interval    string `yaml:"interval,omitempty" json:"interval,omitempty"`         // Poll interval, default "5m"
+	StateDir    string `yaml:"state_dir,omitempty" json:"state_dir,omitempty"`       // Directory for state & locks
+	MetricsAddr string `yaml:"metrics_addr,omitempty" json:"metrics_addr,omitempty"` // e.g. "127.0.0.1:9847"
 }
 
 // DefaultsConfig defines fallback values inherited by surfaces.

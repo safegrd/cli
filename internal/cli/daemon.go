@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -43,6 +44,9 @@ type SurfaceState struct {
 	// recorded is still reported as an error, because the console shows no
 	// backup for it.
 	notRecorded string
+	// Unsent holds the records of backups the remote server could not be
+	// reached for, to send once it answers (unsent.go).
+	Unsent []UnsentRecord `json:"unsent,omitempty"`
 
 	// The remote server's side. ServerNodeID is the child node
 	// this surface reports as. LastBackupRequestID is the last console
@@ -301,33 +305,108 @@ func isPIDAlive(pid int) bool {
 }
 
 func acquireLock(lockPath, surfaceID, snapshotID string) (func(), error) {
-	if data, err := os.ReadFile(lockPath); err == nil {
-		var lock LockInfo
-		if jsonErr := json.Unmarshal(data, &lock); jsonErr == nil {
-			// Check for stale lock (PID is dead or lock > 2h old)
-			if !isPIDAlive(lock.PID) || time.Since(lock.StartTime) > 2*time.Hour {
-				fmt.Fprintf(os.Stderr, "⚠️  Reclaiming stale lock for surface %s (previous PID %d dead or timed out)\n", surfaceID, lock.PID)
-				_ = os.Remove(lockPath)
-			} else {
-				return nil, fmt.Errorf("surface %s backup is already in-progress by PID %d (started %s)", surfaceID, lock.PID, lock.StartTime.Format(time.RFC3339))
-			}
-		}
-	}
-
 	info := LockInfo{
 		PID:        os.Getpid(),
 		StartTime:  time.Now().UTC(),
 		SnapshotID: snapshotID,
 		SurfaceID:  surfaceID,
 	}
-	data, _ := json.Marshal(info)
-	if err := os.WriteFile(lockPath, data, 0600); err != nil {
-		return nil, fmt.Errorf("failed to write lockfile %s: %w", lockPath, err)
-	}
+	mine, _ := json.Marshal(info)
 
-	return func() {
-		_ = os.Remove(lockPath)
-	}, nil
+	// O_EXCL makes taking the lock one step. Reading, checking and then
+	// writing let two daemons that started together both proceed.
+	for attempt := 0; attempt < 2; attempt++ {
+		f, err := os.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		if err == nil {
+			_, werr := f.Write(mine)
+			cerr := f.Close()
+			if werr == nil {
+				werr = cerr
+			}
+			if werr != nil {
+				_ = os.Remove(lockPath) // best effort: we created it and could not fill it
+				return nil, fmt.Errorf("failed to write lockfile %s: %w", lockPath, werr)
+			}
+			return func() { releaseLockFile(lockPath, mine) }, nil
+		}
+		if !os.IsExist(err) {
+			return nil, fmt.Errorf("failed to create lockfile %s: %w", lockPath, err)
+		}
+		held, err := heldLock(lockPath, surfaceID)
+		if err != nil {
+			return nil, err
+		}
+		if err := reclaimStaleLock(lockPath, held, surfaceID); err != nil {
+			return nil, err
+		}
+	}
+	return nil, fmt.Errorf("surface %s: could not take the lock at %s after reclaiming a stale one", surfaceID, lockPath)
+}
+
+// heldLock reads the lock another process holds and returns its bytes if it
+// is stale, or an error naming who holds it if it is live.
+func heldLock(lockPath, surfaceID string) ([]byte, error) {
+	data, err := os.ReadFile(lockPath)
+	if err != nil {
+		return nil, fmt.Errorf("surface %s: reading lockfile %s: %w", surfaceID, lockPath, err)
+	}
+	var lock LockInfo
+	if jsonErr := json.Unmarshal(data, &lock); jsonErr != nil {
+		// Unreadable: either a crash mid-write long ago, or another process
+		// that created the file and has not written it yet. Only the first
+		// is stale.
+		if st, statErr := os.Stat(lockPath); statErr == nil && time.Since(st.ModTime()) < time.Minute {
+			return nil, fmt.Errorf("surface %s backup is starting in another process", surfaceID)
+		}
+		return data, nil
+	}
+	if isPIDAlive(lock.PID) && time.Since(lock.StartTime) <= 2*time.Hour {
+		return nil, fmt.Errorf("surface %s backup is already in-progress by PID %d (started %s)", surfaceID, lock.PID, lock.StartTime.Format(time.RFC3339))
+	}
+	return data, nil
+}
+
+// reclaimStaleLock moves a stale lock aside. The rename is atomic, so of two
+// processes reclaiming at once only one moves it; if what was moved is not
+// the stale lock that was judged (another process took the lock in
+// between), it is put back without overwriting anything.
+func reclaimStaleLock(lockPath string, stale []byte, surfaceID string) error {
+	aside := fmt.Sprintf("%s.stale-%d-%d", lockPath, os.Getpid(), time.Now().UnixNano())
+	if err := os.Rename(lockPath, aside); err != nil {
+		if os.IsNotExist(err) {
+			return nil // someone else reclaimed it; try to take it
+		}
+		return fmt.Errorf("surface %s: reclaiming stale lockfile %s: %w", surfaceID, lockPath, err)
+	}
+	moved, err := os.ReadFile(aside)
+	if err == nil && bytes.Equal(moved, stale) {
+		var lock LockInfo
+		if json.Unmarshal(stale, &lock) == nil {
+			fmt.Fprintf(os.Stderr, "⚠️  Reclaiming stale lock for surface %s (previous PID %d dead or timed out)\n", surfaceID, lock.PID)
+		}
+		return os.Remove(aside)
+	}
+	// Not the lock we judged stale: hand it back. Link fails if a lock
+	// exists again, so nothing is clobbered.
+	linkErr := os.Link(aside, lockPath)
+	_ = os.Remove(aside) // best effort: the link, or a newer lock, now holds the name
+	if linkErr != nil && !os.IsExist(linkErr) {
+		return fmt.Errorf("surface %s: restoring lockfile %s: %w", surfaceID, lockPath, linkErr)
+	}
+	return fmt.Errorf("surface %s backup started in another process while a stale lock was reclaimed", surfaceID)
+}
+
+// releaseLockFile removes the lock only while it is still the one this
+// process wrote, so a lock reclaimed and retaken by another process is not
+// deleted out from under it.
+func releaseLockFile(lockPath string, mine []byte) {
+	data, err := os.ReadFile(lockPath)
+	if err != nil || !bytes.Equal(data, mine) {
+		return
+	}
+	if err := os.Remove(lockPath); err != nil && !os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "⚠️  Could not remove lockfile %s: %v\n", lockPath, err)
+	}
 }
 
 // effectiveSchedule is the schedule a surface actually runs on: its own, or the
@@ -551,6 +630,9 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 		applyConsoleSettings(&surface, &configured, sState)
 		hb := sendHeartbeat(ctx, c, nodeID, sState, tick, &surface)
 		if hb != nil {
+			// The remote server answers, so what it missed while it did not
+			// goes first, before this tick adds anything newer.
+			resendUnsent(ctx, c, sState)
 			if noteConsoleSettings(sState, &configured, hb) {
 				consoleSettingsSaid[surface.ID] = true
 			}
@@ -849,7 +931,7 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 
 		warnIfManifestFailed(storageProvider.UploadMetadata(ctx, snapshotID, meta), snapshotID)
 		if hostIsEnrolled(c) {
-			st.notRecorded = sendMetadataToServer(ctx, c.ServerURL, c.ServerToken, meta, false)
+			st.notRecorded = reportSnapshot(ctx, c, st, meta)
 		}
 		return meta, plan, nil
 
@@ -930,7 +1012,7 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 
 		warnIfManifestFailed(storageProvider.UploadMetadata(ctx, snapshotID, meta), snapshotID)
 		if hostIsEnrolled(c) {
-			st.notRecorded = sendMetadataToServer(ctx, c.ServerURL, c.ServerToken, meta, false)
+			st.notRecorded = reportSnapshot(ctx, c, st, meta)
 		}
 		return meta, plan, nil
 
@@ -1010,7 +1092,7 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 
 		warnIfManifestFailed(storageProvider.UploadMetadata(ctx, snapshotID, dumpMeta), snapshotID)
 		if hostIsEnrolled(c) {
-			st.notRecorded = sendMetadataToServer(ctx, c.ServerURL, c.ServerToken, dumpMeta, false)
+			st.notRecorded = reportSnapshot(ctx, c, st, dumpMeta)
 		}
 		return dumpMeta, plan, nil
 	}
@@ -1045,6 +1127,9 @@ func newDaemonStatusCmd() *cobra.Command {
 				Status        string `json:"status"`
 				LastSnapshot  string `json:"last_snapshot_id,omitempty"`
 				LastError     string `json:"last_error,omitempty"`
+				// Unsent counts backups whose record the remote server has
+				// not received yet; the daemon sends them when it answers.
+				Unsent int `json:"unsent_records,omitempty"`
 				// ScheduleProblem is set when the daemon is not running the
 				// schedule as written (clamped to the floor, or unreadable
 				// and fallback to daily).
@@ -1064,6 +1149,7 @@ func newDaemonStatusCmd() *cobra.Command {
 				failures := 0
 				lastSnap := ""
 				lastErr := ""
+				unsent := 0
 				status := "OK"
 
 				if ok && st != nil {
@@ -1082,6 +1168,7 @@ func newDaemonStatusCmd() *cobra.Command {
 					failures = st.ConsecutiveFailures
 					lastSnap = st.LastSnapshotID
 					lastErr = st.LastError
+					unsent = len(st.Unsent)
 					if failures > 0 {
 						status = fmt.Sprintf("FAILED (%d)", failures)
 					}
@@ -1114,6 +1201,7 @@ func newDaemonStatusCmd() *cobra.Command {
 					Status:          status,
 					LastSnapshot:    lastSnap,
 					LastError:       lastErr,
+					Unsent:          unsent,
 				})
 			}
 
@@ -1147,6 +1235,11 @@ func newDaemonStatusCmd() *cobra.Command {
 					v.ID, v.Type, sched, v.LastSuccess, v.NextDue, v.Status)
 			}
 			w.Flush()
+			for _, v := range views {
+				if v.Unsent > 0 {
+					fmt.Printf("   %s: %d backup record(s) not yet received by the remote server; sent when it answers.\n", v.ID, v.Unsent)
+				}
+			}
 			return nil
 		},
 	}

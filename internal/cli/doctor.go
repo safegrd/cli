@@ -631,7 +631,7 @@ func surfaceCredentialChecks(c *config.CLIConfig) []CheckResult {
 
 // ignoredConfigKeys names each key this config sets that the daemon accepts and
 // does not yet act on. The config reference says so too, but a person who set
-// max_concurrent: 4 believes four surfaces run at once, and only a message at
+// metrics_addr believes something serves metrics there, and only a message at
 // the moment it matters corrects that.
 func ignoredConfigKeys(c *config.CLIConfig) []string {
 	var out []string
@@ -640,11 +640,6 @@ func ignoredConfigKeys(c *config.CLIConfig) []string {
 			out = append(out, key+" is not acted on yet: "+what)
 		}
 	}
-	add(c.Daemon.MaxConcurrent > 1, "daemon.max_concurrent", "surfaces run one at a time")
-	add(c.Daemon.RetryBackoffMin != "" || c.Daemon.RetryBackoffMax != "", "daemon.retry_backoff_min/max",
-		"a failing surface retries after 5 minutes, doubling to at most 1 hour")
-	add(c.Daemon.LogFormat != "" && c.Daemon.LogFormat != "text", "daemon.log_format", "logs are plain text")
-	add(c.Daemon.LogLevel != "" && c.Daemon.LogLevel != "info", "daemon.log_level", "the daemon logs at one level")
 	add(c.Daemon.MetricsAddr != "", "daemon.metrics_addr", "there is no metrics endpoint")
 	add(c.Defaults.Timezone != "" && !strings.EqualFold(c.Defaults.Timezone, "UTC"), "defaults.timezone",
 		"schedules are intervals from the last success, not wall-clock times")
