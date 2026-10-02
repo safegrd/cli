@@ -1,0 +1,47 @@
+# The SafeGrd daemon as a sidecar beside the database it backs up.
+#
+# 1. Enrol once. The config and the key are written into the safegrd-home
+#    volume, owned by the image's user and readable by it alone:
+#
+#      docker compose run --rm safegrd enroll --token sg_pat_... --claim <code>
+#
+#    The claim code is the one the console shows when you add a host. It writes
+#    the surfaces into the config. Without one, add a surface to the config
+#    yourself (see safegrd.example.yaml); the one below reads its connection
+#    string from APP_DATABASE_URL.
+#
+# 2. Start it:
+#
+#      docker compose up -d
+#
+# 3. Check it:
+#
+#      docker compose exec safegrd safegrd doctor
+#      docker compose exec safegrd safegrd list
+
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_PASSWORD: example
+      POSTGRES_DB: app
+    volumes:
+      - db-data:/var/lib/postgresql/data
+
+  safegrd:
+    image: ghcr.io/safegrd/cli:latest
+    command: ["daemon", "run"]
+    restart: unless-stopped
+    depends_on:
+      - db
+    environment:
+      # A surface with `credential: {from: env, name: APP_DATABASE_URL}` reads it.
+      APP_DATABASE_URL: postgres://postgres:example@db:5432/app?sslmode=disable
+    volumes:
+      # Config, key and daemon state. Keep a copy of the key somewhere safe if
+      # you hold it yourself: it is what opens the backups.
+      - safegrd-home:/home/safegrd/.safegrd
+
+volumes:
+  db-data:
+  safegrd-home:

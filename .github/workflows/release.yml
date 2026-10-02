@@ -103,6 +103,92 @@ jobs:
             --generate-notes \
             dist/safegrd_*.tar.gz dist/checksums.txt
 
+  image:
+    name: Publish the image
+    # After the smoke test, like the archives: the image is the same source,
+    # and nothing is published from a tag that has not restored a backup.
+    needs: smoke
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      # Keyless signing: cosign gets a certificate for this workflow's identity.
+      id-token: write
+    env:
+      IMAGE: ghcr.io/safegrd/cli
+      # The Postgres client the image carries, named in its tag: pg_dump has
+      # to be at least as new as the server it reads.
+      PG_MAJOR: "18"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build arguments
+        id: meta
+        run: |
+          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          echo "commit=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      # Built for this runner and run before anything is pushed: the binary
+      # starts and every dump client is on the PATH.
+      - name: Build for a check
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: safegrd-cli:check
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+            COMMIT=${{ steps.meta.outputs.commit }}
+            BUILD_DATE=${{ steps.meta.outputs.date }}
+            PG_MAJOR=${{ env.PG_MAJOR }}
+
+      - name: Check the image
+        run: |
+          docker run --rm safegrd-cli:check version | grep -F "${{ steps.meta.outputs.version }}"
+          docker run --rm -e PG_MAJOR="$PG_MAJOR" --entrypoint sh safegrd-cli:check -c \
+            'pg_dump --version | grep " ${PG_MAJOR}\." && mysqldump --version && mongodump --version'
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push linux/amd64 and linux/arm64
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+            COMMIT=${{ steps.meta.outputs.commit }}
+            BUILD_DATE=${{ steps.meta.outputs.date }}
+            PG_MAJOR=${{ env.PG_MAJOR }}
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.meta.outputs.version }}-pg${{ env.PG_MAJOR }}
+            ${{ env.IMAGE }}:${{ steps.meta.outputs.version }}
+            ${{ env.IMAGE }}:latest
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign the image
+        run: cosign sign --yes "${IMAGE}@${{ steps.push.outputs.digest }}"
+
   homebrew:
     name: Update the Homebrew tap
     needs: release

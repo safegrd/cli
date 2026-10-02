@@ -70,6 +70,24 @@ The formula installs the same release archives as the script.
 go install github.com/safegrd/cli/cmd/safegrd@latest
 ```
 
+### Container image
+
+`ghcr.io/safegrd/cli` runs on linux/amd64 and linux/arm64 and carries `pg_dump`, `mysqldump`
+and `mongodump`. The tag names the Postgres client: `<version>-pg18` reads Postgres 18 and
+every older server. Releases are signed with cosign (keyless, from this repository's release
+workflow):
+
+```bash
+cosign verify ghcr.io/safegrd/cli:<version>-pg18 \
+  --certificate-identity-regexp 'https://github.com/safegrd/cli/.github/workflows/release.yml@.*' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+[`packaging/compose`](packaging/compose/compose.yaml) runs the daemon beside a database,
+[`packaging/kubernetes`](packaging/kubernetes/cronjob.yaml) runs `daemon run --once` as a
+CronJob, and [`packaging/helm/safegrd`](packaging/helm/safegrd) runs the daemon as a
+Deployment.
+
 ### Release archives, or from source
 
 Static binaries for Linux and macOS (`amd64`, `arm64`) and their SHA-256 checksums are

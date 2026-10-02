@@ -1,0 +1,6 @@
+.git
+bin/
+dist/
+packaging/
+*.md
+!README.md
