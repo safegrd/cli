@@ -47,7 +47,7 @@ func showCurrentOrg() error {
 
 	// The catalogue comes from the remote server, which is the only place it
 	// is decided.
-	var planCost string
+	var planCost, overage string
 	var planDisplayName string
 	catalogue, err := fetchPlansCatalogue(serverURL)
 	if err != nil {
@@ -68,6 +68,9 @@ func showCurrentOrg() error {
 			planDisplayName = matchedPlan.Name
 			if matchedPlan.MonthlyUSD > 0 {
 				planCost = fmt.Sprintf("$%d/mo", matchedPlan.MonthlyUSD)
+				if c := matchedPlan.OverageCentsPerGBMonth; c > 0 {
+					overage = fmt.Sprintf("$%d.%02d per GB-month", c/100, c%100)
+				}
 			} else {
 				planCost = "Free"
 			}
@@ -83,6 +86,9 @@ func showCurrentOrg() error {
 	fmt.Printf("   Slug:          %s\n", org.Slug)
 	fmt.Printf("   Billing Plan:  %s (%s)\n", planDisplayName, planCost)
 	fmt.Printf("   Quota:         %d protected surfaces\n", org.MaxDatabases)
+	if overage != "" {
+		fmt.Printf("   Hosted storage above the included amount: %s\n", overage)
+	}
 	fmt.Printf("   Created:       %s\n\n", org.CreatedAt.Format("2006-01-02 15:04:05 MST"))
 
 	fmt.Println("💡 To manage environments or databases under this organization:")

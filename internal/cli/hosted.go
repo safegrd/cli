@@ -86,7 +86,9 @@ func resolveHostedStorage(ctx context.Context, cfg *config.CLIConfig, storageCfg
 		storageCfg.RetentionDays = info.RetentionDays
 	}
 	if write && info.Warning != "" {
-		fmt.Fprintf(os.Stderr, "⚠️  %s At 100%% new backups are refused; existing ones stay restorable.\n", info.Warning)
+		// The remote server's words, as sent: what happens at the quota
+		// depends on the plan, and only the server knows which applies.
+		fmt.Fprintf(os.Stderr, "⚠️  %s\n", info.Warning)
 	}
 	return &info, nil
 }

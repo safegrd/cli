@@ -19,7 +19,7 @@ type destructiveRule struct {
 // one that only mentions it (grep "DROP TABLE"). A false match costs one extra
 // snapshot; a missed one costs the data.
 var destructiveRules = compileRules([]destructiveRule{
-	{Name: "SQL DROP", Pattern: `(?i)\bdrop\s+(table|database|schema|view|materialized\s+view|index|sequence|function|procedure|trigger|type|extension|owned|role|user)\b`},
+	{Name: "SQL DROP", Pattern: `(?i)\bdrop\s+(table|database|schema|view|materialized\s+view|index|sequence|function|procedure|trigger|type|extension|owned|role|user|column)\b`},
 	{Name: "SQL TRUNCATE", Pattern: `(?i)\btruncate\s+(table\s+)?["'\w]`},
 	{Name: "SQL DELETE without WHERE", Pattern: `(?i)\bdelete\s+from\s+[\w."]+\s*(;|$|["'])`},
 	{Name: "dropdb", Pattern: `(^|[\s;&|(])dropdb\s`},

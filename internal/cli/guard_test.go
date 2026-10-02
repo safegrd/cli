@@ -17,6 +17,7 @@ func TestTheDestructiveListMatchesWhatItNames(t *testing.T) {
 	for _, c := range []string{
 		`psql "$DATABASE_URL" -c 'DROP TABLE sessions'`,
 		`psql -c "drop database app"`,
+		`psql -c 'ALTER TABLE users DROP COLUMN email'`,
 		`echo 'DROP SCHEMA public CASCADE;' | psql`,
 		`psql -c 'TRUNCATE users'`,
 		`psql -c "truncate table orders restart identity"`,
