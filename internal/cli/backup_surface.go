@@ -63,7 +63,7 @@ func backupNamedSurface(ctx context.Context, c *config.CLIConfig, surfaceID stri
 	fmt.Printf("⏰ Surface %s (%s): backing up now.\n", surface.ID, surface.Type)
 	fetchHeldSurfaceSecret(ctx, c, nodeID, surface)
 	attempted := sState.LastAttempt
-	if err := backupSurfaceNow(ctx, c, surface, sState, nodeID, lockDir, statePath, daemonState); err != nil {
+	if _, err := backupSurfaceNow(ctx, c, surface, sState, nodeID, lockDir, statePath, daemonState); err != nil {
 		return err
 	}
 	// backupSurfaceNow skips a surface whose lock is held and returns nil,
