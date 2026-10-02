@@ -172,6 +172,26 @@ surfaces:
 [`safegrd.example.yaml`](safegrd.example.yaml) is the annotated version. The daemon reads its
 config when it starts, so run `safegrd daemon restart` after changing it.
 
+### 7. Take a locked snapshot before a destructive command
+
+`safegrd guard` backs up one surface, waits until the snapshot is uploaded and locked, and
+then runs the command. If the backup fails or the snapshot is not locked, the command does
+not run and guard exits 3.
+
+```bash
+safegrd guard --surface app-primary -- psql "$APP_DATABASE_URL" -c 'DROP TABLE sessions'
+safegrd guard -- terraform destroy
+
+# The commands a hook treats as destructive, and a check that takes no backup
+safegrd guard --list
+safegrd guard --matches "npx prisma migrate reset"   # exit 0: it matches
+```
+
+Storage on the host's own disk, or a bucket with `worm_mode: NONE`, cannot lock a snapshot,
+so guard refuses there unless you pass `--allow-unlocked`.
+
+`safegrd list --json` prints every snapshot with its lock date, for scripts.
+
 ---
 
 ## Core Features

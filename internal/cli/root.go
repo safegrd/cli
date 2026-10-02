@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"runtime"
@@ -60,6 +61,13 @@ func Execute() {
 	// block between the copies.
 	RootCmd.SilenceErrors = true
 	if err := RootCmd.Execute(); err != nil {
+		var ee *exitError
+		if errors.As(err, &ee) {
+			if ee.err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", ee.err)
+			}
+			os.Exit(ee.code)
+		}
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
@@ -120,6 +128,7 @@ func init() {
 	RootCmd.AddCommand(newExportCmd())
 	RootCmd.AddCommand(newPruneCmd())
 	RootCmd.AddCommand(newMCPCmd())
+	RootCmd.AddCommand(newGuardCmd())
 }
 
 func newVersionCmd() *cobra.Command {

@@ -680,7 +680,7 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 				fmt.Printf("⏰ Surface %s (%s) is due for backup.\n", surface.ID, surface.Type)
 			}
 			fetchHeldSurfaceSecret(ctx, c, nodeID, &surface)
-			if err := backupSurfaceNow(ctx, c, &surface, sState, nodeID, lockDir, statePath, daemonState); err != nil {
+			if _, err := backupSurfaceNow(ctx, c, &surface, sState, nodeID, lockDir, statePath, daemonState); err != nil {
 				hasErrors = true
 			}
 		}
@@ -738,9 +738,11 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 }
 
 // backupSurfaceNow runs one surface's backup under its lock and records the
-// outcome in the daemon's state. It returns the backup's error, if any.
+// outcome in the daemon's state. It returns the snapshot it took, or nil with
+// no error when another process holds the surface's lock, and the backup's
+// error, if any.
 func backupSurfaceNow(ctx context.Context, c *config.CLIConfig, surface *config.SurfaceConfig, sState *SurfaceState,
-	nodeID, lockDir, statePath string, daemonState *DaemonState) error {
+	nodeID, lockDir, statePath string, daemonState *DaemonState) (*model.SnapshotMetadata, error) {
 	now := time.Now().UTC()
 
 	// Acquire single-flight surface lock
@@ -748,7 +750,7 @@ func backupSurfaceNow(ctx context.Context, c *config.CLIConfig, surface *config.
 	releaseLock, err := acquireLock(surfaceLockPath, surface.ID, "")
 	if err != nil {
 		fmt.Printf("   Skipping %s: %v\n", surface.ID, err)
-		return nil
+		return nil, nil
 	}
 
 	sState.LastAttempt = now
@@ -816,7 +818,10 @@ func backupSurfaceNow(ctx context.Context, c *config.CLIConfig, surface *config.
 	_, sState.NextDue = isSurfaceDue(surface, sState, time.Now().UTC())
 
 	warnIfStateUnsaved(saveDaemonState(statePath, daemonState), statePath)
-	return backupErr
+	if backupErr != nil {
+		return nil, backupErr
+	}
+	return meta, nil
 }
 
 // runSurfaceBackup backs one surface up and reports it as nodeID (the child
