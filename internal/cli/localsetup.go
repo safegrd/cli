@@ -32,7 +32,7 @@ func ensureLocalSetup(nodeName string) (created bool, adopted bool, err error) {
 		return false, false, nil
 	}
 
-	configDir, err := config.DefaultConfigDir()
+	configDir, err := setupDir()
 	if err != nil {
 		return false, false, err
 	}
@@ -94,6 +94,19 @@ func ensureLocalSetup(nodeName string) (created bool, adopted bool, err error) {
 	}
 
 	return created, adopted, nil
+}
+
+// setupDir is where a fresh setup keeps its key and local storage: beside the
+// file --config names, or ~/.safegrd without one. Writing the key under
+// ~/.safegrd while the config lives elsewhere split one host's setup across
+// two places, and a second config on the same machine found the first one's
+// key and refused. The path is absolute, so key_path still resolves when the
+// command later runs from another directory.
+func setupDir() (string, error) {
+	if cfgFile == "" {
+		return config.DefaultConfigDir()
+	}
+	return filepath.Abs(filepath.Dir(cfgFile))
 }
 
 // saveConfig writes the config back to wherever it was read from.

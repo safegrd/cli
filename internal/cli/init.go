@@ -75,7 +75,7 @@ you if you have not already).`,
 
 			fmt.Println("🛡️  Initializing SafeGrd node...")
 
-			configDir, err := config.DefaultConfigDir()
+			configDir, err := setupDir()
 			if err != nil {
 				return err
 			}

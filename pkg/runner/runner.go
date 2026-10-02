@@ -455,13 +455,15 @@ func (v *Verifier) submitReport(ctx context.Context, report *model.VerificationR
 
 	if resp.StatusCode == http.StatusPaymentRequired {
 		var body struct {
-			Error string `json:"error"`
+			Error        string `json:"error"`
+			NextDrillDue string `json:"next_drill_due"`
 		}
-		msg := "Fire Drills are not included on your plan, so this drill was not recorded."
-		if json.NewDecoder(io.LimitReader(resp.Body, 4<<10)).Decode(&body) == nil && body.Error != "" {
-			msg = body.Error
+		// An unreadable body leaves both fields empty, and the message
+		// below still says the drill was not recorded.
+		if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<10)).Decode(&body); err != nil {
+			body.Error, body.NextDrillDue = "", ""
 		}
-		fmt.Fprintf(os.Stderr, "\n[!] Not recorded by the remote server: %s\n", msg)
+		fmt.Fprint(os.Stderr, notRecordedByPlan(body.Error, body.NextDrillDue))
 		return
 	}
 
@@ -479,6 +481,26 @@ func (v *Verifier) submitReport(ctx context.Context, report *model.VerificationR
 			"    The drill itself is valid and shown above.\n",
 			v.serverURL, resp.StatusCode, detail)
 	}
+}
+
+// notRecordedByPlan says why the remote server declined to record a drill
+// under the organization's plan, and what to do next. When the server names
+// the next due time, that is all the operator needs, so the message is built
+// from it; otherwise the server's own reason is passed on.
+func notRecordedByPlan(reason, nextDue string) string {
+	var b strings.Builder
+	b.WriteString("\n[!] Not recorded by the remote server (HTTP 402). The drill above ran and its result stands.\n")
+	if due, err := time.Parse(time.RFC3339, nextDue); err == nil {
+		fmt.Fprintf(&b, "    The plan records one drill per interval on this surface, and the next is due %s.\n",
+			due.UTC().Format("2006-01-02 15:04 MST"))
+		b.WriteString("    Run it again after that, or leave it to the daemon.\n")
+		return b.String()
+	}
+	if reason = strings.TrimSpace(reason); reason != "" {
+		fmt.Fprintf(&b, "    Reason: %s\n", reason)
+	}
+	b.WriteString("    Run 'safegrd org' to see what the plan includes.\n")
+	return b.String()
 }
 
 // computeCertificateHash is the value the attestation chain links against:

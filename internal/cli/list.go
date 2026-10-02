@@ -2,11 +2,14 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/safegrd/cli/pkg/config"
 	"github.com/safegrd/cli/pkg/model"
@@ -15,11 +18,25 @@ import (
 )
 
 func newListCmd() *cobra.Command {
-	return &cobra.Command{
+	var jsonOut bool
+	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List snapshots in storage and when each lock ends",
+		Long: `Lists the snapshots in this host's storage, with what each holds and when its lock ends.
+
+--json prints a JSON array on stdout, one object per snapshot, and sends every
+other line to stderr, so the output can be piped to jq.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
+			if jsonOut {
+				// Routing, credential and deleted-snapshot notices print on
+				// stdout. They still matter, so they move to stderr rather
+				// than being dropped, and stdout carries the JSON alone.
+				stdout := os.Stdout
+				os.Stdout = os.Stderr
+				defer func() { os.Stdout = stdout }()
+				return listJSON(ctx, stdout)
+			}
 			// Routed and credentialed like backup and restore. A node enrolled
 			// with a centrally-managed sink has no bucket or sink secret locally, so reading
 			// cfg.Storage directly means this command cannot reach the bucket
@@ -126,6 +143,105 @@ func newListCmd() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print the snapshots as a JSON array on stdout")
+	return cmd
+}
+
+// listedSnapshot is one entry of `list --json`. The field names are the
+// output's contract with scripts and hooks; add fields, never rename them.
+type listedSnapshot struct {
+	SnapshotID string `json:"snapshot_id"`
+	NodeID     string `json:"node_id,omitempty"`
+	Surface    string `json:"surface,omitempty"`
+	Database   string `json:"database,omitempty"`
+	Status     string `json:"status,omitempty"`
+	CreatedAt  string `json:"created_at,omitempty"`
+	// CompletedAt is when the upload finished.
+	CompletedAt        string `json:"completed_at,omitempty"`
+	EncryptedSizeBytes int64  `json:"encrypted_size_bytes"`
+	TotalItems         int64  `json:"total_items"`
+	TotalContainers    int    `json:"total_containers"`
+	// WORMMode is COMPLIANCE, GOVERNANCE or NONE; empty when the snapshot
+	// predates the field.
+	WORMMode    string `json:"worm_mode,omitempty"`
+	LockedUntil string `json:"locked_until,omitempty"`
+	// Locked is true while Object Lock still holds the snapshot.
+	Locked    bool `json:"locked"`
+	Anomalous bool `json:"anomalous"`
+	// MetadataError says why the snapshot could not be described. The
+	// snapshot itself may still restore.
+	MetadataError string `json:"metadata_error,omitempty"`
+}
+
+// listJSON writes every snapshot as one JSON array to out.
+func listJSON(ctx context.Context, out io.Writer) error {
+	storageCfg, routeErr := resolveStorageRouting(ctx, cfg, "", "", "", "", false)
+	if routeErr != nil {
+		return routeErr
+	}
+	if _, err := resolveHostedStorage(ctx, cfg, &storageCfg, false); err != nil {
+		return err
+	}
+	resolveRuntimeCredentials(ctx, cfg, &storageCfg, false)
+	if cfg.NodeID != "" && storageCfg.NodeID == "" {
+		storageCfg.NodeID = cfg.NodeID
+	}
+	storageProvider, err := openStorage(ctx, cfg, storageCfg)
+	if err != nil {
+		return fmt.Errorf("storage error: %w", err)
+	}
+	snapshots, err := storageProvider.ListSnapshots(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to list snapshots: %w", err)
+	}
+	warnAboutShadowedSnapshots(ctx, storageProvider)
+
+	var nodes map[string]string
+	if loc, ok := storageProvider.(storage.NodeLocator); ok {
+		var locErr error
+		if nodes, locErr = loc.SnapshotNodes(ctx); locErr != nil {
+			fmt.Fprintf(os.Stderr, "⚠️  Could not read which node each snapshot belongs to: %v\n", locErr)
+		}
+	}
+	setNode, canSetNode := storageProvider.(interface{ SetNodeID(string) })
+
+	now := time.Now()
+	entries := make([]listedSnapshot, 0, len(snapshots))
+	for _, snapID := range snapshots {
+		e := listedSnapshot{SnapshotID: snapID, NodeID: nodes[snapID]}
+		if e.NodeID != "" && canSetNode {
+			setNode.SetNodeID(e.NodeID)
+		}
+		meta, err := storageProvider.DownloadMetadata(ctx, snapID)
+		if err != nil {
+			e.MetadataError = describeMissingMetadata(err)
+			entries = append(entries, e)
+			continue
+		}
+		e.Surface = string(meta.SurfaceType)
+		e.Database = meta.DatabaseName
+		e.Status = string(meta.Status)
+		if !meta.CreatedAt.IsZero() {
+			e.CreatedAt = meta.CreatedAt.UTC().Format(time.RFC3339)
+		}
+		if meta.CompletedAt != nil {
+			e.CompletedAt = meta.CompletedAt.UTC().Format(time.RFC3339)
+		}
+		e.EncryptedSizeBytes = meta.EncryptedSizeBytes
+		e.TotalItems = meta.TotalItems
+		e.TotalContainers = meta.TotalContainers
+		e.WORMMode = meta.WORMMode
+		e.Anomalous = meta.IsPoisonPillFrozen
+		if e.WORMMode != string(config.WORMModeNone) && !meta.WORMRetentionUntil.IsZero() {
+			e.LockedUntil = meta.WORMRetentionUntil.UTC().Format(time.RFC3339)
+			e.Locked = meta.WORMRetentionUntil.After(now) && storageCfg.Type != config.StorageTypeLocal
+		}
+		entries = append(entries, e)
+	}
+
+	enc := json.NewEncoder(out)
+	enc.SetIndent("", "  ")
+	return enc.Encode(entries)
 }
 
 // describeContents says what is in a snapshot in the vocabulary of its own

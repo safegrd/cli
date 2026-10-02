@@ -335,7 +335,10 @@ With neither, it uses the login saved by 'safegrd login'.`,
 				}
 
 				fmt.Printf("✅ Enrolled node '%s'\n", regResp.NodeID)
-				fmt.Printf("   Node Token:  %s\n", regResp.Token)
+				// Only enough of the token to tell it apart: the whole of it
+				// would stay in terminal scrollback, and in the job log when
+				// enrolment runs in CI. The config file below holds it.
+				fmt.Printf("   Node token:  %s (saved to the config file)\n", maskToken(regResp.Token))
 				fmt.Printf("   Key:         %s\n", crypto.Fingerprint(cfg.Encryption.PublicKey))
 
 				// Report key custody mode.
@@ -511,4 +514,19 @@ func localStorageKind(st config.StorageConfig, createdByEnroll, chosenByFlag boo
 		return "local"
 	}
 	return "none"
+}
+
+// maskToken shows a token's prefix and last four characters, enough to match
+// it against the console's list without printing anything that authenticates.
+func maskToken(tok string) string {
+	prefix := ""
+	for _, p := range []string{"sg_tok_", "sg_pat_"} {
+		if strings.HasPrefix(tok, p) {
+			prefix, tok = p, tok[len(p):]
+		}
+	}
+	if len(tok) <= 8 {
+		return prefix + "…"
+	}
+	return prefix + "…" + tok[len(tok)-4:]
 }
