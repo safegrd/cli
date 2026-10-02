@@ -44,6 +44,7 @@ func newGuardCmd() *cobra.Command {
 		allowUnlocked bool
 		matches       string
 		list          bool
+		hook          string
 	)
 	cmd := &cobra.Command{
 		Use:   "guard [--surface ID] [-- command [args...]]",
@@ -65,7 +66,25 @@ Exit codes: the command's own exit code when it ran; 3 when guard refused to
 run it; 1 for a usage or configuration error.
 
   safegrd guard --list                 the commands hooks treat as destructive
-  safegrd guard --matches "<command>"  exit 0 if it is one of them, 1 if not`,
+  safegrd guard --matches "<command>"  exit 0 if it is one of them, 1 if not
+
+As an AI coding tool's pre-command hook, guard reads the tool's JSON on stdin,
+backs up first when the command matches the list, and blocks the command when
+no locked snapshot could be taken:
+
+  safegrd guard --hook claude-code --surface prod-db   (also: cursor, codex)`,
+		// A hook answers even when the config cannot be read: an exit 1 lets
+		// the agent's command through, so the refusal has to be the answer
+		// (runGuardHook blocks a destructive command with the reason).
+		// --list and --matches read no config at all.
+		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
+			runningCommand = cmd.Name()
+			if hook != "" || list || cmd.Flags().Changed("matches") {
+				cmd.SilenceUsage = true
+				return nil
+			}
+			return requireUsableConfig(cmd)
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if list {
 				return printGuardRules(os.Stdout)
@@ -76,6 +95,13 @@ run it; 1 for a usage or configuration error.
 					return nil
 				}
 				return &exitError{code: 1}
+			}
+			if hook != "" {
+				ctx := cmd.Context()
+				if ctx == nil {
+					ctx = context.Background()
+				}
+				return runGuardHook(ctx, hook, surfaceID, allowUnlocked, os.Stdin, os.Stdout)
 			}
 
 			var command []string
@@ -113,6 +139,7 @@ run it; 1 for a usage or configuration error.
 			"Without it guard refuses, because anyone who can run the command can delete that backup")
 	cmd.Flags().StringVar(&matches, "matches", "", "Check a command against the destructive list and take no backup")
 	cmd.Flags().BoolVar(&list, "list", false, "Print the destructive command list and exit")
+	cmd.Flags().StringVar(&hook, "hook", "", "Answer an AI coding tool's pre-command hook on stdin: claude-code, cursor or codex")
 	return cmd
 }
 
