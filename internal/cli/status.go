@@ -62,7 +62,7 @@ func newStatusCmd() *cobra.Command {
 			if cfg.Encryption.PublicKey != "" {
 				_, err := crypto.ParseRecipient(cfg.Encryption.PublicKey)
 				if err == nil {
-					fmt.Printf("   Public Key:        ✅ Valid (%s...)\n", cfg.Encryption.PublicKey[:16])
+					fmt.Printf("   Public Key:        ✅ Valid (%s)\n", crypto.Fingerprint(cfg.Encryption.PublicKey))
 				} else {
 					fmt.Printf("   Public Key:        ❌ Invalid format\n")
 				}

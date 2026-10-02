@@ -154,6 +154,41 @@ encryption:
 	}
 }
 
+// The config may lose its inline key only once key_path holds that same key.
+// A key file already holding a different identity used to be left alone while
+// the inline key was stripped anyway, and the identity was then nowhere.
+func TestCLIConfigInlineKeyStaysWhenKeyPathHoldsAnotherKey(t *testing.T) {
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	keyPath := filepath.Join(tempDir, "daemon.key")
+	if err := os.WriteFile(keyPath, []byte("AGE-SECRET-KEY-1SOMEOTHERKEY\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	legacyYAML := `node_id: node-mig-02
+encryption:
+  public_key: age1legacyrecipient
+  private_key: AGE-SECRET-KEY-1THEONLYCOPY
+  key_path: "` + keyPath + `"
+`
+	if err := os.WriteFile(configPath, []byte(legacyYAML), 0600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadCLIConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadCLIConfig: %v", err)
+	}
+	if loaded.Encryption.PrivateKey != "AGE-SECRET-KEY-1THEONLYCOPY" {
+		t.Fatalf("in-memory key = %q", loaded.Encryption.PrivateKey)
+	}
+	raw, _ := os.ReadFile(configPath)
+	if !strings.Contains(string(raw), "AGE-SECRET-KEY-1THEONLYCOPY") {
+		t.Fatalf("the only copy of the key was stripped from the config:\n%s", raw)
+	}
+	if other, _ := os.ReadFile(keyPath); strings.TrimSpace(string(other)) != "AGE-SECRET-KEY-1SOMEOTHERKEY" {
+		t.Fatalf("the existing key file was overwritten: %q", other)
+	}
+}
+
 func TestCLIConfigResolvesPrivateKeyFromKeyPath(t *testing.T) {
 	tempDir := t.TempDir()
 	keyDir := filepath.Join(tempDir, "keys")
@@ -284,7 +319,7 @@ func TestResolveWORMModeRefusesAnythingUnrecognised(t *testing.T) {
 func TestValidateForBackupRejectsUnknownWORMMode(t *testing.T) {
 	cfg := &CLIConfig{
 		DatabaseURL: "postgres://localhost/x",
-		Encryption:  EncryptionConfig{PublicKey: "age1example"},
+		Encryption:  EncryptionConfig{PublicKey: "age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p"},
 		Storage:     StorageConfig{Type: StorageTypeS3, Bucket: "b", WORMMode: "governance"},
 	}
 	if err := cfg.ValidateForBackup(); err == nil {
@@ -311,7 +346,7 @@ func TestSaveCLIConfigNeverWritesThePrivateKey(t *testing.T) {
 	cfg := &CLIConfig{
 		NodeID: "node-1",
 		Encryption: EncryptionConfig{
-			PublicKey:  "age1example",
+			PublicKey:  "age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p",
 			PrivateKey: identity,
 			KeyPath:    "~/.safegrd/keys/daemon.key",
 		},

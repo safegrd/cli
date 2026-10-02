@@ -1,7 +1,6 @@
 package dump
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"fmt"
@@ -130,22 +129,40 @@ func (p *PgDump) Section(ctx context.Context, databaseURL, snapshot, section str
 // stripPsqlMetaCommands removes the backslash commands pg_dump writes for
 // psql (\restrict and \unrestrict since the August 2025 minor releases). They
 // are not SQL, and the restore runs the file over the wire, not through psql.
+//
+// Only those two, by name: a function body is copied verbatim inside dollar
+// quotes and may have a line that starts with a backslash. And no line-length
+// limit: a bufio.Scanner stops at its cap, and a long function body then
+// dropped every statement after it from a backup that reported success.
 func stripPsqlMetaCommands(sql []byte) []byte {
-	var out bytes.Buffer
-	sc := bufio.NewScanner(bytes.NewReader(sql))
-	sc.Buffer(make([]byte, 0, 64<<10), 64<<20)
-	for sc.Scan() {
-		line := sc.Bytes()
-		if len(line) > 0 && line[0] == '\\' {
+	out := make([]byte, 0, len(sql))
+	for len(sql) > 0 {
+		line := sql
+		if i := bytes.IndexByte(sql, '\n'); i >= 0 {
+			line, sql = sql[:i+1], sql[i+1:]
+		} else {
+			sql = nil
+		}
+		if isPsqlMetaCommand(line) {
 			continue
 		}
-		out.Write(line)
-		out.WriteByte('\n')
+		out = append(out, line...)
 	}
-	return out.Bytes()
+	return out
 }
 
-var dsnPasswordRe = regexp.MustCompile(`(?:^|\s)password\s*=\s*('(?:[^'\\]|\\.)*'|\S+)`)
+func isPsqlMetaCommand(line []byte) bool {
+	line = bytes.TrimRight(line, "\r\n")
+	for _, cmd := range []string{`\restrict`, `\unrestrict`} {
+		if rest, ok := bytes.CutPrefix(line, []byte(cmd)); ok && (len(rest) == 0 || rest[0] == ' ' || rest[0] == '\t') {
+			return true
+		}
+	}
+	return false
+}
+
+// libpq reads keywords case-insensitively, so PASSWORD= is a password too.
+var dsnPasswordRe = regexp.MustCompile(`(?i)(?:^|\s)password\s*=\s*('(?:[^'\\]|\\.)*'|\S+)`)
 
 // splitPassword returns the connection string without its password, and the
 // password, for either a URL or a keyword/value string.
@@ -153,7 +170,9 @@ func splitPassword(dsn string) (string, string) {
 	if strings.Contains(dsn, "://") {
 		u, err := url.Parse(dsn)
 		if err != nil {
-			return dsn, ""
+			// Still take the password out of the userinfo, so it reaches
+			// neither argv nor a printed message.
+			return splitURLPasswordRaw(dsn)
 		}
 		password := ""
 		if u.User != nil {
@@ -181,17 +200,47 @@ func splitPassword(dsn string) (string, string) {
 	return strings.TrimSpace(dsn[:m[0]] + " " + dsn[m[1]:]), val
 }
 
-// RedactURL hides the password in a connection string for printing.
+// splitURLPasswordRaw cuts the password out of a URL's userinfo by position,
+// for a URL that url.Parse refuses (a bad percent-escape, say).
+func splitURLPasswordRaw(dsn string) (string, string) {
+	scheme := strings.Index(dsn, "://") + len("://")
+	authority := dsn[scheme:]
+	if end := strings.IndexAny(authority, "/?#"); end >= 0 {
+		authority = authority[:end]
+	}
+	at := strings.LastIndex(authority, "@")
+	if at < 0 {
+		return dsn, ""
+	}
+	colon := strings.Index(authority[:at], ":")
+	if colon < 0 {
+		return dsn, ""
+	}
+	return dsn[:scheme+colon] + dsn[scheme+at:], authority[colon+1 : at]
+}
+
+var urlQueryPasswordRe = regexp.MustCompile(`(?i)([?&]password=)[^&#]*`)
+
+// RedactURL hides the password in a connection string for printing. It fails
+// closed: a URL it cannot parse is printed with the password cut out by
+// position, never as given.
 func RedactURL(dsn string) string {
 	rest, password := splitPassword(dsn)
+	if strings.Contains(rest, "://") {
+		u, err := url.Parse(rest)
+		if err != nil {
+			return urlQueryPasswordRe.ReplaceAllString(rest, "${1}xxxxx")
+		}
+		if password == "" {
+			return dsn
+		}
+		if u.User != nil {
+			u.User = url.UserPassword(u.User.Username(), "xxxxx")
+		}
+		return u.String()
+	}
 	if password == "" {
 		return dsn
-	}
-	if strings.Contains(rest, "://") {
-		if u, err := url.Parse(rest); err == nil && u.User != nil {
-			u.User = url.UserPassword(u.User.Username(), "xxxxx")
-			return u.String()
-		}
 	}
 	return rest + " password=xxxxx"
 }

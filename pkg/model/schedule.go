@@ -2,6 +2,7 @@ package model
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -36,7 +37,10 @@ func ParseSchedule(schedule string) (time.Duration, error) {
 	default:
 		if days, ok := strings.CutSuffix(s, "d"); ok {
 			n, err := strconv.Atoi(days)
-			if err != nil || n <= 0 {
+			// Bounded before multiplying: past this, n days overflows a
+			// Duration and wrapped round to hours, so an absurd schedule was
+			// accepted and then ran far more often than asked.
+			if err != nil || n <= 0 || int64(n) > int64(math.MaxInt64/(24*time.Hour)) {
 				return 0, fmt.Errorf("schedule %q is not a number of days", schedule)
 			}
 			d = time.Duration(n) * 24 * time.Hour

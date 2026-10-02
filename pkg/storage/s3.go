@@ -136,6 +136,9 @@ func (s *S3StorageProvider) metadataKey(snapshotID string) string {
 }
 
 func (s *S3StorageProvider) UploadSnapshot(ctx context.Context, snapshotID string, stream io.Reader, size int64, retentionUntil time.Time) (string, error) {
+	if err := ValidateSnapshotID(snapshotID); err != nil {
+		return "", err
+	}
 	key := s.snapshotKey(snapshotID)
 
 	// Check if object already exists (WORM protection check)
@@ -188,6 +191,9 @@ func (s *S3StorageProvider) UploadSnapshot(ctx context.Context, snapshotID strin
 }
 
 func (s *S3StorageProvider) DownloadSnapshot(ctx context.Context, snapshotID string) (io.ReadCloser, error) {
+	if err := ValidateSnapshotID(snapshotID); err != nil {
+		return nil, err
+	}
 	key := s.snapshotKey(snapshotID)
 	out, err := s.client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: &s.bucket,
@@ -222,6 +228,9 @@ func (s *S3StorageProvider) DownloadSnapshot(ctx context.Context, snapshotID str
 }
 
 func (s *S3StorageProvider) UploadMetadata(ctx context.Context, snapshotID string, meta *model.SnapshotMetadata) error {
+	if err := ValidateSnapshotID(snapshotID); err != nil {
+		return err
+	}
 	key := s.metadataKey(snapshotID)
 	data, err := json.MarshalIndent(meta, "", "  ")
 	if err != nil {
@@ -259,6 +268,9 @@ func (s *S3StorageProvider) UploadMetadata(ctx context.Context, snapshotID strin
 }
 
 func (s *S3StorageProvider) DownloadMetadata(ctx context.Context, snapshotID string) (*model.SnapshotMetadata, error) {
+	if err := ValidateSnapshotID(snapshotID); err != nil {
+		return nil, err
+	}
 	key := s.metadataKey(snapshotID)
 	out, err := s.client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: &s.bucket,
@@ -345,6 +357,9 @@ func (s *S3StorageProvider) ListSnapshots(ctx context.Context) ([]string, error)
 }
 
 func (s *S3StorageProvider) SnapshotExists(ctx context.Context, snapshotID string) (bool, error) {
+	if err := ValidateSnapshotID(snapshotID); err != nil {
+		return false, err
+	}
 	key := s.snapshotKey(snapshotID)
 	_, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{
 		Bucket: &s.bucket,
@@ -385,6 +400,9 @@ func (s *S3StorageProvider) SnapshotExists(ctx context.Context, snapshotID strin
 }
 
 func (s *S3StorageProvider) DeleteSnapshot(ctx context.Context, snapshotID string) error {
+	if err := ValidateSnapshotID(snapshotID); err != nil {
+		return err
+	}
 	// Check retention first
 	meta, err := s.DownloadMetadata(ctx, snapshotID)
 	if err == nil && meta != nil && !meta.WORMRetentionUntil.IsZero() {

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"filippo.io/age"
 	"github.com/safegrd/cli/pkg/config"
 	"github.com/safegrd/cli/pkg/crypto"
 	"github.com/safegrd/cli/pkg/dump"
@@ -154,7 +155,7 @@ executes a full active restore drill into the target ephemeral database.`,
 				} else {
 					fmt.Printf("   Storage Source: %s (local WORM repository)\n", cfg.Storage.LocalPath)
 				}
-				fmt.Printf("   Decryption Key: %s...\n", resolvedKey[:16])
+				fmt.Printf("   Decryption Key: %s\n", identityFingerprint(resolvedKey))
 				fmt.Printf("   Engine:         Pure in-memory catalog & COPY inspector (no real target required)\n\n")
 
 				report, dryResult, err := verifier.RunDryRestore(ctx, snapshotID, resolvedKey)
@@ -473,4 +474,17 @@ func formatNumber(n int64) string {
 		out = append(out, c)
 	}
 	return string(out)
+}
+
+// identityFingerprint names the key a dry restore decrypts with by its public
+// half, so nothing of the private key is printed.
+func identityFingerprint(privateKey string) string {
+	ids, err := crypto.ParseIdentities(privateKey)
+	if err != nil || len(ids) == 0 {
+		return "not readable"
+	}
+	if x, ok := ids[0].(*age.X25519Identity); ok {
+		return crypto.Fingerprint(x.Recipient().String())
+	}
+	return "loaded"
 }

@@ -383,19 +383,25 @@ func LoadCLIConfig(path string) (*CLIConfig, error) {
 						keyPath = filepath.Join(filepath.Dir(path), "keys", "daemon.key")
 						cfg.Encryption.KeyPath = keyPath
 					}
-					// Persist key to keyPath with 0600 permissions if not already present
-					if _, statErr := os.Stat(keyPath); os.IsNotExist(statErr) {
-						if mkErr := os.MkdirAll(filepath.Dir(keyPath), 0700); mkErr == nil {
-							_ = os.WriteFile(keyPath, []byte(inlineKey+"\n"), 0600)
+					// The config is rewritten without the key only once keyPath is
+					// on disk holding this same key. Stripping it after a failed
+					// or mismatched write left the identity nowhere, and every
+					// backup it sealed undecryptable.
+					if err := persistMigratedKey(keyPath, inlineKey); err != nil {
+						fmt.Fprintf(os.Stderr, "⚠️  %s holds an inline private_key that could not be moved to %s: %v\n   The config is unchanged. Fix the key file, or set encryption.key_path to a free path.\n", path, keyPath, err)
+					} else {
+						delete(enc, "private_key")
+						enc["key_path"] = keyPath
+						strippedData, mErr := yaml.Marshal(rawMap)
+						if mErr == nil {
+							mErr = writeFileAtomic(path, strippedData, 0600)
+						}
+						if mErr != nil {
+							fmt.Fprintf(os.Stderr, "⚠️  Moved the inline private_key in %s to %s, but could not rewrite the config without it: %v\n", path, keyPath, mErr)
+						} else {
+							fmt.Fprintf(os.Stderr, "⚠️  Moved the inline private_key in %s to %s (0600). It was stored in plain text, so consider rotating it.\n", path, keyPath)
 						}
 					}
-					// Strip inline key from config file
-					delete(enc, "private_key")
-					enc["key_path"] = keyPath
-					if strippedData, mErr := yaml.Marshal(rawMap); mErr == nil {
-						_ = os.WriteFile(path, strippedData, 0600)
-					}
-					fmt.Fprintf(os.Stderr, "⚠️  WARNING: Insecure inline private_key detected in %s. Migrated to %s (0600) and stripped from config. Please treat this key as exposed and consider rotating it.\n", path, keyPath)
 					cfg.Encryption.PrivateKey = inlineKey
 				}
 			}
@@ -539,6 +545,9 @@ func (c *CLIConfig) ValidateForBackup() error {
 	if c.Encryption.PublicKey == "" {
 		return fmt.Errorf("encryption.public_key is required (run 'safegrd init' or set SAFEGRD_PUBLIC_KEY)")
 	}
+	if _, err := crypto.ParseRecipient(c.Encryption.PublicKey); err != nil {
+		return fmt.Errorf("encryption.public_key: %w (expected age1..., as printed by 'safegrd init')", err)
+	}
 	if c.Storage.Type == StorageTypeS3 && c.Storage.Bucket == "" {
 		return fmt.Errorf("storage.bucket is required for s3 storage")
 	}
@@ -555,6 +564,9 @@ func (c *CLIConfig) ValidateForBackup() error {
 func (c *CLIConfig) ValidateForFileBackup() error {
 	if c.Encryption.PublicKey == "" {
 		return fmt.Errorf("encryption.public_key is required (run 'safegrd init' or set SAFEGRD_PUBLIC_KEY)")
+	}
+	if _, err := crypto.ParseRecipient(c.Encryption.PublicKey); err != nil {
+		return fmt.Errorf("encryption.public_key: %w (expected age1..., as printed by 'safegrd init')", err)
 	}
 	if c.Storage.Type == StorageTypeS3 && c.Storage.Bucket == "" {
 		return fmt.Errorf("storage.bucket is required for s3 storage")
@@ -585,4 +597,68 @@ func topLevelDatabaseType(url string) string {
 		return "mysql"
 	}
 	return "postgres"
+}
+
+// persistMigratedKey makes keyPath hold key, durably. A file already there
+// counts only if it holds the same key.
+func persistMigratedKey(keyPath, key string) error {
+	data, err := os.ReadFile(keyPath)
+	switch {
+	case err == nil:
+		if crypto.IdentityInFile(data) != key {
+			return fmt.Errorf("%s already holds a different key", keyPath)
+		}
+		return nil
+	case !os.IsNotExist(err):
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(keyPath), 0700); err != nil {
+		return err
+	}
+	if err := writeFileAtomic(keyPath, []byte(key+"\n"), 0600); err != nil {
+		return err
+	}
+	data, err = os.ReadFile(keyPath)
+	if err != nil {
+		return err
+	}
+	if crypto.IdentityInFile(data) != key {
+		return fmt.Errorf("%s does not read back as the key written", keyPath)
+	}
+	return nil
+}
+
+// writeFileAtomic writes data to a temporary file beside path, syncs it and
+// renames it over path, so path holds either the old bytes or the new ones.
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp) // a no-op once renamed
+	if err := f.Chmod(perm); err != nil {
+		f.Close()
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	if d, err := os.Open(dir); err == nil {
+		_ = d.Sync() // best effort: not every filesystem syncs a directory
+		d.Close()
+	}
+	return nil
 }

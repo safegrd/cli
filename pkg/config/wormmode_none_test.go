@@ -48,7 +48,7 @@ func TestWORMModeNoneIsOnlyEverExplicit(t *testing.T) {
 func TestABackupConfigMayOptOutOfObjectLock(t *testing.T) {
 	cfg := &CLIConfig{
 		DatabaseURL: "postgres://u:p@h:5432/d",
-		Encryption:  EncryptionConfig{PublicKey: "age1testrecipient"},
+		Encryption:  EncryptionConfig{PublicKey: "age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p"},
 		Storage: StorageConfig{
 			Type: StorageTypeS3, Bucket: "b", WORMMode: WORMModeNone, RetentionDays: 30,
 		},

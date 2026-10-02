@@ -72,6 +72,23 @@ const userTablesQuery = `
 	                  WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype = 'e')
 	ORDER BY n.nspname, c.relname`
 
+// rowSecurityQuery lists the tables row-level security filters for the role
+// taking the backup, with the statistics collector's estimate of their live
+// rows. A policy applies unless the role is a superuser or has BYPASSRLS, or
+// owns the table (directly or through a role it inherits) and the table does
+// not FORCE row-level security. pg_read_all_data does not bypass it, so a
+// read-only backup role copies only the rows its policies let it see, and
+// COPY says nothing about the rest.
+const rowSecurityQuery = `
+	SELECT n.nspname, c.relname, COALESCE(s.n_live_tup, 0)
+	FROM pg_class c
+	JOIN pg_namespace n ON n.oid = c.relnamespace
+	LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid
+	WHERE c.relkind = 'r' AND c.relrowsecurity
+	  AND NOT EXISTS (SELECT 1 FROM pg_roles r
+	                  WHERE r.rolname = current_user AND (r.rolsuper OR r.rolbypassrls))
+	  AND (c.relforcerowsecurity OR NOT pg_has_role(current_user, c.relowner, 'USAGE'))`
+
 // userSequencesQuery lists the sequences whose positions a restore needs.
 const userSequencesQuery = `
 	SELECT n.nspname, c.relname
@@ -135,6 +152,11 @@ func (d *NativeDumper) Dump(ctx context.Context, databaseName string, dst io.Wri
 		return nil, fmt.Errorf("failed to list tables: %w", err)
 	}
 
+	filtered, err := rowSecurityTables(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+
 	tw := tar.NewWriter(dst)
 
 	// The schema, from pg_dump under our snapshot when there is one that can
@@ -192,6 +214,11 @@ func (d *NativeDumper) Dump(ctx context.Context, databaseName string, dst io.Wri
 		}
 		t.RowCount = tag.RowsAffected()
 	}
+	if msg := markRowSecurity(meta.TableStats, filtered); msg != "" {
+		d.Warn(fmt.Sprintf("Row-level security hid rows of %s from this backup's role:\n%s"+
+			"   Those tables are backed up with only the rows the role could see. Back up as the tables'\n"+
+			"   owner or a role with BYPASSRLS (ALTER ROLE ... BYPASSRLS) to capture every row.", databaseName, msg))
+	}
 
 	if postData != nil {
 		if err := writeTarEntry(tw, entryPostData, postData); err != nil {
@@ -222,6 +249,49 @@ func (d *NativeDumper) Dump(ctx context.Context, databaseName string, dst io.Wri
 		return nil, fmt.Errorf("failed to close the archive: %w", err)
 	}
 	return meta, nil
+}
+
+// rowSecurityTables returns the live-row estimate of each table row-level
+// security filters for this role, keyed "schema.table".
+func rowSecurityTables(ctx context.Context, tx pgx.Tx) (map[string]int64, error) {
+	rows, err := tx.Query(ctx, rowSecurityQuery)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list tables under row-level security: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]int64{}
+	for rows.Next() {
+		var schema, name string
+		var live int64
+		if err := rows.Scan(&schema, &name, &live); err != nil {
+			return nil, err
+		}
+		out[schema+"."+name] = live
+	}
+	return out, rows.Err()
+}
+
+// markRowSecurity flags each table row-level security filtered and returns
+// one line per table for the warning, or "" when none was. Every such table is
+// flagged, whatever its count: the role cannot tell how many rows it was not
+// shown. The statistics collector's estimate is printed beside the count when
+// it is larger, as a hint of how much is missing.
+func markRowSecurity(stats []model.TableStat, filtered map[string]int64) string {
+	var b strings.Builder
+	for i := range stats {
+		t := &stats[i]
+		live, ok := filtered[t.Schema+"."+t.TableName]
+		if !ok {
+			continue
+		}
+		t.RowSecurity = true
+		fmt.Fprintf(&b, "     %s.%s: %d rows copied", t.Schema, t.TableName, t.RowCount)
+		if live > t.RowCount {
+			fmt.Fprintf(&b, ", about %d in the table", live)
+		}
+		b.WriteString("\n")
+	}
+	return b.String()
 }
 
 // sequencePositions writes a setval for every user sequence, as SQL.

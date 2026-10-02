@@ -22,6 +22,7 @@ func newRestoreCmd() *cobra.Command {
 		snapshotID string
 		targetURL  string
 		targetDir  string
+		toSQL      string
 		engineStr  string
 		keyPath    string
 		privKey    string
@@ -33,6 +34,10 @@ func newRestoreCmd() *cobra.Command {
 		Short: "Restore an encrypted snapshot into a database target or destination directory",
 		Long: `Read a snapshot from this host's storage, decrypt it here with the private key,
 and restore it into a database (--target) or a directory (--target-dir).
+
+--to-sql writes a PostgreSQL snapshot as files psql loads without SafeGrd:
+the schema as SQL, each table's rows as binary COPY, and load.sql to run them
+in order. The files hold the data unencrypted; the directory is 0700.
 
 --from reads a copy made by 'safegrd export --to-dir' instead: the export
 directory with --snapshot, or one .safegrd file, whose name gives the snapshot ID.
@@ -50,8 +55,21 @@ from storage is.`,
 			if snapshotID == "" {
 				return fmt.Errorf("--snapshot flag is required")
 			}
-			if targetURL == "" && targetDir == "" {
-				return fmt.Errorf("either --target (for a database) or --target-dir (for files or email) is required")
+			given := 0
+			for _, v := range []string{targetURL, targetDir, toSQL} {
+				if v != "" {
+					given++
+				}
+			}
+			if given != 1 {
+				return fmt.Errorf("give one of --target (a database), --target-dir (files or email) or --to-sql (a PostgreSQL snapshot as files psql loads)")
+			}
+			// Checked before anything is written: a failed export removes the
+			// directory, which is only safe when it held nothing of the user's.
+			if toSQL != "" {
+				if entries, err := os.ReadDir(toSQL); err == nil && len(entries) > 0 {
+					return fmt.Errorf("--to-sql %s is not empty; give a new directory", toSQL)
+				}
 			}
 
 			if targetURL != "" {
@@ -160,19 +178,24 @@ from storage is.`,
 			fmt.Printf("   Snapshot ID:    %s\n", snapshotID)
 			fmt.Printf("   Surface:        %s\n", surface)
 
+			if toSQL != "" && surface != model.SurfaceTypePostgres {
+				return fmt.Errorf("snapshot %s is a %s snapshot; --to-sql reads PostgreSQL snapshots only", snapshotID, surface)
+			}
 			if (surface == model.SurfaceTypeFiles || surface == model.SurfaceTypeEmail) && targetDir == "" {
 				return fmt.Errorf("snapshot %s is a %s snapshot; specify --target-dir to restore", snapshotID, surface)
 			}
-			if surface.IsDatabase() && targetURL == "" {
+			if surface.IsDatabase() && targetURL == "" && toSQL == "" {
 				return fmt.Errorf("snapshot %s is a postgres database snapshot; specify --target database connection URL", snapshotID)
 			}
 
 			engine := dump.EngineType(engineStr)
 
-			if surface.IsDatabase() && dump.SurfaceTypeOfURL(targetURL) != surface && !(surface == "" && dump.SurfaceTypeOfURL(targetURL) == model.SurfaceTypePostgres) {
+			if surface.IsDatabase() && toSQL == "" && dump.SurfaceTypeOfURL(targetURL) != surface && !(surface == "" && dump.SurfaceTypeOfURL(targetURL) == model.SurfaceTypePostgres) {
 				return fmt.Errorf("snapshot %s is a %s snapshot; --target must be a %s database", snapshotID, surface, surface)
 			}
-			if surface.IsDatabase() {
+			if toSQL != "" {
+				fmt.Printf("   Target Dir:     %s (SQL and COPY files)\n", toSQL)
+			} else if surface.IsDatabase() {
 				fmt.Printf("   Target DB:      %s\n", dump.RedactURL(targetURL))
 				if meta != nil {
 					fmt.Printf("   Schema:         %s\n", schemaSourceLabel(meta.SchemaSource))
@@ -210,18 +233,28 @@ from storage is.`,
 			digestChecked := false
 			var (
 				pgMeta   *model.SnapshotMetadata
+				sqlRes   *dump.SQLExport
 				fileRes  *dump.FileExtractionResult
 				emailRes *dump.EmailExtractionResult
 			)
 
-			switch surface {
-			case model.SurfaceTypeFiles:
+			switch {
+			case toSQL != "":
+				sqlRes, err = dump.ExportSQL(plainReader, toSQL)
+				if err != nil {
+					_ = os.RemoveAll(toSQL)
+					return fmt.Errorf("writing the snapshot as SQL failed, and nothing was kept in %s: %w", toSQL, err)
+				}
+				// The tar reader stops at the archive's end marker; the rest
+				// of the stream has to be read for the digest to be whole.
+				_, _ = io.Copy(io.Discard, plainReader)
+			case surface == model.SurfaceTypeFiles:
 				fileRestorer := dump.NewFileRestorer()
 				fileRes, err = fileRestorer.ExtractArchive(ctx, plainReader, targetDir)
 				if err != nil {
 					return fmt.Errorf("file extraction failed: %w", err)
 				}
-			case model.SurfaceTypeEmail:
+			case surface == model.SurfaceTypeEmail:
 				emailRestorer := dump.NewEmailRestorer()
 				emailRes, err = emailRestorer.ExtractEmailArchive(ctx, plainReader, targetDir)
 				if err != nil {
@@ -253,11 +286,23 @@ from storage is.`,
 					return fmt.Errorf("stream decryption error (tampered snapshot or invalid key): %w", err)
 				}
 				if err := checkRestoreDigest(ctx, meta, snapshotID, decMetrics); err != nil {
+					if sqlRes != nil {
+						_ = os.RemoveAll(toSQL)
+						return fmt.Errorf("%w\n   The files written to %s were removed", err, toSQL)
+					}
 					return err
 				}
 			}
 
 			elapsed := time.Since(startTime)
+
+			if sqlRes != nil {
+				fmt.Printf("\n✅ Wrote %d tables, %d rows to %s (%s)\n", sqlRes.Tables, sqlRes.Rows, toSQL, elapsed.Round(time.Millisecond))
+				fmt.Println("   The files are unencrypted. Delete them when the database is loaded.")
+				fmt.Println("   Load into an empty database:")
+				fmt.Printf("   cd %s && psql \"postgres://user@host/empty_db\" -f load.sql\n", toSQL)
+				return nil
+			}
 
 			fmt.Println("\n✅ Restore complete")
 			fmt.Printf("   Duration:       %s\n", elapsed.Round(time.Millisecond))
@@ -306,6 +351,7 @@ from storage is.`,
 	cmd.Flags().StringVar(&snapshotID, "snapshot", "", "Snapshot ID to restore (required)")
 	cmd.Flags().StringVar(&targetURL, "target", "", "Target database URL: postgres://… or mysql://… (an empty database), or sqlite:///path/to/new.db (a file that does not exist yet)")
 	cmd.Flags().StringVar(&targetDir, "target-dir", "", "Target directory path to extract files or emails into")
+	cmd.Flags().StringVar(&toSQL, "to-sql", "", "Write a PostgreSQL snapshot into this new directory as SQL and COPY files that psql loads (load.sql)")
 	cmd.Flags().StringVar(&engineStr, "engine", "native", "Accepted for old scripts and ignored: there is one Postgres restore path")
 	_ = cmd.Flags().MarkDeprecated("engine", "there is one Postgres restore path; the flag is ignored")
 	cmd.Flags().StringVar(&keyPath, "key-path", "", "Path to Age private identity file")

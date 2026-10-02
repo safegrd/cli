@@ -18,6 +18,7 @@ import (
 	"github.com/safegrd/cli/pkg/crypto"
 	"github.com/safegrd/cli/pkg/dump"
 	"github.com/safegrd/cli/pkg/model"
+	"github.com/safegrd/cli/pkg/storage"
 	"github.com/spf13/cobra"
 )
 
@@ -98,6 +99,9 @@ and never leaves this host.`,
 			snapshotID := fmt.Sprintf("snap-%s-%s", time.Now().UTC().Format("20060102-150405"), uuid.New().String()[:6])
 			if tag != "" {
 				snapshotID = fmt.Sprintf("snap-%s-%s", tag, uuid.New().String()[:6])
+				if err := storage.ValidateSnapshotID(snapshotID); err != nil {
+					return fmt.Errorf("--tag %q: %w", tag, err)
+				}
 			}
 
 			// ================================================================
@@ -111,7 +115,7 @@ and never leaves this host.`,
 				if !jsonOutput {
 					fmt.Printf("🛡️  SafeGrd File Backup Started: %s\n", snapshotID)
 					fmt.Printf("   Surface:         Files (%s)\n", filesPath)
-					fmt.Printf("   Recipient Key:   %s\n", cfg.Encryption.PublicKey[:16]+"...")
+					fmt.Printf("   Recipient Key:   %s\n", crypto.Fingerprint(cfg.Encryption.PublicKey))
 					fmt.Printf("   Target Storage:  %s (%s)\n", storageCfg.Type, wormLabel(storageCfg))
 				}
 
@@ -234,7 +238,7 @@ and never leaves this host.`,
 				if !jsonOutput {
 					fmt.Printf("🛡️  SafeGrd Email Backup Started: %s\n", snapshotID)
 					fmt.Printf("   Surface:         IMAP Mailbox (%s on %s:%d)\n", user, host, port)
-					fmt.Printf("   Recipient Key:   %s\n", cfg.Encryption.PublicKey[:16]+"...")
+					fmt.Printf("   Recipient Key:   %s\n", crypto.Fingerprint(cfg.Encryption.PublicKey))
 					fmt.Printf("   Target Storage:  %s (%s)\n", storageCfg.Type, wormLabel(storageCfg))
 				}
 
@@ -359,7 +363,7 @@ and never leaves this host.`,
 
 			if !jsonOutput {
 				fmt.Printf("🛡️  SafeGrd Backup Started: %s\n", snapshotID)
-				fmt.Printf("   Recipient Key:   %s\n", cfg.Encryption.PublicKey[:16]+"...")
+				fmt.Printf("   Recipient Key:   %s\n", crypto.Fingerprint(cfg.Encryption.PublicKey))
 				fmt.Printf("   Target Storage:  %s (%s)\n", storageCfg.Type, wormLabel(storageCfg))
 			}
 

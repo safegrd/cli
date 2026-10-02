@@ -204,6 +204,9 @@ func (s *S3StorageProvider) ListShadowedSnapshots(ctx context.Context) ([]Shadow
 // This deletes only delete markers (addressed by version ID) and never a
 // version holding data.
 func (s *S3StorageProvider) UndeleteSnapshot(ctx context.Context, snapshotID string) (int, error) {
+	if err := ValidateSnapshotID(snapshotID); err != nil {
+		return 0, err
+	}
 	keys := []string{s.snapshotKey(snapshotID), s.metadataKey(snapshotID)}
 	if s.nodeID != "" {
 		keys = append(keys,

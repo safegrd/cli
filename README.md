@@ -8,9 +8,9 @@
 
 `safegrd` protects modern engineering teams and autonomous AI agents from data corruption and accidental drops. It delivers **PostgreSQL backups that restore as the database** (schema from `pg_dump`, rows over binary `COPY`, one snapshot), **streaming POSIX file tree archives**, **universal IMAP email extraction**, **client-side Age (X25519) encryption**, **Zstandard compression**, **immutable WORM storage**, and **automated Fire Drill restore verifications**.
 
-The private key stays on your machine. Fire Drills run here, in your environment, and the remote server receives a signed attestation report; never your data and never your key.
+Fire Drills run here, in your environment, and the remote server receives a signed attestation report, never your data. You choose who holds the private key. By default the remote server keeps it sealed and releases it only to your enrolled hosts, so you can restore even after losing a host. With `enroll --key-custody local` it stays on your machines and only you can decrypt the backups.
 
-**Surfaces.** Supports PostgreSQL, MySQL, MariaDB and MongoDB databases, POSIX file trees, and IMAP email mailboxes under one customer-held Age keypair, Object Lock WORM policy, and attestation chain.
+**Surfaces.** Supports PostgreSQL, MySQL, MariaDB and MongoDB databases, POSIX file trees, and IMAP email mailboxes under one Age keypair, Object Lock WORM policy, and attestation chain.
 
 ---
 
@@ -177,7 +177,7 @@ config when it starts, so run `safegrd daemon restart` after changing it.
 ## Core Features
 
 - **Postgres, restored whole:** the schema comes from `pg_dump` and the rows stream over binary `COPY` from the same snapshot, so arrays, enums, foreign keys, views, triggers and sequence positions all come back. Needs a `pg_dump` at least as new as the server on the host.
-- **Encrypted before it leaves the host:** backups are encrypted with age (X25519) on your machine. You choose who holds the private key: keep it on your hosts, or have the remote server keep it sealed for your enrolled hosts.
+- **Encrypted before it leaves the host:** backups are encrypted with age (X25519) on your machine. You choose who holds the private key: the remote server keeps it sealed and releases it only to your enrolled hosts (the default), or you keep it on your hosts.
 - **Immutable WORM Storage:** Supports AWS S3 Object Lock (Governance and Compliance modes) and local filesystem WORM locking.
 - **Fire Drill restores:** restores backups on a schedule, counts what came back, and signs a certificate of each test.
 

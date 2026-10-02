@@ -48,6 +48,9 @@ func (l *LocalStorageProvider) metadataPath(snapshotID string) string {
 }
 
 func (l *LocalStorageProvider) UploadSnapshot(ctx context.Context, snapshotID string, stream io.Reader, size int64, retentionUntil time.Time) (string, error) {
+	if err := ValidateSnapshotID(snapshotID); err != nil {
+		return "", err
+	}
 	dstPath := l.snapshotPath(snapshotID)
 	if err := os.MkdirAll(filepath.Dir(dstPath), 0755); err != nil {
 		return "", fmt.Errorf("failed to create directory for snapshot %s: %w", snapshotID, err)
@@ -99,6 +102,9 @@ func (l *LocalStorageProvider) UploadSnapshot(ctx context.Context, snapshotID st
 }
 
 func (l *LocalStorageProvider) DownloadSnapshot(ctx context.Context, snapshotID string) (io.ReadCloser, error) {
+	if err := ValidateSnapshotID(snapshotID); err != nil {
+		return nil, err
+	}
 	dstPath := l.snapshotPath(snapshotID)
 	f, err := os.Open(dstPath)
 	if err != nil && l.nodeID != "" {
@@ -115,6 +121,9 @@ func (l *LocalStorageProvider) DownloadSnapshot(ctx context.Context, snapshotID 
 }
 
 func (l *LocalStorageProvider) UploadMetadata(ctx context.Context, snapshotID string, meta *model.SnapshotMetadata) error {
+	if err := ValidateSnapshotID(snapshotID); err != nil {
+		return err
+	}
 	dstPath := l.metadataPath(snapshotID)
 	if err := os.MkdirAll(filepath.Dir(dstPath), 0755); err != nil {
 		return fmt.Errorf("failed to create directory for metadata %s: %w", snapshotID, err)
@@ -137,6 +146,9 @@ func (l *LocalStorageProvider) UploadMetadata(ctx context.Context, snapshotID st
 }
 
 func (l *LocalStorageProvider) DownloadMetadata(ctx context.Context, snapshotID string) (*model.SnapshotMetadata, error) {
+	if err := ValidateSnapshotID(snapshotID); err != nil {
+		return nil, err
+	}
 	dstPath := l.metadataPath(snapshotID)
 	data, err := os.ReadFile(dstPath)
 	if err != nil && l.nodeID != "" {
@@ -180,6 +192,9 @@ func (l *LocalStorageProvider) ListSnapshots(ctx context.Context) ([]string, err
 }
 
 func (l *LocalStorageProvider) SnapshotExists(ctx context.Context, snapshotID string) (bool, error) {
+	if err := ValidateSnapshotID(snapshotID); err != nil {
+		return false, err
+	}
 	dstPath := l.snapshotPath(snapshotID)
 	_, err := os.Stat(dstPath)
 	if err == nil {
@@ -198,6 +213,9 @@ func (l *LocalStorageProvider) SnapshotExists(ctx context.Context, snapshotID st
 }
 
 func (l *LocalStorageProvider) DeleteSnapshot(ctx context.Context, snapshotID string) error {
+	if err := ValidateSnapshotID(snapshotID); err != nil {
+		return err
+	}
 	// Check retention first
 	meta, err := l.DownloadMetadata(ctx, snapshotID)
 	if err == nil && meta != nil && !meta.WORMRetentionUntil.IsZero() {
