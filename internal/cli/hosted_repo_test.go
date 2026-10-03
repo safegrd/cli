@@ -28,9 +28,12 @@ type fakeRepoHosted struct {
 	// in turn: "ok", "503", "drop" (read the body, keep it, then close the
 	// connection without answering) or "lose" (close without keeping it).
 	putScript, getScript []string
-	// uploadedScript is the status /uploaded answers with, in turn.
+	// uploadedScript is the status /uploaded answers with, in turn;
+	// epochClosed makes a 409 the closed-epoch refusal instead of "not
+	// held yet".
 	uploadedScript []int
 	uploadedCalls  int
+	epochClosed    bool
 }
 
 func newFakeRepoHosted(t *testing.T) *fakeRepoHosted {
@@ -80,7 +83,11 @@ func (f *fakeRepoHosted) serve(w http.ResponseWriter, r *http.Request) {
 			status, f.uploadedScript = f.uploadedScript[0], f.uploadedScript[1:]
 		}
 		w.WriteHeader(status)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Hosted storage does not hold the key yet"})
+		msg := "Hosted storage does not hold the key yet"
+		if f.epochClosed {
+			msg = "Epoch e202610-00000000 is closed; ask for the current epoch again."
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
 	case r.URL.Path == "/bucket/get":
 		f.gets++
 		if f.next(&f.getScript) == "503" {
@@ -219,6 +226,23 @@ func TestADroppedPutThatDidNotLandIsSentAgain(t *testing.T) {
 	}
 	if f.puts != 2 || f.uploadedCalls != 1 || string(f.objects["k"]) != "payload" {
 		t.Fatalf("%d PUTs, %d probes, object %q", f.puts, f.uploadedCalls, f.objects["k"])
+	}
+}
+
+// A dropped PUT whose epoch closed meanwhile is not sent again: the signed
+// URL may still be honoured, and the object would land in a closed epoch.
+func TestADroppedPutIntoAClosedEpochIsNotSentAgain(t *testing.T) {
+	quickBackoff(t)
+	f := newFakeRepoHosted(t)
+	f.putScript = []string{"lose"}
+	f.uploadedScript = []int{http.StatusConflict}
+	f.epochClosed = true
+	err := f.repo().Put(context.Background(), putSlot(f, "k"), []byte("payload"))
+	if err == nil || !strings.Contains(err.Error(), "closed") {
+		t.Fatalf("a closed epoch: %v", err)
+	}
+	if f.puts != 1 || f.uploadedCalls != 1 {
+		t.Fatalf("%d PUTs, %d probes", f.puts, f.uploadedCalls)
 	}
 }
 

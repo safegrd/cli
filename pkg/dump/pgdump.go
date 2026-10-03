@@ -114,6 +114,11 @@ func (p *PgDump) Section(ctx context.Context, databaseURL, snapshot, section str
 	if password != "" {
 		cmd.Env = append(cmd.Env, "PGPASSWORD="+password)
 	}
+	// The same bound as the connection above (connectPostgres); a
+	// connect_timeout in the URL still wins over the environment.
+	if os.Getenv("PGCONNECT_TIMEOUT") == "" {
+		cmd.Env = append(cmd.Env, "PGCONNECT_TIMEOUT=30")
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {

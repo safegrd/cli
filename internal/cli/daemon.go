@@ -921,7 +921,7 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 				// did not take stay open for the next backup, which would
 				// otherwise skip this month's copy.
 				plan.DayKey, plan.WeekKey, plan.MonthKey = "", "", ""
-				fmt.Printf("   Surface %s: kept at the epoch's %s tier; the %s slot stays open for the next backup\n", s.ID, res.Tier, plan.Tier)
+				fmt.Printf("   Surface %s: kept at the epoch's %s tier. The %s slot stays open for the next backup.\n", s.ID, res.Tier, plan.Tier)
 			}
 			if hostIsEnrolled(c) {
 				st.notRecorded = reportSnapshot(ctx, c, st, meta)

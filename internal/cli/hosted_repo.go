@@ -278,10 +278,12 @@ func (h *hostedRepo) Put(ctx context.Context, slot sink.Slot, body []byte) error
 
 // landed asks the remote server whether the bucket holds the slot's object,
 // by confirming it: the answer records it, which the run does next anyway.
+// Only the answer that the bucket does not hold it yet means the body may be
+// sent again; any other refusal (the epoch closed meanwhile) is final.
 func (h *hostedRepo) landed(ctx context.Context, slot sink.Slot) (bool, error) {
 	err := h.uploaded(ctx, slot.EpochID, []string{slot.Key})
 	var he *hostedError
-	if errors.As(err, &he) && he.Status == http.StatusConflict {
+	if errors.As(err, &he) && he.Status == http.StatusConflict && strings.Contains(he.Msg, "does not hold") {
 		return false, nil
 	}
 	return err == nil, err

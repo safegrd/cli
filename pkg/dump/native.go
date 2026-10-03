@@ -108,7 +108,7 @@ func (d *NativeDumper) Dump(ctx context.Context, databaseName string, dst io.Wri
 	started := time.Now().UTC()
 	startTime := time.Now()
 
-	conn, err := pgx.Connect(ctx, d.databaseURL)
+	conn, err := connectPostgres(ctx, d.databaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("could not connect to the database: %w", err)
 	}
@@ -375,7 +375,7 @@ func NewNativeRestorer(targetURL string) *NativeRestorer {
 // looks like the real one. It refuses a target that already holds tables, and
 // holds every table's loaded row count to the manifest.
 func (r *NativeRestorer) Restore(ctx context.Context, src io.Reader) (*model.SnapshotMetadata, error) {
-	conn, err := pgx.Connect(ctx, r.targetURL)
+	conn, err := connectPostgres(ctx, r.targetURL)
 	if err != nil {
 		return nil, fmt.Errorf("could not connect to the restore target: %w", err)
 	}
@@ -549,4 +549,21 @@ func checkTargetEmpty(ctx context.Context, conn *pgx.Conn) error {
 			"(for example: createdb restored_copy) and point --target at it", n)
 	}
 	return nil
+}
+
+// defaultConnectTimeout bounds connecting to a database that does not answer.
+// pgx waits for ever without one: a source that accepted the TCP connection
+// and then said nothing held a backup open past five minutes, under the daemon
+// with no failure reported and no alert. A connect_timeout in the URL wins.
+const defaultConnectTimeout = 30 * time.Second
+
+func connectPostgres(ctx context.Context, url string) (*pgx.Conn, error) {
+	cfg, err := pgx.ParseConfig(url)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.ConnectTimeout == 0 {
+		cfg.ConnectTimeout = defaultConnectTimeout
+	}
+	return pgx.ConnectConfig(ctx, cfg)
 }
