@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"runtime"
 	"strings"
 	"time"
@@ -35,7 +36,7 @@ func newEnrollCmd() *cobra.Command {
 		Long: `Authenticates the local CLI daemon with the SafeGrd remote server.
 You can either provide a direct Node Token or an Organization API Key to register this node.
 With neither, it uses the login saved by 'safegrd login'.`,
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) (runErr error) {
 			serverURL := resolveServerURL()
 
 			// Refused before anything is generated. Checked after the local
@@ -206,6 +207,25 @@ With neither, it uses the login saved by 'safegrd login'.`,
 
 				generatedNow := !keyExistedBeforeEnroll && cfg.Encryption.PublicKey != ""
 
+				// A key this run generated and never got registered is nobody's
+				// yet. Left on disk, the retry adopts it as one the operator
+				// supplied and refuses --key-custody=safegrd, so the first
+				// refusal made the second one permanent. It goes, and the
+				// retry generates a fresh one. Once the server has answered
+				// 2xx the key may be registered, and it stays whatever follows.
+				registered := false
+				if generatedNow && cfg.Encryption.KeyPath != "" {
+					generatedKey := cfg.Encryption.KeyPath
+					defer func() {
+						if runErr == nil || registered {
+							return
+						}
+						if err := os.Remove(generatedKey); err == nil {
+							fmt.Fprintf(os.Stderr, "   The key this attempt generated was never sent, so it was removed (%s). Re-running enroll makes a new one.\n", generatedKey)
+						}
+					}()
+				}
+
 				// Two different custody modes, named rather than inferred:
 				//
 				//   --key-custody=safegrd  generate here, send it, SafeGrd can
@@ -307,6 +327,7 @@ With neither, it uses the login saved by 'safegrd login'.`,
 					_ = json.NewDecoder(resp.Body).Decode(&errResp)
 					return fmt.Errorf("server rejected enrollment (HTTP %d): %s", resp.StatusCode, errResp["error"])
 				}
+				registered = true
 
 				var regResp model.NodeRegisterResponse
 				if err := json.NewDecoder(resp.Body).Decode(&regResp); err != nil {

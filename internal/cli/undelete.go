@@ -169,6 +169,11 @@ version holding data, which is why it is safe to run.`,
 // line. It exists so the CLI cannot print "WORM Object Lock" over a bucket that
 // has none.
 func wormLabel(storageCfg config.StorageConfig) string {
+	if storageCfg.Type == config.StorageTypeLocal {
+		// A directory has no Object Lock, whatever worm_mode says: the
+		// owner of the account can remove a read-only file.
+		return "no Object Lock: a directory on this host"
+	}
 	if mode, err := storageCfg.ResolveWORMMode(); err == nil && mode == config.WORMModeNone {
 		return "NO Object Lock"
 	}
@@ -198,7 +203,12 @@ func printRetentionLine(storageCfg config.StorageConfig, retainUntil time.Time) 
 		fmt.Printf("                    The backup is encrypted and attested, but it can be deleted.\n")
 		return
 	}
-	fmt.Printf("   WORM Locked:     Immutable until %s\n", retainUntil.Format("2006-01-02 15:04:05 UTC"))
+	if storageCfg.Type == config.StorageTypeLocal {
+		fmt.Printf("   Kept until:      %s. safegrd will not delete it before then;\n", retainUntil.UTC().Format("2006-01-02 15:04:05 UTC"))
+		fmt.Printf("                    a directory on this host has no Object Lock, so its owner can.\n")
+		return
+	}
+	fmt.Printf("   WORM Locked:     Immutable until %s\n", retainUntil.UTC().Format("2006-01-02 15:04:05 UTC"))
 }
 
 // warnIfManifestFailed reports a manifest that did not reach the sink.

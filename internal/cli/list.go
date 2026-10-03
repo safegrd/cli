@@ -361,6 +361,11 @@ func describeRetention(meta *model.SnapshotMetadata, storageCfg config.StorageCo
 		return "unknown"
 	}
 	until := meta.WORMRetentionUntil.Format("2006-01-02 15:04")
+	if storageCfg.Type == config.StorageTypeLocal {
+		// The sidecar may say COMPLIANCE (the config's default mode), but a
+		// directory enforces nothing: only safegrd's own refusal to delete.
+		return "kept until " + until + " (no Object Lock)"
+	}
 	if !recorded {
 		return until + " (mode not recorded)"
 	}

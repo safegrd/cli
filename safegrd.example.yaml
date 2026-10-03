@@ -120,8 +120,11 @@ encryption:
 #     # A scratch database for Fire Drills: the drill restores the snapshot into
 #     # it and counts what came back. It must hold nothing and be used for
 #     # nothing else: the daemon refuses one with tables in it, refuses the
-#     # database above, and empties it after each drill. Without it, drills
-#     # replay the snapshot in memory.
+#     # database above, and empties it after each drill. Without it, on a plan
+#     # with sandbox drills, a postgres surface restores into a throwaway
+#     # cluster the daemon starts from this host's PostgreSQL server (initdb and
+#     # postgres, the source's major or newer) and deletes afterwards. With no
+#     # server here, drills replay the snapshot in memory.
 #     # drill:
 #     #   sandbox_url_env: "APP_DRILL_DATABASE_URL"
 #

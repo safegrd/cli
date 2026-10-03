@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"crypto/md5"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/safegrd/cli/pkg/config"
+	"github.com/safegrd/cli/pkg/repo/sink"
 	"github.com/safegrd/cli/pkg/storage"
 	"github.com/spf13/cobra"
 )
@@ -42,9 +44,15 @@ destination is skipped, so an interrupted export can simply be run again.
 those nodes. Both can be repeated or given as a comma-separated list.
 Restore from an export with 'safegrd restore --from'.
 
+Incremental (--format repo) backups are copied a whole epoch at a time, since
+a snapshot needs every object of its epoch; --snapshot copies the epoch that
+holds it.
+
 Credentials for --to-bucket come from the standard AWS environment
 (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, or a profile). A copy into a bucket
-keeps each snapshot's lock: it is locked there until the same date.`,
+keeps each snapshot's lock: it is locked there until the same date. A
+repository's objects are locked until their epoch's longest date, the one its
+first run's objects carry.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
 			if (toDir == "") == (toBucket == "") {
@@ -81,6 +89,13 @@ keeps each snapshot's lock: it is locked there until the same date.`,
 				return fmt.Errorf("destination storage: %w", err)
 			}
 
+			// Incremental repositories go first, whole epochs at a time: a
+			// snapshot needs every object of its epoch.
+			rCopied, rSkipped, rFailed, rMatched, rErr := exportRepos(ctx, srcCfg, dstCfg, onlySnapshots, onlyNodes)
+			if rErr != nil {
+				return rErr
+			}
+
 			ids, err := src.ListSnapshots(ctx)
 			if err != nil {
 				return fmt.Errorf("listing snapshots: %w", err)
@@ -93,9 +108,24 @@ keeps each snapshot's lock: it is locked there until the same date.`,
 				}
 			}
 
-			ids, err = filterExport(ids, nodes, srcCfg.NodeID, onlySnapshots, onlyNodes)
-			if err != nil {
-				return err
+			var unmatched []string
+			for _, id := range onlySnapshots {
+				if !rMatched[strings.TrimSpace(id)] {
+					unmatched = append(unmatched, id)
+				}
+			}
+			if len(onlySnapshots) > 0 && len(unmatched) == 0 {
+				ids = nil
+			} else if len(ids) > 0 || len(onlySnapshots) > 0 || rCopied+rSkipped+rFailed == 0 {
+				if len(onlySnapshots) > 0 {
+					onlySnapshots = unmatched
+				}
+				ids, err = filterExport(ids, nodes, srcCfg.NodeID, onlySnapshots, onlyNodes)
+				if err != nil && rCopied+rSkipped+rFailed == 0 {
+					return err
+				} else if err != nil {
+					ids = nil
+				}
 			}
 
 			copied, skipped, failed := 0, 0, 0
@@ -116,6 +146,7 @@ keeps each snapshot's lock: it is locked there until the same date.`,
 				fmt.Printf("   ✅ %s\n", id)
 				copied++
 			}
+			copied, skipped, failed = copied+rCopied, skipped+rSkipped, failed+rFailed
 			fmt.Printf("\n📦 Exported %d, already there %d, failed %d.\n", copied, skipped, failed)
 			if failed > 0 {
 				return fmt.Errorf("%d snapshot(s) were not exported", failed)
@@ -229,4 +260,126 @@ func exportOne(ctx context.Context, src, dst storage.StorageProvider, id string)
 		return fmt.Errorf("writing its metadata: %w", err)
 	}
 	return nil
+}
+
+// exportRepos copies every incremental repository epoch from src to dst,
+// keeping the layout, so 'restore --from' and a bucket used as storage read
+// it as they would the original. An epoch already at the destination is
+// skipped object by object. It returns the epochs copied, skipped and failed,
+// and the snapshot ids --snapshot asked for that it found.
+func exportRepos(ctx context.Context, srcCfg, dstCfg config.StorageConfig, onlySnapshots, onlyNodes []string) (copied, skipped, failed int, matched map[string]bool, err error) {
+	matched = map[string]bool{}
+	if srcCfg.Type == config.StorageTypeHosted && !hostedRepoReady {
+		return 0, 0, 0, matched, nil
+	}
+	backends, err := repoBackendsAll(ctx, srcCfg)
+	if err != nil {
+		return 0, 0, 0, matched, fmt.Errorf("listing incremental repositories: %w", err)
+	}
+	wantNode := map[string]bool{}
+	for _, n := range onlyNodes {
+		wantNode[strings.TrimSpace(n)] = true
+	}
+	for _, b := range backends {
+		rows, err := repoSnapshots(ctx, b)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "❌ the repository in %s could not be listed: %v\n", b.Describe(), err)
+			failed++
+			continue
+		}
+		type epochKey struct{ surface, epoch string }
+		epochs := map[epochKey]repoSnapshot{}
+		for _, r := range rows {
+			if len(wantNode) > 0 && !wantNode[r.Meta.NodeID] {
+				continue
+			}
+			if len(onlySnapshots) > 0 {
+				hit := false
+				for _, id := range onlySnapshots {
+					if strings.TrimSpace(id) == r.Meta.SnapshotID {
+						hit, matched[r.Meta.SnapshotID] = true, true
+					}
+				}
+				if !hit {
+					continue
+				}
+			}
+			epochs[epochKey{r.SurfaceID, r.Epoch.Epoch.EpochID}] = r
+		}
+		for k, r := range epochs {
+			node := r.Meta.NodeID
+			if node == "" {
+				node = srcCfg.NodeID
+			}
+			dc := dstCfg
+			dc.NodeID = node
+			dst, err := repoBackend(ctx, cfg, dc)
+			if err != nil {
+				return copied, skipped, failed, matched, fmt.Errorf("destination storage: %w", err)
+			}
+			d, ok := dst.(*sink.Direct)
+			if !ok {
+				return copied, skipped, failed, matched, fmt.Errorf("an incremental repository can be exported to a directory or a bucket")
+			}
+			n, already, err := exportEpoch(ctx, r.Backend, r.Epoch, d, k.surface)
+			label := fmt.Sprintf("%s epoch %s (%d objects)", k.surface, k.epoch, n+already)
+			switch {
+			case err != nil:
+				fmt.Fprintf(os.Stderr, "❌ %s: %v\n", label, err)
+				failed++
+			case n == 0:
+				fmt.Printf("   ⏭️  %s already exported\n", label)
+				skipped++
+			default:
+				fmt.Printf("   ✅ %s\n", label)
+				copied++
+			}
+		}
+	}
+	return copied, skipped, failed, matched, nil
+}
+
+// exportEpoch copies one epoch's objects, epoch.json last so a reader never
+// finds a descriptor over a half-copied epoch. It holds every copy to the
+// source object's length; the bytes are sealed, and a restore or check of
+// the copy proves them.
+func exportEpoch(ctx context.Context, src sink.Backend, e sink.EpochInfo, dst *sink.Direct, surface string) (copied, already int, err error) {
+	objs, err := src.List(ctx, e, "")
+	if err != nil {
+		return 0, 0, err
+	}
+	dstPrefix := sink.EpochPrefix(dst.S.Root(), surface, e.Epoch.EpochID)
+	have := map[string]int64{}
+	if existing, err := dst.S.List(ctx, dstPrefix+"/"); err == nil {
+		for _, o := range existing {
+			have[o.Key] = o.Size
+		}
+	}
+	lock := e.Epoch.OpeningRetainUntil
+	if min := time.Now().Add(24 * time.Hour); lock.Before(min) {
+		lock = min
+	}
+	sort.Slice(objs, func(i, j int) bool {
+		return !strings.HasSuffix(objs[i].Key, "/epoch.json") && strings.HasSuffix(objs[j].Key, "/epoch.json")
+	})
+	for _, o := range objs {
+		rel := strings.TrimPrefix(o.Key, e.Prefix)
+		key := dstPrefix + rel
+		if size, ok := have[key]; ok && size == o.Size {
+			already++
+			continue
+		}
+		body, err := src.Get(ctx, o.Key)
+		if err != nil {
+			return copied, already, fmt.Errorf("%s: %w", o.Key, err)
+		}
+		if int64(len(body)) != o.Size {
+			return copied, already, fmt.Errorf("%s: read %d bytes, storage lists %d", o.Key, len(body), o.Size)
+		}
+		if err := dst.S.Put(ctx, key, body, md5.Sum(body), lock); err != nil {
+			return copied, already, fmt.Errorf("%s: %w", key, err)
+		}
+		copied++
+	}
+	return copied, already, nil
 }

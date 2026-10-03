@@ -27,7 +27,7 @@ func TestASinglePassRetriesAFailureAndSaysWhyItSkipsTheRest(t *testing.T) {
 		Storage: config.StorageConfig{Type: config.StorageTypeLocal, LocalPath: filepath.Join(dir, "worm"), RetentionDays: 1},
 		Surfaces: []config.SurfaceConfig{
 			{ID: "moneydb", Type: "postgres", Schedule: "@daily"},
-			{ID: "docs", Type: "files", Schedule: "@daily", Roots: []string{dir}},
+			{ID: "docs", Type: "files", Format: "tar", Schedule: "@daily", Roots: []string{dir}},
 		},
 	}
 	now := time.Now().UTC()
@@ -104,7 +104,7 @@ func TestTheResidentDaemonStopsARetiredSurfaceAndSaysSoOnce(t *testing.T) {
 	c := &config.CLIConfig{
 		ServerURL: ts.URL, ServerToken: "tok", NodeID: "host-1",
 		Storage:  config.StorageConfig{Type: config.StorageTypeLocal, LocalPath: filepath.Join(dir, "worm"), RetentionDays: 1},
-		Surfaces: []config.SurfaceConfig{{ID: "docs", Type: "files", Schedule: "@daily", Roots: []string{dir}}},
+		Surfaces: []config.SurfaceConfig{{ID: "docs", Type: "files", Format: "tar", Schedule: "@daily", Roots: []string{dir}}},
 	}
 	tick := func() string {
 		return captureStderr(t, func() {

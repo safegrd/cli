@@ -96,7 +96,7 @@ func TestTheDaemonIgnoresTriggerBackupAndRunsARequestOnce(t *testing.T) {
 		NodeID:      "host-1",
 		Storage:     config.StorageConfig{Type: config.StorageTypeLocal, LocalPath: filepath.Join(dir, "worm"), RetentionDays: 1},
 		Encryption:  config.EncryptionConfig{PublicKey: id.Recipient().String()},
-		Surfaces:    []config.SurfaceConfig{{ID: "docs", Type: "files", Schedule: "@daily", Roots: []string{tree}}},
+		Surfaces:    []config.SurfaceConfig{{ID: "docs", Type: "files", Format: "tar", Schedule: "@daily", Roots: []string{tree}}},
 	}
 	stateDir := filepath.Join(dir, "state")
 	if err := os.MkdirAll(filepath.Join(stateDir, "locks"), 0o700); err != nil {
@@ -166,7 +166,7 @@ func TestALostDrillReportDoesNotBecomeADrillEveryTick(t *testing.T) {
 		NodeID:      "host-1",
 		Storage:     config.StorageConfig{Type: config.StorageTypeLocal, LocalPath: filepath.Join(dir, "worm"), RetentionDays: 1},
 		Encryption:  config.EncryptionConfig{PublicKey: id.Recipient().String(), KeyPath: keyPath},
-		Surfaces:    []config.SurfaceConfig{{ID: "docs", Type: "files", Schedule: "@daily", Roots: []string{tree}}},
+		Surfaces:    []config.SurfaceConfig{{ID: "docs", Type: "files", Format: "tar", Schedule: "@daily", Roots: []string{tree}}},
 	}
 	stateDir := filepath.Join(dir, "state")
 	if err := os.MkdirAll(filepath.Join(stateDir, "locks"), 0o700); err != nil {

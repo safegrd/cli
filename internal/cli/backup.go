@@ -164,6 +164,9 @@ and never leaves this host.`,
 						enc.SetIndent("", "  ")
 						return enc.Encode(meta)
 					}
+					// The labelled line scripts and agents read, as every
+					// other backup prints it.
+					fmt.Printf("   Snapshot ID:     %s\n", meta.SnapshotID)
 					return nil
 				}
 				if newEpoch || rescan || cmd.Flags().Changed("one-filesystem") {
@@ -400,6 +403,13 @@ and never leaves this host.`,
 			// ================================================================
 			// Surface 3: PostgreSQL Databases (Default)
 			// ================================================================
+			// The flag, or the config's database_url: either may be an env: or
+			// file: reference, and `init --database-url env:VAR` writes one to
+			// the config. Only the flag used to be resolved, so the reference
+			// the docs recommend reached the driver as a literal.
+			if dbURL == "" && (strings.HasPrefix(cfg.DatabaseURL, "env:") || strings.HasPrefix(cfg.DatabaseURL, "file:")) {
+				dbURL = cfg.DatabaseURL
+			}
 			if dbURL != "" {
 				resolvedDB, err := ResolveSecretRef("database-url", dbURL)
 				if err != nil {
@@ -540,7 +550,7 @@ and never leaves this host.`,
 	cmd.Flags().StringVar(&surfaceID, "surface", "", "Back up this surface from the config's surfaces now, as the daemon would, whatever its schedule")
 	cmd.Flags().StringVar(&filesPath, "files", "", "Path to directory tree for file-based backup")
 	cmd.Flags().StringSliceVar(&excludes, "exclude", nil, "Glob patterns to exclude from file backup (e.g. '*.tmp,node_modules/*')")
-	cmd.Flags().StringVar(&fileFmt, "format", "tar", "How --files is stored: tar (one archive per backup) or repo (incremental: each run uploads only what changed)")
+	cmd.Flags().StringVar(&fileFmt, "format", formatRepo, "How --files is stored: repo (incremental: each run uploads only what changed) or tar (one archive per backup)")
 	cmd.Flags().BoolVar(&newEpoch, "new-epoch", false, "With --format repo, or --surface of a repo surface: start a new epoch now, uploading every file once")
 	cmd.Flags().BoolVar(&rescan, "rescan", false, "With --format repo, or --surface of a repo surface: read every file, not only those whose size or times changed")
 	cmd.Flags().BoolVar(&oneFS, "one-filesystem", false, "With --format repo: stay on the root's filesystem (the default when the root is /)")
@@ -615,7 +625,7 @@ func deliverSnapshotRecord(ctx context.Context, serverURL, token string, meta *m
 	// node_id is not alone proof of enrolment.
 	if token == "" {
 		warn("not reported: no server_token in this config, so this host is standalone.\n" +
-			"                    The backup is in your bucket. Run 'safegrd enroll' to report to the console.")
+			"                    The backup is stored; run 'safegrd enroll' to report it to the console.")
 		return "", false
 	}
 	if meta.NodeID == "" {

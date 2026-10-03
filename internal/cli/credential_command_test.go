@@ -80,7 +80,7 @@ func TestDoctorResolvesSurfaceCredentials(t *testing.T) {
 		{ID: "ok", Type: "email", Username: "a@b", Credential: fromCommand("echo pw")},
 		{ID: "locked", Type: "email", Username: "a@b", Credential: fromCommand("echo 'vault sealed' >&2; exit 2")},
 		{ID: "unset", Type: "email", Username: "a@b", Credential: &config.CredentialConfig{From: "env", Name: "SAFEGRD_TEST_NOT_SET"}},
-		{ID: "tree", Type: "files", Roots: []string{"/"}},
+		{ID: "tree", Type: "files", Format: "tar", Roots: []string{"/"}},
 	}}
 	got := map[string]CheckResult{}
 	for _, r := range surfaceCredentialChecks(c) {

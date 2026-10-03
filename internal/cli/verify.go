@@ -95,12 +95,10 @@ executes a full active restore drill into the target ephemeral database.`,
 
 			ctx := context.Background()
 
-			// Same last resort as restore: a managed-custody
-			// organization's identity, fetched for this verification only and
-			// never written to disk.
-			if resolvedKey == "" {
-				resolvedKey = resolveManagedIdentity(ctx, cfg, true)
-			}
+			// Same key set as restore: the host's own key and a
+			// managed-custody organization's keys, fetched for this
+			// verification only and never written to disk.
+			resolvedKey = withManagedIdentities(ctx, cfg, resolvedKey, true)
 
 			if resolvedKey == "" {
 				return fmt.Errorf("decryption key required for verification: specify --private-key or configure ~/.safegrd/keys/daemon.key")
@@ -126,7 +124,9 @@ executes a full active restore drill into the target ephemeral database.`,
 			if storageCfg.Type != config.StorageTypeHosted || hostedRepoReady {
 				rs, err := locateRepoSnapshot(ctx, storageCfg, snapshotID)
 				if err != nil {
-					return fmt.Errorf("looking for %s among the repositories in storage: %w", snapshotID, err)
+					// Said, and not fatal: the snapshot may be an archive, which
+					// does not need the repositories to be readable.
+					fmt.Fprintf(os.Stderr, "⚠️  Could not look among the incremental repositories: %v\n", err)
 				}
 				if rs != nil {
 					if sandboxURL != "" && !dryRun {

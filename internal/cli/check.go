@@ -37,9 +37,7 @@ func resolveIdentity(ctx context.Context, keyPath, privKey string) (string, erro
 			}
 		}
 	}
-	if key == "" {
-		key = resolveManagedIdentity(ctx, cfg, true)
-	}
+	key = withManagedIdentities(ctx, cfg, key, true)
 	if key == "" {
 		return "", fmt.Errorf("decryption key required: specify --private-key or configure ~/.safegrd/keys/daemon.key")
 	}

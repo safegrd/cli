@@ -35,13 +35,14 @@ const (
 	formatRepo = "repo"
 )
 
-// fileFormat resolves a format flag or setting; empty is tar.
+// fileFormat resolves a format flag or setting. Unset is repo: incremental
+// backups are the default for files; format: tar keeps one archive per backup.
 func fileFormat(v string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(v)) {
-	case "", formatTar:
-		return formatTar, nil
-	case formatRepo:
+	case "", formatRepo:
 		return formatRepo, nil
+	case formatTar:
+		return formatTar, nil
 	}
 	return "", fmt.Errorf("format %q is not tar or repo", v)
 }
@@ -383,9 +384,19 @@ func restoreRepoSnapshot(ctx context.Context, rs *repoSnapshot, privateKey, targ
 	if err := checkRepoContentRoot(ctx, rs.Meta, snapshotID, root); err != nil {
 		return err
 	}
-	res, err := r.Restore(ctx, snap, idx, read.RestoreOptions{Target: targetDir, Paths: paths})
+	// A snapshot of one directory restores that directory's contents into
+	// the target, as an archive of it does. One of several roots, or of /,
+	// restores at its paths from /.
+	base := ""
+	if len(snap.Roots) == 1 && snap.Roots[0] != "/" {
+		base = strings.TrimPrefix(snap.Roots[0], "/")
+	}
+	res, err := r.Restore(ctx, snap, idx, read.RestoreOptions{Target: targetDir, Paths: paths, Base: base})
 	if err != nil {
 		return fmt.Errorf("restore failed, and %s is as it was: %w", targetDir, err)
+	}
+	if base != "" {
+		fmt.Printf("   Restored the contents of %s into %s.\n", snap.Roots[0], targetDir)
 	}
 	fmt.Printf("Restored %s %s (%s) from %s in %s. Every file matched its SHA-256.\n", formatNumber(res.Files),
 		pluralWord(res.Files, "file", "files"), formatBytes(res.Bytes), snapshotID, shortDuration(time.Since(started)))

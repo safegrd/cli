@@ -103,7 +103,7 @@ func guardConfig(t *testing.T) string {
 	cfg.Storage.LocalPath = filepath.Join(dir, "store")
 	cfg.Encryption.PublicKey = kp.PublicKey
 	cfg.Daemon.StateDir = filepath.Join(dir, "state")
-	cfg.Surfaces = []config.SurfaceConfig{{ID: "docs", Type: "files", Roots: []string{src}}}
+	cfg.Surfaces = []config.SurfaceConfig{{ID: "docs", Type: "files", Format: "tar", Roots: []string{src}}}
 	return dir
 }
 

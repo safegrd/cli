@@ -701,7 +701,8 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 				if s.Drill != nil {
 					fetchHeldSurfaceSecret(ctx, c, nodeID, &s)
 				}
-				d := pendingDrill{surface: &s, state: sState, nodeID: nodeID, snapshotID: hb.DrillSnapshotID}
+				d := pendingDrill{surface: &s, state: sState, nodeID: nodeID, snapshotID: hb.DrillSnapshotID,
+					stateDir: stateDir, sandboxIncluded: hb.SandboxDrillsIncluded}
 				if hb.DrillRequestID != "" && hb.DrillRequestID != sState.LastDrillRequestID {
 					d.requestID = hb.DrillRequestID
 				}
@@ -717,7 +718,7 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 		if ctx.Err() != nil {
 			break
 		}
-		runUnattendedDrill(ctx, c, d.surface, d.state, d.nodeID, d.snapshotID, d.requestID, func() {
+		runUnattendedDrill(ctx, c, d, func() {
 			warnIfStateUnsaved(saveDaemonState(statePath, daemonState), statePath)
 		})
 	}

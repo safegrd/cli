@@ -29,6 +29,11 @@ type RestoreOptions struct {
 	Concurrency int
 	// MergeGap joins ranges of one pack closer than this; zero means 1 MiB.
 	MergeGap int64
+	// Base, a directory relative to / with no leading slash, is restored
+	// as the top of the target: what is under it lands directly in the
+	// target, and nothing outside it is restored. Empty restores the whole
+	// tree at its paths from /.
+	Base string
 }
 
 // RestoreResult is what a restore wrote.
@@ -70,6 +75,16 @@ func (r *Repo) Restore(ctx context.Context, s format.Snapshot, idx Index, o Rest
 	items, err := r.Select(ctx, idx, s, o.Paths)
 	if err != nil {
 		return nil, err
+	}
+	if base := strings.Trim(o.Base, "/"); base != "" {
+		kept := items[:0]
+		for _, it := range items {
+			if rel, ok := strings.CutPrefix(it.Path, base+"/"); ok {
+				it.Path = rel
+				kept = append(kept, it)
+			}
+		}
+		items = kept
 	}
 	if len(o.Paths) > 0 && len(items) == 0 {
 		return nil, fmt.Errorf("nothing in snapshot %s matches %s", s.SnapshotID, strings.Join(o.Paths, ", "))

@@ -23,6 +23,15 @@ jobs:
       - name: Verify dependencies
         run: go mod verify
 
+      # A drill can restore into a throwaway cluster from the host's
+      # PostgreSQL server; the test that starts one fails in CI without it.
+      - name: Install the PostgreSQL server
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q postgresql-16
+          sudo systemctl disable --now postgresql || true
+          /usr/lib/postgresql/16/bin/postgres --version
+
       # `make ci` is the same gate a contributor can run locally: gofmt check,
       # tidy check, vet, and the race-detector test run. Keeping it in one make
       # target means CI and a local run cannot drift apart.

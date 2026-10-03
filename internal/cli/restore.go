@@ -115,20 +115,31 @@ from storage is.`,
 
 			ctx := context.Background()
 
-			// Last resort: SafeGrd may hold this organization's identity.
-			// Only reached when the host has no key of its own, and
-			// the result is never written to key_path; it opens this archive
-			// and then goes away. A customer-held org answers 404 and the
-			// error below stands.
-			if resolvedKey == "" {
-				resolvedKey = resolveManagedIdentity(ctx, cfg, true)
-			}
+			// SafeGrd may hold this organization's keys, including a lost
+			// host's. They are tried beside the host's own key, never written
+			// to key_path; they open this archive and then go away. A
+			// customer-held org answers 404 and the local key stands alone.
+			resolvedKey = withManagedIdentities(ctx, cfg, resolvedKey, true)
 
 			if resolvedKey == "" {
 				return fmt.Errorf("decryption key required: specify --private-key or configure ~/.safegrd/keys/daemon.key")
 			}
 
 			var storageProvider storage.StorageProvider
+			if fromDir != "" {
+				// An export holds incremental repositories in the layout a
+				// local directory of storage has.
+				rs, err := locateRepoSnapshot(ctx, config.StorageConfig{Type: config.StorageTypeLocal, LocalPath: fromDir}, snapshotID)
+				if err != nil {
+					return fmt.Errorf("looking for %s in %s: %w", snapshotID, fromDir, err)
+				}
+				if rs != nil {
+					if targetDir == "" {
+						return fmt.Errorf("snapshot %s is a files snapshot; specify --target-dir to restore", snapshotID)
+					}
+					return restoreRepoSnapshot(ctx, rs, resolvedKey, targetDir, paths)
+				}
+			}
 			if fromDir != "" {
 				local, err := storage.NewLocalStorage(fromDir)
 				if err != nil {
@@ -168,7 +179,9 @@ from storage is.`,
 				if storageCfg.Type != config.StorageTypeHosted || hostedRepoReady {
 					rs, err := locateRepoSnapshot(ctx, storageCfg, snapshotID)
 					if err != nil {
-						return fmt.Errorf("looking for %s among the repositories in storage: %w", snapshotID, err)
+						// Said, and not fatal: the snapshot may be an archive, which
+						// does not need the repositories to be readable.
+						fmt.Fprintf(os.Stderr, "⚠️  Could not look among the incremental repositories: %v\n", err)
 					}
 					if rs != nil {
 						if targetDir == "" {

@@ -258,17 +258,40 @@ func fetchManagedIdentity(ctx context.Context, serverURL, nodeID, token string) 
 	return &res, nil
 }
 
-// resolveManagedIdentity is the last fallback for restore and verify: when no
-// key is on this host, ask whether SafeGrd holds one for this organization.
+// resolveManagedIdentity asks whether SafeGrd holds keys for this
+// organization, for restore and verify when no key is on this host.
 //
 // Returns "" whenever it cannot, including for a customer-held org, so the
 // caller's existing "decryption key required" error stands unchanged.
 func resolveManagedIdentity(ctx context.Context, cfg *config.CLIConfig, verbose bool) string {
+	return fetchManagedKeys(ctx, cfg, verbose, true)
+}
+
+// withManagedIdentities is the key set restore and verify decrypt with: the
+// host's own key, plus every key SafeGrd holds for the organization when the
+// host is enrolled. A host that replaced a lost one has a key of its own that
+// cannot open the lost host's snapshots; the held key for that host can, and
+// trying the local key alone failed the restore managed custody exists for.
+// A customer-held organization answers 404 and only the local key is used. A
+// failed fetch is not reported while a local key exists: an offline restore
+// with the host's own key is the normal case, not a warning.
+func withManagedIdentities(ctx context.Context, cfg *config.CLIConfig, local string, verbose bool) string {
+	if local == "" {
+		return fetchManagedKeys(ctx, cfg, verbose, true)
+	}
+	held := fetchManagedKeys(ctx, cfg, verbose, false)
+	if held == "" {
+		return local
+	}
+	return local + "\n" + held
+}
+
+func fetchManagedKeys(ctx context.Context, cfg *config.CLIConfig, verbose, reportFailure bool) string {
 	if cfg.ServerURL == "" || cfg.NodeID == "" || cfg.ServerToken == "" {
 		return ""
 	}
 	res, err := fetchManagedIdentity(ctx, cfg.ServerURL, cfg.NodeID, cfg.ServerToken)
-	if err != nil && !errors.Is(err, errNoManagedKey) {
+	if err != nil && !errors.Is(err, errNoManagedKey) && reportFailure {
 		// The caller goes on to report that no key was found, which is true
 		// but not why. Say why first.
 		fmt.Fprintf(os.Stderr, "⚠️  Could not fetch the key the remote server holds: %v\n", err)

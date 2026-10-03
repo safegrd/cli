@@ -194,6 +194,11 @@ type pendingDrill struct {
 	nodeID     string
 	snapshotID string
 	requestID  string // a "drill now" not yet run, or empty
+	// stateDir holds a local sandbox's cluster, when the drill starts one.
+	stateDir string
+	// sandboxIncluded: the plan records sandbox drills, so a Postgres surface
+	// with no drill.sandbox_url drills into a throwaway local cluster.
+	sandboxIncluded bool
 }
 
 // drillMinSpacing is the least time between two unattended drill attempts of
@@ -234,14 +239,17 @@ func daemonPrivateKey(ctx context.Context, c *config.CLIConfig) string {
 	return resolveManagedIdentity(ctx, c, false)
 }
 
-// runUnattendedDrill proves snapshotID restores and reports it. A Postgres
+// runUnattendedDrill proves d's snapshot restores and reports it. A database
 // surface with drill.sandbox_url is restored into that scratch database for
-// real and counted there; everything else is replayed in memory, and
-// the report says which.
+// real and counted there. A Postgres surface without one, on a plan that
+// records sandbox drills, is restored into a throwaway cluster this host
+// starts, when it can; everything else is replayed in memory, and the report
+// says which.
 //
-// requestID is a "drill now" not yet run: it goes ahead inside the usual
+// d.requestID is a "drill now" not yet run: it goes ahead inside the usual
 // spacing, once, because a person or a daemon asked for it.
-func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, s *config.SurfaceConfig, st *SurfaceState, nodeID, snapshotID, requestID string, save func()) {
+func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, d pendingDrill, save func()) {
+	s, st, nodeID, snapshotID, requestID := d.surface, d.state, d.nodeID, d.snapshotID, d.requestID
 	now := time.Now().UTC()
 	if requestID != "" {
 		st.LastDrillRequestID = requestID
@@ -309,28 +317,41 @@ func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, s *config.Surf
 	verifier.SetServerToken(c.ServerToken)
 	var report *model.VerificationReport
 	how := "in-memory restore"
+	// A surface whose last snapshot is still an archive from before it was
+	// incremental takes the archive's drill.
+	var rs *repoSnapshot
+	if strings.EqualFold(s.Type, "files") && !strings.EqualFold(s.Format, formatTar) {
+		rs = repoDrillTarget(ctx, c, storageCfg, snapshotID)
+	}
+	var local *runner.LocalPostgres
+	if sandboxErr == nil && sandbox == "" && d.sandboxIncluded && surfaceIsPostgres(s) {
+		var why error
+		if local, why = startLocalSandbox(ctx, provider, snapshotID, d.stateDir); why != nil {
+			fmt.Fprintf(os.Stderr, "⚠️  Surface %s: drilling in memory, not in a local sandbox: %v\n", s.ID, why)
+		} else if local != nil {
+			defer local.Stop()
+		}
+	}
 	switch {
 	case sandboxErr != nil:
 		err = sandboxErr
+	case local != nil:
+		how = "restore into a throwaway PostgreSQL " + local.Server.Version + " on this host"
+		fmt.Printf("🔥 Surface %s: Fire Drill due: restoring snapshot %s into a throwaway PostgreSQL %s on this host.\n",
+			s.ID, snapshotID, local.Server.Version)
+		// The cluster is deleted after the drill, so it is not emptied.
+		report, err = verifier.RunFireDrill(ctx, snapshotID, key, local.URL)
 	case sandbox != "":
 		how = "restore into the sandbox database"
 		fmt.Printf("🔥 Surface %s: Fire Drill due: restoring snapshot %s into its sandbox database.\n", s.ID, snapshotID)
 		report, err = verifier.RunSandboxDrill(ctx, snapshotID, key, sandbox)
-	case strings.EqualFold(s.Format, formatRepo):
+	case rs != nil:
 		// A repository snapshot is proven by restoring every file and
 		// recomputing its content root from what landed on disk.
 		how = "full restore"
-		var rs *repoSnapshot
-		if rb, berr := repoBackend(ctx, c, storageCfg); berr != nil {
-			err = berr
-		} else if rs, err = findRepoSnapshot(ctx, rb, snapshotID); err == nil && rs == nil {
-			err = fmt.Errorf("snapshot %s is not in the surface's repository", snapshotID)
-		}
-		if err == nil {
-			fmt.Printf("🔥 Surface %s: Fire Drill due: restoring snapshot %s and recomputing its content root.\n", s.ID, snapshotID)
-			report, err = verifier.RunRepoDrill(ctx, runner.RepoDrill{Backend: rs.Backend, Epoch: rs.Epoch, Meta: rs.Meta,
-				Scratch: drillScratchIn(stateDirOf(c))}, key)
-		}
+		fmt.Printf("🔥 Surface %s: Fire Drill due: restoring snapshot %s and recomputing its content root.\n", s.ID, snapshotID)
+		report, err = verifier.RunRepoDrill(ctx, runner.RepoDrill{Backend: rs.Backend, Epoch: rs.Epoch, Meta: rs.Meta,
+			Scratch: drillScratchIn(stateDirOf(c))}, key)
 	default:
 		fmt.Printf("🔥 Surface %s: Fire Drill due: restoring snapshot %s in memory.\n", s.ID, snapshotID)
 		report, _, err = verifier.RunDryRestore(ctx, snapshotID, key)
@@ -381,6 +402,45 @@ func recordedNodeID(ctx context.Context, c *config.CLIConfig, snapshotID string)
 	return rec.NodeID
 }
 
+// surfaceIsPostgres reports whether s backs up a PostgreSQL database.
+func surfaceIsPostgres(s *config.SurfaceConfig) bool {
+	return model.SurfaceType(strings.ToLower(s.Type)) == model.SurfaceTypePostgres
+}
+
+// startLocalSandbox starts a throwaway cluster for the snapshot's drill, or
+// says why it cannot: no PostgreSQL server here, one older than the snapshot's,
+// no room on the disk, or an extension the snapshot uses that the server lacks.
+// A drill that cannot have one replays the snapshot in memory instead: a
+// restore that failed for one of these reasons would report the backup as
+// broken when the host was the problem.
+func startLocalSandbox(ctx context.Context, provider storage.StorageProvider, snapshotID, stateDir string) (*runner.LocalPostgres, error) {
+	meta, err := provider.DownloadMetadata(ctx, snapshotID)
+	if err != nil {
+		return nil, fmt.Errorf("cannot read the snapshot's manifest: %w", err)
+	}
+	if meta.SurfaceType != "" && meta.SurfaceType != model.SurfaceTypePostgres {
+		return nil, nil
+	}
+	srv, err := runner.FindPgServer(ctx, runner.SourceMajor(meta))
+	if err != nil {
+		return nil, err
+	}
+	lp, err := runner.StartLocalPostgres(ctx, srv, stateDir, runner.SandboxBytesNeeded(meta))
+	if err != nil {
+		return nil, err
+	}
+	missing, err := lp.MissingExtensions(ctx, meta.Extensions)
+	if err == nil && len(missing) > 0 {
+		err = fmt.Errorf("the snapshot uses %s, which this host's PostgreSQL %s does not have; install them for %s, "+
+			"or point drill.sandbox_url at a database that has them", strings.Join(missing, ", "), srv.Version, srv.BinDir)
+	}
+	if err != nil {
+		lp.Stop()
+		return nil, err
+	}
+	return lp, nil
+}
+
 // surfaceSandboxURL is the scratch database a Postgres surface drills into, or
 // "" for an in-memory drill. A sandbox that is the surface's own database is
 // refused here, before anything connects to it: a drill restores into its
@@ -406,4 +466,19 @@ func surfaceSandboxURL(ctx context.Context, c *config.CLIConfig, s *config.Surfa
 			"A drill restores into its sandbox; point it at a separate, empty database", s.ID)
 	}
 	return resolved, nil
+}
+
+// repoDrillTarget finds snapshotID in the surface's repository, or nil when
+// it is not a repository snapshot (or the repository cannot be read, which
+// the archive drill then reports).
+func repoDrillTarget(ctx context.Context, c *config.CLIConfig, storageCfg config.StorageConfig, snapshotID string) *repoSnapshot {
+	rb, err := repoBackend(ctx, c, storageCfg)
+	if err != nil {
+		return nil
+	}
+	rs, err := findRepoSnapshot(ctx, rb, snapshotID)
+	if err != nil {
+		return nil
+	}
+	return rs
 }

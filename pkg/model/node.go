@@ -272,6 +272,10 @@ type HeartbeatResponse struct {
 	// FireDrillsIncluded lets the CLI explain a refusal before it posts a report
 	// the remote server will reject with 402.
 	FireDrillsIncluded bool `json:"fire_drills_included"`
+	// SandboxDrillsIncluded says the plan records a drill that restored into
+	// a real database. With it, a Postgres surface that names no sandbox
+	// drills into a throwaway local cluster when the host can start one.
+	SandboxDrillsIncluded bool `json:"sandbox_drills_included,omitempty"`
 
 	// BackupRequestID names a one-shot "back up now". The daemon runs each id
 	// once and remembers it. TriggerBackup is NOT this and a daemon must not
