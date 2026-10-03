@@ -137,7 +137,27 @@ type SnapshotMetadata struct {
 	DurationMs         int64              `json:"duration_ms" yaml:"duration_ms"`
 	IsPoisonPillFrozen bool               `json:"is_poison_pill_frozen" yaml:"is_poison_pill_frozen"`
 	ErrorMessage       string             `json:"error_message,omitempty" yaml:"error_message,omitempty"`
+
+	// Format is how the snapshot is stored: empty for one archive object,
+	// SnapshotFormatRepo for a snapshot in an incremental file repository.
+	// For that format Sha256Checksum is the content root, EncryptedSha256 is
+	// empty, RawSizeBytes and TotalItems are the whole tree's logical size and
+	// file count, and EncryptedSizeBytes is what this run uploaded.
+	Format string `json:"format,omitempty" yaml:"format,omitempty"`
+	// EpochID is the repository epoch that holds the snapshot, and
+	// ObjectClass whether the run that wrote it was the epoch's opening run
+	// ("opening") or a later one ("later").
+	EpochID     string `json:"epoch_id,omitempty" yaml:"epoch_id,omitempty"`
+	ObjectClass string `json:"object_class,omitempty" yaml:"object_class,omitempty"`
 }
+
+// SnapshotFormatRepo is the Format of a snapshot in an incremental file
+// repository, version 1.
+const SnapshotFormatRepo = "repo-v1"
+
+// IsRepo reports whether the snapshot lives in an incremental file
+// repository rather than one archive object.
+func (m *SnapshotMetadata) IsRepo() bool { return m != nil && m.Format == SnapshotFormatRepo }
 
 // CalculateTotals sums row counts, file totals, or email totals.
 func (m *SnapshotMetadata) CalculateTotals() {

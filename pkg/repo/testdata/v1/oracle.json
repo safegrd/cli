@@ -1,0 +1,158 @@
+[
+  {
+    "snapshot_id": "snap-fixture-opening",
+    "epoch_id": "e202610-a1ef6d57",
+    "root": "/private/var/folders/8n/m3_cpd2x2j92z_8tnyg5q_240000gn/T/TestCommittedFixtureStillRestores1078790516/001/src",
+    "content_root": "604e0c8217beace19b9a3fa09e4733ac3494cb95d82326cde2ee309d708a258a",
+    "entries": [
+      {
+        "path": "empty-dir",
+        "type": "d",
+        "value": "",
+        "mode": 488
+      },
+      {
+        "path": "etc",
+        "type": "d",
+        "value": "",
+        "mode": 448
+      },
+      {
+        "path": "etc/hosts",
+        "type": "f",
+        "value": "081ef9d5367595d16e30b4b4549d9f43537320508b4ce0788963e10e4f808857",
+        "mode": 420
+      },
+      {
+        "path": "etc/secret.conf",
+        "type": "f",
+        "value": "b287f64390dfc820ef2a39a81e2d78bff7fdc7d59cee4ddaa143b30ea7d359c2",
+        "mode": 384
+      },
+      {
+        "path": "var",
+        "type": "d",
+        "value": "",
+        "mode": 493
+      },
+      {
+        "path": "var/hosts-link",
+        "type": "l",
+        "value": "",
+        "mode": 0,
+        "target": "../etc/hosts"
+      },
+      {
+        "path": "var/www",
+        "type": "d",
+        "value": "",
+        "mode": 493
+      },
+      {
+        "path": "var/www/big.bin",
+        "type": "f",
+        "value": "7886fa437cc95b6b1c8028ed998e79b5420e3e071c3aca0c11ae8a504c30a54f",
+        "mode": 420
+      },
+      {
+        "path": "var/www/empty.txt",
+        "type": "f",
+        "value": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "mode": 420
+      },
+      {
+        "path": "var/www/index.html",
+        "type": "f",
+        "value": "be90b9557a7c61d8d5c8422e1033701dacdc0e14631a1bd489dddbb677026a03",
+        "mode": 420
+      },
+      {
+        "path": "日本語",
+        "type": "d",
+        "value": "",
+        "mode": 493
+      },
+      {
+        "path": "日本語/ファイル.txt",
+        "type": "f",
+        "value": "ebc45fabefbabdd06424b3c476b11e93fec784069ff10844e7383d59f491f8cb",
+        "mode": 416
+      }
+    ]
+  },
+  {
+    "snapshot_id": "snap-fixture-later",
+    "epoch_id": "e202610-a1ef6d57",
+    "root": "/private/var/folders/8n/m3_cpd2x2j92z_8tnyg5q_240000gn/T/TestCommittedFixtureStillRestores1078790516/001/src",
+    "content_root": "b825cd0d73bdd9403352de174822142a1264654d67476f4d2729c0e14f1cc5cf",
+    "entries": [
+      {
+        "path": "empty-dir",
+        "type": "d",
+        "value": "",
+        "mode": 488
+      },
+      {
+        "path": "etc",
+        "type": "d",
+        "value": "",
+        "mode": 448
+      },
+      {
+        "path": "etc/hosts",
+        "type": "f",
+        "value": "1c8c77976d42bff0e91e14f1f7ea941fa1cdfc8de690a238ed24d9ae05b97497",
+        "mode": 420
+      },
+      {
+        "path": "etc/secret.conf",
+        "type": "f",
+        "value": "b287f64390dfc820ef2a39a81e2d78bff7fdc7d59cee4ddaa143b30ea7d359c2",
+        "mode": 384
+      },
+      {
+        "path": "var",
+        "type": "d",
+        "value": "",
+        "mode": 493
+      },
+      {
+        "path": "var/hosts-link",
+        "type": "l",
+        "value": "",
+        "mode": 0,
+        "target": "../etc/hosts"
+      },
+      {
+        "path": "var/www",
+        "type": "d",
+        "value": "",
+        "mode": 493
+      },
+      {
+        "path": "var/www/big.bin",
+        "type": "f",
+        "value": "4ca59a0540e4c3e0884a7b91264425f51bdf3b67afa992da19c6b3a89effa122",
+        "mode": 420
+      },
+      {
+        "path": "var/www/index.html",
+        "type": "f",
+        "value": "be90b9557a7c61d8d5c8422e1033701dacdc0e14631a1bd489dddbb677026a03",
+        "mode": 420
+      },
+      {
+        "path": "日本語",
+        "type": "d",
+        "value": "",
+        "mode": 493
+      },
+      {
+        "path": "日本語/ファイル.txt",
+        "type": "f",
+        "value": "ebc45fabefbabdd06424b3c476b11e93fec784069ff10844e7383d59f491f8cb",
+        "mode": 416
+      }
+    ]
+  }
+]
