@@ -125,8 +125,17 @@ func (h *hostedRepo) callRetry(ctx context.Context, method, sub string, in, out 
 }
 
 func (h *hostedRepo) OpenEpoch(ctx context.Context, req sink.OpenRequest) (sink.Opened, error) {
+	// The month and a retention increase are the remote server's to decide:
+	// it knows the plan's clamps (a trial's locks end with the trial), and a
+	// host deciding them from its own settings would open an epoch on every
+	// run the clamp applies to. The host asks for a new epoch only for what
+	// it alone knows: no cache, a lost one, --new-epoch, another format.
+	open, reason := req.Decision.Open, req.Decision.Reason
+	if reason == format.ReasonMonth || reason == format.ReasonRetentionIncreased {
+		open, reason = false, ""
+	}
 	body := map[string]any{
-		"node_id": h.node, "surface_id": req.SurfaceID, "open": req.Decision.Open, "reason": req.Decision.Reason,
+		"node_id": h.node, "surface_id": req.SurfaceID, "open": open, "reason": reason,
 		"opening_tier": req.OpeningTier, "recipient": req.Recipient, "format": format.Version,
 		"retention": map[string]int{"days": req.Retention.Days, "keep_daily": req.Retention.KeepDaily,
 			"keep_weekly": req.Retention.KeepWeekly, "keep_monthly": req.Retention.KeepMonthly},
