@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/safegrd/cli/pkg/config"
+	"github.com/safegrd/cli/pkg/crypto"
 )
 
 // nodeCredentialsResponse mirrors the remote server's credential release
@@ -262,7 +263,10 @@ func fetchManagedIdentity(ctx context.Context, serverURL, nodeID, token string) 
 // organization, for restore and verify when no key is on this host.
 //
 // Returns "" whenever it cannot, including for a customer-held org, so the
-// caller's existing "decryption key required" error stands unchanged.
+// caller's existing "decryption key required" error stands unchanged. In an
+// organization that holds keys for some hosts but not this one, it returns
+// those keys (an older snapshot may be sealed to one) and says on stderr that
+// this host's own key has to be passed in.
 func resolveManagedIdentity(ctx context.Context, cfg *config.CLIConfig, verbose bool) string {
 	return fetchManagedKeys(ctx, cfg, verbose, true)
 }
@@ -300,13 +304,24 @@ func fetchManagedKeys(ctx context.Context, cfg *config.CLIConfig, verbose, repor
 		return ""
 	}
 	var keys []string
+	ownHeld := cfg.Encryption.PublicKey == ""
 	for _, id := range res.Identities {
 		if id.Identity != "" {
 			keys = append(keys, id.Identity)
+			ownHeld = ownHeld || id.PublicKey == cfg.Encryption.PublicKey
 		}
 	}
 	if len(keys) == 0 {
 		return ""
+	}
+	if !ownHeld {
+		// The organization holds keys for its other hosts, but this host's
+		// key is the customer's. Those keys open only snapshots sealed to
+		// them, so the decrypt error that follows needs this said first.
+		fmt.Fprintf(os.Stderr, "⚠️  You hold this host's key (%s), and it is not on this host.\n"+
+			"   Pass it with --private-key or SAFEGRD_PRIVATE_KEY. Trying the keys the remote server holds for other hosts.\n",
+			crypto.Fingerprint(cfg.Encryption.PublicKey))
+		return strings.Join(keys, "\n")
 	}
 	if verbose {
 		// The fingerprint, never the key. An operator needs to know which key

@@ -2,12 +2,16 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/safegrd/cli/pkg/config"
+	"github.com/safegrd/cli/pkg/crypto"
 )
 
 var fromSafeGrd = &config.CredentialConfig{From: config.CredentialFromSafeGrd}
@@ -127,5 +131,57 @@ func TestAHeldSurfaceCredentialNeverReachesTheConfigFile(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), "from: safegrd") {
 		t.Errorf("the config does not say the credential comes from SafeGrd:\n%s", raw)
+	}
+}
+
+// A host whose key the customer holds, in an organization where SafeGrd holds
+// keys for other hosts: the keys come back for older snapshots, and stderr
+// says this host's own key has to be passed, rather than presenting the
+// organization's keys as this host's.
+func TestAHostWithACustomerHeldKeyIsToldToPassIt(t *testing.T) {
+	other, err := crypto.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mine, err := crypto.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"org_id":      "org-1",
+			"identities":  []map[string]string{{"public_key": other.PublicKey, "identity": other.PrivateKey}},
+			"key_custody": "safegrd",
+			"notice":      "SafeGrd keeps your key sealed",
+		})
+	}))
+	defer srv.Close()
+	cfg := &config.CLIConfig{ServerURL: srv.URL, NodeID: "node-1", ServerToken: "sg_tok_x",
+		Encryption: config.EncryptionConfig{PublicKey: mine.PublicKey}}
+
+	var got string
+	stdout := captureStdout(t, func() {
+		stderr := captureStderr(t, func() { got = resolveManagedIdentity(context.Background(), cfg, true) })
+		if !strings.Contains(stderr, "You hold this host's key ("+crypto.Fingerprint(mine.PublicKey)+")") ||
+			!strings.Contains(stderr, "SAFEGRD_PRIVATE_KEY") {
+			t.Errorf("stderr does not tell the operator to pass this host's key:\n%s", stderr)
+		}
+	})
+	if got != other.PrivateKey {
+		t.Error("the organization's held key was not returned for older snapshots")
+	}
+	if strings.Contains(stdout, "SafeGrd-managed identity") || strings.Contains(stdout, "sealed") {
+		t.Errorf("a customer-held host was told SafeGrd holds its key:\n%s", stdout)
+	}
+
+	// The host's own key among them: the managed lines, and no warning.
+	cfg.Encryption.PublicKey = other.PublicKey
+	stdout = captureStdout(t, func() {
+		if stderr := captureStderr(t, func() { resolveManagedIdentity(context.Background(), cfg, true) }); stderr != "" {
+			t.Errorf("a managed host was warned:\n%s", stderr)
+		}
+	})
+	if !strings.Contains(stdout, "SafeGrd-managed identity for org org-1") {
+		t.Errorf("a managed host was not told where its key came from:\n%s", stdout)
 	}
 }
