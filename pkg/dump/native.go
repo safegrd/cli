@@ -558,6 +558,14 @@ func checkTargetEmpty(ctx context.Context, conn *pgx.Conn) error {
 const defaultConnectTimeout = 30 * time.Second
 
 func connectPostgres(ctx context.Context, url string) (*pgx.Conn, error) {
+	cfg, err := postgresConnConfig(url)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.ConnectConfig(ctx, cfg)
+}
+
+func postgresConnConfig(url string) (*pgx.ConnConfig, error) {
 	cfg, err := pgx.ParseConfig(url)
 	if err != nil {
 		return nil, err
@@ -565,5 +573,5 @@ func connectPostgres(ctx context.Context, url string) (*pgx.Conn, error) {
 	if cfg.ConnectTimeout == 0 {
 		cfg.ConnectTimeout = defaultConnectTimeout
 	}
-	return pgx.ConnectConfig(ctx, cfg)
+	return cfg, nil
 }
