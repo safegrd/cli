@@ -15,6 +15,9 @@ const (
 	NodeStatusOffline  NodeStatus = "offline"
 )
 
+// RunsOnSafeGrd marks a surface the remote server backs up and drills itself.
+const RunsOnSafeGrd = "safegrd"
+
 // Node represents an enrolled CLI daemon or backup runner.
 type Node struct {
 	ID                string     `json:"id" yaml:"id"`
@@ -56,6 +59,11 @@ type Node struct {
 	// node. The host's token acts for its children and no other node, so one
 	// token per host covers every surface on it.
 	ParentNodeID string `json:"parent_node_id,omitempty" yaml:"parent_node_id,omitempty"`
+
+	// RunsOn is set to RunsOnSafeGrd on a surface with no host: the remote
+	// server takes its backups and drills on machines it starts, with the
+	// credential it holds for the surface. Empty for a surface a host runs.
+	RunsOn string `json:"runs_on,omitempty" yaml:"runs_on,omitempty"`
 
 	// CredentialSource is where a surface's own credential comes from, as its
 	// host's config says: "held" (the remote server holds it and the host
