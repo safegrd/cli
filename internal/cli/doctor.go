@@ -287,6 +287,12 @@ func scheduleCheck(name, schedule string) CheckResult {
 
 func runDoctorChecks(path string, c *config.CLIConfig) []CheckResult {
 	results := runValidationChecks(path, c)
+	// A refused file leaves c at its defaults, and the checks below act on c:
+	// the storage check created ./safegrd-storage in whatever directory doctor
+	// ran from. runValidationChecks has already said why it stopped.
+	if cfgLoadErr != nil {
+		return results
+	}
 	results = append(results, credentialProvenanceCheck(c)...)
 	results = append(results, surfaceCredentialChecks(c)...)
 	results = append(results, pgDumpChecks(c)...)

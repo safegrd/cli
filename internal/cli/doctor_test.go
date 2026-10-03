@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -72,5 +74,26 @@ func TestDoctorChecks_LocalWritability(t *testing.T) {
 	}
 	if !localOk {
 		t.Errorf("expected Local Storage Writability to PASS")
+	}
+}
+
+// A refused config leaves the defaults in place, and the default local
+// storage is ./safegrd-storage. Doctor used to carry on to its storage check
+// and create that directory wherever it was run.
+func TestDoctorStopsAtARefusedConfig(t *testing.T) {
+	saved := cfgLoadErr
+	t.Cleanup(func() { cfgLoadErr = saved })
+	cfgLoadErr = errors.New("insecure mode 0644")
+
+	c := config.NewDefaultCLIConfig()
+	c.Storage.Type = config.StorageTypeLocal
+	c.Storage.LocalPath = filepath.Join(t.TempDir(), "would-be-created")
+
+	results := runDoctorChecks(filepath.Join(t.TempDir(), "config.yaml"), c)
+	if _, err := os.Stat(c.Storage.LocalPath); err == nil {
+		t.Errorf("doctor created %s from a config it refused", c.Storage.LocalPath)
+	}
+	if last := results[len(results)-1]; last.Name != "Configuration Load" || last.Status != "FAIL" {
+		t.Errorf("last check = %s %s, want Configuration Load FAIL", last.Name, last.Status)
 	}
 }
