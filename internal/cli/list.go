@@ -28,7 +28,7 @@ func newListCmd() *cobra.Command {
 --json prints a JSON array on stdout, one object per snapshot, and sends every
 other line to stderr, so the output can be piped to jq.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := context.Background()
+			ctx := cmd.Context()
 			if jsonOut {
 				// Routing, credential and deleted-snapshot notices print on
 				// stdout. They still matter, so they move to stderr rather
@@ -112,7 +112,7 @@ other line to stderr, so the output can be piped to jq.`,
 
 				status := string(meta.Status)
 				if meta.IsPoisonPillFrozen {
-					status = "🚨 ANOMALOUS"
+					status = "ANOMALOUS"
 				}
 
 				surface := string(meta.SurfaceType)
@@ -139,7 +139,7 @@ other line to stderr, so the output can be piped to jq.`,
 				// sealed inside the encrypted archive, so a snapshot
 				// nothing here can describe still restores and still verifies.
 				fmt.Fprintf(os.Stderr,
-					"\n⚠️  %d snapshot(s) above could not be described. The sidecar beside the object is\n"+
+					"\nWarning: %d snapshot(s) above could not be described. The sidecar beside the object is\n"+
 						"   what this table reads; it is routing data, not the backup. The manifest is sealed\n"+
 						"   inside the encrypted archive, so those snapshots still restore: run\n"+
 						"   'safegrd verify --snapshot <id>' with the identity to read what is in them.\n",
@@ -191,14 +191,14 @@ type listedSnapshot struct {
 func listRepoSnapshots(ctx context.Context, storageCfg config.StorageConfig) []repoSnapshot {
 	bs, err := repoBackendsAll(ctx, storageCfg)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "⚠️  Could not list the incremental repositories: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Warning: could not list the incremental repositories: %v\n", err)
 		return nil
 	}
 	var out []repoSnapshot
 	for _, b := range bs {
 		rows, err := repoSnapshots(ctx, b)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "⚠️  Could not list the repository in %s: %v\n", b.Describe(), err)
+			fmt.Fprintf(os.Stderr, "Warning: could not list the repository in %s: %v\n", b.Describe(), err)
 			continue
 		}
 		out = append(out, rows...)
@@ -217,7 +217,7 @@ func printRepoTable(rows []repoSnapshot, storageCfg config.StorageConfig) {
 		m := r.Meta
 		status := string(m.Status)
 		if m.IsPoisonPillFrozen {
-			status = "🚨 ANOMALOUS"
+			status = "ANOMALOUS"
 		}
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", m.SnapshotID, r.SurfaceID, m.EpochID, m.ObjectClass,
 			describeContents(m), formatBytes(m.RawSizeBytes), formatBytes(m.EncryptedSizeBytes), describeRetention(m, storageCfg), status)
@@ -252,7 +252,7 @@ func listJSON(ctx context.Context, out io.Writer) error {
 	if loc, ok := storageProvider.(storage.NodeLocator); ok {
 		var locErr error
 		if nodes, locErr = loc.SnapshotNodes(ctx); locErr != nil {
-			fmt.Fprintf(os.Stderr, "⚠️  Could not read which node each snapshot belongs to: %v\n", locErr)
+			fmt.Fprintf(os.Stderr, "Warning: could not read which node each snapshot belongs to: %v\n", locErr)
 		}
 	}
 	setNode, canSetNode := storageProvider.(interface{ SetNodeID(string) })

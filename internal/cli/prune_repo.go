@@ -69,7 +69,7 @@ func pruneRepos(ctx context.Context, st repoPruneStore, keepFor func(node string
 	for _, pl := range places {
 		keep, err := keepFor(pl.node)
 		if err != nil {
-			fmt.Fprintf(out, "⚠️  Node %s: incremental snapshots not pruned, because the remote server could not say which snapshot it keeps as last known good: %v\n", pl.node, err)
+			fmt.Fprintf(out, "Warning: Node %s: incremental snapshots not pruned, because the remote server could not say which snapshot it keeps as last known good: %v\n", pl.node, err)
 			r.Failed++
 			continue
 		}
@@ -80,7 +80,7 @@ func pruneRepos(ctx context.Context, st repoPruneStore, keepFor func(node string
 		}
 		for _, sf := range surfaces {
 			if err := pruneSurfaceRepo(ctx, st, d, sf, keep, now, grace, dryRun, out, r); err != nil {
-				fmt.Fprintf(out, "❌ Surface %s: %v\n", sf, err)
+				fmt.Fprintf(out, "Error: Surface %s: %v\n", sf, err)
 				r.Failed++
 			}
 		}
@@ -209,7 +209,7 @@ func pruneSurfaceRepo(ctx context.Context, st repoPruneStore, d *sink.Direct, su
 				}
 				lock, err := st.Retention(ctx, k, v.VersionID)
 				if err != nil {
-					fmt.Fprintf(out, "❌ %s: could not read its lock: %v\n", k, err)
+					fmt.Fprintf(out, "Error: %s: could not read its lock: %v\n", k, err)
 					failed++
 					left++
 					continue
@@ -281,10 +281,10 @@ func deleteVersion(ctx context.Context, st repoPruneStore, key, versionID string
 	if err := st.DeleteVersion(ctx, key, versionID); err != nil {
 		var api smithy.APIError
 		if errors.As(err, &api) && api.ErrorCode() == "AccessDenied" {
-			fmt.Fprintf(out, "❌ %s: the bucket refused the delete. Pruning needs s3:DeleteObjectVersion and s3:GetObjectRetention "+
+			fmt.Fprintf(out, "Error: %s: the bucket refused the delete. Pruning needs s3:DeleteObjectVersion and s3:GetObjectRetention "+
 				"on this host's key (the recommended policy denies them).\n", key)
 		} else {
-			fmt.Fprintf(out, "❌ %s: %v\n", key, err)
+			fmt.Fprintf(out, "Error: %s: %v\n", key, err)
 		}
 		return err
 	}

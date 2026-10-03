@@ -72,7 +72,7 @@ A new host enrolls with a claim code instead: safegrd enroll --claim <code>.`,
 				have[s.ID] = true
 			}
 			var add []claimSurface
-			fmt.Printf("📋 Surfaces named for this host in the console")
+			fmt.Printf("Surfaces named for this host in the console")
 			if pending.ProjectName != "" {
 				fmt.Printf(" (project '%s')", pending.ProjectName)
 			}
@@ -95,7 +95,7 @@ A new host enrolls with a claim code instead: safegrd enroll --claim <code>.`,
 			if err != nil {
 				return err
 			}
-			fmt.Printf("\n💾 Added %d surface%s to %s (the previous config is at %s).\n", len(add), plural(len(add)), path, backup)
+			fmt.Printf("\nAdded %d surface%s to %s (the previous config is at %s).\n", len(add), plural(len(add)), path, backup)
 			fmt.Println("   The daemon reads its config when it starts. Restart it: safegrd daemon restart")
 			fmt.Println("   or take the first backups now: safegrd daemon run --once")
 			return nil

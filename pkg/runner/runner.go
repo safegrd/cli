@@ -320,7 +320,7 @@ func (v *Verifier) RunDryRestore(ctx context.Context, snapshotID, privateKey str
 		Name:     "DecryptionIntegrity",
 		Passed:   true,
 		Expected: "Age X25519 payload authenticates and decrypts cleanly",
-		Actual:   "Ciphertext decrypted successfully with private identity key",
+		Actual:   "Decrypted with the private key",
 	})
 
 	// Hold the decrypted stream to the digest recorded at backup time.
@@ -431,23 +431,25 @@ func (v *Verifier) failEarly(ctx context.Context, report *model.VerificationRepo
 
 func (v *Verifier) submitReport(ctx context.Context, report *model.VerificationReport) {
 	if v.serverURL == "" {
-		fmt.Fprintf(os.Stderr, "\n[!] Not recorded: no remote server configured for this run.\n"+
+		fmt.Fprintf(os.Stderr, "\nWarning: Not recorded: no remote server configured for this run.\n"+
 			"    The verification above is real; nothing outside this machine knows it happened.\n")
 		return
 	}
 	if v.serverToken == "" {
-		fmt.Fprintf(os.Stderr, "\n[!] NOT RECORDED: no server_token in this config, so the remote server cannot be told.\n"+
+		fmt.Fprintf(os.Stderr, "\nWarning: NOT RECORDED: no server_token in this config, so the remote server cannot be told.\n"+
 			"    The verification above is real; nothing outside this machine knows it happened.\n")
 		return
 	}
 
 	data, err := json.Marshal(report)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "\nWarning: NOT RECORDED: could not encode the verification: %v\n", err)
 		return
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", v.serverURL+"/api/v1/verifications", bytes.NewReader(data))
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "\nWarning: NOT RECORDED: %v\n", err)
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -458,7 +460,7 @@ func (v *Verifier) submitReport(ctx context.Context, report *model.VerificationR
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "\n[!] NOT RECORDED: could not reach %s: %v\n"+
+		fmt.Fprintf(os.Stderr, "\nWarning: NOT RECORDED: could not reach %s: %v\n"+
 			"    The verification itself is valid and shown above, but the remote server\n"+
 			"    has no record of it.\n", v.serverURL, err)
 		return
@@ -489,7 +491,7 @@ func (v *Verifier) submitReport(ctx context.Context, report *model.VerificationR
 		if detail == "" {
 			detail = strings.TrimSpace(string(raw))
 		}
-		fmt.Fprintf(os.Stderr, "\n[!] NOT RECORDED: %s rejected the verification: HTTP %d %s\n"+
+		fmt.Fprintf(os.Stderr, "\nWarning: NOT RECORDED: %s rejected the verification: HTTP %d %s\n"+
 			"    The drill itself is valid and shown above.\n",
 			v.serverURL, resp.StatusCode, detail)
 	}
@@ -501,7 +503,7 @@ func (v *Verifier) submitReport(ctx context.Context, report *model.VerificationR
 // from it; otherwise the server's own reason is passed on.
 func notRecordedByPlan(reason, nextDue string) string {
 	var b strings.Builder
-	b.WriteString("\n[!] Not recorded by the remote server (HTTP 402). The drill above ran and its result stands.\n")
+	b.WriteString("\nWarning: Not recorded by the remote server (HTTP 402). The drill above ran and its result stands.\n")
 	if due, err := time.Parse(time.RFC3339, nextDue); err == nil {
 		fmt.Fprintf(&b, "    The plan records one drill per interval on this surface, and the next is due %s.\n",
 			due.UTC().Format("2006-01-02 15:04 MST"))

@@ -121,7 +121,7 @@ func TestGuardRefusesAnUnlockedSnapshotUnlessAllowed(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "not locked") {
 		t.Fatalf("guard accepted a snapshot on local storage: %v", err)
 	}
-	if strings.Contains(errOut, "🔒") {
+	if strings.Contains(errOut, "is locked:") {
 		t.Errorf("an unlocked snapshot was announced as locked:\n%s", errOut)
 	}
 

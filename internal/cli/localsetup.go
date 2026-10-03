@@ -53,7 +53,7 @@ func ensureLocalSetup(nodeName string) (created bool, adopted bool, err error) {
 			cfg.Encryption.PrivateKey = identity
 			cfg.Encryption.KeyPath = keyPath
 			adopted = true
-			fmt.Printf("🔑 Using the Age identity already at %s\n", keyPath)
+			fmt.Printf("Using the age identity already at %s\n", keyPath)
 		} else {
 			kp, genErr := crypto.GenerateKeyPair()
 			if genErr != nil {
@@ -66,9 +66,9 @@ func ensureLocalSetup(nodeName string) (created bool, adopted bool, err error) {
 			cfg.Encryption.PrivateKey = kp.PrivateKey
 			cfg.Encryption.KeyPath = keyPath
 
-			fmt.Printf("🔑 Generated Age X25519 asymmetric keypair\n")
-			fmt.Printf("   Public Key:  %s\n", kp.PublicKey)
-			fmt.Printf("   Private Key: %s (locked to 0600)\n", keyPath)
+			fmt.Printf("Generated an age X25519 keypair\n")
+			fmt.Printf("   Public key:  %s\n", kp.PublicKey)
+			fmt.Printf("   Private key: %s (mode 0600)\n", keyPath)
 			created = true
 		}
 	}

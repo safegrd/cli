@@ -54,7 +54,7 @@ type NativeDumper struct {
 // NewNativeDumper creates a dumper for databaseURL.
 func NewNativeDumper(databaseURL string) *NativeDumper {
 	return &NativeDumper{databaseURL: databaseURL, Warn: func(msg string) {
-		fmt.Fprintf(os.Stderr, "⚠️  %s\n", msg)
+		fmt.Fprintf(os.Stderr, "Warning: %s\n", msg)
 	}}
 }
 
@@ -366,7 +366,7 @@ type NativeRestorer struct {
 // NewNativeRestorer creates a restorer for targetURL.
 func NewNativeRestorer(targetURL string) *NativeRestorer {
 	return &NativeRestorer{targetURL: targetURL, Warn: func(msg string) {
-		fmt.Fprintf(os.Stderr, "⚠️  %s\n", msg)
+		fmt.Fprintf(os.Stderr, "Warning: %s\n", msg)
 	}}
 }
 

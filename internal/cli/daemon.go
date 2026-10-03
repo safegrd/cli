@@ -12,10 +12,10 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -148,20 +148,38 @@ func newDaemonRunCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "run",
-		Short: "Run the resident backup daemon (or run once with --once)",
-		Long: `Executes the daemon loop. Supervised by systemd or launchd,
-evaluates due surfaces based on local state, acquires per-surface single-flight locks,
-and performs streaming backups to immutable WORM storage.`,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
+		Short: "Run the backup daemon in the foreground (or one pass with --once)",
+		Long: `Runs the daemon in the foreground, as systemd or launchd does. Every poll interval
+it backs up each surface that is due, one at a time per surface, and runs any Fire
+Drill the remote server asks for.
 
-			sigChan := make(chan os.Signal, 1)
-			signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+SIGINT or SIGTERM cancels the backup in progress and exits. A second signal
+exits at once.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			// Cancelled on SIGINT or SIGTERM by Execute, which also puts the
+			// default handling back so a second signal ends the process.
+			ctx := cmd.Context()
+			var stopping sync.Once
+			announceStop := func() {
+				stopping.Do(func() {
+					fmt.Fprintln(os.Stderr, "\nStopping: cancelling any backup in progress. Send the signal again to exit now.")
+				})
+			}
+			returned := make(chan struct{})
+			defer close(returned)
 			go func() {
-				<-sigChan
-				fmt.Println("\n🛑 Shutdown signal received. Finishing active tasks...")
-				cancel()
+				select {
+				case <-ctx.Done():
+				case <-returned:
+					return
+				}
+				// Execute cancels the context after this returns as well;
+				// that is not a signal and is not announced.
+				select {
+				case <-returned:
+				default:
+					announceStop()
+				}
 			}()
 
 			resolvedStateDir := resolveStateDir(stateDir, cfg)
@@ -181,25 +199,43 @@ and performs streaming backups to immutable WORM storage.`,
 			}
 			defer releaseDaemonLock()
 
-			fmt.Println("🛡️  SafeGrd Always-On Daemon Started")
-			fmt.Printf("   Configured Surfaces: %d\n", len(cfg.Surfaces))
-			fmt.Printf("   State Directory:     %s\n", resolvedStateDir)
+			// A poll interval that does not parse is refused, not replaced
+			// with the default: an operator who typed "5min" asked for
+			// something, and running on another value says nothing about it.
+			interval := 5 * time.Minute
+			if intervalStr != "" {
+				d, err := time.ParseDuration(intervalStr)
+				if err != nil || d <= 0 {
+					return fmt.Errorf("--interval %q is not a positive duration such as 5m or 1h", intervalStr)
+				}
+				interval = d
+			} else if cfg.Daemon.Interval != "" {
+				d, err := time.ParseDuration(cfg.Daemon.Interval)
+				if err != nil || d <= 0 {
+					return fmt.Errorf("daemon.interval %q in the config is not a positive duration such as 5m or 1h", cfg.Daemon.Interval)
+				}
+				interval = d
+			}
+
+			fmt.Printf("SafeGrd daemon %s started\n", Version)
+			fmt.Printf("   Surfaces:            %d\n", len(cfg.Surfaces))
+			fmt.Printf("   State directory:     %s\n", resolvedStateDir)
 			// Said once, at start: a daemon with no token reports nothing, and
 			// an enrolled host that lost its token must not look the same as
 			// one reporting fine.
 			if !hostIsEnrolled(cfg) {
-				fmt.Printf("   Remote Server:       not reporting (no server_token; standalone)\n")
+				fmt.Printf("   Remote server:       not reporting (no server_token; standalone)\n")
 			}
 			if msg := unusedAlertBlock(cfg); msg != "" {
-				fmt.Fprintf(os.Stderr, "⚠️  %s\n", msg)
+				fmt.Fprintf(os.Stderr, "Warning: %s\n", msg)
 			}
 			for _, msg := range ignoredConfigKeys(cfg) {
-				fmt.Fprintf(os.Stderr, "⚠️  %s\n", msg)
+				fmt.Fprintf(os.Stderr, "Warning: %s\n", msg)
 			}
 			warnAboutSchedules(cfg)
 
 			if len(cfg.Surfaces) == 0 {
-				fmt.Println("ℹ️  No surfaces defined in config. Daemon is idling.")
+				fmt.Println("No surfaces in the config, so there is nothing to back up. Add one, or run 'safegrd claim'.")
 				if once {
 					return nil
 				}
@@ -218,23 +254,11 @@ and performs streaming backups to immutable WORM storage.`,
 				return reconcileSurfaces(ctx, cfg, resolvedStateDir, 0, registered)
 			}
 
-			// Parse daemon poll interval
-			interval := 5 * time.Minute
-			if intervalStr != "" {
-				if d, err := time.ParseDuration(intervalStr); err == nil && d > 0 {
-					interval = d
-				}
-			} else if cfg.Daemon.Interval != "" {
-				if d, err := time.ParseDuration(cfg.Daemon.Interval); err == nil && d > 0 {
-					interval = d
-				}
-			}
-
-			fmt.Printf("   Poll Interval:       %s (±10%% jitter)\n\n", interval)
+			fmt.Printf("   Poll interval:       %s (±10%% jitter)\n\n", interval)
 
 			// Initial pass immediately
 			if err := reconcileSurfaces(ctx, cfg, resolvedStateDir, interval, registered); err != nil {
-				fmt.Fprintf(os.Stderr, "⚠️  Error in initial reconciliation: %v\n", err)
+				fmt.Fprintf(os.Stderr, "Error: first pass over the surfaces: %v\n", err)
 			}
 
 			for {
@@ -244,20 +268,21 @@ and performs streaming backups to immutable WORM storage.`,
 
 				select {
 				case <-ctx.Done():
-					fmt.Println("Daemon stopped gracefully.")
+					announceStop()
+					fmt.Println("Daemon stopped.")
 					return nil
 				case <-time.After(sleepDur):
 					if err := reconcileSurfaces(ctx, cfg, resolvedStateDir, interval, registered); err != nil {
-						fmt.Fprintf(os.Stderr, "⚠️  Reconciliation error: %v\n", err)
+						fmt.Fprintf(os.Stderr, "Error: pass over the surfaces: %v\n", err)
 					}
 				}
 			}
 		},
 	}
 
-	cmd.Flags().BoolVar(&once, "once", false, "Execute a single reconciliation pass and exit (cron/k8s mode)")
-	cmd.Flags().StringVar(&intervalStr, "interval", "", "Daemon poll interval (default: 5m)")
-	cmd.Flags().StringVar(&stateDir, "state-dir", "", "Path to state and locks directory")
+	cmd.Flags().BoolVar(&once, "once", false, "Back up every due surface once and exit, for cron or a Kubernetes CronJob")
+	cmd.Flags().StringVar(&intervalStr, "interval", "", "How often to check which surfaces are due (default: daemon.interval, then 5m)")
+	cmd.Flags().StringVar(&stateDir, "state-dir", "", "Directory for daemon state and locks")
 
 	return cmd
 }
@@ -403,7 +428,7 @@ func reclaimStaleLock(lockPath string, stale []byte, surfaceID string) error {
 	if err == nil && bytes.Equal(moved, stale) {
 		var lock LockInfo
 		if json.Unmarshal(stale, &lock) == nil {
-			fmt.Fprintf(os.Stderr, "⚠️  Reclaiming stale lock for surface %s (previous PID %d dead or timed out)\n", surfaceID, lock.PID)
+			fmt.Fprintf(os.Stderr, "Warning: reclaiming stale lock for surface %s (previous PID %d dead or timed out)\n", surfaceID, lock.PID)
 		}
 		return os.Remove(aside)
 	}
@@ -426,7 +451,7 @@ func releaseLockFile(lockPath string, mine []byte) {
 		return
 	}
 	if err := os.Remove(lockPath); err != nil && !os.IsNotExist(err) {
-		fmt.Fprintf(os.Stderr, "⚠️  Could not remove lockfile %s: %v\n", lockPath, err)
+		fmt.Fprintf(os.Stderr, "Warning: could not remove lockfile %s: %v\n", lockPath, err)
 	}
 }
 
@@ -478,7 +503,7 @@ func sayConsoleSettingsInForce(s, configured *config.SurfaceConfig, st *SurfaceS
 		return
 	}
 	consoleSettingsSaid[st.SurfaceID] = true
-	fmt.Printf("🛠  Surface %s runs on settings from the console: %s. Clear them in the console to use the config.\n",
+	fmt.Printf("Surface %s runs on settings from the console: %s. Clear them in the console to use the config.\n",
 		st.SurfaceID, strings.Join(parts, ", "))
 }
 
@@ -492,14 +517,14 @@ func noteConsoleSettings(st *SurfaceState, configured *config.SurfaceConfig, hb 
 		changed = true
 		switch {
 		case hb.Schedule == "":
-			fmt.Printf("🛠  Surface %s: the schedule set in the console was cleared; back to the config's %s.\n",
+			fmt.Printf("Surface %s: the schedule set in the console was cleared; back to the config's %s.\n",
 				st.SurfaceID, configured.Schedule)
 		default:
 			if _, err := model.ScheduleInterval(hb.Schedule); err != nil {
-				fmt.Fprintf(os.Stderr, "⚠️  Surface %s: the console set the schedule %q, which this daemon cannot run (%v). "+
+				fmt.Fprintf(os.Stderr, "Warning: Surface %s: the console set the schedule %q, which this daemon cannot run (%v). "+
 					"Keeping the config's %s; update safegrd.\n", st.SurfaceID, hb.Schedule, err, configured.Schedule)
 			} else {
-				fmt.Printf("🛠  Surface %s: the console set its schedule to %s, in place of the config's %s.\n",
+				fmt.Printf("Surface %s: the console set its schedule to %s, in place of the config's %s.\n",
 					st.SurfaceID, hb.Schedule, configured.Schedule)
 			}
 		}
@@ -508,9 +533,9 @@ func noteConsoleSettings(st *SurfaceState, configured *config.SurfaceConfig, hb 
 	if hb.RetentionDays != st.ConsoleRetentionDays {
 		changed = true
 		if hb.RetentionDays == 0 {
-			fmt.Printf("🛠  Surface %s: the retention set in the console was cleared; new backups follow the config again.\n", st.SurfaceID)
+			fmt.Printf("Surface %s: the retention set in the console was cleared; new backups follow the config again.\n", st.SurfaceID)
 		} else {
-			fmt.Printf("🛠  Surface %s: the console set its retention to %d days. New backups are locked that long; "+
+			fmt.Printf("Surface %s: the console set its retention to %d days. New backups are locked that long; "+
 				"backups already taken keep the lock they were written with.\n", st.SurfaceID, hb.RetentionDays)
 		}
 		st.ConsoleRetentionDays = hb.RetentionDays
@@ -526,7 +551,7 @@ func warnAboutSchedules(c *config.CLIConfig) {
 	for _, s := range c.Surfaces {
 		sched := effectiveSchedule(c, s)
 		if interval, err := model.ScheduleInterval(sched); err != nil {
-			fmt.Fprintf(os.Stderr, "⚠️  Surface %s: %v.\n   Backing it up every %s instead. Fix the schedule and run 'safegrd config validate'.\n",
+			fmt.Fprintf(os.Stderr, "Warning: Surface %s: %v.\n   Backing it up every %s instead. Fix the schedule and run 'safegrd config validate'.\n",
 				s.ID, err, model.ShortDuration(interval))
 		}
 	}
@@ -543,7 +568,7 @@ func warnIfStateUnsaved(err error, path string) {
 	if err == nil {
 		return
 	}
-	fmt.Fprintf(os.Stderr, "❌ Could not save daemon state to %s: %v\n"+
+	fmt.Fprintf(os.Stderr, "Error: could not save daemon state to %s: %v\n"+
 		"   The next tick will not know this run happened and will back up again.\n", path, err)
 }
 
@@ -585,7 +610,7 @@ func isSurfaceDue(s *config.SurfaceConfig, state *SurfaceState, now time.Time) (
 // sayNotDue tells a single pass why a surface was skipped: it is not yet at
 // its next scheduled backup, and the last attempt's failure if there was one.
 func sayNotDue(s *config.SurfaceConfig, state *SurfaceState, now time.Time) {
-	fmt.Printf("✓  Surface %s (%s): not due; the next backup is at %s, in %s.\n",
+	fmt.Printf("Surface %s (%s): not due. The next backup is at %s, in %s.\n",
 		s.ID, s.Type, state.NextDue.Local().Format("2006-01-02 15:04"), state.NextDue.Sub(now).Round(time.Minute))
 	if state.ConsecutiveFailures > 0 && state.LastError != "" {
 		fmt.Printf("   The last attempt failed: %s\n", state.LastError)
@@ -613,7 +638,7 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 			st.DrillInFlight = false
 			st.DrillFailures++
 			st.setDrill(model.DrillStatusFailed, model.DrillReasonInterrupted, "")
-			fmt.Fprintf(os.Stderr, "❌ Surface %s: the last Fire Drill did not finish; the daemon stopped during it. "+
+			fmt.Fprintf(os.Stderr, "Error: Surface %s: the last Fire Drill did not finish; the daemon stopped during it. "+
 				"Counted as a failure; the next is at least %s away.\n", st.SurfaceID, drillBackoff(st.DrillFailures))
 		}
 	}
@@ -639,7 +664,7 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 			// Retired in the console. Said to a single pass every time, and
 			// to the daemon when it first hears it, not every tick.
 			if tick == 0 || wasRetired != sState.Retired {
-				fmt.Fprintf(os.Stderr, "⛔ Surface %s: %s.\n", surface.ID, sState.Retired)
+				fmt.Fprintf(os.Stderr, "Error: Surface %s: %s.\n", surface.ID, sState.Retired)
 			}
 			warnIfStateUnsaved(saveDaemonState(statePath, daemonState), statePath)
 			continue
@@ -663,7 +688,7 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 		sayConsoleSettingsInForce(&surface, &configured, sState)
 
 		if clockWentBackwards(sState, now) {
-			fmt.Fprintf(os.Stderr, "⚠️  Surface %s: this host's clock is behind the last backup it recorded (%s); "+
+			fmt.Fprintf(os.Stderr, "Warning: Surface %s: this host's clock is behind the last backup it recorded (%s); "+
 				"it went backwards. Backing up now rather than waiting for it to catch up. Check NTP.\n",
 				surface.ID, sState.LastAttempt.UTC().Format(time.RFC3339))
 		}
@@ -696,9 +721,9 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 
 		if due || requested {
 			if requested && !due {
-				fmt.Printf("⏰ Surface %s (%s): backup requested from the console.\n", surface.ID, surface.Type)
+				fmt.Printf("Surface %s (%s): backup requested from the console.\n", surface.ID, surface.Type)
 			} else {
-				fmt.Printf("⏰ Surface %s (%s) is due for backup.\n", surface.ID, surface.Type)
+				fmt.Printf("Surface %s (%s) is due for backup.\n", surface.ID, surface.Type)
 			}
 			fetchHeldSurfaceSecret(ctx, c, nodeID, &surface)
 			if _, err := backupSurfaceNow(ctx, c, &surface, sState, nodeID, lockDir, statePath, daemonState); err != nil {
@@ -745,9 +770,9 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 	if c.Storage.ExpireAfterLock && c.Storage.Type == config.StorageTypeS3 && time.Since(daemonState.LastPrune) >= pruneEvery {
 		daemonState.LastPrune = time.Now().UTC()
 		if r, err := pruneOwnBucket(ctx, c, pruneGrace, false, os.Stderr); err != nil {
-			fmt.Fprintf(os.Stderr, "❌ Prune (storage.expire_after_lock): %v\n", err)
+			fmt.Fprintf(os.Stderr, "Error: Prune (storage.expire_after_lock): %v\n", err)
 		} else {
-			fmt.Printf("🧹 Prune: %s\n", r)
+			fmt.Printf("Prune: %s\n", r)
 		}
 	}
 
@@ -808,7 +833,7 @@ func backupSurfaceNow(ctx context.Context, c *config.CLIConfig, surface *config.
 		postErr = runHook(ctx, surface, "post_backup", surface.PostBackup,
 			"SAFEGRD_BACKUP_STATUS="+status, "SAFEGRD_SNAPSHOT_ID="+snapID)
 		if postErr != nil {
-			fmt.Fprintf(os.Stderr, "❌ Surface %s: %v\n", surface.ID, postErr)
+			fmt.Fprintf(os.Stderr, "Error: Surface %s: %v\n", surface.ID, postErr)
 		}
 	}
 	releaseLock()
@@ -817,7 +842,7 @@ func backupSurfaceNow(ctx context.Context, c *config.CLIConfig, surface *config.
 		sState.ConsecutiveFailures++
 		sState.LastError = backupErr.Error()
 		sState.BackupReason = backupReasonOf(backupErr)
-		fmt.Fprintf(os.Stderr, "❌ Surface %s backup failed: %v\n", surface.ID, backupErr)
+		fmt.Fprintf(os.Stderr, "Error: Surface %s backup failed: %v\n", surface.ID, backupErr)
 	} else {
 		sState.ConsecutiveFailures = 0
 		sState.LastError, sState.BackupReason = "", ""
@@ -834,7 +859,7 @@ func backupSurfaceNow(ctx context.Context, c *config.CLIConfig, surface *config.
 			sState.LastSnapshotID = meta.SnapshotID
 		}
 		plan.record(sState)
-		fmt.Printf("✅ Backed up surface %s\n", surface.ID)
+		fmt.Printf("Backed up surface %s\n", surface.ID)
 	}
 	// Recomputed from the attempt just made. Reset next due after success
 	// so status reflects the next cycle.
@@ -1221,7 +1246,7 @@ func newDaemonStatusCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "status",
-		Short: "View live status of all configured surfaces and the daemon",
+		Short: "Show each surface's schedule, last backup and next due time",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			resolvedStateDir := resolveStateDir(stateDir, cfg)
 			statePath := filepath.Join(resolvedStateDir, "daemon_state.json")
@@ -1346,12 +1371,12 @@ func newDaemonStatusCmd() *cobra.Command {
 				})
 			}
 
-			fmt.Println("🛡️  SafeGrd Always-On Daemon Status")
-			fmt.Printf("   Daemon ID:    %s\n", daemonState.DaemonID)
-			fmt.Printf("   State Dir:   %s\n\n", resolvedStateDir)
+			fmt.Println("SafeGrd daemon status")
+			fmt.Printf("   Daemon ID:   %s\n", daemonState.DaemonID)
+			fmt.Printf("   State dir:   %s\n\n", resolvedStateDir)
 
 			if len(views) == 0 {
-				fmt.Println("No surfaces configured in config.yaml.")
+				fmt.Println("No surfaces in the config.")
 				return nil
 			}
 
@@ -1375,8 +1400,8 @@ func newDaemonStatusCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().BoolVar(&jsonOut, "json", false, "Output status as JSON")
-	cmd.Flags().StringVar(&stateDir, "state-dir", "", "Path to state directory")
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print the status as JSON on stdout")
+	cmd.Flags().StringVar(&stateDir, "state-dir", "", "Directory for daemon state and locks")
 
 	return cmd
 }
@@ -1389,7 +1414,7 @@ func newDaemonInstallCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "install",
-		Short: "Generate or install SafeGrd system service (systemd / launchd)",
+		Short: "Install the daemon as a service (systemd, launchd or Task Scheduler)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			svc, err := daemonServiceSpec(userScope)
 			if err != nil {
@@ -1424,14 +1449,14 @@ func newDaemonInstallCmd() *cobra.Command {
 					return fmt.Errorf("failed to create %s, which the daemon writes to: %w", w, err)
 				}
 				if err := chownLike(w, svc.configPath); err != nil {
-					fmt.Fprintf(os.Stderr, "[!] Created %s but could not give it to the config's owner: %v\n", w, err)
+					fmt.Fprintf(os.Stderr, "Warning: created %s but could not give it to the config's owner: %v\n", w, err)
 				}
 			}
 			if err := os.WriteFile(targetPath, []byte(body), 0644); err != nil {
 				return fmt.Errorf("failed to write the service file %s (try sudo, or --user): %w", targetPath, err)
 			}
 
-			fmt.Printf("✅ Installed %s\n", targetPath)
+			fmt.Printf("Installed %s\n", targetPath)
 			fmt.Printf("   Config:     %s\n   State:      %s\n", svc.configPath, svc.stateDir)
 			// It used to stop here and print the command that starts it, so a
 			// host the console said was "installed as a service that starts at
@@ -1453,12 +1478,12 @@ func newDaemonInstallCmd() *cobra.Command {
 			}
 			for _, st := range steps {
 				if out, err := exec.Command(st[0], st[1:]...).CombinedOutput(); err != nil {
-					fmt.Printf("   Not started: %s %s failed: %v %s\n   Start it with:\n   %s\n",
+					fmt.Fprintf(os.Stderr, "Warning: installed, not started: %s %s failed: %v %s\n   Start it with:\n   %s\n",
 						st[0], strings.Join(st[1:], " "), err, strings.TrimSpace(string(out)), manual)
 					return nil
 				}
 			}
-			fmt.Printf("✅ Started. It runs now and at every %s.\n", map[bool]string{true: "login", false: "boot"}[userScope])
+			fmt.Printf("Started. It runs now and at every %s.\n", map[bool]string{true: "login", false: "boot"}[userScope])
 			if userScope && runtime.GOOS != "darwin" {
 				fmt.Println("   To keep it running after you log out:\n   loginctl enable-linger $USER")
 			}
@@ -1466,8 +1491,8 @@ func newDaemonInstallCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().BoolVar(&printOnly, "print", false, "Print service definition to stdout without installing")
-	cmd.Flags().BoolVar(&userScope, "user", false, "Install as user agent instead of system service")
+	cmd.Flags().BoolVar(&printOnly, "print", false, "Print the service definition to stdout and install nothing")
+	cmd.Flags().BoolVar(&userScope, "user", false, "Install for this user (runs at login) instead of system-wide (runs at boot)")
 
 	return cmd
 }
@@ -1661,7 +1686,7 @@ func newDaemonUninstallCmd() *cobra.Command {
 	var userScope bool
 	cmd := &cobra.Command{
 		Use:   "uninstall",
-		Short: "Uninstall and disable the SafeGrd system service",
+		Short: "Stop and remove the daemon service",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			targetPath, stop := systemdPath(userScope), "sudo systemctl disable --now safegrd"
 			if userScope {
@@ -1675,10 +1700,10 @@ func newDaemonUninstallCmd() *cobra.Command {
 			if _, err := os.Stat(targetPath); err == nil {
 				stopArgs := strings.Fields(strings.TrimPrefix(stop, "sudo "))
 				if out, err := exec.Command(stopArgs[0], stopArgs[1:]...).CombinedOutput(); err == nil {
-					fmt.Printf("✅ Stopped: %s\n", strings.TrimPrefix(stop, "sudo "))
+					fmt.Printf("Stopped: %s\n", strings.TrimPrefix(stop, "sudo "))
 					stop = ""
 				} else if len(out) > 0 {
-					fmt.Fprintf(os.Stderr, "   Could not stop it (%s); it may not have been running.\n", strings.TrimSpace(string(out)))
+					fmt.Fprintf(os.Stderr, "Warning: could not stop it (%s). It may not have been running.\n", strings.TrimSpace(string(out)))
 				}
 			}
 			// It printed "Removed" whether or not anything was, including
@@ -1690,14 +1715,14 @@ func newDaemonUninstallCmd() *cobra.Command {
 			case err != nil:
 				return fmt.Errorf("could not remove %s (try sudo, or --user for a user service): %w", targetPath, err)
 			}
-			fmt.Printf("✅ Removed %s\n", targetPath)
+			fmt.Printf("Removed %s\n", targetPath)
 			if stop != "" {
 				fmt.Printf("   If it is still running, stop it with:\n   %s\n", stop)
 			}
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&userScope, "user", false, "Target user-scoped service")
+	cmd.Flags().BoolVar(&userScope, "user", false, "The service installed with --user")
 	return cmd
 }
 
@@ -1731,11 +1756,11 @@ func newDaemonRestartCmd() *cobra.Command {
 				return fmt.Errorf("%s %s failed (a system service needs sudo; a user one needs --user): %v\n%s",
 					name, strings.Join(argv, " "), err, strings.TrimSpace(string(out)))
 			}
-			fmt.Printf("✅ Restarted: %s %s\n", name, strings.Join(argv, " "))
+			fmt.Printf("Restarted: %s %s\n", name, strings.Join(argv, " "))
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&userScope, "user", false, "Target user-scoped service")
+	cmd.Flags().BoolVar(&userScope, "user", false, "The service installed with --user")
 	return cmd
 }
 

@@ -125,7 +125,7 @@ func addClaimSurfaces(c *config.CLIConfig, surfaces []claimSurface) {
 	if len(surfaces) == 0 {
 		return
 	}
-	fmt.Printf("\n📋 Surfaces named for this host in the console:\n")
+	fmt.Printf("\nSurfaces named for this host in the console:\n")
 	for _, s := range surfaces {
 		if have[s.Key] {
 			fmt.Printf("   %-20s already in this config; left as it is\n", s.Key)

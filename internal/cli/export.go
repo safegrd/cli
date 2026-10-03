@@ -54,7 +54,7 @@ keeps each snapshot's lock: it is locked there until the same date. A
 repository's objects are locked until their epoch's longest date, the one its
 first run's objects carry.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := context.Background()
+			ctx := cmd.Context()
 			if (toDir == "") == (toBucket == "") {
 				return fmt.Errorf("choose one destination: --to-dir or --to-bucket")
 			}
@@ -134,20 +134,20 @@ first run's objects carry.`,
 				setNode(src, node, srcCfg.NodeID)
 				setNode(dst, node, srcCfg.NodeID)
 				if ok, err := dst.SnapshotExists(ctx, id); err == nil && ok {
-					fmt.Printf("   ⏭️  %s already exported\n", id)
+					fmt.Printf("   %s already exported\n", id)
 					skipped++
 					continue
 				}
 				if err := exportOne(ctx, src, dst, id); err != nil {
-					fmt.Fprintf(os.Stderr, "❌ %s: %v\n", id, err)
+					fmt.Fprintf(os.Stderr, "Error: %s: %v\n", id, err)
 					failed++
 					continue
 				}
-				fmt.Printf("   ✅ %s\n", id)
+				fmt.Printf("   %s exported\n", id)
 				copied++
 			}
 			copied, skipped, failed = copied+rCopied, skipped+rSkipped, failed+rFailed
-			fmt.Printf("\n📦 Exported %d, already there %d, failed %d.\n", copied, skipped, failed)
+			fmt.Printf("\nExported %d, already there %d, failed %d.\n", copied, skipped, failed)
 			if failed > 0 {
 				return fmt.Errorf("%d snapshot(s) were not exported", failed)
 			}
@@ -280,7 +280,7 @@ func exportRepos(ctx context.Context, srcCfg, dstCfg config.StorageConfig, onlyS
 	for _, b := range backends {
 		rows, err := repoSnapshots(ctx, b)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "❌ the repository in %s could not be listed: %v\n", b.Describe(), err)
+			fmt.Fprintf(os.Stderr, "Error: the repository in %s could not be listed: %v\n", b.Describe(), err)
 			failed++
 			continue
 		}
@@ -322,13 +322,13 @@ func exportRepos(ctx context.Context, srcCfg, dstCfg config.StorageConfig, onlyS
 			label := fmt.Sprintf("%s epoch %s (%d objects)", k.surface, k.epoch, n+already)
 			switch {
 			case err != nil:
-				fmt.Fprintf(os.Stderr, "❌ %s: %v\n", label, err)
+				fmt.Fprintf(os.Stderr, "Error: %s: %v\n", label, err)
 				failed++
 			case n == 0:
-				fmt.Printf("   ⏭️  %s already exported\n", label)
+				fmt.Printf("   %s already exported\n", label)
 				skipped++
 			default:
-				fmt.Printf("   ✅ %s\n", label)
+				fmt.Printf("   %s exported\n", label)
 				copied++
 			}
 		}

@@ -131,7 +131,7 @@ func routeProjectSink(ctx context.Context, cfg *config.CLIConfig, storageCfg *co
 	}
 	sinkResp, err := fetchNodeSink(ctx, cfg.ServerURL, cfg.NodeID, cfg.ServerToken)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "⚠️  Could not ask the remote server where this project's backups go (%v); using this host's storage config\n", err)
+		fmt.Fprintf(os.Stderr, "Warning: could not ask the remote server where this project's backups go (%v); using this host's storage config\n", err)
 		return nil
 	}
 	ownBucket := storageCfg.Type == config.StorageTypeS3 && storageCfg.Bucket != ""
@@ -167,7 +167,7 @@ func routeProjectSink(ctx context.Context, cfg *config.CLIConfig, storageCfg *co
 		storageCfg.RetentionDays = sinkResp.Sink.RetentionDays
 	}
 	if verbose {
-		fmt.Printf("   Sink Routing:    Project '%s' -> s3://%s\n", sinkResp.ProjectName, storageCfg.Bucket)
+		fmt.Printf("   Storage:         project '%s' -> s3://%s\n", sinkResp.ProjectName, storageCfg.Bucket)
 	}
 	return nil
 }
@@ -203,7 +203,7 @@ func checkSurfaceStorage(ctx context.Context, cfg *config.CLIConfig, st *config.
 	}
 	sinkResp, err := fetchNodeSink(ctx, cfg.ServerURL, cfg.NodeID, cfg.ServerToken)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "⚠️  Could not ask the remote server where this project's backups go (%v); using this surface's storage config\n", err)
+		fmt.Fprintf(os.Stderr, "Warning: could not ask the remote server where this project's backups go (%v); using this surface's storage config\n", err)
 		return nil
 	}
 	return secondOrigin(sinkResp, st)
@@ -234,7 +234,7 @@ func bucketKeyFingerprint(salt, secret string) string {
 // own config is used: protection never waits on the remote server.
 func registerOwnBucket(ctx context.Context, cfg *config.CLIConfig, st *config.StorageConfig, salt string) error {
 	if err := refuseInsecureServerURL(cfg.ServerURL); err != nil {
-		fmt.Fprintf(os.Stderr, "⚠️  Not registering this host's bucket with the remote server: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Warning: not registering this host's bucket with the remote server: %v\n", err)
 		return nil
 	}
 	body, _ := json.Marshal(model.NodeSinkRegisterRequest{
@@ -252,7 +252,7 @@ func registerOwnBucket(ctx context.Context, cfg *config.CLIConfig, st *config.St
 	req.Header.Set("User-Agent", UserAgent())
 	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "⚠️  Could not register this host's bucket with the remote server (%v); backing up to it anyway\n", err)
+		fmt.Fprintf(os.Stderr, "Warning: could not register this host's bucket with the remote server (%v); backing up to it anyway\n", err)
 		return nil
 	}
 	defer resp.Body.Close()
@@ -264,7 +264,7 @@ func registerOwnBucket(ctx context.Context, cfg *config.CLIConfig, st *config.St
 	case resp.StatusCode == http.StatusConflict:
 		return fmt.Errorf("the remote server refused this host's bucket: %s", answer.Error)
 	case resp.StatusCode/100 != 2:
-		fmt.Fprintf(os.Stderr, "⚠️  The remote server did not record this host's bucket (HTTP %d %s); backing up to it anyway\n",
+		fmt.Fprintf(os.Stderr, "Warning: the remote server did not record this host's bucket (HTTP %d %s); backing up to it anyway\n",
 			resp.StatusCode, answer.Error)
 	}
 	return nil
@@ -281,7 +281,7 @@ func applyHeldSinkKey(ctx context.Context, cfg *config.CLIConfig, storageCfg *co
 	}
 	creds, err := fetchNodeCredentials(ctx, cfg.ServerURL, cfg.NodeID, cfg.ServerToken)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "⚠️  Could not fetch the bucket key the remote server holds (%v)\n", err)
+		fmt.Fprintf(os.Stderr, "Warning: could not fetch the bucket key the remote server holds (%v)\n", err)
 		return
 	}
 	if creds.Sink != nil && creds.Sink.SecretAccessKey != "" {

@@ -41,7 +41,7 @@ func keepUnsent(st *SurfaceState, meta *model.SnapshotMetadata, reason string) {
 	st.Unsent = append(st.Unsent, UnsentRecord{Meta: *meta, FirstFailedAt: time.Now().UTC(), Reason: reason})
 	if over := len(st.Unsent) - maxUnsentPerSurface; over > 0 {
 		for _, dropped := range st.Unsent[:over] {
-			fmt.Fprintf(os.Stderr, "⚠️  Surface %s: %d backup records are waiting to be sent; dropping the oldest, %s. "+
+			fmt.Fprintf(os.Stderr, "Warning: Surface %s: %d backup records are waiting to be sent; dropping the oldest, %s. "+
 				"Its snapshot is in your storage and 'safegrd list' shows it.\n",
 				st.SurfaceID, maxUnsentPerSurface, dropped.Meta.SnapshotID)
 		}
@@ -63,7 +63,7 @@ func resendUnsent(ctx context.Context, c *config.CLIConfig, st *SurfaceState) in
 		}
 		st.Unsent = st.Unsent[1:]
 		if reason != "" {
-			fmt.Fprintf(os.Stderr, "❌ Surface %s: the record of %s was refused when sent again: %s\n",
+			fmt.Fprintf(os.Stderr, "Error: Surface %s: the record of %s was refused when sent again: %s\n",
 				st.SurfaceID, rec.Meta.SnapshotID, reason)
 			continue
 		}
@@ -78,7 +78,7 @@ func resendUnsent(ctx context.Context, c *config.CLIConfig, st *SurfaceState) in
 		st.Unsent = nil
 	}
 	if sent > 0 {
-		fmt.Printf("📨 Surface %s: sent %d backup record(s) the remote server had not received.\n", st.SurfaceID, sent)
+		fmt.Printf("Surface %s: sent %d backup record(s) the remote server had not received.\n", st.SurfaceID, sent)
 	}
 	return sent
 }

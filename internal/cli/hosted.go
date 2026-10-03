@@ -89,7 +89,7 @@ func resolveHostedStorage(ctx context.Context, cfg *config.CLIConfig, storageCfg
 	if write && info.Warning != "" {
 		// The remote server's words, as sent: what happens at the quota
 		// depends on the plan, and only the server knows which applies.
-		fmt.Fprintf(os.Stderr, "⚠️  %s\n", info.Warning)
+		fmt.Fprintf(os.Stderr, "Warning: %s\n", info.Warning)
 	}
 	return &info, nil
 }
@@ -398,7 +398,7 @@ func (p *hostedProvider) abort(uploadID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := p.client.call(ctx, http.MethodPost, "/uploads/"+uploadID+"/abort", nil, nil); err != nil {
-		fmt.Fprintf(os.Stderr, "⚠️  hosted storage: could not abort the failed upload (%v); the remote server will clean it up\n", err)
+		fmt.Fprintf(os.Stderr, "Warning: hosted storage: could not abort the failed upload (%v); the remote server will clean it up\n", err)
 	}
 }
 

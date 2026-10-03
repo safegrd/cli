@@ -69,7 +69,7 @@ func TestASinglePassRetriesAFailureAndSaysWhyItSkipsTheRest(t *testing.T) {
 	if !strings.Contains(out, "Surface moneydb (postgres) is due for backup") {
 		t.Errorf("a single pass did not retry a surface waiting out its backoff:\n%s", out)
 	}
-	if !strings.Contains(out, "Surface docs (files): not due; the next backup is at") {
+	if !strings.Contains(out, "Surface docs (files): not due. The next backup is at") {
 		t.Errorf("a surface not yet due was skipped without saying so:\n%s", out)
 	}
 	// The daemon keeps the backoff, and does not repeat why

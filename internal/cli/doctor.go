@@ -32,7 +32,7 @@ type CheckResult struct {
 func newConfigCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "config",
-		Short: "Manage and validate SafeGrd configuration files",
+		Short: "Check the configuration file",
 	}
 
 	cmd.AddCommand(newConfigValidateCmd())
@@ -44,14 +44,14 @@ func newConfigValidateCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "validate",
-		Short: "Validate configuration syntax, permissions, and surface definitions",
+		Short: "Check the config's syntax, file permissions and surfaces, without connecting to anything",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			results := runValidationChecks(cfgFile, cfg)
-			return printAndEvaluateResults("SafeGrd Config Validation", results, jsonOut)
+			return printAndEvaluateResults("Config validation", results, jsonOut)
 		},
 	}
 
-	cmd.Flags().BoolVar(&jsonOut, "json", false, "Output results in JSON format")
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print the results as JSON on stdout")
 	return cmd
 }
 
@@ -61,12 +61,14 @@ func newDoctorCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "Check the config, keys, storage and every surface before you rely on them",
-		Long: `Performs deep preflight diagnostics of your SafeGrd environment:
-- Configuration file permissions (enforces 0600 on POSIX)
-- Age keypair integrity and presence
-- Immutable WORM storage connectivity and S3 Object Lock compliance
-- Remote server reachability and host clock skew
-- Surface reachability (PostgreSQL, Filesystem roots, IMAP email)
+		Long: `Checks everything a backup depends on, one line each, with a fix for each failure:
+- the config file and its permissions (0600 on POSIX)
+- the age keypair
+- the storage, and S3 Object Lock in compliance mode
+- the remote server, and this host's clock against it
+- every surface: its database, directory or mailbox can be reached
+
+Exits 1 if any critical check fails.
 
 --agent-proof checks instead whether the backups survive an AI agent on this
 host: the bucket is in another account from the database, this host's storage
@@ -74,14 +76,14 @@ key cannot delete, Object Lock is in compliance mode, a drill passed within 7
 days, and an agent is given a personal access token. Each failure names its fix.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if agentProof {
-				return printAndEvaluateResults("SafeGrd agent-proof check", runAgentProofChecks(cfg), jsonOut)
+				return printAndEvaluateResults("Agent-proof check", runAgentProofChecks(cfg), jsonOut)
 			}
 			results := runDoctorChecks(cfgFile, cfg)
-			return printAndEvaluateResults("SafeGrd Doctor Diagnostic Report", results, jsonOut)
+			return printAndEvaluateResults("Doctor", results, jsonOut)
 		},
 	}
 
-	cmd.Flags().BoolVar(&jsonOut, "json", false, "Output diagnostic report in JSON format")
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print the report as JSON on stdout")
 	cmd.Flags().BoolVar(&agentProof, "agent-proof", false, "Check that an AI agent on this host could not destroy the backups")
 	return cmd
 }
@@ -532,25 +534,23 @@ func printAndEvaluateResults(title string, results []CheckResult, jsonOut bool) 
 		return nil
 	}
 
-	fmt.Printf("🔍 %s\n\n", title)
+	fmt.Printf("%s\n\n", title)
+	failed := 0
 	for _, r := range results {
-		icon := "✅"
-		if r.Status == "WARN" {
-			icon = "⚠️ "
-		} else if r.Status == "FAIL" {
-			icon = "❌"
+		if r.Status == "FAIL" {
+			failed++
 		}
-		fmt.Printf("   [%s] %-30s : %s\n", icon, r.Name, r.Message)
+		fmt.Printf("   [%-4s] %-30s : %s\n", r.Status, r.Name, r.Message)
 		if r.Fix != "" && r.Status != "PASS" {
-			fmt.Printf("        %-30s   Fix: %s\n", "", r.Fix)
+			fmt.Printf("          %-30s   Fix: %s\n", "", r.Fix)
 		}
 	}
 	fmt.Println()
 
 	if hasFailure {
-		return fmt.Errorf("one or more critical checks failed")
+		return fmt.Errorf("%d critical %s failed", failed, pluralWord(int64(failed), "check", "checks"))
 	}
-	fmt.Println("🎉 All critical checks passed.")
+	fmt.Println("All critical checks passed.")
 	return nil
 }
 
@@ -607,7 +607,7 @@ func unusedAlertBlock(c *config.CLIConfig) string {
 		return ""
 	}
 	return "alert: webhooks in this file are not used; the remote server sends alerts: " +
-		"set the Slack, Discord or plain webhook in the console under Settings → Alerts " +
+		"set the Slack, Discord or plain webhook in the console under Settings > Alerts " +
 		"(safegrd.dev/docs/alerts)"
 }
 
@@ -716,7 +716,7 @@ func pgDumpChecks(c *config.CLIConfig) []CheckResult {
 	}
 	var results []CheckResult
 	for name, u := range urls {
-		if r, err := ResolveSecretRef("database_url", u); err == nil && r != "" && (strings.HasPrefix(u, "env:") || strings.HasPrefix(u, "file:")) {
+		if r, err := resolveConfigSecret("database_url", u); err == nil && r != "" && (strings.HasPrefix(u, "env:") || strings.HasPrefix(u, "file:")) {
 			u = r
 		}
 		if dump.IsSQLiteURL(u) {

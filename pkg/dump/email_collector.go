@@ -83,7 +83,7 @@ func NewEmailCollector(cfg EmailCollectorConfig) *EmailCollector {
 		cfg.Port = 993
 	}
 	if cfg.Warn == nil {
-		cfg.Warn = func(msg string) { fmt.Fprintf(os.Stderr, "⚠️  %s\n", msg) }
+		cfg.Warn = func(msg string) { fmt.Fprintf(os.Stderr, "Warning: %s\n", msg) }
 	}
 	return &EmailCollector{cfg: cfg}
 }

@@ -124,7 +124,7 @@ func (v *Verifier) checkDigests(report *model.VerificationReport, meta *model.Sn
 	})
 
 	if rec.record == nil {
-		fmt.Fprintf(os.Stderr, "\n[!] Digest checked against the sidecar only: %s.\n"+
+		fmt.Fprintf(os.Stderr, "\nWarning: digest checked against the sidecar only: %s.\n"+
 			"    It was not compared with SafeGrd's record from backup time; run this on an enrolled host to compare.\n", rec.why)
 		return ""
 	}

@@ -238,7 +238,7 @@ type SQLiteDumper struct {
 
 // NewSQLiteDumper creates a dumper for a sqlite: URL.
 func NewSQLiteDumper(databaseURL string) *SQLiteDumper {
-	return &SQLiteDumper{databaseURL: databaseURL, Warn: func(msg string) { fmt.Fprintf(os.Stderr, "⚠️  %s\n", msg) }}
+	return &SQLiteDumper{databaseURL: databaseURL, Warn: func(msg string) { fmt.Fprintf(os.Stderr, "Warning: %s\n", msg) }}
 }
 
 // Dump writes a consistent copy of the database and its manifest to dst.

@@ -240,10 +240,10 @@ func runRepoBackup(ctx context.Context, p repoParams) (*model.SnapshotMetadata, 
 		warnSkipped(s)
 	}
 	for _, p := range snap.Inconsistent {
-		fmt.Fprintf(os.Stderr, "⚠️  %s /%s changed while it was read, twice. The second read is stored, and the next run reads it again.\n", label, p)
+		fmt.Fprintf(os.Stderr, "Warning: %s /%s changed while it was read, twice. The second read is stored, and the next run reads it again.\n", label, p)
 	}
 	if res.CacheWarning != "" {
-		fmt.Fprintf(os.Stderr, "⚠️  %s %s\n", label, res.CacheWarning)
+		fmt.Fprintf(os.Stderr, "Warning: %s %s\n", label, res.CacheWarning)
 	}
 	took := shortDuration(time.Since(started))
 	if res.Class == format.ClassOpening {
@@ -425,7 +425,7 @@ func checkRepoContentRoot(ctx context.Context, meta *model.SnapshotMetadata, sna
 	case root != expected:
 		return fmt.Errorf("snapshot %s has content root %s, the %s says %s: it is not the snapshot that was backed up; nothing was restored", snapshotID, root, source, expected)
 	case rec == nil:
-		fmt.Fprintf(os.Stderr, "[!] Content root checked against the sidecar only: %s.\n"+
+		fmt.Fprintf(os.Stderr, "Warning: content root checked against the sidecar only: %s.\n"+
 			"    It was not compared with SafeGrd's record from backup time; run this on an enrolled host to compare.\n", why)
 	default:
 		if meta.Sha256Checksum != rec.Sha256Checksum {
@@ -458,10 +458,9 @@ func verifyRepoSnapshot(ctx context.Context, rs *repoSnapshot, privateKey string
 		fmt.Printf("   [%s] %s (Expected: %s, Actual: %s)\n", status, a.Name, a.Expected, a.Actual)
 	}
 	if report.Status != model.VerificationStatusPassed {
-		fmt.Printf("❌ Verification failed: %s\n", report.ErrorMessage)
-		return fmt.Errorf("verification of %s failed", rs.Meta.SnapshotID)
+		return fmt.Errorf("verification of %s failed: %s", rs.Meta.SnapshotID, report.ErrorMessage)
 	}
-	fmt.Printf("✅ Restore verified: %s files, %d directories, in %s\n", formatNumber(report.RowsRestored), report.TablesRestored,
+	fmt.Printf("Restore verified: %s files, %d directories, in %s\n", formatNumber(report.RowsRestored), report.TablesRestored,
 		time.Duration(report.DurationMs*int64(time.Millisecond)).Round(time.Millisecond))
 	fmt.Printf("   Verification ID: %s\n", report.VerificationID)
 	fmt.Printf("   Certificate:     %s\n", report.CertificateHash)

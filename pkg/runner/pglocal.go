@@ -359,7 +359,7 @@ func (lp *LocalPostgres) Stop() {
 	}
 	if lp.dataDir != "" {
 		if err := os.RemoveAll(lp.dataDir); err != nil {
-			fmt.Fprintf(os.Stderr, "⚠️  Could not delete the local sandbox at %s: %v. Delete it by hand to free the disk.\n", lp.dataDir, err)
+			fmt.Fprintf(os.Stderr, "Warning: could not delete the local sandbox at %s: %v. Delete it by hand to free the disk.\n", lp.dataDir, err)
 		}
 		lp.dataDir = ""
 	}
@@ -376,7 +376,7 @@ func SweepLocalSandboxes(stateDir string) {
 	for _, d := range dirs {
 		stopLeftoverPostmaster(d)
 		if err := os.RemoveAll(d); err != nil {
-			fmt.Fprintf(os.Stderr, "⚠️  Could not delete a local sandbox left by an earlier drill at %s: %v\n", d, err)
+			fmt.Fprintf(os.Stderr, "Warning: could not delete a local sandbox left by an earlier drill at %s: %v\n", d, err)
 		}
 	}
 }

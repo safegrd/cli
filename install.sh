@@ -63,15 +63,15 @@ log_info() {
 }
 
 log_success() {
-  printf "${GREEN}✓${RESET} %s\n" "$1"
+  printf "${GREEN}%s${RESET}\n" "$1"
 }
 
 log_warn() {
-  printf "${YELLOW}⚠️  %s${RESET}\n" "$1"
+  printf "${YELLOW}Warning: %s${RESET}\n" "$1" >&2
 }
 
 log_error() {
-  printf "${RED}❌ Error: %s${RESET}\n" "$1" >&2
+  printf "${RED}Error: %s${RESET}\n" "$1" >&2
 }
 
 # 1. Detect Operating System
@@ -297,7 +297,7 @@ if [ -z "$ALREADY_INSTALLED" ]; then
   # 11. Smoke Test
   if [ -x "$INSTALL_DIR/safegrd" ]; then
     VERSION_OUTPUT="$("$INSTALL_DIR/safegrd" version 2>/dev/null || "$INSTALL_DIR/safegrd" --version 2>/dev/null || true)"
-    log_success "Installed successfully: ${VERSION_OUTPUT:-safegrd}"
+    log_success "Installed: ${VERSION_OUTPUT:-safegrd}"
   else
     log_error "Installation failed: $INSTALL_DIR/safegrd is not executable."
     exit 1
@@ -512,7 +512,9 @@ if [ -z "${SAFEGRD_NO_SETUP:-}" ] && [ -n "${SAFEGRD_TOKEN:-}" ]; then
     setup_failed "Set SAFEGRD_KEY_CUSTODY to 'safegrd' (SafeGrd keeps the key sealed and releases it only to your enrolled hosts) or 'local' (only you can decrypt these backups), or use a claim code from the console."
   fi
   printf "\n"
-  if ! enroll_with enroll --token "$SAFEGRD_TOKEN" </dev/null; then
+  # By reference, so the token is not in the process table while enroll runs.
+  export SAFEGRD_TOKEN
+  if ! enroll_with enroll --token env:SAFEGRD_TOKEN </dev/null; then
     setup_failed "Enrollment failed, so this host is not registered."
   fi
   print_enrolled

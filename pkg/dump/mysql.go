@@ -276,7 +276,7 @@ type MySQLDumper struct {
 
 // NewMySQLDumper creates a dumper for a mysql:// URL.
 func NewMySQLDumper(databaseURL string) *MySQLDumper {
-	return &MySQLDumper{databaseURL: databaseURL, Warn: func(msg string) { fmt.Fprintf(os.Stderr, "⚠️  %s\n", msg) }}
+	return &MySQLDumper{databaseURL: databaseURL, Warn: func(msg string) { fmt.Fprintf(os.Stderr, "Warning: %s\n", msg) }}
 }
 
 // Dump runs the server's dump tool and streams its output into the archive,
@@ -669,7 +669,7 @@ type MySQLRestorer struct {
 
 // NewMySQLRestorer creates a restorer for a mysql:// URL.
 func NewMySQLRestorer(targetURL string) *MySQLRestorer {
-	return &MySQLRestorer{targetURL: targetURL, Warn: func(msg string) { fmt.Fprintf(os.Stderr, "⚠️  %s\n", msg) }}
+	return &MySQLRestorer{targetURL: targetURL, Warn: func(msg string) { fmt.Fprintf(os.Stderr, "Warning: %s\n", msg) }}
 }
 
 // Restore pipes the dump into the server's own client, then holds every

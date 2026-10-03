@@ -121,16 +121,16 @@ no locked snapshot could be taken:
 			snap, err := guardSnapshot(ctx, surfaceID, allowUnlocked, describeCommand(command))
 			if err != nil {
 				if len(command) > 0 {
-					fmt.Fprintf(os.Stderr, "⛔ Not running %s: %v\n", describeCommand(command), err)
+					fmt.Fprintf(os.Stderr, "Error: not running %s: %v\n", describeCommand(command), err)
 				} else {
-					fmt.Fprintf(os.Stderr, "⛔ No locked snapshot: %v\n", err)
+					fmt.Fprintf(os.Stderr, "Error: no locked snapshot: %v\n", err)
 				}
 				return &exitError{code: guardRefused}
 			}
 			if len(command) == 0 {
 				return nil
 			}
-			fmt.Fprintf(os.Stderr, "▶️  Running %s (snapshot %s)\n", describeCommand(command), snap.SnapshotID)
+			fmt.Fprintf(os.Stderr, "Running %s (snapshot %s)\n", describeCommand(command), snap.SnapshotID)
 			return runGuarded(command)
 		},
 	}
@@ -157,9 +157,9 @@ func guardSnapshot(ctx context.Context, surfaceID string, allowUnlocked bool, wh
 		return nil, err
 	}
 	if what != "" {
-		fmt.Printf("🛡️  Backing up %s before running %s\n", surface.ID, what)
+		fmt.Printf("Backing up %s before running %s\n", surface.ID, what)
 	} else {
-		fmt.Printf("🛡️  Backing up %s\n", surface.ID)
+		fmt.Printf("Backing up %s\n", surface.ID)
 	}
 
 	stateDir := resolveStateDir("", cfg)
@@ -201,7 +201,7 @@ func guardSnapshot(ctx context.Context, surfaceID string, allowUnlocked bool, wh
 	if st.notRecorded != "" {
 		// The snapshot is in storage and locked, which is what guard
 		// promises. The console not knowing about it is said, not hidden.
-		fmt.Fprintf(os.Stderr, "⚠️  Snapshot %s is not recorded by the remote server: %s\n", meta.SnapshotID, st.notRecorded)
+		fmt.Fprintf(os.Stderr, "Warning: snapshot %s is not recorded by the remote server: %s\n", meta.SnapshotID, st.notRecorded)
 	}
 
 	locked, why := snapshotLocked(meta, time.Now())
@@ -210,9 +210,9 @@ func guardSnapshot(ctx context.Context, surfaceID string, allowUnlocked bool, wh
 			"Point this host at a bucket with Object Lock, or pass --allow-unlocked", meta.SnapshotID, why)
 	}
 	if locked {
-		fmt.Printf("🔒 Snapshot %s is locked: %s\n", meta.SnapshotID, why)
+		fmt.Printf("Snapshot %s is locked: %s\n", meta.SnapshotID, why)
 	} else {
-		fmt.Printf("⚠️  Snapshot %s is not locked (%s); running anyway because of --allow-unlocked\n", meta.SnapshotID, why)
+		fmt.Printf("Warning: snapshot %s is not locked (%s). Running anyway because of --allow-unlocked\n", meta.SnapshotID, why)
 	}
 	return meta, nil
 }

@@ -35,15 +35,15 @@ func warnAboutShadowedSnapshots(ctx context.Context, provider storage.StoragePro
 		return 0
 	}
 
-	fmt.Printf("\n🚨 %d snapshot(s) have been DELETED from the bucket.\n", len(shadowed))
-	fmt.Println("   Object Lock preserved the data: the encrypted versions are intact and still")
-	fmt.Println("   immutable, but a delete marker is hiding them. SafeGrd is reading past it.")
-	fmt.Println("   Someone or something issued a DELETE against your backups. Investigate.")
+	w := os.Stderr
+	fmt.Fprintf(w, "\nWarning: %d snapshot(s) have been DELETED from the bucket.\n", len(shadowed))
+	fmt.Fprintln(w, "   Object Lock kept the encrypted versions, and they are still locked. A delete marker")
+	fmt.Fprintln(w, "   hides each one, and SafeGrd reads past it. Find out which credential issued the DELETE.")
 	for _, s := range shadowed {
-		fmt.Printf("   - %s  (deleted %s)\n", s.SnapshotID, s.DeletedAt.Format("2006-01-02 15:04 UTC"))
+		fmt.Fprintf(w, "   - %s  (deleted %s)\n", s.SnapshotID, s.DeletedAt.Format("2006-01-02 15:04 UTC"))
 	}
-	fmt.Println("\n   Clear the delete markers with:  safegrd undelete --snapshot <id>")
-	fmt.Println("   Then deny s3:DeleteObject on this bucket so delete markers cannot be placed.")
+	fmt.Fprintln(w, "\n   Clear the delete markers with:  safegrd undelete --snapshot <id>")
+	fmt.Fprintln(w, "   Then deny s3:DeleteObject on this bucket so delete markers cannot be placed.")
 	return len(shadowed)
 }
 
@@ -63,7 +63,7 @@ read without removing a single byte. This command removes those markers.
 It only ever deletes delete markers, addressed by version id. It cannot remove a
 version holding data, which is why it is safe to run.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := context.Background()
+			ctx := cmd.Context()
 			storageCfg, routeErr := resolveStorageRouting(ctx, cfg, "", "", "", "", true)
 			if routeErr != nil {
 				return routeErr
@@ -75,8 +75,8 @@ version holding data, which is why it is safe to run.`,
 				// No host holds a credential that can place a delete marker on
 				// hosted storage, and every read goes past any marker that is
 				// there. There is nothing for this command to do.
-				fmt.Println("ℹ️  Hosted storage: hosts cannot hide snapshots, and restore, verify and export read past")
-				fmt.Println("   any delete marker. Nothing to undelete; run 'safegrd list' to see every snapshot.")
+				fmt.Println("Nothing to undelete: a host cannot hide a snapshot in hosted storage, and restore,")
+				fmt.Println("verify and export read past any delete marker. Run 'safegrd list' to see every snapshot.")
 				return nil
 			}
 			resolveRuntimeCredentials(ctx, cfg, &storageCfg, true)
@@ -112,7 +112,7 @@ version holding data, which is why it is safe to run.`,
 			}
 
 			if len(targets) == 0 {
-				fmt.Println("✅ No snapshots are hidden behind a delete marker.")
+				fmt.Println("No snapshots are hidden behind a delete marker.")
 				return nil
 			}
 
@@ -130,24 +130,24 @@ version holding data, which is why it is safe to run.`,
 					// not get the same sentence.
 					exists, existsErr := provider.SnapshotExists(ctx, id)
 					if existsErr == nil && exists {
-						fmt.Printf("ℹ️  %s: no delete markers; this snapshot is already visible.\n", id)
+						fmt.Printf("%s: no delete markers. The snapshot is already visible.\n", id)
 						continue
 					}
 					unknown++
 					fmt.Fprintf(os.Stderr,
-						"⚠️  %s: nothing to undelete, and no snapshot by that id is in this bucket.\n"+
+						"Warning: %s: nothing to undelete, and no snapshot by that id is in this bucket.\n"+
 							"   Looked in s3://%s/%s (node %q). Nothing was changed. Check the snapshot id\n"+
 							"   against 'safegrd list', and check this is the sink it was written to.\n",
 						id, storageCfg.Bucket, storageCfg.Prefix, storageCfg.NodeID)
 					continue
 				}
 				total += removed
-				fmt.Printf("✅ %s: removed %d delete marker(s)\n", id, removed)
+				fmt.Printf("%s: removed %d delete marker(s)\n", id, removed)
 			}
 
 			if total > 0 {
-				fmt.Printf("\n   %d marker(s) removed across %d snapshot(s). The encrypted data was never gone.\n", total, len(targets))
-				fmt.Println("   Deny s3:DeleteObject on this bucket so it cannot happen again.")
+				fmt.Printf("\nRemoved %d marker(s) across %d snapshot(s). The encrypted versions were kept throughout.\n", total, len(targets))
+				fmt.Println("Deny s3:DeleteObject on this bucket so no new markers can be placed.")
 			}
 			if unknown > 0 {
 				// Non-zero exit, because the operator named a snapshot that is
@@ -199,13 +199,13 @@ func recordRetention(meta *model.SnapshotMetadata, storageCfg config.StorageConf
 // but an attacker with write access to the bucket can delete it.
 func printRetentionLine(storageCfg config.StorageConfig, retainUntil time.Time) {
 	if mode, err := storageCfg.ResolveWORMMode(); err == nil && mode == config.WORMModeNone {
-		fmt.Printf("   WORM Locked:     ⚠️  NO: worm_mode is NONE, so this bucket applies no Object Lock.\n")
-		fmt.Printf("                    The backup is encrypted and attested, but it can be deleted.\n")
+		fmt.Printf("   WORM Locked:     NO Object Lock: worm_mode is NONE.\n")
+		fmt.Printf("                    The backup is encrypted and attested, and it can be deleted.\n")
 		return
 	}
 	if storageCfg.Type == config.StorageTypeLocal {
-		fmt.Printf("   Kept until:      %s. safegrd will not delete it before then;\n", retainUntil.UTC().Format("2006-01-02 15:04:05 UTC"))
-		fmt.Printf("                    a directory on this host has no Object Lock, so its owner can.\n")
+		fmt.Printf("   Kept until:      %s. safegrd does not delete it before then.\n", retainUntil.UTC().Format("2006-01-02 15:04:05 UTC"))
+		fmt.Printf("                    A directory on this host has no Object Lock, so its owner can.\n")
 		return
 	}
 	fmt.Printf("   WORM Locked:     Immutable until %s\n", retainUntil.UTC().Format("2006-01-02 15:04:05 UTC"))

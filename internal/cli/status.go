@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -19,17 +18,23 @@ import (
 func newStatusCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
-		Short: "Check connectivity, storage immutability, and encryption keys",
+		Short: "Check the database, key, storage and remote server this host uses",
+		Long: `Checks the database, the encryption key, the storage and the remote server this
+host is configured for, one line each. Exits 1 if any check fails.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := context.Background()
-			fmt.Println("🔍 Checking SafeGrd Node Status...")
+			ctx := cmd.Context()
+			failed := 0
+			fail := func(format string, args ...any) {
+				failed++
+				fmt.Printf(format, args...)
+			}
 
 			// 1. Database connectivity
 			if cfg.DatabaseURL != "" {
-				label, ping := "Postgres DB:      ", func() error { return pingSQL("pgx", cfg.DatabaseURL) }
+				label, ping := "PostgreSQL:       ", func() error { return pingSQL("pgx", cfg.DatabaseURL) }
 				switch {
 				case dump.IsSQLiteURL(cfg.DatabaseURL):
-					label, ping = "SQLite DB:        ", func() error { return dump.PingSQLite(ctx, cfg.DatabaseURL) }
+					label, ping = "SQLite:           ", func() error { return dump.PingSQLite(ctx, cfg.DatabaseURL) }
 				case dump.IsMongoURL(cfg.DatabaseURL):
 					label, ping = "MongoDB:          ", func() error {
 						client, _, err := dump.OpenMongo(ctx, cfg.DatabaseURL)
@@ -40,7 +45,7 @@ func newStatusCmd() *cobra.Command {
 						return client.Ping(ctx, nil)
 					}
 				case dump.IsMySQLURL(cfg.DatabaseURL):
-					label, ping = "MySQL DB:         ", func() error {
+					label, ping = "MySQL:            ", func() error {
 						db, err := dump.OpenMySQL(cfg.DatabaseURL)
 						if err != nil {
 							return err
@@ -50,27 +55,27 @@ func newStatusCmd() *cobra.Command {
 					}
 				}
 				if err := ping(); err == nil {
-					fmt.Printf("   %s ✅ Connected\n", label)
+					fmt.Printf("%s connected\n", label)
 				} else {
-					fmt.Printf("   %s ❌ Failed to connect (%v)\n", label, err)
+					fail("%s FAILED: could not connect (%v)\n", label, err)
 				}
 			} else if len(cfg.Surfaces) > 0 {
 				// Each surface names its own database; `daemon status` shows them.
-				fmt.Printf("   Surfaces:          %d configured (see 'safegrd daemon status')\n", len(cfg.Surfaces))
+				fmt.Printf("Surfaces:          %d configured (see 'safegrd daemon status')\n", len(cfg.Surfaces))
 			} else {
-				fmt.Printf("   Database:          ⚠️  Not configured (set database_url)\n")
+				fmt.Printf("Database:          not configured (set database_url)\n")
 			}
 
 			// 2. Encryption Keys
 			if cfg.Encryption.PublicKey != "" {
 				_, err := crypto.ParseRecipient(cfg.Encryption.PublicKey)
 				if err == nil {
-					fmt.Printf("   Public Key:        ✅ Valid (%s)\n", crypto.Fingerprint(cfg.Encryption.PublicKey))
+					fmt.Printf("Public key:        valid (%s)\n", crypto.Fingerprint(cfg.Encryption.PublicKey))
 				} else {
-					fmt.Printf("   Public Key:        ❌ Invalid format\n")
+					fail("Public key:        FAILED: not an age recipient (%v)\n", err)
 				}
 			} else {
-				fmt.Printf("   Public Key:        ❌ Missing (run 'safegrd init')\n")
+				fail("Public key:        FAILED: missing (run 'safegrd init')\n")
 			}
 
 			// 3. Storage Provider Connectivity & Immutability Verification
@@ -93,30 +98,30 @@ func newStatusCmd() *cobra.Command {
 			if err == nil {
 				snaps, err := storageProvider.ListSnapshots(ctx)
 				if err == nil {
-					fmt.Printf("   Storage (%s):    ✅ Accessible (%d snapshots stored)\n", cfg.Storage.Type, len(snaps))
+					fmt.Printf("Storage:           %s, readable (%d snapshots)\n", storageCfg.Type, len(snaps))
 				} else {
-					fmt.Printf("   Storage (%s):    ❌ Error listing snapshots: %v\n", cfg.Storage.Type, err)
+					fail("Storage:           FAILED: could not list snapshots in %s storage: %v\n", storageCfg.Type, err)
 				}
 
 				if storageProvider.Type() == "hosted" {
-					fmt.Printf("   WORM Object Lock:  ✅ Compliance mode, set by the remote server on every hosted object\n")
+					fmt.Printf("Object Lock:       compliance mode, set by the remote server on every hosted object\n")
 				}
 				if s3Prov, ok := storageProvider.(*storage.S3StorageProvider); ok {
 					if err := s3Prov.VerifyBucketObjectLock(ctx); err == nil {
-						fmt.Printf("   WORM Object Lock:  ✅ Verified enabled on bucket %s\n", cfg.Storage.Bucket)
+						fmt.Printf("Object Lock:       on for bucket %s\n", storageCfg.Bucket)
 					} else {
-						fmt.Printf("   WORM Object Lock:  ⚠️  Not enabled or unverified on bucket %s: %v\n", cfg.Storage.Bucket, err)
+						fail("Object Lock:       FAILED: not confirmed on bucket %s: %v\n", storageCfg.Bucket, err)
 					}
 				}
 			} else {
-				fmt.Printf("   Storage:           ❌ Provider error: %v\n", err)
+				fail("Storage:           FAILED: %v\n", err)
 			}
 
 			// 4. remote server Connectivity
 			if cfg.ServerToken == "" {
 				// Not enrolled: pinging the default remote server would report
 				// on a service this host does not use.
-				fmt.Printf("   Remote Server:     Standalone (not enrolled; run 'safegrd enroll' to report to the console)\n")
+				fmt.Printf("Remote server:     none (standalone; run 'safegrd enroll' to report to the console)\n")
 			} else if cfg.ServerURL != "" {
 				client := &http.Client{Timeout: 3 * time.Second}
 				req, err := http.NewRequestWithContext(ctx, http.MethodGet, cfg.ServerURL+"/api/v1/nodes/"+cfg.NodeID, nil)
@@ -126,36 +131,41 @@ func newStatusCmd() *cobra.Command {
 					resp, err := client.Do(req)
 					if err == nil {
 						defer resp.Body.Close()
-						if resp.StatusCode == http.StatusOK {
-							fmt.Printf("   Remote Server:     ✅ Online (%s)\n", cfg.ServerURL)
+						switch {
+						case resp.StatusCode == http.StatusOK:
+							fmt.Printf("Remote server:     online, node %s accepted (%s)\n", cfg.NodeID, cfg.ServerURL)
 							var n model.Node
 							if err := json.NewDecoder(resp.Body).Decode(&n); err == nil && n.UpgradeAvailable {
-								fmt.Printf("   CLI Update:        ⚠️  A new release is available: v%s (installed: %s)\n", n.LatestCLIVersion, Version)
+								fmt.Printf("CLI update:        v%s is available (installed: %s)\n", n.LatestCLIVersion, Version)
 							}
-						} else {
-							// Fallback to /healthz ping
-							hResp, hErr := client.Get(cfg.ServerURL + "/healthz")
-							if hErr == nil && hResp.StatusCode == http.StatusOK {
-								fmt.Printf("   Remote Server:     ✅ Online (%s)\n", cfg.ServerURL)
-								hResp.Body.Close()
-							} else {
-								fmt.Printf("   Remote Server:     ⚠️  Unreachable (%s: HTTP %d)\n", cfg.ServerURL, resp.StatusCode)
-							}
+						case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
+							// The server is up and said no. Reporting that as
+							// "online" is how a revoked token went unnoticed.
+							fail("Remote server:     FAILED: %s refused this host's token (HTTP %d). Re-run 'safegrd enroll'\n", cfg.ServerURL, resp.StatusCode)
+						default:
+							fail("Remote server:     FAILED: %s answered HTTP %d\n", cfg.ServerURL, resp.StatusCode)
 						}
 					} else {
-						fmt.Printf("   Remote Server:     ⚠️  Unreachable (%s)\n", cfg.ServerURL)
+						fail("Remote server:     FAILED: could not reach %s (%v)\n", cfg.ServerURL, err)
 					}
 				} else {
 					resp, err := client.Get(cfg.ServerURL + "/healthz")
-					if err == nil && resp.StatusCode == http.StatusOK {
-						fmt.Printf("   Remote Server:     ✅ Online (%s)\n", cfg.ServerURL)
+					switch {
+					case err != nil:
+						fail("Remote server:     FAILED: could not reach %s (%v)\n", cfg.ServerURL, err)
+					case resp.StatusCode != http.StatusOK:
 						resp.Body.Close()
-					} else {
-						fmt.Printf("   Remote Server:     ⚠️  Unreachable (%s)\n", cfg.ServerURL)
+						fail("Remote server:     FAILED: %s answered HTTP %d\n", cfg.ServerURL, resp.StatusCode)
+					default:
+						resp.Body.Close()
+						fmt.Printf("Remote server:     online (%s); this config names no node_id\n", cfg.ServerURL)
 					}
 				}
 			}
 
+			if failed > 0 {
+				return fmt.Errorf("%d %s failed", failed, pluralWord(int64(failed), "check", "checks"))
+			}
 			return nil
 		},
 	}

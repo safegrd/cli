@@ -33,11 +33,22 @@ func newEnrollCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "enroll",
 		Short: "Register this host with the remote server, using an access token or a node token",
-		Long: `Authenticates the local CLI daemon with the SafeGrd remote server.
-You can either provide a direct Node Token or an Organization API Key to register this node.
-With neither, it uses the login saved by 'safegrd login'.`,
+		Long: `Registers this host with the remote server and writes the node token to the config.
+
+Pass a personal access token (sg_pat_...) to register a new node, or a node token
+(sg_tok_...) with --node-id to take over one the console already created. With
+neither, it uses the login saved by 'safegrd login'. Both flags take env:VAR or
+file:/path, which keeps the token out of 'ps' and shell history.`,
 		RunE: func(cmd *cobra.Command, args []string) (runErr error) {
 			serverURL := resolveServerURL()
+
+			var err error
+			if token, err = ResolveSecretRef("token", token); err != nil {
+				return err
+			}
+			if apiKey, err = ResolveSecretRef("api-key", apiKey); err != nil {
+				return err
+			}
 
 			// Refused before anything is generated. Checked after the local
 			// setup, a key made here would be found on the retry and adopted
@@ -99,7 +110,7 @@ With neither, it uses the login saved by 'safegrd login'.`,
 				cfg.Storage.Type = config.StorageTypeLocal
 			}
 			if created {
-				fmt.Printf("📁 No local setup found, so it was created before enrolling.\n\n")
+				fmt.Printf("No local setup found, so it was created first.\n\n")
 			}
 			// An identity found on disk is the operator's, whatever wrote it.
 			// It reaches here when a previous enrollment generated the key and
@@ -109,7 +120,7 @@ With neither, it uses the login saved by 'safegrd login'.`,
 				keyExistedBeforeEnroll = true
 			}
 
-			fmt.Printf("🌐 Connecting to SafeGrd Remote Server at %s...\n", serverURL)
+			fmt.Printf("Enrolling with %s\n", serverURL)
 
 			// A Personal Access Token passed to --token is registration, not a
 			// node token.
@@ -123,7 +134,7 @@ With neither, it uses the login saved by 'safegrd login'.`,
 			// prefix rather than asking the operator to know which flag their
 			// token belongs to.
 			if apiKey == "" && strings.HasPrefix(token, "sg_pat_") {
-				fmt.Printf("🔑 That is a personal access token, so this host will be registered with it.\n")
+				fmt.Printf("Registering a new node with the personal access token.\n")
 				apiKey, token = token, ""
 			}
 
@@ -134,7 +145,7 @@ With neither, it uses the login saved by 'safegrd login'.`,
 			// Only a personal access token counts; a node token already in the
 			// config belongs to a node this host enrolled before.
 			if token == "" && apiKey == "" && strings.HasPrefix(cfg.ServerToken, "sg_pat_") {
-				fmt.Printf("🔑 Using the login saved by 'safegrd login'.\n")
+				fmt.Printf("Using the login saved by 'safegrd login'.\n")
 				apiKey = cfg.ServerToken
 			}
 
@@ -184,11 +195,11 @@ With neither, it uses the login saved by 'safegrd login'.`,
 					// Could not reach the remote server to check. The token may
 					// be perfectly good, so this is written and said out loud
 					// rather than refused.
-					fmt.Printf("⚠️  Could not verify the token: %v\n", err)
-					fmt.Printf("   The config below is being written unverified. Run 'safegrd status' once\n")
-					fmt.Printf("   the remote server is reachable to confirm this node is enrolled.\n")
+					fmt.Fprintf(os.Stderr, "Warning: could not check the token: %v\n", err)
+					fmt.Fprintf(os.Stderr, "   The config is written without that check. Run 'safegrd status' once\n")
+					fmt.Fprintf(os.Stderr, "   the remote server is reachable to confirm this node is enrolled.\n")
 				default:
-					fmt.Printf("✅ Node token accepted\n")
+					fmt.Printf("Node token accepted\n")
 					fmt.Printf("   Node:        %s\n", cfg.NodeID)
 				}
 			} else {
@@ -249,7 +260,7 @@ With neither, it uses the login saved by 'safegrd login'.`,
 						return fmt.Errorf("%w. Nothing was changed", err)
 					}
 					claim, orgID, projectID = pv, pv.OrgID, pv.ProjectID
-					fmt.Printf("🎫 Claim for project '%s'.\n", pv.ProjectName)
+					fmt.Printf("Claim for project '%s'.\n", pv.ProjectName)
 					if pv.StorageKind == string(config.StorageTypeHosted) && storageFlag == "" {
 						cfg.Storage = config.StorageConfig{Type: config.StorageTypeHosted, WORMMode: config.WORMModeCompliance}
 						storageFlag = string(config.StorageTypeHosted)
@@ -290,7 +301,7 @@ With neither, it uses the login saved by 'safegrd login'.`,
 						return err
 					}
 					orgID = resolved
-					fmt.Printf("🏢 Organization: %s\n", orgID)
+					fmt.Printf("Organization: %s\n", orgID)
 				}
 
 				regReq := model.NodeRegisterRequest{
@@ -357,7 +368,7 @@ With neither, it uses the login saved by 'safegrd login'.`,
 				// hosted storage, so this host does too.
 				if regResp.StorageKind == string(config.StorageTypeHosted) && regReq.LocalStorage == "none" {
 					cfg.Storage = config.StorageConfig{Type: config.StorageTypeHosted, WORMMode: config.WORMModeCompliance}
-					fmt.Printf("📦 Storage: SafeGrd's hosted storage, as the project's other hosts use.\n")
+					fmt.Printf("Storage: SafeGrd's hosted storage, as the project's other hosts use.\n")
 				}
 				if regResp.ProjectID != "" {
 					cfg.ProjectID = regResp.ProjectID
@@ -369,16 +380,17 @@ With neither, it uses the login saved by 'safegrd login'.`,
 				// is safe with us, delete their copy, and find out on the day
 				// they need it. Fail the command and print the key.
 				if escrowRequested && !regResp.KeyEscrowed {
-					fmt.Printf("\n❌ The server did NOT store your encryption key.\n\n")
-					fmt.Printf("   This node is enrolled, but the key below exists in exactly one place:\n")
-					fmt.Printf("   %s\n\n", cfg.Encryption.KeyPath)
-					fmt.Printf("   Save a copy now. It is the only key that decrypts this node's backups.\n\n")
-					fmt.Printf("   Public key:  %s\n", cfg.Encryption.PublicKey)
-					fmt.Printf("   Fingerprint: %s\n", crypto.Fingerprint(cfg.Encryption.PublicKey))
+					w := os.Stderr
+					fmt.Fprintf(w, "\nError: the remote server did not store the encryption key.\n\n")
+					fmt.Fprintf(w, "   This node is enrolled, and the key below is only in this file:\n")
+					fmt.Fprintf(w, "   %s\n\n", cfg.Encryption.KeyPath)
+					fmt.Fprintf(w, "   Save a copy now. It is the only key that decrypts this node's backups.\n\n")
+					fmt.Fprintf(w, "   Public key:  %s\n", cfg.Encryption.PublicKey)
+					fmt.Fprintf(w, "   Fingerprint: %s\n", crypto.Fingerprint(cfg.Encryption.PublicKey))
 					return fmt.Errorf("enrollment completed but key escrow failed: save the key above before running a backup")
 				}
 
-				fmt.Printf("✅ Enrolled node %s as '%s'\n", regResp.NodeID, name)
+				fmt.Printf("Enrolled node %s as '%s'\n", regResp.NodeID, name)
 				// Only enough of the token to tell it apart: the whole of it
 				// would stay in terminal scrollback, and in the job log when
 				// enrolment runs in CI. The config file below holds it.
@@ -411,7 +423,7 @@ With neither, it uses the login saved by 'safegrd login'.`,
 					fmt.Printf("\n   Next: take the first backups now, and watch them land in the console:\n")
 					fmt.Printf("     safegrd daemon run --once\n")
 					fmt.Printf("   Then keep it running as a service that starts at boot:\n")
-					fmt.Printf("     sudo safegrd daemon install --system\n")
+					fmt.Printf("     sudo safegrd daemon install\n")
 				}
 			}
 
@@ -420,15 +432,15 @@ With neither, it uses the login saved by 'safegrd login'.`,
 				return err
 			}
 
-			fmt.Printf("💾 Configuration updated at: %s\n", targetConfig)
+			fmt.Printf("Saved to %s\n", targetConfig)
 			return nil
 		},
 	}
 
-	cmd.Flags().StringVar(&token, "token", "", "Pre-issued Node Token from dashboard")
-	cmd.Flags().StringVar(&apiKey, "api-key", "", "Organization/Admin API Key for dynamic registration")
+	cmd.Flags().StringVar(&token, "token", "", "Personal access token (sg_pat_...) or node token (sg_tok_...), as env:VAR, file:/path or the token")
+	cmd.Flags().StringVar(&apiKey, "api-key", "", "Organization API key to register the node with, as env:VAR, file:/path or the key")
 	cmd.Flags().StringVar(&nodeName, "node-name", "", "Name this host is shown under (default: the hostname)")
-	cmd.Flags().StringVar(&projectID, "project", "", "Project ID or slug to attach this node to (defaults to org default project)")
+	cmd.Flags().StringVar(&projectID, "project", "", "Project ID or slug to attach this node to (default: the organization's default project)")
 	cmd.Flags().StringVar(&nodeIDFlag, "node-id", "",
 		"The node this token belongs to, for --token. The console shows it beside the token. "+
 			"Not needed with a personal access token, which registers a new node.")

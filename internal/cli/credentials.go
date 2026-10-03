@@ -165,9 +165,9 @@ func resolveRuntimeCredentials(ctx context.Context, cfg *config.CLIConfig, stora
 
 	creds, err := fetchNodeCredentials(ctx, cfg.ServerURL, cfg.NodeID, cfg.ServerToken)
 	if err != nil {
-		if verbose {
-			fmt.Printf("   Credentials:     remote server unavailable (%v); using local configuration only\n", err)
-		}
+		// On stderr whatever verbose says: it is a warning, and --json
+		// keeps stdout for the JSON.
+		fmt.Fprintf(os.Stderr, "Warning: could not fetch credentials from the remote server (%v). Using this host's config only.\n", err)
 		return src
 	}
 
@@ -301,7 +301,7 @@ func fetchManagedKeys(ctx context.Context, cfg *config.CLIConfig, verbose, repor
 	if err != nil && !errors.Is(err, errNoManagedKey) && reportFailure {
 		// The caller goes on to report that no key was found, which is true
 		// but not why. Say why first.
-		fmt.Fprintf(os.Stderr, "⚠️  Could not fetch the key the remote server holds: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Warning: could not fetch the key the remote server holds: %v\n", err)
 	}
 	if err != nil || res == nil {
 		return ""
@@ -321,7 +321,7 @@ func fetchManagedKeys(ctx context.Context, cfg *config.CLIConfig, verbose, repor
 		// The organization holds keys for its other hosts, but this host's
 		// key is the customer's. Those keys open only snapshots sealed to
 		// them, so the decrypt error that follows needs this said first.
-		fmt.Fprintf(os.Stderr, "⚠️  You hold this host's key (%s), and it is not on this host.\n"+
+		fmt.Fprintf(os.Stderr, "Warning: you hold this host's key (%s), and it is not on this host.\n"+
 			"   Pass it with --private-key or SAFEGRD_PRIVATE_KEY. Trying the keys the remote server holds for other hosts.\n",
 			crypto.Fingerprint(cfg.Encryption.PublicKey))
 		return strings.Join(keys, "\n")
@@ -330,7 +330,7 @@ func fetchManagedKeys(ctx context.Context, cfg *config.CLIConfig, verbose, repor
 		// The fingerprint, never the key. An operator needs to know which key
 		// opened the archive and where it came from; printing the identity
 		// itself would put it in a terminal scrollback and a CI log.
-		fmt.Printf("   Decryption Key:  SafeGrd-managed identity for org %s (fetched, not stored)\n", res.OrgID)
+		fmt.Printf("   Decryption key:  SafeGrd-managed identity for org %s (fetched, not stored)\n", res.OrgID)
 		if res.Notice != "" {
 			fmt.Printf("   Notice:          %s\n", res.Notice)
 		}
@@ -351,12 +351,12 @@ func fetchHeldSurfaceSecret(ctx context.Context, c *config.CLIConfig, nodeID str
 		return
 	}
 	if c.ServerURL == "" || c.ServerToken == "" || nodeID == "" || nodeID == s.ID {
-		fmt.Fprintf(os.Stderr, "⚠️  Surface %s: its credential is held by the remote server, but this surface is not registered with it yet.\n", s.ID)
+		fmt.Fprintf(os.Stderr, "Warning: Surface %s: its credential is held by the remote server, but this surface is not registered with it yet.\n", s.ID)
 		return
 	}
 	creds, err := fetchNodeCredentials(ctx, c.ServerURL, nodeID, c.ServerToken)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "⚠️  Surface %s: could not fetch the credential the remote server holds for it: %v\n", s.ID, err)
+		fmt.Fprintf(os.Stderr, "Warning: Surface %s: could not fetch the credential the remote server holds for it: %v\n", s.ID, err)
 		return
 	}
 	if strings.ToLower(s.Type) == "email" {
@@ -365,6 +365,6 @@ func fetchHeldSurfaceSecret(ctx context.Context, c *config.CLIConfig, nodeID str
 		s.HeldSecret = creds.DatabaseURL
 	}
 	if s.HeldSecret == "" {
-		fmt.Fprintf(os.Stderr, "⚠️  Surface %s: the remote server holds no credential for it. Set one in the console, or name a variable on this host.\n", s.ID)
+		fmt.Fprintf(os.Stderr, "Warning: Surface %s: the remote server holds no credential for it. Set one in the console, or name a variable on this host.\n", s.ID)
 	}
 }

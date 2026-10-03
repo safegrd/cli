@@ -35,7 +35,7 @@ var upgradeNoticeOnce sync.Once
 
 func notifyUpgrade(latest string) {
 	upgradeNoticeOnce.Do(func() {
-		fmt.Fprintf(os.Stderr, "💡 A new SafeGrd CLI release is available: v%s (current: %s). Visit https://safegrd.dev or run 'safegrd version' for update details.\n", latest, Version)
+		fmt.Fprintf(os.Stderr, "SafeGrd CLI v%s is available (installed: %s). See https://safegrd.dev/changelog\n", latest, Version)
 	})
 }
 
@@ -128,7 +128,7 @@ func surfaceNodeID(ctx context.Context, c *config.CLIConfig, s *config.SurfaceCo
 	if err != nil || resp.NodeID == "" {
 		// The backup still runs. Its report will be refused, and the backup
 		// path says so; this says why.
-		fmt.Fprintf(os.Stderr, "⚠️  Surface %s: could not register it with the remote server (%v).\n"+
+		fmt.Fprintf(os.Stderr, "Warning: Surface %s: could not register it with the remote server (%v).\n"+
 			"   It is still backed up; the console will not show it until this succeeds.\n", s.ID, err)
 		if st.ServerNodeID != "" {
 			return st.ServerNodeID
@@ -190,7 +190,7 @@ func sendHeartbeat(ctx context.Context, c *config.CLIConfig, nodeID string, st *
 		if strings.Contains(err.Error(), "HTTP 401") {
 			hint = "This host's token was replaced or revoked in the console. Put the current one in with: safegrd enroll --token <node token from the console>"
 		}
-		fmt.Fprintf(os.Stderr, "⚠️  Surface %s: heartbeat failed (%v). %s\n", st.SurfaceID, err, hint)
+		fmt.Fprintf(os.Stderr, "Warning: Surface %s: heartbeat failed (%v). %s\n", st.SurfaceID, err, hint)
 		return nil
 	}
 	if resp.UpgradeAvailable {
@@ -272,7 +272,7 @@ func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, d pendingDrill
 	now := time.Now().UTC()
 	if requestID != "" {
 		st.LastDrillRequestID = requestID
-		fmt.Printf("⏰ Surface %s: Fire Drill requested.\n", s.ID)
+		fmt.Printf("Surface %s: Fire Drill requested.\n", s.ID)
 	} else if !st.LastDrillAttempt.IsZero() && !now.Before(st.LastDrillAttempt) {
 		// (A last attempt in the future means the clock went backwards;
 		// the spacing is not waited out from a time that has not happened.)
@@ -287,7 +287,7 @@ func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, d pendingDrill
 	key := daemonPrivateKey(ctx, c)
 	if key == "" {
 		if st.DrillStatus != model.DrillStatusNoKey {
-			fmt.Fprintf(os.Stderr, "⚠️  Surface %s: a Fire Drill is due and this host does not hold the private key.\n"+
+			fmt.Fprintf(os.Stderr, "Warning: Surface %s: a Fire Drill is due and this host does not hold the private key.\n"+
 				"   The daemon never copies it here. Run 'safegrd verify --snapshot %s' where the key is,\n"+
 				"   or set key_path / SAFEGRD_PRIVATE_KEY on this host. The console shows this surface as unproven.\n", s.ID, snapshotID)
 		}
@@ -329,7 +329,7 @@ func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, d pendingDrill
 	if err != nil {
 		st.DrillFailures++
 		st.setDrill(model.DrillStatusFailed, model.DrillReasonStorage, err.Error())
-		fmt.Fprintf(os.Stderr, "❌ Surface %s: Fire Drill could not open storage: %v\n", s.ID, err)
+		fmt.Fprintf(os.Stderr, "Error: Surface %s: Fire Drill could not open storage: %v\n", s.ID, err)
 		return
 	}
 	verifier := runner.NewVerifier(provider, c.ServerURL)
@@ -351,7 +351,7 @@ func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, d pendingDrill
 		var why error
 		if local, shallow, why = startLocalSandbox(ctx, provider, snapshotID, d.stateDir); why != nil {
 			shallowWhy = why.Error()
-			fmt.Fprintf(os.Stderr, "⚠️  Surface %s: drilling in memory, not in a local sandbox: %v\n", s.ID, why)
+			fmt.Fprintf(os.Stderr, "Warning: Surface %s: drilling in memory, not in a local sandbox: %v\n", s.ID, why)
 		} else if local != nil {
 			defer local.Stop()
 		}
@@ -361,23 +361,23 @@ func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, d pendingDrill
 		err = sandboxErr
 	case local != nil:
 		how = "restore into a throwaway PostgreSQL " + local.Server.Version + " on this host"
-		fmt.Printf("🔥 Surface %s: Fire Drill due: restoring snapshot %s into a throwaway PostgreSQL %s on this host.\n",
+		fmt.Printf("Surface %s: Fire Drill due: restoring snapshot %s into a throwaway PostgreSQL %s on this host.\n",
 			s.ID, snapshotID, local.Server.Version)
 		// The cluster is deleted after the drill, so it is not emptied.
 		report, err = verifier.RunFireDrill(ctx, snapshotID, key, local.URL)
 	case sandbox != "":
 		how = "restore into the sandbox database"
-		fmt.Printf("🔥 Surface %s: Fire Drill due: restoring snapshot %s into its sandbox database.\n", s.ID, snapshotID)
+		fmt.Printf("Surface %s: Fire Drill due: restoring snapshot %s into its sandbox database.\n", s.ID, snapshotID)
 		report, err = verifier.RunSandboxDrill(ctx, snapshotID, key, sandbox)
 	case rs != nil:
 		// A repository snapshot is proven by restoring every file and
 		// recomputing its content root from what landed on disk.
 		how = "full restore"
-		fmt.Printf("🔥 Surface %s: Fire Drill due: restoring snapshot %s and recomputing its content root.\n", s.ID, snapshotID)
+		fmt.Printf("Surface %s: Fire Drill due: restoring snapshot %s and recomputing its content root.\n", s.ID, snapshotID)
 		report, err = verifier.RunRepoDrill(ctx, runner.RepoDrill{Backend: rs.Backend, Epoch: rs.Epoch, Meta: rs.Meta,
 			Scratch: drillScratchIn(d.stateDir)}, key)
 	default:
-		fmt.Printf("🔥 Surface %s: Fire Drill due: restoring snapshot %s in memory.\n", s.ID, snapshotID)
+		fmt.Printf("Surface %s: Fire Drill due: restoring snapshot %s in memory.\n", s.ID, snapshotID)
 		report, _, err = verifier.RunDryRestore(ctx, snapshotID, key)
 	}
 	var blocked *runner.DrillBlockedError
@@ -390,19 +390,19 @@ func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, d pendingDrill
 			reason = model.DrillReasonNoDisk
 		}
 		st.setDrill(model.DrillStatusBlocked, reason, blocked.Error())
-		fmt.Fprintf(os.Stderr, "⚠️  Surface %s: Fire Drill not run: %v\n", s.ID, blocked)
+		fmt.Fprintf(os.Stderr, "Warning: Surface %s: Fire Drill not run: %v\n", s.ID, blocked)
 	case sandboxErr != nil:
 		st.DrillFailures++
 		st.setDrill(model.DrillStatusFailed, model.DrillReasonSandboxRefused, err.Error())
-		fmt.Fprintf(os.Stderr, "❌ Surface %s: Fire Drill could not run: %v\n", s.ID, err)
+		fmt.Fprintf(os.Stderr, "Error: Surface %s: Fire Drill could not run: %v\n", s.ID, err)
 	case err != nil:
 		st.DrillFailures++
 		st.setDrill(model.DrillStatusFailed, model.DrillReasonRestoreFailed, err.Error())
-		fmt.Fprintf(os.Stderr, "❌ Surface %s: Fire Drill could not run: %v\n", s.ID, err)
+		fmt.Fprintf(os.Stderr, "Error: Surface %s: Fire Drill could not run: %v\n", s.ID, err)
 	case report.Status != model.VerificationStatusPassed:
 		st.DrillFailures++
 		st.setDrill(model.DrillStatusFailed, failedDrillReason(report), report.ErrorMessage)
-		fmt.Fprintf(os.Stderr, "❌ Surface %s: Fire Drill FAILED for %s: %s\n", s.ID, snapshotID, report.ErrorMessage)
+		fmt.Fprintf(os.Stderr, "Error: Surface %s: Fire Drill FAILED for %s: %s\n", s.ID, snapshotID, report.ErrorMessage)
 	default:
 		st.DrillFailures = 0
 		if shallow != "" {
@@ -411,7 +411,7 @@ func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, d pendingDrill
 			st.setDrill(model.DrillStatusPassed, "", "")
 		}
 		st.LastDrillSnapshotID = snapshotID
-		fmt.Printf("✅ Surface %s: Fire Drill passed (%s of %s, certificate %s).\n", s.ID, how, snapshotID, report.CertificateHash)
+		fmt.Printf("Surface %s: Fire Drill passed (%s of %s, certificate %s).\n", s.ID, how, snapshotID, report.CertificateHash)
 	}
 }
 
@@ -517,7 +517,7 @@ func surfaceSandboxURL(ctx context.Context, c *config.CLIConfig, s *config.Surfa
 	if url == "" && s.Drill.SandboxURLEnv != "" {
 		url = os.Getenv(s.Drill.SandboxURLEnv)
 	}
-	resolved, err := ResolveSecretRef("drill.sandbox_url", url)
+	resolved, err := resolveConfigSecret("drill.sandbox_url", url)
 	if err != nil || resolved == "" {
 		return "", err
 	}

@@ -17,6 +17,7 @@ func newInitCmd() *cobra.Command {
 		dbURL         string
 		storageType   string
 		s3Bucket      string
+		s3Prefix      string
 		s3Region      string
 		s3Endpoint    string
 		localPath     string
@@ -73,8 +74,6 @@ you if you have not already).`,
 						"  (back up the key it currently names first)", targetPath)
 			}
 
-			fmt.Println("🛡️  Initializing SafeGrd node...")
-
 			configDir, err := setupDir()
 			if err != nil {
 				return err
@@ -95,9 +94,9 @@ you if you have not already).`,
 			if err := save(kp.PrivateKey, keyPath); err != nil {
 				return fmt.Errorf("failed saving private key: %w", err)
 			}
-			fmt.Printf("🔑 Generated Age X25519 asymmetric keypair\n")
-			fmt.Printf("   Public Key:  %s\n", kp.PublicKey)
-			fmt.Printf("   Private Key: %s (locked to 0600)\n", keyPath)
+			fmt.Printf("Generated an age X25519 keypair\n")
+			fmt.Printf("   Public key:  %s\n", kp.PublicKey)
+			fmt.Printf("   Private key: %s (mode 0600)\n", keyPath)
 
 			// 2. Prepare Config
 			nodeID := "node-" + uuid.New().String()[:8]
@@ -115,7 +114,7 @@ you if you have not already).`,
 					Bucket:        s3Bucket,
 					Region:        s3Region,
 					Endpoint:      s3Endpoint,
-					Prefix:        "safegrd/snapshots",
+					Prefix:        s3Prefix,
 					RetentionDays: retentionDays,
 					WORMMode:      config.WORMModeCompliance,
 					LocalPath:     localPath,
@@ -143,13 +142,15 @@ you if you have not already).`,
 
 			// Verify S3 Object Lock if S3 storage is configured
 			if cfg.Storage.Type == config.StorageTypeS3 && cfg.Storage.Bucket != "" {
-				fmt.Printf("🔒 Verifying S3 bucket '%s' WORM Object Lock...\n", cfg.Storage.Bucket)
-				if s3Prov, err := storage.NewS3Storage(cmd.Context(), cfg.Storage); err == nil {
-					if err := s3Prov.VerifyBucketObjectLock(cmd.Context()); err == nil {
-						fmt.Printf("   ✅ S3 Object Lock Compliance Mode verified on bucket\n")
-					} else {
-						fmt.Printf("   ⚠️  Object Lock verification notice: %v\n", err)
-					}
+				s3Prov, err := storage.NewS3Storage(cmd.Context(), cfg.Storage)
+				if err == nil {
+					err = s3Prov.VerifyBucketObjectLock(cmd.Context())
+				}
+				if err == nil {
+					fmt.Printf("Object Lock: compliance mode is on for bucket %s\n", cfg.Storage.Bucket)
+				} else {
+					fmt.Fprintf(os.Stderr, "Warning: could not confirm Object Lock on bucket %s: %v\n"+
+						"   Run 'safegrd doctor' once the bucket is reachable.\n", cfg.Storage.Bucket, err)
 				}
 			}
 
@@ -158,9 +159,9 @@ you if you have not already).`,
 			if err != nil {
 				return err
 			}
-			fmt.Printf("💾 Configuration written to: %s\n\n", targetConfig)
-			fmt.Println("🚀 Local setup complete.")
-			fmt.Println("   Back up the private key above: without it no snapshot can ever be read again.")
+			fmt.Printf("Saved to %s\n\n", targetConfig)
+			fmt.Println("Local setup complete.")
+			fmt.Println("   Keep a copy of the private key file somewhere safe. It is the key that opens these backups.")
 			fmt.Println()
 			if cfg.Storage.Type == config.StorageTypeHosted {
 				fmt.Println("   Hosted storage is leased from the remote server, so enrol this host before")
@@ -176,13 +177,14 @@ you if you have not already).`,
 		},
 	}
 
-	cmd.Flags().StringVar(&dbURL, "database-url", "", "PostgreSQL connection URL")
+	cmd.Flags().StringVar(&dbURL, "database-url", "", "Database connection URL, or env:VAR / file:/path to read it from")
 	cmd.Flags().StringVar(&storageType, "storage", "local", "Storage type: 'local', 's3', or 'hosted' (SafeGrd's locked bucket, leased per run)")
-	cmd.Flags().StringVar(&s3Bucket, "s3-bucket", "", "S3 bucket for WORM storage")
+	cmd.Flags().StringVar(&s3Bucket, "s3-bucket", "", "S3 bucket, with Object Lock enabled")
+	cmd.Flags().StringVar(&s3Prefix, "s3-prefix", "safegrd/snapshots", "Key prefix in the S3 bucket")
 	cmd.Flags().StringVar(&s3Region, "s3-region", "us-east-1", "S3 bucket region")
-	cmd.Flags().StringVar(&s3Endpoint, "s3-endpoint", "", "S3 custom endpoint (for MinIO / R2)")
-	cmd.Flags().StringVar(&localPath, "local-path", "", "Local storage directory path")
-	cmd.Flags().IntVar(&retentionDays, "retention-days", 14, "WORM immutability retention in days")
+	cmd.Flags().StringVar(&s3Endpoint, "s3-endpoint", "", "S3 endpoint, for MinIO, R2 or another S3-compatible store")
+	cmd.Flags().StringVar(&localPath, "local-path", "", "Directory for --storage local (default ~/.safegrd/storage)")
+	cmd.Flags().IntVar(&retentionDays, "retention-days", 14, "Days each backup is locked (Object Lock retention)")
 	cmd.Flags().StringVar(&nodeName, "node-name", "", "Name this host is shown under (default: the hostname)")
 	cmd.Flags().BoolVar(&initForce, "force", false,
 		"Overwrite an existing config. This discards the settings in it and generates a NEW "+

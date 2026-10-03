@@ -19,9 +19,9 @@ func newOrgsCmd() *cobra.Command {
 		Use:     "org",
 		Aliases: []string{"orgs"},
 		Short:   "Show your organization, plan and quotas",
-		Long: `In SafeGrd, a user belongs to an Organization where billing, subscription tier,
-and database quotas are attached (similar to GCP). Multiple projects can be created
-under your organization to segment environments (production, staging, etc.).`,
+		Long: `Shows the organization you belong to: its plan, price and surface quota.
+Billing and quotas belong to the organization. Projects inside it separate
+environments such as production and staging.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return showCurrentOrg()
 		},
@@ -53,7 +53,7 @@ func showCurrentOrg() error {
 	if err != nil {
 		// The price is the remote server's to state; without it, say so
 		// rather than print one that may be out of date.
-		fmt.Fprintf(os.Stderr, "⚠️  Notice: %v.\n", err)
+		fmt.Fprintf(os.Stderr, "Warning: %v.\n", err)
 		planDisplayName = strings.ToUpper(string(org.Plan))
 		planCost = "price unavailable"
 	} else {
@@ -80,22 +80,22 @@ func showCurrentOrg() error {
 		}
 	}
 
-	fmt.Println("🏢 SafeGrd Organization")
+	fmt.Println("Organization")
 	fmt.Printf("   Name:          %s\n", org.Name)
 	fmt.Printf("   Org ID:        %s\n", org.ID)
 	fmt.Printf("   Slug:          %s\n", org.Slug)
-	fmt.Printf("   Billing Plan:  %s (%s)\n", planDisplayName, planCost)
+	fmt.Printf("   Plan:          %s (%s)\n", planDisplayName, planCost)
 	fmt.Printf("   Quota:         %d protected surfaces\n", org.MaxDatabases)
 	if overage != "" {
 		fmt.Printf("   Extra hosted storage: %s\n", overage)
 	}
 	fmt.Printf("   Created:       %s\n\n", org.CreatedAt.Format("2006-01-02 15:04:05 MST"))
 
-	fmt.Println("💡 To manage environments or databases under this organization:")
+	fmt.Println("Projects and members:")
 	fmt.Println("   safegrd projects list")
 	fmt.Println("   safegrd org members")
 	// Projects are created in the console.
-	fmt.Println("   New projects are created in the console at " + resolveServerURL() + "/dashboard")
+	fmt.Println("   Create projects in the console at " + resolveServerURL() + "/dashboard")
 
 	return nil
 }
@@ -103,7 +103,7 @@ func showCurrentOrg() error {
 func newListOrgsCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
-		Short: "Display your organization profile and quota status",
+		Short: "List the organizations you belong to",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if cfg.ServerToken == "" {
 				return fmt.Errorf("not logged in. Run 'safegrd login' first")
@@ -139,7 +139,7 @@ func newListOrgsCmd() *cobra.Command {
 			}
 
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-			fmt.Fprintln(w, "ORG ID\tNAME\tSLUG\tPLAN\tMAX DATABASES")
+			fmt.Fprintln(w, "ORG ID\tNAME\tSLUG\tPLAN\tMAX SURFACES")
 			for _, o := range orgs {
 				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\n", o.ID, o.Name, o.Slug, strings.ToUpper(string(o.Plan)), o.MaxDatabases)
 			}

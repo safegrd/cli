@@ -55,6 +55,8 @@ func newBackupCmd() *cobra.Command {
 		storagePrefix   string
 		storageRegion   string
 		storageEndpoint string
+		s3AccessKey     string
+		s3SecretKey     string
 	)
 
 	cmd := &cobra.Command{
@@ -64,10 +66,10 @@ func newBackupCmd() *cobra.Command {
 and writes it to locked (WORM) storage. The unencrypted data is never written to disk
 and never leaves this host.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := context.Background()
+			ctx := cmd.Context()
 
 			if surfaceID != "" {
-				for _, f := range []string{"database-url", "files", "email", "json", "tag", "retention-days", "bucket", "prefix", "region", "endpoint", "format", "one-filesystem"} {
+				for _, f := range []string{"database-url", "files", "email", "json", "tag", "retention-days", "s3-bucket", "s3-prefix", "s3-region", "s3-endpoint", "s3-access-key", "s3-secret-key", "format", "one-filesystem"} {
 					if cmd.Flags().Changed(f) {
 						return fmt.Errorf("--surface backs up the surface as the config defines it; leave out --%s", f)
 					}
@@ -80,6 +82,18 @@ and never leaves this host.`,
 			storageCfg, routeErr := routeStorage(ctx, cfg, storageBucket, storagePrefix, storageRegion, storageEndpoint, !jsonOutput, true)
 			if routeErr != nil {
 				return routeErr
+			}
+			// Applied before resolveRuntimeCredentials, which fills only
+			// what is still empty, so the flags win over a held secret.
+			if s3AccessKey != "" {
+				storageCfg.AccessKeyID = s3AccessKey
+			}
+			if s3SecretKey != "" {
+				resolved, err := ResolveSecretRef("s3-secret-key", s3SecretKey)
+				if err != nil {
+					return err
+				}
+				storageCfg.SecretAccessKey = resolved
 			}
 			if retentionDays > 0 {
 				storageCfg.RetentionDays = retentionDays
@@ -179,8 +193,7 @@ and never leaves this host.`,
 				}
 
 				if !jsonOutput {
-					fmt.Printf("🛡️  SafeGrd File Backup Started: %s\n", snapshotID)
-					fmt.Printf("   Surface:         Files (%s)\n", filesPath)
+					fmt.Printf("Backing up %s as snapshot %s\n", filesPath, snapshotID)
 					fmt.Printf("   Recipient Key:   %s\n", crypto.Fingerprint(cfg.Encryption.PublicKey))
 					fmt.Printf("   Target Storage:  %s (%s)\n", storageCfg.Type, wormLabel(storageCfg))
 				}
@@ -256,7 +269,7 @@ and never leaves this host.`,
 					return enc.Encode(meta)
 				}
 
-				fmt.Printf("\n✅ Backed up %d files\n", meta.TotalItems)
+				fmt.Printf("\nBacked up %d files\n", meta.TotalItems)
 				fmt.Printf("   Snapshot ID:     %s\n", meta.SnapshotID)
 				fmt.Printf("   Files Backed Up: %d\n", meta.TotalItems)
 				fmt.Printf("   Directories:     %d\n", meta.TotalContainers)
@@ -298,12 +311,11 @@ and never leaves this host.`,
 					pass = os.Getenv("SAFEGRD_EMAIL_PASSWORD")
 				}
 				if user == "" || pass == "" {
-					return fmt.Errorf("email credentials required: specify --email-user and set SAFEGRD_EMAIL_PASSWORD env var")
+					return fmt.Errorf("--email needs a login: pass --email-user (or set SAFEGRD_EMAIL_USER) and set SAFEGRD_EMAIL_PASSWORD")
 				}
 
 				if !jsonOutput {
-					fmt.Printf("🛡️  SafeGrd Email Backup Started: %s\n", snapshotID)
-					fmt.Printf("   Surface:         IMAP Mailbox (%s on %s:%d)\n", user, host, port)
+					fmt.Printf("Backing up mailbox %s on %s:%d as snapshot %s\n", user, host, port, snapshotID)
 					fmt.Printf("   Recipient Key:   %s\n", crypto.Fingerprint(cfg.Encryption.PublicKey))
 					fmt.Printf("   Target Storage:  %s (%s)\n", storageCfg.Type, wormLabel(storageCfg))
 				}
@@ -394,7 +406,7 @@ and never leaves this host.`,
 					return enc.Encode(meta)
 				}
 
-				fmt.Printf("\n✅ Backed up %d emails\n", meta.TotalItems)
+				fmt.Printf("\nBacked up %d emails\n", meta.TotalItems)
 				fmt.Printf("   Snapshot ID:     %s\n", meta.SnapshotID)
 				fmt.Printf("   Emails Saved:    %d\n", meta.TotalItems)
 				fmt.Printf("   Mailbox Folders: %d\n", meta.TotalContainers)
@@ -435,7 +447,7 @@ and never leaves this host.`,
 			dbSurface := dump.SurfaceTypeOfURL(cfg.DatabaseURL)
 
 			if !jsonOutput {
-				fmt.Printf("🛡️  SafeGrd Backup Started: %s\n", snapshotID)
+				fmt.Printf("Backing up %s as snapshot %s\n", dbSurface, snapshotID)
 				fmt.Printf("   Recipient Key:   %s\n", crypto.Fingerprint(cfg.Encryption.PublicKey))
 				fmt.Printf("   Target Storage:  %s (%s)\n", storageCfg.Type, wormLabel(storageCfg))
 			}
@@ -526,7 +538,7 @@ and never leaves this host.`,
 				return enc.Encode(dumpMeta)
 			}
 
-			fmt.Printf("\n✅ Backed up %d tables, %d rows\n", dumpMeta.TotalTables, dumpMeta.TotalRows)
+			fmt.Printf("\nBacked up %d tables, %d rows\n", dumpMeta.TotalTables, dumpMeta.TotalRows)
 			fmt.Printf("   Snapshot ID:     %s\n", dumpMeta.SnapshotID)
 			fmt.Printf("   Tables Dumped:   %d\n", dumpMeta.TotalTables)
 			fmt.Printf("   Total Rows:      %d\n", dumpMeta.TotalRows)
@@ -538,8 +550,8 @@ and never leaves this host.`,
 			fmt.Printf("   Storage URI:     %s\n", dumpMeta.StorageURI)
 
 			if dumpMeta.IsPoisonPillFrozen {
-				fmt.Println("\n🚨 WARNING: Threat Shield detected an abnormal schema or volume drop!")
-				fmt.Println("   This snapshot is marked anomalous. Restore from the one before it; SafeGrd never prunes a snapshot.")
+				fmt.Fprintln(os.Stderr, "\nWarning: Threat Shield marked this snapshot anomalous: the schema or row counts dropped sharply.")
+				fmt.Fprintln(os.Stderr, "   Restore from the snapshot before it. Prune keeps that one as the last known good snapshot.")
 			}
 
 			return nil
@@ -547,41 +559,43 @@ and never leaves this host.`,
 	}
 
 	// Flags for PostgreSQL
-	cmd.Flags().StringVar(&dbURL, "database-url", "", "Database connection string: postgres://…, mysql://… (mariadb://…), mongodb://… or sqlite:///path/to/file.db")
+	cmd.Flags().StringVar(&dbURL, "database-url", "", "Database to back up: postgres://…, mysql://… (mariadb://…), mongodb://… or sqlite:///path/to/file.db, or env:VAR / file:/path")
 	cmd.Flags().StringVar(&engineStr, "engine", "native", "Accepted for old scripts and ignored: there is one Postgres backup path")
 	_ = cmd.Flags().MarkDeprecated("engine", "the schema comes from pg_dump and the rows from COPY; the flag is ignored")
 
 	// Flags for Files
 	cmd.Flags().StringVar(&surfaceID, "surface", "", "Back up this surface from the config's surfaces now, as the daemon would, whatever its schedule")
-	cmd.Flags().StringVar(&filesPath, "files", "", "Path to directory tree for file-based backup")
-	cmd.Flags().StringSliceVar(&excludes, "exclude", nil, "Glob patterns to exclude from file backup (e.g. '*.tmp,node_modules/*')")
+	cmd.Flags().StringVar(&filesPath, "files", "", "Back up this directory tree")
+	cmd.Flags().StringSliceVar(&excludes, "exclude", nil, "Glob patterns to leave out of --files (e.g. '*.tmp,node_modules/*')")
 	cmd.Flags().StringVar(&fileFmt, "format", formatRepo, "How --files is stored: repo (incremental: each run uploads only what changed) or tar (one archive per backup)")
 	cmd.Flags().BoolVar(&newEpoch, "new-epoch", false, "With --format repo, or --surface of a repo surface: start a new epoch now, uploading every file once")
 	cmd.Flags().BoolVar(&rescan, "rescan", false, "With --format repo, or --surface of a repo surface: read every file, not only those whose size or times changed")
 	cmd.Flags().BoolVar(&oneFS, "one-filesystem", false, "With --format repo: stay on the root's filesystem (the default when the root is /)")
 
 	// Flags for Email
-	cmd.Flags().BoolVar(&emailMode, "email", false, "Execute Universal IMAP email backup")
+	cmd.Flags().BoolVar(&emailMode, "email", false, "Back up an IMAP mailbox")
 	cmd.Flags().StringVar(&emailHost, "email-host", "", "IMAP server hostname (e.g. imap.gmail.com)")
-	cmd.Flags().IntVar(&emailPort, "email-port", 993, "IMAP server TLS port (default 993)")
+	cmd.Flags().IntVar(&emailPort, "email-port", 993, "IMAP server TLS port")
 	cmd.Flags().StringVar(&emailCAFile, "email-ca-file", "",
 		"PEM bundle of extra CAs to trust for the IMAP server, for a self-hosted mailbox "+
 			"behind a private CA (or $SAFEGRD_EMAIL_CA_FILE). Added to the system roots, "+
 			"never instead of them; there is deliberately no way to skip verification")
-	cmd.Flags().StringVar(&emailUser, "email-user", "", "Email account username/address")
-	cmd.Flags().StringVar(&emailPass, "email-password", "", "Email account app password (prefer setting SAFEGRD_EMAIL_PASSWORD env var)")
-	cmd.Flags().StringSliceVar(&emailFolders, "email-folders", nil, "Specific mailbox folders to back up (default: all except spam/trash)")
+	cmd.Flags().StringVar(&emailUser, "email-user", "", "Mailbox username or address (default $SAFEGRD_EMAIL_USER)")
+	cmd.Flags().StringVar(&emailPass, "email-password", "", "App password, as env:VAR or file:/path (default $SAFEGRD_EMAIL_PASSWORD)")
+	cmd.Flags().StringSliceVar(&emailFolders, "email-folders", nil, "Mailbox folders to back up (default: all except spam and trash)")
 
 	// Global backup flags
-	cmd.Flags().IntVar(&retentionDays, "retention-days", 0, "WORM immutability period in days")
-	cmd.Flags().StringVar(&tag, "tag", "", "Optional custom snapshot tag prefix")
-	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Output result as JSON")
+	cmd.Flags().IntVar(&retentionDays, "retention-days", 0, "Days this backup is locked (Object Lock retention; default: the config's)")
+	cmd.Flags().StringVar(&tag, "tag", "", "Put this tag in the snapshot ID (snap-<tag>-…)")
+	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Print the snapshot metadata as JSON on stdout; warnings stay on stderr")
 
 	// Storage routing override flags
-	cmd.Flags().StringVar(&storageBucket, "bucket", "", "Storage bucket name (overrides project sink and config)")
-	cmd.Flags().StringVar(&storagePrefix, "prefix", "", "Storage key prefix (overrides project sink and config)")
-	cmd.Flags().StringVar(&storageRegion, "region", "", "Storage region (overrides project sink and config)")
-	cmd.Flags().StringVar(&storageEndpoint, "endpoint", "", "Storage endpoint URL (overrides project sink and config)")
+	cmd.Flags().StringVar(&storageBucket, "s3-bucket", "", "Write to this S3 bucket instead of the project's or the config's")
+	cmd.Flags().StringVar(&storagePrefix, "s3-prefix", "", "Key prefix in the S3 bucket")
+	cmd.Flags().StringVar(&storageRegion, "s3-region", "", "S3 region")
+	cmd.Flags().StringVar(&storageEndpoint, "s3-endpoint", "", "S3 endpoint, for MinIO, R2 or another S3-compatible store")
+	cmd.Flags().StringVar(&s3AccessKey, "s3-access-key", "", "S3 access key ID")
+	cmd.Flags().StringVar(&s3SecretKey, "s3-secret-key", "", "S3 secret access key, as env:VAR or file:/path")
 
 	return cmd
 }
@@ -614,12 +628,12 @@ func deliverSnapshotRecord(ctx context.Context, serverURL, token string, meta *m
 		// above; it must not suppress "the remote server does not know about
 		// this backup", so this goes to stderr and stays out of the JSON on
 		// stdout.
-		fmt.Fprintf(os.Stderr, "   Remote Server:   "+format+"\n", args...)
+		fmt.Fprintf(os.Stderr, "   Remote server:   "+format+"\n", args...)
 	}
 
 	if serverURL == "" {
 		if verbose {
-			fmt.Printf("   Remote Server:   Not configured (metadata stored locally in WORM manifest)\n")
+			fmt.Printf("   Remote server:   not configured (the manifest is stored beside the backup)\n")
 		}
 		return "", false
 	}
@@ -675,7 +689,7 @@ func deliverSnapshotRecord(ctx context.Context, serverURL, token string, meta *m
 		meta.IsPoisonPillFrozen = serverMeta.IsPoisonPillFrozen
 		meta.OutsideProjectStorage = serverMeta.OutsideProjectStorage
 		if verbose {
-			fmt.Printf("   Remote Server:   Synced with %s\n", serverURL)
+			fmt.Printf("   Remote server:   recorded by %s\n", serverURL)
 		}
 		// Recorded, but not where the project keeps its backups: the console
 		// shows the project's storage, and this backup is somewhere else.
@@ -772,7 +786,7 @@ func warnSkipped(skipped []string) {
 	if len(skipped) == 0 {
 		return
 	}
-	fmt.Fprintf(os.Stderr, "[!] %d entries are not files, directories or symlinks and were not backed up:\n", len(skipped))
+	fmt.Fprintf(os.Stderr, "Warning: %d entries are not files, directories or symlinks and were not backed up:\n", len(skipped))
 	for i, s := range skipped {
 		if i == 20 {
 			fmt.Fprintf(os.Stderr, "    ... and %d more\n", len(skipped)-20)

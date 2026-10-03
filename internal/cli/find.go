@@ -114,7 +114,7 @@ segment, '**' across any number of them. A directory selects everything below it
 Restore a version with: safegrd restore --path <path> --version <n> --target-dir <dir>`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := context.Background()
+			ctx := cmd.Context()
 			key, err := resolveIdentity(ctx, keyPath, privKey)
 			if err != nil {
 				return err
@@ -178,8 +178,8 @@ Restore a version with: safegrd restore --path <path> --version <n> --target-dir
 	cmd.Flags().StringVar(&surface, "surface", "", "Search this surface only")
 	cmd.Flags().BoolVar(&deleted, "deleted", false, "List only files the newest snapshot no longer holds")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print the histories as JSON")
-	cmd.Flags().StringVar(&keyPath, "key-path", "", "Path to Age private identity file")
-	cmd.Flags().StringVar(&privKey, "private-key", "", "Age private identity key string")
+	cmd.Flags().StringVar(&keyPath, "key-path", "", "Path to the age identity file")
+	cmd.Flags().StringVar(&privKey, "private-key", "", "Age identity (AGE-SECRET-KEY-1...), as env:VAR, file:/path or the key")
 	return cmd
 }
 

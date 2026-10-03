@@ -70,7 +70,7 @@ which downloads the snapshot's data. It needs the private key.`,
 			if given != 1 {
 				return fmt.Errorf("give one of --snapshot, --epoch or --all")
 			}
-			ctx := context.Background()
+			ctx := cmd.Context()
 			key, err := resolveIdentity(ctx, keyPath, privKey)
 			if err != nil {
 				return err
@@ -145,7 +145,7 @@ which downloads the snapshot's data. It needs the private key.`,
 	cmd.Flags().StringVar(&epochID, "epoch", "", "Check every snapshot of this epoch")
 	cmd.Flags().BoolVar(&all, "all", false, "Check every incremental snapshot in storage")
 	cmd.Flags().BoolVar(&readData, "read-data", false, "Also open every blob and check its SHA-256 (downloads the data)")
-	cmd.Flags().StringVar(&keyPath, "key-path", "", "Path to Age private identity file")
-	cmd.Flags().StringVar(&privKey, "private-key", "", "Age private identity key string")
+	cmd.Flags().StringVar(&keyPath, "key-path", "", "Path to the age identity file")
+	cmd.Flags().StringVar(&privKey, "private-key", "", "Age identity (AGE-SECRET-KEY-1...), as env:VAR, file:/path or the key")
 	return cmd
 }

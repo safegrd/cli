@@ -13,9 +13,20 @@ import (
 	"github.com/safegrd/cli/pkg/config"
 )
 
-// ResolveSecretRef resolves a secret value from a reference (e.g. "env:VAR_NAME" or "file:/path/to/secret")
-// or directly from a raw value while emitting a security warning to stderr.
+// ResolveSecretRef resolves a secret flag: a reference ("env:VAR_NAME" or
+// "file:/path/to/secret"), or a raw value, which is warned about because a
+// flag's value is visible in `ps` and shell history.
 func ResolveSecretRef(flagName, val string) (string, error) {
+	return resolveSecret(flagName, val, true)
+}
+
+// resolveConfigSecret resolves the same references in a config value. A raw
+// value there is not on any command line, so it is not warned about.
+func resolveConfigSecret(field, val string) (string, error) {
+	return resolveSecret(field, val, false)
+}
+
+func resolveSecret(flagName, val string, isFlag bool) (string, error) {
 	if val == "" {
 		return "", nil
 	}
@@ -38,8 +49,9 @@ func ResolveSecretRef(flagName, val string) (string, error) {
 		return strings.TrimSpace(string(data)), nil
 	}
 
-	// Raw secret passed as flag - warn operator about process table exposure
-	fmt.Fprintf(os.Stderr, "⚠️  Security Warning: Passing credentials via --%s exposes secrets in `ps` and shell history. Use 'env:VAR' or 'file:/path' reference instead.\n", flagName)
+	if isFlag {
+		fmt.Fprintf(os.Stderr, "Warning: the value of --%s is visible in `ps` and shell history. Pass env:VAR or file:/path instead.\n", flagName)
+	}
 	return val, nil
 }
 
@@ -228,7 +240,7 @@ func resolveSurfaceDatabaseURLAsGiven(ctx context.Context, c *config.CLIConfig, 
 		url = c.DatabaseURL
 	}
 	if strings.HasPrefix(url, "env:") || strings.HasPrefix(url, "file:") {
-		return ResolveSecretRef("database_url", url)
+		return resolveConfigSecret("database_url", url)
 	}
 	return url, nil
 }

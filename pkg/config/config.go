@@ -393,7 +393,7 @@ func LoadCLIConfig(path string) (*CLIConfig, error) {
 					// or mismatched write left the identity nowhere, and every
 					// backup it sealed undecryptable.
 					if err := persistMigratedKey(keyPath, inlineKey); err != nil {
-						fmt.Fprintf(os.Stderr, "⚠️  %s holds an inline private_key that could not be moved to %s: %v\n   The config is unchanged. Fix the key file, or set encryption.key_path to a free path.\n", path, keyPath, err)
+						fmt.Fprintf(os.Stderr, "Warning: %s holds an inline private_key that could not be moved to %s: %v\n   The config is unchanged. Fix the key file, or set encryption.key_path to a free path.\n", path, keyPath, err)
 					} else {
 						delete(enc, "private_key")
 						enc["key_path"] = keyPath
@@ -402,9 +402,9 @@ func LoadCLIConfig(path string) (*CLIConfig, error) {
 							mErr = writeFileAtomic(path, strippedData, 0600)
 						}
 						if mErr != nil {
-							fmt.Fprintf(os.Stderr, "⚠️  Moved the inline private_key in %s to %s, but could not rewrite the config without it: %v\n", path, keyPath, mErr)
+							fmt.Fprintf(os.Stderr, "Warning: moved the inline private_key in %s to %s, but could not rewrite the config without it: %v\n", path, keyPath, mErr)
 						} else {
-							fmt.Fprintf(os.Stderr, "⚠️  Moved the inline private_key in %s to %s (0600). It was stored in plain text, so consider rotating it.\n", path, keyPath)
+							fmt.Fprintf(os.Stderr, "Warning: moved the inline private_key in %s to %s (0600). It was stored in plain text, so consider rotating it.\n", path, keyPath)
 						}
 					}
 					cfg.Encryption.PrivateKey = inlineKey

@@ -1,12 +1,15 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
+	"os/signal"
 	"runtime"
 	"runtime/debug"
 	"strings"
+	"syscall"
 
 	"github.com/safegrd/cli/pkg/config"
 	"github.com/spf13/cobra"
@@ -50,9 +53,34 @@ var (
 var RootCmd = &cobra.Command{
 	Use:   "safegrd",
 	Short: "SafeGrd: encrypted, locked backups of databases, files and mail, with scheduled restore tests",
-	Long: `SafeGrd (https://safegrd.dev)
-Daemon-safe, cryptographically air-gapped PostgreSQL backups with
-client-side Age encryption and WORM storage immutability.`,
+	Long: `SafeGrd (https://safegrd.dev) backs up PostgreSQL, MySQL, MongoDB and SQLite
+databases, directory trees and IMAP mailboxes. Each backup is encrypted on this
+host with age, written to Object Lock storage, and restored on a schedule to
+prove it can be.
+
+Output:
+  Results go to stdout. Warnings and errors go to stderr, prefixed "Warning:"
+  and "Error:". Commands with --json print only JSON on stdout.
+
+Exit status:
+  0 on success, 1 on failure, 130 when interrupted. 'safegrd guard' exits with
+  the status of the command it runs, or 3 when it refused to run it.
+
+Environment (each overrides the config file; flags override both):
+  SAFEGRD_SERVER_URL       remote server URL
+  SAFEGRD_SERVER_TOKEN     node token (server_token)
+  SAFEGRD_PRIVATE_KEY      age identity, read instead of encryption.key_path
+  SAFEGRD_PUBLIC_KEY       age recipient (encryption.public_key)
+  SAFEGRD_DATABASE_URL     database to back up (database_url)
+  SAFEGRD_STORAGE_BUCKET   S3 bucket (storage.bucket); sets storage.type to s3
+  SAFEGRD_S3_REGION, SAFEGRD_S3_ENDPOINT, SAFEGRD_S3_ACCESS_KEY, SAFEGRD_S3_SECRET_KEY
+                           S3 settings; AWS_REGION, AWS_ACCESS_KEY_ID and
+                           AWS_SECRET_ACCESS_KEY are read when these are unset
+  SAFEGRD_EMAIL_USER, SAFEGRD_EMAIL_PASSWORD, SAFEGRD_EMAIL_CA_FILE
+                           IMAP login and CA bundle for 'backup --email'
+  SAFEGRD_PG_DUMP          pg_dump binary to use
+  SAFEGRD_PG_BINDIR        PostgreSQL binaries a local drill sandbox runs from
+  NO_COLOR                 set to any value to turn off colour`,
 }
 
 func Execute() {
@@ -60,7 +88,20 @@ func Execute() {
 	// told not to, which put every failure on the screen twice with the usage
 	// block between the copies.
 	RootCmd.SilenceErrors = true
-	if err := RootCmd.Execute(); err != nil {
+
+	// One context for every command, cancelled by Ctrl-C or SIGTERM, so a
+	// backup, restore or upload stops where it is and cleans up instead of
+	// dying mid-write. After the first signal the default handling is put
+	// back, so a second Ctrl-C ends a process that is stuck.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
+	err := RootCmd.ExecuteContext(ctx)
+	interrupted := ctx.Err() != nil
+	stop()
+	if err != nil {
 		var ee *exitError
 		if errors.As(err, &ee) {
 			if ee.err != nil {
@@ -69,6 +110,9 @@ func Execute() {
 			os.Exit(ee.code)
 		}
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		if interrupted {
+			os.Exit(130)
+		}
 		os.Exit(1)
 	}
 }
@@ -101,8 +145,8 @@ func init() {
 		runningCommand = cmd.Name()
 		return requireUsableConfig(cmd)
 	}
-	RootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is ~/.safegrd/config.yaml)")
-	RootCmd.PersistentFlags().StringVar(&serverURLFlag, "server-url", "", "Remote server URL (default: https://safegrd.dev, or $SAFEGRD_SERVER_URL)")
+	RootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "Config file (default ~/.safegrd/config.yaml)")
+	RootCmd.PersistentFlags().StringVar(&serverURLFlag, "server-url", "", "Remote server URL (default $SAFEGRD_SERVER_URL, then https://safegrd.dev)")
 
 	RootCmd.Version = Version
 	RootCmd.SetVersionTemplate(fmt.Sprintf("safegrd version {{.Version}} (commit: %s, built: %s)\n", Commit, Date))
@@ -136,7 +180,7 @@ func init() {
 func newVersionCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
-		Short: "Print safegrd CLI version and build information",
+		Short: "Print the CLI version and build information",
 		Run: func(cmd *cobra.Command, args []string) {
 			fmt.Printf("safegrd version %s (commit: %s, built: %s)\n", Version, Commit, Date)
 		},
@@ -174,15 +218,14 @@ func requireUsableConfig(cmd *cobra.Command) error {
 	cmd.SilenceUsage = true
 
 	if cfgLoadErr == nil && cfg != nil && len(cfg.UnknownKeys) > 0 && !diagnosesConfig(cmd) {
-		fmt.Fprintf(os.Stderr, "⚠️  Your config file has keys SafeGrd does not know, and they are ignored: %s.\n"+
-			"   A misspelt setting falls back to its default. See safegrd.dev/docs/config\n", strings.Join(cfg.UnknownKeys, "; "))
+		fmt.Fprintf(os.Stderr, "Warning: the config file has keys SafeGrd does not know, and they are ignored: %s.\n"+
+			"   A misspelt setting falls back to its default. See https://safegrd.dev/docs/config\n", strings.Join(cfg.UnknownKeys, "; "))
 	}
 	if cfgLoadErr == nil || diagnosesConfig(cmd) {
 		return nil
 	}
 	return fmt.Errorf("the configuration file was not loaded: %w\n"+
-		"       No error after this one is about your configuration; it was never read, "+
-		"so every setting in it is missing. Run 'safegrd config validate' for the full picture", cfgLoadErr)
+		"       None of its settings were read. Run 'safegrd config validate' to see why", cfgLoadErr)
 }
 
 // diagnosesConfig reports whether cmd, or any command it sits under, exists to

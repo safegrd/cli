@@ -1,12 +1,12 @@
 package cli
 
 import (
-	"context"
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -29,6 +29,7 @@ func newVerifyCmd() *cobra.Command {
 		keyPath     string
 		privKey     string
 		s3Bucket    string
+		s3Prefix    string
 		s3Region    string
 		s3Endpoint  string
 		s3AccessKey string
@@ -38,22 +39,25 @@ func newVerifyCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "verify",
 		Short: "Test a backup by restoring it in memory, or into a sandbox database",
-		Long: `Pulls an encrypted snapshot from storage (S3 or local WORM), decrypts it in-memory
-using your private Age encryption key, and verifies table counts, row counts,
-column counts, and extensions.
+		Long: `Reads a snapshot from storage, decrypts it on this host with the private key,
+and checks its tables, row counts, columns and extensions.
 
-By default (or with --dry-run), performs a pure Go in-memory dry restore requiring
-no running PostgreSQL database instance. When --sandbox-target is provided without --dry-run,
-executes a full active restore drill into the target ephemeral database.`,
+By default (or with --dry-run) the restore is parsed in memory and needs no
+database. With --sandbox-target it is restored into that empty database, which
+is the full Fire Drill. Either way the result is reported to the remote server
+when this host is enrolled.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if snapshotID == "" {
-				return fmt.Errorf("--snapshot flag is required")
+				return fmt.Errorf("--snapshot is required")
 			}
 
 			// Apply S3 sink overrides if provided
 			if s3Bucket != "" {
 				cfg.Storage.Type = config.StorageTypeS3
 				cfg.Storage.Bucket = s3Bucket
+			}
+			if s3Prefix != "" {
+				cfg.Storage.Prefix = s3Prefix
 			}
 			if s3Region != "" {
 				cfg.Storage.Region = s3Region
@@ -65,7 +69,11 @@ executes a full active restore drill into the target ephemeral database.`,
 				cfg.Storage.AccessKeyID = s3AccessKey
 			}
 			if s3SecretKey != "" {
-				cfg.Storage.SecretAccessKey = s3SecretKey
+				resolved, err := ResolveSecretRef("s3-secret-key", s3SecretKey)
+				if err != nil {
+					return err
+				}
+				cfg.Storage.SecretAccessKey = resolved
 			}
 
 			// Load private key
@@ -93,7 +101,7 @@ executes a full active restore drill into the target ephemeral database.`,
 				}
 			}
 
-			ctx := context.Background()
+			ctx := cmd.Context()
 
 			// Same key set as restore: the host's own key and a
 			// managed-custody organization's keys, fetched for this
@@ -125,7 +133,7 @@ executes a full active restore drill into the target ephemeral database.`,
 			if err != nil {
 				// Said, and not fatal: the snapshot may be an archive, which
 				// does not need the repositories to be readable.
-				fmt.Fprintf(os.Stderr, "⚠️  Could not look among the incremental repositories: %v\n", err)
+				fmt.Fprintf(os.Stderr, "Warning: could not look among the incremental repositories: %v\n", err)
 			}
 			if rs != nil {
 				if sandboxURL != "" && !dryRun {
@@ -157,24 +165,24 @@ executes a full active restore drill into the target ephemeral database.`,
 			isDryRun := dryRun || sandboxURL == ""
 
 			if isDryRun {
-				fmt.Printf("🛡️  SafeGrd In-Memory Dry Restore Verification...\n")
+				fmt.Printf("Dry restore of %s: decrypting and reading it in memory\n", snapshotID)
 				fmt.Printf("   Snapshot ID:    %s\n", snapshotID)
 				// The storage this run reads, after routing: a hosted or
 				// console-set bucket is not in cfg.Storage.
 				switch storageCfg.Type {
 				case config.StorageTypeS3:
-					fmt.Printf("   Storage Source: s3://%s\n", storageCfg.Bucket)
+					fmt.Printf("   Storage:        s3://%s\n", storageCfg.Bucket)
 				case config.StorageTypeHosted:
-					fmt.Printf("   Storage Source: SafeGrd hosted storage\n")
+					fmt.Printf("   Storage:        SafeGrd hosted storage\n")
 				default:
-					fmt.Printf("   Storage Source: %s (a directory on this host)\n", storageCfg.LocalPath)
+					fmt.Printf("   Storage:        %s (a directory on this host)\n", storageCfg.LocalPath)
 				}
 				fmt.Printf("   Key:            %s\n", identityFingerprint(resolvedKey))
-				fmt.Printf("   Engine:         Pure in-memory catalog & COPY inspector (no real target required)\n\n")
+				fmt.Printf("   Method:         schema and COPY data parsed in memory; no database needed\n\n")
 
 				report, dryResult, err := verifier.RunDryRestore(ctx, snapshotID, resolvedKey)
 				if err != nil {
-					return fmt.Errorf("dry restore execution error: %w", err)
+					return fmt.Errorf("dry restore of %s: %w", snapshotID, err)
 				}
 
 				if report.Status == model.VerificationStatusPassed {
@@ -184,15 +192,15 @@ executes a full active restore drill into the target ephemeral database.`,
 					}
 
 					if report.SurfaceType == model.SurfaceTypeFiles {
-						fmt.Println("\nVerified File Catalog:")
-						fmt.Printf("   • Total Files:       %s\n", formatNumber(report.RowsRestored))
-						fmt.Printf("   • Total Directories: %d\n", report.TablesRestored)
+						fmt.Println("\nFiles read:")
+						fmt.Printf("   Files:       %s\n", formatNumber(report.RowsRestored))
+						fmt.Printf("   Directories: %d\n", report.TablesRestored)
 					} else if report.SurfaceType == model.SurfaceTypeEmail {
-						fmt.Println("\nVerified Mailbox:")
-						fmt.Printf("   • Total Emails:      %s\n", formatNumber(report.RowsRestored))
-						fmt.Printf("   • Total Folders:     %d\n", report.TablesRestored)
+						fmt.Println("\nMailbox read:")
+						fmt.Printf("   Emails:      %s\n", formatNumber(report.RowsRestored))
+						fmt.Printf("   Folders:     %d\n", report.TablesRestored)
 					} else if dryResult != nil && len(dryResult.Tables) > 0 {
-						fmt.Println("\nVerified Table Catalog:")
+						fmt.Println("\nTables read:")
 						for _, t := range dryResult.Tables {
 							colDesc := fmt.Sprintf("%d columns", t.ColumnCount)
 							if len(t.Columns) > 0 {
@@ -206,32 +214,31 @@ executes a full active restore drill into the target ephemeral database.`,
 									colDesc += " [" + strings.Join(colNames[:5], ", ") + ", ...]"
 								}
 							}
-							fmt.Printf("   • %s.%s: %s rows, %s\n",
+							fmt.Printf("   %s.%s: %s rows, %s\n",
 								t.Schema, t.TableName,
 								formatNumber(t.RowCount),
 								colDesc)
 						}
 					}
 
-					fmt.Printf("\n✅ Dry restore verified\n")
+					fmt.Printf("\nDry restore verified\n")
 					fmt.Printf("   Verification ID: %s\n", report.VerificationID)
 					fmt.Printf("   Duration:        %s\n", time.Duration(report.DurationMs*int64(time.Millisecond)).Round(time.Millisecond))
 					if report.SurfaceType == model.SurfaceTypeFiles {
-						fmt.Printf("   Files Verified:  %s\n", formatNumber(report.RowsRestored))
-						fmt.Printf("   Dirs Verified:   %d\n", report.TablesRestored)
+						fmt.Printf("   Files:           %s\n", formatNumber(report.RowsRestored))
+						fmt.Printf("   Directories:     %d\n", report.TablesRestored)
 					} else if report.SurfaceType == model.SurfaceTypeEmail {
-						fmt.Printf("   Emails Verified: %s\n", formatNumber(report.RowsRestored))
-						fmt.Printf("   Folders Verified:%d\n", report.TablesRestored)
+						fmt.Printf("   Emails:          %s\n", formatNumber(report.RowsRestored))
+						fmt.Printf("   Folders:         %d\n", report.TablesRestored)
 					} else {
-						fmt.Printf("   Tables Verified: %d\n", report.TablesRestored)
-						fmt.Printf("   Rows Verified:   %s\n", formatNumber(report.RowsRestored))
+						fmt.Printf("   Tables:          %d\n", report.TablesRestored)
+						fmt.Printf("   Rows:            %s\n", formatNumber(report.RowsRestored))
 					}
 					fmt.Printf("   Certificate:     %s\n", report.CertificateHash)
 					return nil
 				}
 
-				fmt.Printf("❌ Dry Restore Verification Failed!\n")
-				fmt.Printf("   Error: %s\n", report.ErrorMessage)
+				fmt.Printf("Dry restore failed\n")
 				for _, a := range report.Assertions {
 					status := "PASS"
 					if !a.Passed {
@@ -239,33 +246,32 @@ executes a full active restore drill into the target ephemeral database.`,
 					}
 					fmt.Printf("   [%s] %s: %s (Expected: %s, Actual: %s)\n", status, a.Name, a.Message, a.Expected, a.Actual)
 				}
-				return fmt.Errorf("dry restore verification failed")
+				return fmt.Errorf("dry restore of %s failed: %s", snapshotID, report.ErrorMessage)
 			}
 
 			// Active Sandbox Fire Drill
-			fmt.Printf("🔥 Running SafeGrd Fire Drill Verification...\n")
+			fmt.Printf("Fire Drill: restoring %s into the sandbox database\n", snapshotID)
 			fmt.Printf("   Snapshot ID:    %s\n", snapshotID)
-			fmt.Printf("   Sandbox Target: %s\n\n", dump.RedactURL(sandboxURL))
+			fmt.Printf("   Sandbox:        %s\n\n", dump.RedactURL(sandboxURL))
 
 			report, err := verifier.RunFireDrill(ctx, snapshotID, resolvedKey, sandboxURL)
 			if err != nil {
-				return fmt.Errorf("fire drill execution error: %w", err)
+				return fmt.Errorf("fire drill of %s: %w", snapshotID, err)
 			}
 
 			if report.Status == model.VerificationStatusPassed {
-				fmt.Printf("✅ Fire Drill Passed!\n")
+				fmt.Printf("Fire Drill Passed\n")
 				fmt.Printf("   Verification ID: %s\n", report.VerificationID)
 				fmt.Printf("   Duration:        %s\n", time.Duration(report.DurationMs*int64(time.Millisecond)).Round(time.Millisecond))
-				fmt.Printf("   Tables Restored: %d\n", report.TablesRestored)
-				fmt.Printf("   Rows Restored:   %d\n", report.RowsRestored)
+				fmt.Printf("   Tables restored: %d\n", report.TablesRestored)
+				fmt.Printf("   Rows restored:   %d\n", report.RowsRestored)
 				fmt.Printf("   Certificate:     %s\n", report.CertificateHash)
 				fmt.Println("\nAssertions:")
 				for _, a := range report.Assertions {
 					fmt.Printf("   [PASS] %s (Expected: %s, Actual: %s)\n", a.Name, a.Expected, a.Actual)
 				}
 			} else {
-				fmt.Printf("❌ Fire Drill Failed!\n")
-				fmt.Printf("   Error: %s\n", report.ErrorMessage)
+				fmt.Printf("Fire Drill Failed\n")
 				for _, a := range report.Assertions {
 					status := "PASS"
 					if !a.Passed {
@@ -273,7 +279,7 @@ executes a full active restore drill into the target ephemeral database.`,
 					}
 					fmt.Printf("   [%s] %s: %s (Expected: %s, Actual: %s)\n", status, a.Name, a.Message, a.Expected, a.Actual)
 				}
-				return fmt.Errorf("fire drill assertions failed")
+				return fmt.Errorf("fire drill of %s failed: %s", snapshotID, report.ErrorMessage)
 			}
 
 			return nil
@@ -281,15 +287,16 @@ executes a full active restore drill into the target ephemeral database.`,
 	}
 
 	cmd.Flags().StringVar(&snapshotID, "snapshot", "", "Snapshot ID to verify (required)")
-	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Perform pure in-memory dry restore without a real target")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Restore in memory only, even with --sandbox-target (the default without it)")
 	cmd.Flags().StringVar(&sandboxURL, "sandbox-target", "", "An empty database to restore the snapshot into for a full Fire Drill: postgres://…, mysql://…, or sqlite:///path/to/absent.db")
-	cmd.Flags().StringVar(&keyPath, "key-path", "", "Path to Age private identity file")
-	cmd.Flags().StringVar(&privKey, "private-key", "", "Age private identity key string")
-	cmd.Flags().StringVar(&s3Bucket, "s3-bucket", "", "Override S3 bucket to pull snapshot from")
-	cmd.Flags().StringVar(&s3Region, "s3-region", "", "Override S3 region")
-	cmd.Flags().StringVar(&s3Endpoint, "s3-endpoint", "", "Override S3 endpoint (e.g. for MinIO, Cloudflare R2)")
-	cmd.Flags().StringVar(&s3AccessKey, "s3-access-key", "", "Override S3 Access Key ID")
-	cmd.Flags().StringVar(&s3SecretKey, "s3-secret-key", "", "Override S3 Secret Access Key")
+	cmd.Flags().StringVar(&keyPath, "key-path", "", "Path to the age identity file")
+	cmd.Flags().StringVar(&privKey, "private-key", "", "Age identity (AGE-SECRET-KEY-1...), as env:VAR, file:/path or the key")
+	cmd.Flags().StringVar(&s3Bucket, "s3-bucket", "", "Read the snapshot from this S3 bucket instead of the configured storage")
+	cmd.Flags().StringVar(&s3Prefix, "s3-prefix", "", "Key prefix in the S3 bucket")
+	cmd.Flags().StringVar(&s3Region, "s3-region", "", "S3 region of --s3-bucket")
+	cmd.Flags().StringVar(&s3Endpoint, "s3-endpoint", "", "S3 endpoint of --s3-bucket, for MinIO, R2 or another S3-compatible store")
+	cmd.Flags().StringVar(&s3AccessKey, "s3-access-key", "", "S3 access key ID for --s3-bucket")
+	cmd.Flags().StringVar(&s3SecretKey, "s3-secret-key", "", "S3 secret access key, as env:VAR or file:/path")
 
 	cmd.AddCommand(newVerifyHistoryCmd())
 
@@ -308,19 +315,22 @@ func newVerifyHistoryCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "history",
 		Aliases: []string{"verify-history"},
-		Short:   "Verify cryptographic attestation chain and Ed25519 signatures for a node",
-		Long: `Performs offline or remote verification of the tamper-evident attestation hash chain (PrevHash).
-Validates that:
-1. Genesis block has PrevHash='genesis'
-2. Every subsequent block links immutably to the predecessor certificate hash
-3. All Ed25519 signatures are valid against the remote server's attestation public key
-4. No records have been modified, skipped, or backdated.`,
+		Short:   "Check a node's attestation chain and Ed25519 signatures",
+		Long: `Checks a node's attestation records, fetched from the remote server or read from
+a file with --file:
+
+1. The first record has PrevHash 'genesis'.
+2. Every later record's PrevHash is the certificate hash of the one before it,
+   so no record was changed, removed or inserted.
+3. Every signed record's Ed25519 signature is valid against the attestation
+   public key (from --key, --key-file or the remote server). Unsigned records
+   are counted and reported.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if nodeID == "" {
 				nodeID = cfg.NodeID
 			}
 			if nodeID == "" && localFile == "" {
-				return fmt.Errorf("--node flag is required")
+				return fmt.Errorf("--node is required: this config names no node_id")
 			}
 
 			serverURL := resolveServerURL()
@@ -344,7 +354,11 @@ Validates that:
 				}
 				pubKey = ed25519.PublicKey(raw)
 			} else {
-				resp, err := http.Get(serverURL + "/api/v1/attestations/public-key")
+				pkReq, err := http.NewRequestWithContext(cmd.Context(), http.MethodGet, serverURL+"/api/v1/attestations/public-key", nil)
+				if err != nil {
+					return err
+				}
+				resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(pkReq)
 				if err != nil {
 					return fmt.Errorf("failed to fetch attestation public key from %s: %w", serverURL, err)
 				}
@@ -365,6 +379,11 @@ Validates that:
 				}
 				pubKey = ed25519.PublicKey(raw)
 			}
+			// A key of the wrong length used to skip every signature check
+			// and still report the signatures verified.
+			if len(pubKey) != ed25519.PublicKeySize {
+				return fmt.Errorf("the attestation public key is %d bytes; an Ed25519 public key is %d", len(pubKey), ed25519.PublicKeySize)
+			}
 
 			// 2. Load verifications
 			var reports []*model.VerificationReport
@@ -377,7 +396,7 @@ Validates that:
 					return fmt.Errorf("failed to parse verifications file: %w", err)
 				}
 			} else {
-				req, err := http.NewRequest("GET", fmt.Sprintf("%s/api/v1/verifications?node_id=%s", serverURL, nodeID), nil)
+				req, err := http.NewRequestWithContext(cmd.Context(), http.MethodGet, fmt.Sprintf("%s/api/v1/verifications?node_id=%s", serverURL, url.QueryEscape(nodeID)), nil)
 				if err != nil {
 					return err
 				}
@@ -402,7 +421,7 @@ Validates that:
 				if jsonOut {
 					fmt.Println(`{"status":"empty","count":0}`)
 				} else {
-					fmt.Printf("ℹ️  No attestation records found for node %s.\n", nodeID)
+					fmt.Printf("No attestation records found for node %s.\n", nodeID)
 				}
 				return nil
 			}
@@ -416,27 +435,23 @@ Validates that:
 			})
 
 			expectedPrev := "genesis"
+			unsigned := 0
 			for i, r := range reports {
 				// 1. Verify PrevHash chaining
 				if r.PrevHash != expectedPrev {
-					err := fmt.Errorf("CHAIN BREAK DETECTED at index %d (verification %s): expected PrevHash=%q, actual PrevHash=%q",
+					return fmt.Errorf("CHAIN BREAK DETECTED at index %d (verification %s): expected PrevHash=%q, actual PrevHash=%q",
 						i, r.VerificationID, expectedPrev, r.PrevHash)
-					if !jsonOut {
-						fmt.Printf("❌ %v\n", err)
-					}
-					return err
 				}
 
-				// 2. Verify signature if signature is present
-				if r.Signature != "" && len(pubKey) == ed25519.PublicKeySize {
+				// 2. Verify the signature. A record with none is counted and
+				// said, never passed as verified.
+				if r.Signature == "" {
+					unsigned++
+				} else {
 					sigBytes, err := hex.DecodeString(r.Signature)
 					if err != nil || !ed25519.Verify(pubKey, r.CanonicalBytes(), sigBytes) {
-						err := fmt.Errorf("SIGNATURE FORGERY DETECTED at index %d (verification %s): Ed25519 signature is invalid",
+						return fmt.Errorf("INVALID SIGNATURE at index %d (verification %s): the Ed25519 signature does not match the record",
 							i, r.VerificationID)
-						if !jsonOut {
-							fmt.Printf("❌ %v\n", err)
-						}
-						return err
 					}
 				}
 
@@ -451,19 +466,25 @@ Validates that:
 					"chain_depth":   len(reports),
 					"genesis_hash":  reports[0].CertificateHash,
 					"head_hash":     reports[len(reports)-1].CertificateHash,
-					"signatures_ok": true,
+					"signatures_ok": unsigned == 0,
+					"unsigned":      unsigned,
 				}
 				enc := json.NewEncoder(os.Stdout)
 				enc.SetIndent("", "  ")
 				return enc.Encode(res)
 			}
 
-			fmt.Println("🛡️  SafeGrd Attestation History Verified")
+			fmt.Println("Attestation History Verified")
 			fmt.Printf("   Node ID:         %s\n", nodeID)
-			fmt.Printf("   Chain Depth:     %d records\n", len(reports))
-			fmt.Printf("   Genesis Hash:    %s\n", reports[0].CertificateHash)
-			fmt.Printf("   Head Hash:       %s\n", reports[len(reports)-1].CertificateHash)
-			fmt.Println("   Chain Integrity: 100% (Genesis valid, append-only chaining intact, Ed25519 signatures verified)")
+			fmt.Printf("   Records:         %d, each linked to the one before it from genesis\n", len(reports))
+			fmt.Printf("   Genesis hash:    %s\n", reports[0].CertificateHash)
+			fmt.Printf("   Head hash:       %s\n", reports[len(reports)-1].CertificateHash)
+			if unsigned == 0 {
+				fmt.Printf("   Signatures:      %d of %d valid (Ed25519)\n", len(reports), len(reports))
+			} else {
+				fmt.Printf("   Signatures:      %d of %d valid (Ed25519); %d records carry no signature\n",
+					len(reports)-unsigned, len(reports), unsigned)
+			}
 			return nil
 		},
 	}
@@ -471,8 +492,8 @@ Validates that:
 	cmd.Flags().StringVar(&nodeID, "node", "", "Node ID to verify history for")
 	cmd.Flags().StringVar(&keyStr, "key", "", "Hex-encoded Ed25519 attestation public key")
 	cmd.Flags().StringVar(&keyFile, "key-file", "", "Path to file containing hex-encoded public key")
-	cmd.Flags().StringVar(&localFile, "file", "", "Path to local JSON file of verifications (for offline air-gapped audit)")
-	cmd.Flags().BoolVar(&jsonOut, "json", false, "Output verification result in JSON format")
+	cmd.Flags().StringVar(&localFile, "file", "", "JSON file of verification records to check offline")
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print the result as JSON on stdout")
 
 	return cmd
 }

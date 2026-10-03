@@ -15,35 +15,36 @@ func newWhoamiCmd() *cobra.Command {
 		Short: "Show who you are signed in as, and on which server",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if cfg.ServerToken == "" {
-				fmt.Println("Not logged in. Run 'safegrd login' to authenticate with the SafeGrd Remote Server.")
+				fmt.Println("Not logged in. Run 'safegrd login' to sign in.")
 				return nil
 			}
 
 			serverURL := resolveServerURL()
 
-			req, err := http.NewRequest("GET", serverURL+"/api/v1/auth/me", nil)
+			req, err := http.NewRequestWithContext(cmd.Context(), http.MethodGet, serverURL+"/api/v1/auth/me", nil)
 			if err != nil {
 				return err
 			}
 			req.Header.Set("Authorization", "Bearer "+cfg.ServerToken)
+			req.Header.Set("User-Agent", UserAgent())
 
 			client := &http.Client{Timeout: 5 * time.Second}
 			resp, err := client.Do(req)
 			if err != nil {
-				return fmt.Errorf("could not connect to server at %s: %w", serverURL, err)
+				return fmt.Errorf("could not reach %s: %w", serverURL, err)
 			}
 			defer resp.Body.Close()
 
 			if resp.StatusCode != http.StatusOK {
-				fmt.Printf("⚠️  Token rejected by server (HTTP %d). Session may have expired.\n", resp.StatusCode)
-				fmt.Println("Run 'safegrd login' to refresh your session.")
-				return nil
+				return fmt.Errorf("%s refused the saved token (HTTP %d). It may have expired: run 'safegrd login'", serverURL, resp.StatusCode)
 			}
 
 			var data map[string]any
-			_ = json.NewDecoder(resp.Body).Decode(&data)
+			if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+				return fmt.Errorf("could not read the account from %s: %w", serverURL, err)
+			}
 
-			fmt.Println("👤 SafeGrd Authentication Status")
+			fmt.Println("Signed in")
 			fmt.Printf("   Server: %s\n", serverURL)
 			if email, ok := data["email"]; ok {
 				fmt.Printf("   User:   %v\n", email)

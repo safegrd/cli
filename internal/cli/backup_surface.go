@@ -64,7 +64,7 @@ func backupNamedSurface(ctx context.Context, c *config.CLIConfig, surfaceID stri
 	}
 	sState.newEpoch, sState.rescan = newEpoch, rescan
 
-	fmt.Printf("⏰ Surface %s (%s): backing up now.\n", surface.ID, surface.Type)
+	fmt.Printf("Surface %s (%s): backing up now.\n", surface.ID, surface.Type)
 	fetchHeldSurfaceSecret(ctx, c, nodeID, surface)
 	attempted := sState.LastAttempt
 	if _, err := backupSurfaceNow(ctx, c, surface, sState, nodeID, lockDir, statePath, daemonState); err != nil {
@@ -81,7 +81,7 @@ func backupNamedSurface(ctx context.Context, c *config.CLIConfig, surfaceID stri
 	}
 	if sState.LastError != "" {
 		// The backup is taken; what follows is about its report or its hook.
-		fmt.Fprintf(os.Stderr, "⚠️  Surface %s: %s %s\n", surface.ID, sState.BackupReason.Words(), sState.LastError)
+		fmt.Fprintf(os.Stderr, "Warning: Surface %s: %s %s\n", surface.ID, sState.BackupReason.Words(), sState.LastError)
 	}
 	return nil
 }

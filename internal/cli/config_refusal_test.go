@@ -130,7 +130,7 @@ func TestAnUnusedAlertBlockIsNamed(t *testing.T) {
 		t.Error("an empty alert block was reported")
 	}
 	c.Alert.SlackWebhookURL = "https://hooks.slack.com/services/T/B/x"
-	if msg := unusedAlertBlock(c); !strings.Contains(msg, "Settings → Alerts") {
+	if msg := unusedAlertBlock(c); !strings.Contains(msg, "Settings > Alerts") {
 		t.Errorf("a set alert block was not explained: %q", msg)
 	}
 }

@@ -304,7 +304,7 @@ type MongoDumper struct {
 
 // NewMongoDumper creates a dumper for a mongodb:// URL.
 func NewMongoDumper(databaseURL string) *MongoDumper {
-	return &MongoDumper{databaseURL: databaseURL, Warn: func(msg string) { fmt.Fprintf(os.Stderr, "⚠️  %s\n", msg) }}
+	return &MongoDumper{databaseURL: databaseURL, Warn: func(msg string) { fmt.Fprintf(os.Stderr, "Warning: %s\n", msg) }}
 }
 
 // Dump runs mongodump and streams its archive into the snapshot, counting
@@ -508,7 +508,7 @@ type MongoRestorer struct {
 
 // NewMongoRestorer creates a restorer for a mongodb:// URL.
 func NewMongoRestorer(targetURL string) *MongoRestorer {
-	return &MongoRestorer{targetURL: targetURL, Warn: func(msg string) { fmt.Fprintf(os.Stderr, "⚠️  %s\n", msg) }}
+	return &MongoRestorer{targetURL: targetURL, Warn: func(msg string) { fmt.Fprintf(os.Stderr, "Warning: %s\n", msg) }}
 }
 
 // Restore pipes the archive into mongorestore, renaming the source database

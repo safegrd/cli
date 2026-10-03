@@ -162,7 +162,7 @@ func TestAHostWithACustomerHeldKeyIsToldToPassIt(t *testing.T) {
 	var got string
 	stdout := captureStdout(t, func() {
 		stderr := captureStderr(t, func() { got = resolveManagedIdentity(context.Background(), cfg, true) })
-		if !strings.Contains(stderr, "You hold this host's key ("+crypto.Fingerprint(mine.PublicKey)+")") ||
+		if !strings.Contains(stderr, "you hold this host's key ("+crypto.Fingerprint(mine.PublicKey)+")") ||
 			!strings.Contains(stderr, "SAFEGRD_PRIVATE_KEY") {
 			t.Errorf("stderr does not tell the operator to pass this host's key:\n%s", stderr)
 		}

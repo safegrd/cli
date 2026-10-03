@@ -161,7 +161,7 @@ safegrd verify \
   --sandbox-target "postgres://postgres:password@localhost:5432/ephemeral_test_db"
 ```
 
-### 5. Emergency Restore
+### 5. Restore
 
 ```bash
 safegrd restore \

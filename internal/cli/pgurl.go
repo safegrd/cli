@@ -80,6 +80,6 @@ func sayDroppedURLParams(who string, dropped []string) {
 			named = append(named, k)
 		}
 	}
-	fmt.Fprintf(os.Stderr, "⚠️  %s: its connection URL has parameters PostgreSQL does not accept, so they are left out: %s.\n",
+	fmt.Fprintf(os.Stderr, "Warning: %s: its connection URL has parameters PostgreSQL does not accept, so they are left out: %s.\n",
 		who, strings.Join(named, ", "))
 }

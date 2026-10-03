@@ -35,7 +35,7 @@ func newRestoreCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "restore",
-		Short: "Restore an encrypted snapshot into a database target or destination directory",
+		Short: "Restore a snapshot into a database or a directory",
 		Long: `Read a snapshot from this host's storage, decrypt it here with the private key,
 and restore it into a database (--target) or a directory (--target-dir).
 
@@ -113,7 +113,7 @@ from storage is.`,
 				}
 			}
 
-			ctx := context.Background()
+			ctx := cmd.Context()
 
 			// SafeGrd may hold this organization's keys, including a lost
 			// host's. They are tried beside the host's own key, never written
@@ -180,7 +180,7 @@ from storage is.`,
 				if err != nil {
 					// Said, and not fatal: the snapshot may be an archive, which
 					// does not need the repositories to be readable.
-					fmt.Fprintf(os.Stderr, "⚠️  Could not look among the incremental repositories: %v\n", err)
+					fmt.Fprintf(os.Stderr, "Warning: could not look among the incremental repositories: %v\n", err)
 				}
 				if rs != nil {
 					if targetDir == "" {
@@ -220,10 +220,10 @@ from storage is.`,
 			if metaErr != nil {
 				// Without the sidecar the surface type is a guess from the
 				// flags, and the digest cannot be checked against it.
-				fmt.Fprintf(os.Stderr, "⚠️  Could not read the metadata for %s: %v\n   Restoring it as a %s snapshot, going by the flags given.\n", snapshotID, metaErr, surface)
+				fmt.Fprintf(os.Stderr, "Warning: could not read the metadata for %s: %v\n   Restoring it as a %s snapshot, going by the flags given.\n", snapshotID, metaErr, surface)
 			}
 
-			fmt.Printf("🛡️  SafeGrd Emergency Restore Initiated\n")
+			fmt.Printf("Restoring %s\n", snapshotID)
 			fmt.Printf("   Snapshot ID:    %s\n", snapshotID)
 			fmt.Printf("   Surface:        %s\n", surface)
 
@@ -234,7 +234,7 @@ from storage is.`,
 				return fmt.Errorf("snapshot %s is a %s snapshot; specify --target-dir to restore", snapshotID, surface)
 			}
 			if surface.IsDatabase() && targetURL == "" && toSQL == "" {
-				return fmt.Errorf("snapshot %s is a postgres database snapshot; specify --target database connection URL", snapshotID)
+				return fmt.Errorf("snapshot %s is a %s snapshot; pass --target with a database URL, or --to-sql", snapshotID, surface)
 			}
 
 			engine := dump.EngineType(engineStr)
@@ -243,14 +243,14 @@ from storage is.`,
 				return fmt.Errorf("snapshot %s is a %s snapshot; --target must be a %s database", snapshotID, surface, surface)
 			}
 			if toSQL != "" {
-				fmt.Printf("   Target Dir:     %s (SQL and COPY files)\n", toSQL)
+				fmt.Printf("   Target dir:     %s (SQL and COPY files)\n", toSQL)
 			} else if surface.IsDatabase() {
-				fmt.Printf("   Target DB:      %s\n", dump.RedactURL(targetURL))
+				fmt.Printf("   Target:         %s\n", dump.RedactURL(targetURL))
 				if meta != nil {
 					fmt.Printf("   Schema:         %s\n", schemaSourceLabel(meta.SchemaSource))
 				}
 			} else {
-				fmt.Printf("   Target Dir:     %s\n", targetDir)
+				fmt.Printf("   Target dir:     %s\n", targetDir)
 			}
 
 			startTime := time.Now()
@@ -350,14 +350,14 @@ from storage is.`,
 			elapsed := time.Since(startTime)
 
 			if sqlRes != nil {
-				fmt.Printf("\n✅ Wrote %d tables, %d rows to %s (%s)\n", sqlRes.Tables, sqlRes.Rows, toSQL, elapsed.Round(time.Millisecond))
+				fmt.Printf("\nWrote %d tables, %d rows to %s (%s)\n", sqlRes.Tables, sqlRes.Rows, toSQL, elapsed.Round(time.Millisecond))
 				fmt.Println("   The files are unencrypted. Delete them when the database is loaded.")
 				fmt.Println("   Load into an empty database:")
 				fmt.Printf("   cd %s && psql \"postgres://user@host/empty_db\" -f load.sql\n", toSQL)
 				return nil
 			}
 
-			fmt.Println("\n✅ Restore complete")
+			fmt.Println("\nRestore complete")
 			fmt.Printf("   Duration:       %s\n", elapsed.Round(time.Millisecond))
 			switch surface {
 			case model.SurfaceTypeFiles:
@@ -373,7 +373,7 @@ from storage is.`,
 						fmt.Printf("   Files:          %d\n", files)
 					}
 					fmt.Printf("   Directories:    %d\n", fileRes.DirectoriesExtracted)
-					fmt.Printf("   Bytes Written:  %d\n", fileRes.TotalBytesWritten)
+					fmt.Printf("   Bytes written:  %d\n", fileRes.TotalBytesWritten)
 				}
 				fmt.Printf("   Destination:    %s\n", targetDir)
 				if fileRes != nil {
@@ -383,7 +383,7 @@ from storage is.`,
 				if emailRes != nil {
 					fmt.Printf("   Emails:         %d\n", emailRes.EmailsExtracted)
 					fmt.Printf("   Folders:        %d\n", emailRes.DirectoriesExtracted)
-					fmt.Printf("   Bytes Written:  %d\n", emailRes.TotalBytesWritten)
+					fmt.Printf("   Bytes written:  %d\n", emailRes.TotalBytesWritten)
 					if emailRes.GmailLabels {
 						fmt.Printf("   Gmail labels:   %s (one copy of each message, in All Mail)\n", emailRes.ManifestPath)
 					}
@@ -392,7 +392,7 @@ from storage is.`,
 			default:
 				if pgMeta != nil {
 					fmt.Printf("   Tables:         %d\n", pgMeta.TotalTables)
-					fmt.Printf("   Total Rows:     %d\n", pgMeta.TotalRows)
+					fmt.Printf("   Rows:           %d\n", pgMeta.TotalRows)
 				}
 				fmt.Println("   Check the tables and rows above against what you expect before you point an application at it.")
 			}
@@ -403,12 +403,12 @@ from storage is.`,
 
 	cmd.Flags().StringVar(&snapshotID, "snapshot", "", "Snapshot ID to restore (required)")
 	cmd.Flags().StringVar(&targetURL, "target", "", "Target database URL: postgres://… or mysql://… (an empty database), or sqlite:///path/to/new.db (a file that does not exist yet)")
-	cmd.Flags().StringVar(&targetDir, "target-dir", "", "Target directory path to extract files or emails into")
+	cmd.Flags().StringVar(&targetDir, "target-dir", "", "Directory to restore a files or email snapshot into")
 	cmd.Flags().StringVar(&toSQL, "to-sql", "", "Write a PostgreSQL snapshot into this new directory as SQL and COPY files that psql loads (load.sql)")
 	cmd.Flags().StringVar(&engineStr, "engine", "native", "Accepted for old scripts and ignored: there is one Postgres restore path")
 	_ = cmd.Flags().MarkDeprecated("engine", "there is one Postgres restore path; the flag is ignored")
-	cmd.Flags().StringVar(&keyPath, "key-path", "", "Path to Age private identity file")
-	cmd.Flags().StringVar(&privKey, "private-key", "", "Age private identity key string (AGE-SECRET-KEY-1...)")
+	cmd.Flags().StringVar(&keyPath, "key-path", "", "Path to the age identity file")
+	cmd.Flags().StringVar(&privKey, "private-key", "", "Age identity (AGE-SECRET-KEY-1...), as env:VAR, file:/path or the key")
 	cmd.Flags().IntVar(&version, "version", 0, "With one --path: restore that version of the file, as 'safegrd find' numbers them")
 	cmd.Flags().StringVar(&surfaceSel, "surface", "", "With --version: the surface whose repository holds the file")
 	cmd.Flags().StringArrayVar(&paths, "path", nil, "Restore only this path of a repository snapshot, relative to / (repeatable; '*', '?' and '**' match)")
@@ -430,7 +430,7 @@ func printFileRestoreLimits(res *dump.FileExtractionResult) {
 		"                   attributes and ACLs, setuid/setgid bits, and sparse regions\n" +
 		"                   (written out in full). See safegrd.dev/docs/surfaces/files.\n")
 	if len(res.Skipped) > 0 {
-		fmt.Fprintf(os.Stderr, "\n[!] %d archive entries were not restored, because this restore does not create them:\n", len(res.Skipped))
+		fmt.Fprintf(os.Stderr, "\nWarning: %d archive entries were not restored, because this restore does not create them:\n", len(res.Skipped))
 		for _, s := range res.Skipped {
 			fmt.Fprintf(os.Stderr, "    %s\n", s)
 		}
@@ -464,7 +464,7 @@ func checkRestoreDigest(ctx context.Context, meta *model.SnapshotMetadata, snaps
 	}
 	switch {
 	case decMetrics == nil || expected == "":
-		fmt.Fprintf(os.Stderr, "\n[!] NOT VERIFIED: no digest is recorded for this snapshot (%s).\n"+
+		fmt.Fprintf(os.Stderr, "\nWarning: NOT VERIFIED: no digest is recorded for this snapshot (%s).\n"+
 			"    The data decrypted cleanly, but nothing proves it is what was backed up.\n", why)
 	case decMetrics.RawSha256 != expected:
 		// Exact, against the plaintext.
@@ -479,7 +479,7 @@ func checkRestoreDigest(ctx context.Context, meta *model.SnapshotMetadata, snaps
 	case rec != nil && rec.EncryptedSha256 != "" && decMetrics.EncryptedSha256 != rec.EncryptedSha256:
 		return fmt.Errorf("cryptographic tamper detected: the ciphertext read from the sink (%s) is not the one written at backup time (%s)", decMetrics.EncryptedSha256, rec.EncryptedSha256)
 	case rec == nil:
-		fmt.Fprintf(os.Stderr, "\n[!] Digest checked against the sidecar only: %s.\n"+
+		fmt.Fprintf(os.Stderr, "\nWarning: digest checked against the sidecar only: %s.\n"+
 			"    It was not compared with SafeGrd's record from backup time; run this on an enrolled host to compare.\n", why)
 	default:
 		fmt.Printf("   Digest:          matches the remote server's record from backup time\n")

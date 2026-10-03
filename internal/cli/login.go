@@ -24,10 +24,12 @@ func newLoginCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "login",
-		Short: "Authenticate the CLI with the remote server via browser or API key",
-		Long: `Authenticates the local environment with SafeGrd.
-By default, launches an interactive browser confirmation flow.
-For CI/CD or headless environments, pass your Personal Access Token via '--token sg_pat_...'.`,
+		Short: "Sign in to the remote server, in a browser or with an access token",
+		Long: `Signs this CLI in to the remote server and saves the token in the config.
+
+By default it prints a URL and a confirmation code, and opens the URL in a
+browser. In CI or on a host with no browser, pass a personal access token from
+Tokens in the console: --token env:SAFEGRD_TOKEN (or file:/path, or the token itself).`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			serverURL := resolveServerURL()
 
@@ -40,8 +42,12 @@ For CI/CD or headless environments, pass your Personal Access Token via '--token
 			}
 
 			// Mode 1: Direct API Key / Personal Access Token provided
+			token, err := ResolveSecretRef("token", token)
+			if err != nil {
+				return err
+			}
 			if token != "" {
-				fmt.Printf("🔑 Verifying provided token with %s...\n", serverURL)
+				fmt.Printf("Checking the token with %s\n", serverURL)
 				profile, err := fetchProfile(serverURL, token)
 				if err != nil {
 					return fmt.Errorf("token verification failed: %w", err)
@@ -54,48 +60,49 @@ For CI/CD or headless environments, pass your Personal Access Token via '--token
 					return err
 				}
 
-				fmt.Printf("✅ Signed in as '%s'\n", profile)
-				fmt.Printf("💾 Config updated: %s\n", targetConfig)
+				fmt.Printf("Signed in as '%s'\n", profile)
+				fmt.Printf("Saved to %s\n", targetConfig)
 				return nil
 			}
 
 			// Mode 2: Interactive Browser Device Flow
-			fmt.Printf("🛡️  Initiating SafeGrd CLI authentication with %s...\n", serverURL)
+			fmt.Printf("Signing in to %s\n", serverURL)
 
-			req, err := http.NewRequest("POST", serverURL+"/api/v1/auth/cli/session", nil)
+			ctx, cancel := context.WithTimeout(cmd.Context(), 5*time.Minute)
+			defer cancel()
+
+			req, err := http.NewRequestWithContext(ctx, "POST", serverURL+"/api/v1/auth/cli/session", nil)
 			if err != nil {
 				return err
 			}
 			client := &http.Client{Timeout: 5 * time.Second}
 			resp, err := client.Do(req)
 			if err != nil {
-				return fmt.Errorf("failed connecting to SafeGrd server: %w", err)
+				return fmt.Errorf("could not reach %s: %w", serverURL, err)
 			}
 			defer resp.Body.Close()
 
 			if resp.StatusCode != http.StatusCreated {
-				return fmt.Errorf("server rejected CLI session request (HTTP %d)", resp.StatusCode)
+				return fmt.Errorf("%s refused to start a sign-in (HTTP %d)", serverURL, resp.StatusCode)
 			}
 
 			var session model.CLISession
 			if err := json.NewDecoder(resp.Body).Decode(&session); err != nil {
-				return fmt.Errorf("failed parsing server session: %w", err)
+				return fmt.Errorf("could not read the sign-in session from %s: %w", serverURL, err)
 			}
 
 			authURL := fmt.Sprintf("%s/auth/cli?session=%s&code=%s", serverURL, session.SessionID, session.UserCode)
 
 			remote := isRemoteSession()
 
-			fmt.Println("\n==================================================")
-			fmt.Printf("Confirmation Code:  \033[1;36m%s\033[0m\n", session.UserCode)
-			fmt.Println("==================================================")
+			fmt.Printf("\nConfirmation code: %s\n\n", ansi("1;36", session.UserCode))
 			if remote {
 				// Over SSH or PuTTY the browser is on the operator's own
 				// machine, not this one, so say where to open it.
 				fmt.Printf("Open this URL in a browser on any device, such as the machine you are\n")
-				fmt.Printf("connecting from, and check the code matches:\n\n  \033[4;34m%s\033[0m\n\n", authURL)
+				fmt.Printf("connecting from, and check the code matches:\n\n  %s\n\n", ansi("4;34", authURL))
 			} else {
-				fmt.Printf("Open the following URL in your browser to authorize:\n\n  \033[4;34m%s\033[0m\n\n", authURL)
+				fmt.Printf("Open this URL in your browser and check the code matches:\n\n  %s\n\n", ansi("4;34", authURL))
 			}
 
 			// Never launch a browser on a remote host: xdg-open there either
@@ -103,15 +110,11 @@ For CI/CD or headless environments, pass your Personal Access Token via '--token
 			// session, which takes over the terminal the code is printed in.
 			if !noBrowser && !remote {
 				if err := openBrowser(authURL); err != nil {
-					fmt.Printf("(Could not open a browser here: %v. Open the URL above by hand.)\n\n", err)
+					fmt.Fprintf(os.Stderr, "Could not open a browser here (%v). Open the URL above by hand.\n\n", err)
 				}
 			}
 
-			fmt.Print("⏳ Waiting for browser authorization...")
-
-			// Poll for authorization
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-			defer cancel()
+			fmt.Print("Waiting for you to approve the sign-in in the browser")
 
 			ticker := time.NewTicker(2 * time.Second)
 			defer ticker.Stop()
@@ -119,8 +122,11 @@ For CI/CD or headless environments, pass your Personal Access Token via '--token
 			for {
 				select {
 				case <-ctx.Done():
-					fmt.Println("\n❌ Login timed out. Run 'safegrd login' again.")
-					return fmt.Errorf("authorization timed out")
+					fmt.Println()
+					if cmd.Context().Err() != nil {
+						return cmd.Context().Err()
+					}
+					return fmt.Errorf("the sign-in was not approved within 5 minutes. Run 'safegrd login' again")
 				case <-ticker.C:
 					fmt.Print(".")
 					pollReq, _ := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("%s/api/v1/auth/cli/session?session_id=%s", serverURL, session.SessionID), nil)
@@ -134,7 +140,7 @@ For CI/CD or headless environments, pass your Personal Access Token via '--token
 					pollResp.Body.Close()
 
 					if pollSession.Status == model.CLISessionStatusAuthorized && pollSession.Token != "" {
-						fmt.Println("\n\n✅ Authorization successful!")
+						fmt.Println("\n\nSigned in.")
 
 						cfg.ServerURL = serverURL
 						cfg.ServerToken = pollSession.Token
@@ -145,11 +151,11 @@ For CI/CD or headless environments, pass your Personal Access Token via '--token
 						}
 
 						fmt.Printf("   User:   %s\n", pollSession.UserEmail)
-						fmt.Printf("   Token:  %s...\n", pollSession.Token[:14])
+						fmt.Printf("   Token:  %s\n", maskToken(pollSession.Token))
 						if pollSession.TokenExpiresAt != nil {
 							fmt.Printf("   Expires: %s. Run 'safegrd login' again after that.\n", pollSession.TokenExpiresAt.Local().Format("2006-01-02"))
 						}
-						fmt.Printf("💾 Config updated: %s\n", targetConfig)
+						fmt.Printf("Saved to %s\n", targetConfig)
 						return nil
 					}
 				}
@@ -157,7 +163,7 @@ For CI/CD or headless environments, pass your Personal Access Token via '--token
 		},
 	}
 
-	cmd.Flags().StringVar(&token, "token", "", "Personal Access Token (sg_pat_...) for non-interactive / CI login")
+	cmd.Flags().StringVar(&token, "token", "", "Personal access token (sg_pat_...), as env:VAR, file:/path or the token")
 	cmd.Flags().BoolVar(&noBrowser, "no-browser", false, "Do not attempt to open browser automatically")
 
 	return cmd
