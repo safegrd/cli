@@ -365,7 +365,9 @@ func (h *hostedRepo) fetch(ctx context.Context, key string, rng string) ([]byte,
 	return io.ReadAll(resp.Body)
 }
 
-func (h *hostedRepo) Get(ctx context.Context, key string) ([]byte, error) { return h.fetch(ctx, key, "") }
+func (h *hostedRepo) Get(ctx context.Context, key string) ([]byte, error) {
+	return h.fetch(ctx, key, "")
+}
 
 func (h *hostedRepo) GetRange(ctx context.Context, key string, off, n int64) ([]byte, error) {
 	if n <= 0 {
