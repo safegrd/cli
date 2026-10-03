@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "safegrd",
+  "version": "0.1.0",
+  "description": "Check SafeGrd backups, take one before a risky change and prove it restores, from Claude Code. No tool deletes, disables, re-routes or re-keys a backup.",
+  "author": {
+    "name": "SafeGrd",
+    "url": "https://safegrd.dev"
+  },
+  "homepage": "https://safegrd.dev/docs/mcp",
+  "repository": "https://github.com/safegrd/cli",
+  "license": "BUSL-1.1",
+  "keywords": ["backup", "postgresql", "mysql", "mongodb", "restore", "object-lock", "mcp"],
+  "userConfig": {
+    "safegrd_token": {
+      "type": "string",
+      "title": "SafeGrd personal access token",
+      "description": "Create one in the SafeGrd console under Tokens (it starts with sg_pat_). The SafeGrd MCP server reads your backups and drills with it and can ask for a backup or a drill. It cannot delete, disable, re-route or re-key a backup.",
+      "sensitive": true
+    }
+  }
+}
