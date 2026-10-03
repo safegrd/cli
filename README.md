@@ -210,12 +210,36 @@ so guard refuses there unless you pass `--allow-unlocked`.
 
 `safegrd list --json` prints every snapshot with its lock date, for scripts.
 
+### 8. Back up a directory tree, and get one file back
+
+File backups are incremental: the first run of each month uploads every file, and every
+run after it uploads only the chunks that changed. Every kept version of every file is
+searchable, and one file restores on its own.
+
+```bash
+safegrd backup --files /srv/app --exclude '*.tmp,node_modules/*'
+
+# every kept version of a file, numbered from the oldest
+safegrd find etc/nginx/nginx.conf
+
+# one version of one file, or a directory as it was in one snapshot
+safegrd restore --path etc/nginx/nginx.conf --version 2 --target-dir ./out
+safegrd restore --snapshot snap-20260919-01 --path 'var/www/**' --target-dir ./out
+
+# every pack present and every listing consistent, without restoring anything
+safegrd check --all
+```
+
+`--format tar` keeps one archive per backup instead. What is locked, for how long, and
+what a restore brings back: [safegrd.dev/docs/surfaces/files](https://safegrd.dev/docs/surfaces/files).
+
 ---
 
 ## Core Features
 
 - **Postgres, restored whole:** the schema comes from `pg_dump` and the rows stream over binary `COPY` from the same snapshot, so arrays, enums, foreign keys, views, triggers and sequence positions all come back. Needs a `pg_dump` at least as new as the server on the host.
 - **Encrypted before it leaves the host:** backups are encrypted with age (X25519) on your machine. You choose who holds the private key: the remote server keeps it sealed and releases it only to your enrolled hosts (the default), or you keep it on your hosts.
+- **Incremental file backups:** each run uploads only the chunks that changed, every object is locked once when it is written, and `safegrd find` lists every kept version of a file for `restore --path --version`.
 - **Immutable WORM Storage:** Supports AWS S3 Object Lock (Governance and Compliance modes) and local filesystem WORM locking.
 - **Fire Drill restores:** restores backups on a schedule, counts what came back, and signs a certificate of each test.
 
