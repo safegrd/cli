@@ -26,6 +26,8 @@ type RestoreOptions struct {
 	// Paths select what to restore, relative to /; none means everything.
 	Paths []string
 	// Concurrency is how many ranges are fetched at once; zero means 16.
+	// Fewer run when the planned ranges are large, so that what is in
+	// flight stays under MaxInFlightBytes.
 	Concurrency int
 	// MergeGap joins ranges of one pack closer than this; zero means 1 MiB.
 	MergeGap int64
@@ -35,6 +37,12 @@ type RestoreOptions struct {
 	// tree at its paths from /.
 	Base string
 }
+
+// MaxInFlightBytes bounds the range bodies held in memory at once. A whole
+// pack is one range when every blob of it is needed, so a full restore of a
+// large tree runs a few fetches at a time; a restore of one file keeps the
+// full concurrency.
+const MaxInFlightBytes = 256 << 20
 
 // RestoreResult is what a restore wrote.
 type RestoreResult struct {
@@ -180,7 +188,15 @@ func (r *Repo) Restore(ctx context.Context, s format.Snapshot, idx Index, o Rest
 		}
 	}
 
-	if err := r.fetch(ctx, plan, idx, occ, files, stage, o.Concurrency, res); err != nil {
+	workers := o.Concurrency
+	var largest int64
+	for _, rf := range plan {
+		largest = max(largest, rf.end-rf.start)
+	}
+	if largest > 0 {
+		workers = max(2, min(workers, int(MaxInFlightBytes/largest)))
+	}
+	if err := r.fetch(ctx, plan, idx, occ, files, stage, workers, res); err != nil {
 		return nil, err
 	}
 

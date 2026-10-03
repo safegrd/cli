@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/safegrd/cli/pkg/diskspace"
 	"github.com/safegrd/cli/pkg/model"
 )
 
@@ -141,9 +142,6 @@ func SourceMajor(meta *model.SnapshotMetadata) int {
 // what that misses, and a fixed allowance for the cluster itself.
 const (
 	sandboxClusterBytes = 1 << 30
-	// sandboxKeepFree is the share of the filesystem left free after the
-	// restore: the host's own database and logs live on it too.
-	sandboxKeepFree = 0.05
 )
 
 // SandboxBytesNeeded is how much free disk a restore of meta needs.
@@ -156,35 +154,6 @@ func SandboxBytesNeeded(meta *model.SnapshotMetadata) int64 {
 		onDisk = meta.RawSizeBytes
 	}
 	return onDisk + onDisk/4 + sandboxClusterBytes
-}
-
-// checkRoom refuses a restore that would leave the filesystem with less than
-// sandboxKeepFree of it free.
-func checkRoom(dir string, need int64) error {
-	avail, total, err := diskSpace(dir)
-	if err != nil {
-		return fmt.Errorf("cannot read the free space under %s: %w", dir, err)
-	}
-	keep := int64(float64(total) * sandboxKeepFree)
-	if avail < need+keep {
-		return fmt.Errorf("not enough disk under %s for a local sandbox: the restore needs about %s and %s is free "+
-			"(keeping %s spare for the rest of the host); free some space, set daemon.state_dir on a larger disk, "+
-			"or point drill.sandbox_url at a database elsewhere", dir, humanBytes(need), humanBytes(avail), humanBytes(keep))
-	}
-	return nil
-}
-
-func humanBytes(n int64) string {
-	const unit = 1024
-	if n < unit {
-		return fmt.Sprintf("%d B", n)
-	}
-	div, exp := int64(unit), 0
-	for m := n / unit; m >= unit; m /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
 }
 
 // LocalPostgres is a running throwaway cluster. URL connects to its empty
@@ -236,7 +205,8 @@ func StartLocalPostgres(ctx context.Context, srv *PgServer, stateDir string, nee
 		return nil, err
 	}
 	SweepLocalSandboxes(stateDir)
-	if err := checkRoom(base, need); err != nil {
+	if err := diskspace.CheckFreeSpace(base, need, "a local sandbox",
+		"free some space, set daemon.state_dir on a larger disk, or point drill.sandbox_url at a database elsewhere"); err != nil {
 		return nil, err
 	}
 

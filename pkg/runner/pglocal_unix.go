@@ -53,13 +53,3 @@ func (r *runAs) apply(cmd *exec.Cmd) {
 	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: r.uid, Gid: r.gid, NoSetGroups: true}}
 }
-
-// diskSpace is what an ordinary user may still write under dir, and the
-// filesystem's size.
-func diskSpace(dir string) (avail, total int64, err error) {
-	var st syscall.Statfs_t
-	if err := syscall.Statfs(dir, &st); err != nil {
-		return 0, 0, err
-	}
-	return int64(st.Bavail) * int64(st.Bsize), int64(st.Blocks) * int64(st.Bsize), nil
-}

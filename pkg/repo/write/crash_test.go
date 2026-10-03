@@ -155,6 +155,10 @@ func TestAnInterruptedRunResumesAtEveryPoint(t *testing.T) {
 			if err == nil && f.calls > n {
 				t.Fatalf("%s (seed %d): the run did not fail", name, s)
 			}
+			// The tree changes between the death and the rerun: a catalog
+			// that replayed the dead run's delta twice would still agree
+			// with the trees, one that misses what changed since would not.
+			m.apply(t, 10)
 			want := oracle(t, h.src)
 			res := h.backup(opts)
 			if res.Resumed {

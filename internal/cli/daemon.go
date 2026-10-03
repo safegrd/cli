@@ -60,8 +60,12 @@ type SurfaceState struct {
 	LastBackupRequestID string `json:"last_backup_request_id,omitempty"`
 	// LastDrillRequestID is the last "drill now" this surface ran, so each
 	// request is run once.
-	LastDrillRequestID  string    `json:"last_drill_request_id,omitempty"`
-	DrillStatus         string    `json:"drill_status,omitempty"`
+	LastDrillRequestID string `json:"last_drill_request_id,omitempty"`
+	DrillStatus        string `json:"drill_status,omitempty"`
+	// DrillNote is why the last drill was not the one the plan sells: run in
+	// memory for want of a sandbox, or blocked for want of disk. It travels on
+	// the heartbeat, so the console says it too.
+	DrillNote           string    `json:"drill_note,omitempty"`
 	LastDrillAttempt    time.Time `json:"last_drill_attempt,omitempty"`
 	DrillFailures       int       `json:"drill_failures,omitempty"`
 	LastDrillSnapshotID string    `json:"last_drill_snapshot_id,omitempty"`
@@ -900,7 +904,7 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 			if storageCfg.NodeID == "" {
 				storageCfg.NodeID = nodeID
 			}
-			meta, _, err := runRepoBackup(ctx, repoParams{
+			meta, res, err := runRepoBackup(ctx, repoParams{
 				SurfaceID: s.ID, Roots: roots, Excludes: s.Excludes, OneFS: s.OneFilesystem, StorageCfg: storageCfg,
 				NodeID: nodeID, Recipient: pubKey,
 				Retention: policy.Retention{Days: storageCfg.RetentionDays, KeepDaily: tiers.Days, KeepWeekly: tiers.Weeks, KeepMonthly: tiers.Months},
@@ -910,6 +914,14 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 			st.newEpoch, st.rescan = false, false
 			if err != nil {
 				return nil, plan, err
+			}
+			if res.Tier != plan.Tier {
+				// A resumed opening run keeps the tier its epoch was opened
+				// at, whatever the schedule offered this time. The slots it
+				// did not take stay open for the next backup, which would
+				// otherwise skip this month's copy.
+				plan.DayKey, plan.WeekKey, plan.MonthKey = "", "", ""
+				fmt.Printf("   Surface %s: kept at the epoch's %s tier; the %s slot stays open for the next backup\n", s.ID, res.Tier, plan.Tier)
 			}
 			if hostIsEnrolled(c) {
 				st.notRecorded = reportSnapshot(ctx, c, st, meta)

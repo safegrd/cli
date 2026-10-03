@@ -21,9 +21,6 @@ import (
 	"github.com/safegrd/cli/pkg/repo/sink"
 )
 
-// hostedRepoReady is set: hosted storage takes repository backups.
-const hostedRepoReady = true
-
 // hostedRepo is an incremental repository on SafeGrd's hosted storage. The
 // remote server opens every epoch and decides its locks, names every key and
 // signs every request; this host PUTs and GETs the bytes directly, and holds
@@ -38,7 +35,44 @@ type hostedRepo struct {
 	mu       sync.Mutex
 	prefixes map[string]string // epoch id -> key prefix
 	gets     map[string]signedGet
+	// signing serialises the signing of one key, so concurrent reads of
+	// one pack ask the remote server once; every signed download counts
+	// against the day's budget.
+	signing sink.PerKey
 }
+
+// Transfers to the bucket are tried a few times: a dropped connection or a
+// 5xx from the bucket is the ordinary weather of a two-hour upload, and a
+// run that dies on one is resumed only at its next schedule.
+const hostedTransferAttempts = 4
+
+// hostedTransferBackoff is the first pause between attempts; each later one
+// is twice the one before. A variable so tests do not wait.
+var hostedTransferBackoff = time.Second
+
+// retryTransfer runs try until it succeeds, says the failure is final, or
+// the attempts run out, with a growing pause between attempts.
+func retryTransfer(ctx context.Context, try func() (final bool, err error)) error {
+	var err error
+	for attempt := 0; attempt < hostedTransferAttempts; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(hostedTransferBackoff << (attempt - 1)):
+			}
+		}
+		var final bool
+		if final, err = try(); err == nil || final {
+			return err
+		}
+	}
+	return err
+}
+
+// transient reports whether a bucket's answer is one worth trying again:
+// a server-side failure, or a request it asked to have slowed down.
+func transient(status int) bool { return status/100 == 5 || status == http.StatusTooManyRequests }
 
 type signedGet struct {
 	url     string
@@ -190,42 +224,75 @@ func (h *hostedRepo) Reserve(ctx context.Context, e format.Epoch, class string, 
 		if s.Class != class {
 			return nil, fmt.Errorf("epoch %s takes %s objects now, and this run writes %s ones; run the backup again", e.EpochID, s.Class, class)
 		}
-		slots[i] = sink.Slot{Kind: objs[i].Kind, Key: s.Key, Class: s.Class, RetainUntil: s.RetainUntil, URL: s.URL, Headers: s.Headers}
+		slots[i] = sink.Slot{Kind: objs[i].Kind, Key: s.Key, EpochID: e.EpochID, Class: s.Class, RetainUntil: s.RetainUntil, URL: s.URL, Headers: s.Headers}
 	}
 	return slots, nil
 }
 
 // Put sends the body to the signed URL with exactly the headers the
-// signature covers: its length, its MD5 and its lock.
+// signature covers: its length, its MD5 and its lock. A refusal from the
+// bucket is final; a 5xx is tried again. A connection that drops before an
+// answer arrives may or may not have delivered the object, and a second PUT
+// of a delivered one writes a second version, which is billed: so the
+// remote server is asked whether the bucket holds the key, and the body is
+// sent again only when it does not.
 func (h *hostedRepo) Put(ctx context.Context, slot sink.Slot, body []byte) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, slot.URL, bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.ContentLength = int64(len(body))
 	for k, v := range slot.Headers {
-		if strings.EqualFold(k, "Content-Length") {
-			if v != strconv.Itoa(len(body)) {
-				return fmt.Errorf("%s was signed for %s bytes, the object is %d", slot.Key, v, len(body))
-			}
-			continue
+		if strings.EqualFold(k, "Content-Length") && v != strconv.Itoa(len(body)) {
+			return fmt.Errorf("%s was signed for %s bytes, the object is %d", slot.Key, v, len(body))
 		}
-		req.Header.Set(k, v)
 	}
-	resp, err := h.c.bucket.Do(req)
-	if err != nil {
-		return fmt.Errorf("uploading %s: %w", slot.Key, err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode/100 != 2 {
+	return retryTransfer(ctx, func() (bool, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPut, slot.URL, bytes.NewReader(body))
+		if err != nil {
+			return true, err
+		}
+		req.ContentLength = int64(len(body))
+		for k, v := range slot.Headers {
+			if !strings.EqualFold(k, "Content-Length") {
+				req.Header.Set(k, v)
+			}
+		}
+		resp, err := h.c.bucket.Do(req)
+		if err != nil {
+			if ctx.Err() != nil {
+				return true, ctx.Err()
+			}
+			landed, perr := h.landed(ctx, slot)
+			switch {
+			case perr != nil:
+				return true, fmt.Errorf("uploading %s: %w (and whether it arrived could not be checked: %v)", slot.Key, err, perr)
+			case landed:
+				return true, nil
+			}
+			return false, fmt.Errorf("uploading %s: %w", slot.Key, err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode/100 == 2 {
+			return true, nil
+		}
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return fmt.Errorf("hosted storage refused %s: HTTP %d %s", slot.Key, resp.StatusCode, strings.TrimSpace(string(msg)))
+		return !transient(resp.StatusCode), fmt.Errorf("hosted storage refused %s: HTTP %d %s", slot.Key, resp.StatusCode, strings.TrimSpace(string(msg)))
+	})
+}
+
+// landed asks the remote server whether the bucket holds the slot's object,
+// by confirming it: the answer records it, which the run does next anyway.
+func (h *hostedRepo) landed(ctx context.Context, slot sink.Slot) (bool, error) {
+	err := h.uploaded(ctx, slot.EpochID, []string{slot.Key})
+	var he *hostedError
+	if errors.As(err, &he) && he.Status == http.StatusConflict {
+		return false, nil
 	}
-	return nil
+	return err == nil, err
 }
 
 func (h *hostedRepo) Uploaded(ctx context.Context, e format.Epoch, keys []string) error {
-	return h.callRetry(ctx, http.MethodPost, "/repo/epochs/"+url.PathEscape(e.EpochID)+"/uploaded", map[string]any{"keys": keys}, nil)
+	return h.uploaded(ctx, e.EpochID, keys)
+}
+
+func (h *hostedRepo) uploaded(ctx context.Context, epochID string, keys []string) error {
+	return h.callRetry(ctx, http.MethodPost, "/repo/epochs/"+url.PathEscape(epochID)+"/uploaded", map[string]any{"keys": keys}, nil)
 }
 
 // Commit names the run's metadata objects; its packs were each confirmed as
@@ -316,6 +383,7 @@ func (h *hostedRepo) List(ctx context.Context, e sink.EpochInfo, sub string) ([]
 // signed returns a GET URL for key, asking the remote server for it once per
 // URL lifetime.
 func (h *hostedRepo) signed(ctx context.Context, key string) (signedGet, error) {
+	defer h.signing.Lock(key)()
 	h.mu.Lock()
 	if g, ok := h.gets[key]; ok && time.Until(g.expires) > 15*time.Second {
 		h.mu.Unlock()
@@ -347,31 +415,39 @@ func (h *hostedRepo) signed(ctx context.Context, key string) (signedGet, error) 
 	return g, nil
 }
 
+// fetch reads key, or a range of it, from its signed URL. A read is
+// harmless to repeat, so a dropped connection or a 5xx is tried again.
 func (h *hostedRepo) fetch(ctx context.Context, key string, rng string) ([]byte, error) {
 	g, err := h.signed(ctx, key)
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, g.url, nil)
-	if err != nil {
-		return nil, err
-	}
-	if rng != "" {
-		req.Header.Set("Range", rng)
-	}
-	resp, err := h.c.bucket.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("downloading %s: %w", key, err)
-	}
-	defer resp.Body.Close()
-	switch {
-	case resp.StatusCode == http.StatusRequestedRangeNotSatisfiable:
-		return nil, nil
-	case resp.StatusCode/100 != 2:
-		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return nil, fmt.Errorf("hosted storage refused the download of %s: HTTP %d %s", key, resp.StatusCode, strings.TrimSpace(string(msg)))
-	}
-	return io.ReadAll(resp.Body)
+	var body []byte
+	err = retryTransfer(ctx, func() (bool, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, g.url, nil)
+		if err != nil {
+			return true, err
+		}
+		if rng != "" {
+			req.Header.Set("Range", rng)
+		}
+		resp, err := h.c.bucket.Do(req)
+		if err != nil {
+			return ctx.Err() != nil, fmt.Errorf("downloading %s: %w", key, err)
+		}
+		defer resp.Body.Close()
+		switch {
+		case resp.StatusCode == http.StatusRequestedRangeNotSatisfiable:
+			body = nil
+			return true, nil
+		case resp.StatusCode/100 != 2:
+			msg, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+			return !transient(resp.StatusCode), fmt.Errorf("hosted storage refused the download of %s: HTTP %d %s", key, resp.StatusCode, strings.TrimSpace(string(msg)))
+		}
+		body, err = io.ReadAll(resp.Body)
+		return err == nil, err
+	})
+	return body, err
 }
 
 func (h *hostedRepo) Get(ctx context.Context, key string) ([]byte, error) {

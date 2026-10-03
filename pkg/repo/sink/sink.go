@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"path"
+	"sync"
 	"time"
 
 	"github.com/safegrd/cli/pkg/repo/format"
@@ -42,6 +43,7 @@ type ObjectSpec struct {
 type Slot struct {
 	Kind        Kind
 	Key         string
+	EpochID     string
 	Class       string
 	RetainUntil time.Time
 	// URL and Headers are set when the remote server signed the request:
@@ -127,6 +129,30 @@ type Backend interface {
 
 // ErrNotFound is returned by Get for a key that holds nothing.
 var ErrNotFound = errors.New("not found")
+
+// PerKey hands out one lock per key, so that concurrent first reads of one
+// object (a pack's header, a signed URL) share one request instead of each
+// making their own.
+type PerKey struct {
+	mu    sync.Mutex
+	locks map[string]*sync.Mutex
+}
+
+// Lock takes the key's lock and returns what releases it.
+func (p *PerKey) Lock(key string) func() {
+	p.mu.Lock()
+	if p.locks == nil {
+		p.locks = map[string]*sync.Mutex{}
+	}
+	l, ok := p.locks[key]
+	if !ok {
+		l = &sync.Mutex{}
+		p.locks[key] = l
+	}
+	p.mu.Unlock()
+	l.Lock()
+	return l.Unlock
+}
 
 // Store is a flat object store a Direct backend writes through.
 type Store interface {

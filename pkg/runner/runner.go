@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/safegrd/cli/pkg/crypto"
+	"github.com/safegrd/cli/pkg/diskspace"
 	"github.com/safegrd/cli/pkg/dump"
 	"github.com/safegrd/cli/pkg/model"
 	"github.com/safegrd/cli/pkg/storage"
@@ -224,6 +225,14 @@ func (v *Verifier) RunDryRestore(ctx context.Context, snapshotID, privateKey str
 	surface := meta.SurfaceType
 	if surface == "" {
 		surface = model.SurfaceTypePostgres
+	}
+	// A SQLite drill writes the database out and opens it, in the system
+	// temporary directory.
+	if surface == model.SurfaceTypeSQLite {
+		if err := diskspace.CheckFreeSpace(os.TempDir(), meta.RawSizeBytes, "a Fire Drill of "+snapshotID+", which writes the database out",
+			"free some space, or set TMPDIR to a larger disk"); err != nil {
+			return nil, nil, &DrillBlockedError{Err: err}
+		}
 	}
 
 	report := &model.VerificationReport{

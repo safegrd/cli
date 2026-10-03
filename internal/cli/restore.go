@@ -176,20 +176,18 @@ from storage is.`,
 					}
 					snapshotID = id
 				}
-				if storageCfg.Type != config.StorageTypeHosted || hostedRepoReady {
-					rs, err := locateRepoSnapshot(ctx, storageCfg, snapshotID)
-					if err != nil {
-						// Said, and not fatal: the snapshot may be an archive, which
-						// does not need the repositories to be readable.
-						fmt.Fprintf(os.Stderr, "⚠️  Could not look among the incremental repositories: %v\n", err)
+				rs, err := locateRepoSnapshot(ctx, storageCfg, snapshotID)
+				if err != nil {
+					// Said, and not fatal: the snapshot may be an archive, which
+					// does not need the repositories to be readable.
+					fmt.Fprintf(os.Stderr, "⚠️  Could not look among the incremental repositories: %v\n", err)
+				}
+				if rs != nil {
+					if targetDir == "" {
+						return fmt.Errorf("snapshot %s is a files snapshot; specify --target-dir to restore", snapshotID)
 					}
-					if rs != nil {
-						if targetDir == "" {
-							return fmt.Errorf("snapshot %s is a files snapshot; specify --target-dir to restore", snapshotID)
-						}
-						fmt.Printf("Restoring %s (epoch %s, %s) into %s\n", snapshotID, rs.Epoch.Epoch.EpochID, rs.SurfaceID, targetDir)
-						return restoreRepoSnapshot(ctx, rs, resolvedKey, targetDir, paths)
-					}
+					fmt.Printf("Restoring %s (epoch %s, %s) into %s\n", snapshotID, rs.Epoch.Epoch.EpochID, rs.SurfaceID, targetDir)
+					return restoreRepoSnapshot(ctx, rs, resolvedKey, targetDir, paths)
 				}
 				opened, err := openStorage(ctx, cfg, storageCfg)
 				if err != nil {

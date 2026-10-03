@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/safegrd/cli/pkg/diskspace"
 	"github.com/safegrd/cli/pkg/model"
 	"github.com/safegrd/cli/pkg/repo/check"
 	"github.com/safegrd/cli/pkg/repo/read"
@@ -42,6 +43,20 @@ type RepoDrill struct {
 func (v *Verifier) RunRepoDrill(ctx context.Context, d RepoDrill, privateKey string) (*model.VerificationReport, error) {
 	started := time.Now()
 	meta := d.Meta
+	// The restore writes the whole tree to this host's disk before deleting
+	// it. Checked before anything is restored or reported: a disk that
+	// cannot hold the tree says nothing about the backup.
+	scratchParent := d.Scratch
+	if scratchParent == "" {
+		scratchParent = os.TempDir()
+	}
+	if err := diskspace.CheckFreeSpace(scratchParent, RepoRestoreBytes(meta), "a Fire Drill of "+meta.SnapshotID+", which restores every file",
+		"free some space, or set daemon.state_dir on a larger disk"); err != nil {
+		if d.Scratch != "" {
+			_ = os.RemoveAll(d.Scratch)
+		}
+		return nil, &DrillBlockedError{Err: err}
+	}
 	report := &model.VerificationReport{
 		VerificationID: "verif-dry-" + uuid.New().String()[:8],
 		SnapshotID:     meta.SnapshotID,
@@ -80,10 +95,8 @@ func (v *Verifier) RunRepoDrill(ctx context.Context, d RepoDrill, privateKey str
 		if scratch, err = os.MkdirTemp("", "safegrd-drill-"); err != nil {
 			return fail("RestoreIntegrity", "a scratch directory", err.Error(), "no scratch directory for the restore: "+err.Error())
 		}
-		defer os.RemoveAll(scratch)
-	} else {
-		defer os.RemoveAll(scratch)
 	}
+	defer os.RemoveAll(scratch)
 	target := filepath.Join(scratch, "restore")
 	r := read.Open(d.Backend, d.Epoch, ids)
 	snap, err := r.Snapshot(ctx, meta.SnapshotID)
@@ -143,3 +156,18 @@ func (v *Verifier) RunRepoDrill(ctx context.Context, d RepoDrill, privateKey str
 	v.submitReport(ctx, report)
 	return report, nil
 }
+
+// RepoRestoreBytes is the disk a full restore of meta takes: the files'
+// logical size, a tenth again, and a block for each file, which a tree of
+// small files spends more on than on their contents.
+func RepoRestoreBytes(meta *model.SnapshotMetadata) int64 {
+	return meta.RawSizeBytes + meta.RawSizeBytes/10 + meta.TotalItems*4096
+}
+
+// DrillBlockedError is a drill this host cannot run, for a reason that says
+// nothing about the backup, such as not enough disk. No report is sent: the
+// daemon tells the remote server through its heartbeat instead.
+type DrillBlockedError struct{ Err error }
+
+func (e *DrillBlockedError) Error() string { return e.Err.Error() }
+func (e *DrillBlockedError) Unwrap() error { return e.Err }

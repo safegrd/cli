@@ -23,6 +23,9 @@ const (
 	ReasonRetentionIncreased = "retention-increased"
 	ReasonFormat             = "format"
 	ReasonRequested          = "requested"
+	// ReasonRecipient: the surface's public key changed. Packs are wrapped
+	// to one recipient per epoch, so a new key starts a new epoch.
+	ReasonRecipient = "recipient-changed"
 )
 
 // Retention tiers an opening snapshot can be declared at.

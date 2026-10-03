@@ -82,6 +82,12 @@ type Result struct {
 	Opened bool
 	Reason string
 	Class  string
+	// Tier is the retention tier the snapshot was kept at. It is the
+	// epoch's opening tier for an opening run, which a resumed run keeps
+	// whatever Options.Tier asked, and Options.Tier otherwise. A caller
+	// that hands out tiers by schedule should count a slot as taken only
+	// when this is the tier it offered.
+	Tier string
 	// Planned is the retain-until the schedule asked for; Capped says the
 	// class lock shortened it to Snapshot.RetainUntil.
 	Planned time.Time
@@ -161,7 +167,7 @@ func Run(ctx context.Context, b sink.Backend, o Options) (*Result, error) {
 			lost = true
 		}
 	}
-	decision := policy.Decide(started, current, o.Retention, lost, o.NewEpoch)
+	decision := policy.Decide(started, current, o.Retention, lost, o.NewEpoch, o.Recipient)
 	tier := o.Tier
 	if !policy.ValidTier(tier) {
 		tier = format.TierBase
@@ -202,9 +208,9 @@ func Run(ctx context.Context, b sink.Backend, o Options) (*Result, error) {
 		}
 	}
 	e := opened.Epoch
-	res.Class = format.ClassLater
+	res.Class, res.Tier = format.ClassLater, tier
 	if !cur.OpeningDone() {
-		res.Class = format.ClassOpening
+		res.Class, res.Tier = format.ClassOpening, e.OpeningTier
 	}
 	planned := o.Planned
 	if res.Class == format.ClassOpening {
@@ -235,6 +241,15 @@ func Run(ctx context.Context, b sink.Backend, o Options) (*Result, error) {
 	if err := cur.BeginRun(runID, o.SnapshotID, res.Class, started); err != nil {
 		return nil, err
 	}
+	// The catalog lists every path in the opening run, and again after a
+	// run that may have published a snapshot without finishing: the cache
+	// does not hold what that run saw, so a delta against it would miss
+	// what changed since.
+	unfinished, err := cur.UnfinishedRun()
+	if err != nil {
+		return nil, err
+	}
+	completeCatalog := res.Class == format.ClassOpening || unfinished
 	ch, err := chunk.New(cur.Polynomial(), e.Chunker)
 	if err != nil {
 		return nil, err
@@ -290,8 +305,6 @@ func Run(ctx context.Context, b sink.Backend, o Options) (*Result, error) {
 	}
 	res.ReadBytes = w.readBytes
 	res.ChangedFiles = w.changed
-	res.WrittenBytes = up.bytes
-	res.Keys = append(res.Keys, up.keys...)
 
 	// 5–6. Index, catalog, snapshot, sidecar, in that order.
 	if err := cur.Commit(); err != nil {
@@ -323,12 +336,12 @@ func Run(ctx context.Context, b sink.Backend, o Options) (*Result, error) {
 	if err := index.Validate(); err != nil {
 		return nil, fmt.Errorf("the index this run built: %w", err)
 	}
-	deltas, err := cur.Deltas(res.Class == format.ClassOpening)
+	deltas, err := cur.Deltas(completeCatalog)
 	if err != nil {
 		return nil, err
 	}
 	catalog := format.Catalog{Version: format.Version, EpochID: e.EpochID, RunID: runID, SnapshotID: o.SnapshotID,
-		Complete: res.Class == format.ClassOpening, Entries: make([]format.CatalogEntry, 0, len(deltas))}
+		Complete: completeCatalog, Entries: make([]format.CatalogEntry, 0, len(deltas))}
 	for _, d := range deltas {
 		ce := format.CatalogEntry{Path: d.Path, Event: d.Event, Type: string(d.Type)}
 		if d.Event != format.EventDeleted {
@@ -387,6 +400,12 @@ func Run(ctx context.Context, b sink.Backend, o Options) (*Result, error) {
 	}
 	sidecar, err := o.Sidecar(res)
 	if err != nil {
+		return nil, err
+	}
+	// From the sidecar on the snapshot exists for every reader. The cache
+	// notes that first, so a run that dies between here and FinishRun is
+	// known to the next one, which then lists every path in its catalog.
+	if err := cur.MarkPublishing(runID); err != nil {
 		return nil, err
 	}
 	if err := up.putOne(ctx, sink.KindMeta, o.SnapshotID, sidecar); err != nil {

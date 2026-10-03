@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -167,6 +168,7 @@ func sendHeartbeat(ctx context.Context, c *config.CLIConfig, nodeID string, st *
 		ConsecutiveFailures: st.ConsecutiveFailures,
 		LastError:           st.LastError,
 		DrillStatus:         st.DrillStatus,
+		DrillNote:           st.DrillNote,
 		Schedule:            s.Schedule,
 		RetentionDays:       s.RetentionDays,
 	}, &resp)
@@ -324,9 +326,13 @@ func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, d pendingDrill
 		rs = repoDrillTarget(ctx, c, storageCfg, snapshotID)
 	}
 	var local *runner.LocalPostgres
+	// note is why this drill is shallower than the plan's, said on the
+	// heartbeat as well as here: the report alone reads as a passing drill.
+	var note string
 	if sandboxErr == nil && sandbox == "" && d.sandboxIncluded && surfaceIsPostgres(s) {
 		var why error
 		if local, why = startLocalSandbox(ctx, provider, snapshotID, d.stateDir); why != nil {
+			note = "Drilled in memory, not in a sandbox: " + why.Error()
 			fmt.Fprintf(os.Stderr, "⚠️  Surface %s: drilling in memory, not in a local sandbox: %v\n", s.ID, why)
 		} else if local != nil {
 			defer local.Stop()
@@ -351,23 +357,33 @@ func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, d pendingDrill
 		how = "full restore"
 		fmt.Printf("🔥 Surface %s: Fire Drill due: restoring snapshot %s and recomputing its content root.\n", s.ID, snapshotID)
 		report, err = verifier.RunRepoDrill(ctx, runner.RepoDrill{Backend: rs.Backend, Epoch: rs.Epoch, Meta: rs.Meta,
-			Scratch: drillScratchIn(stateDirOf(c))}, key)
+			Scratch: drillScratchIn(d.stateDir)}, key)
 	default:
 		fmt.Printf("🔥 Surface %s: Fire Drill due: restoring snapshot %s in memory.\n", s.ID, snapshotID)
 		report, _, err = verifier.RunDryRestore(ctx, snapshotID, key)
 	}
+	var blocked *runner.DrillBlockedError
 	switch {
+	case errors.As(err, &blocked):
+		// Not a failure: nothing was learned about the backup. It is tried
+		// again after the usual spacing.
+		st.DrillStatus = model.DrillStatusBlocked
+		st.DrillNote = "Fire Drill not run: " + blocked.Error()
+		fmt.Fprintf(os.Stderr, "⚠️  Surface %s: Fire Drill not run: %v\n", s.ID, blocked)
 	case err != nil:
 		st.DrillFailures++
 		st.DrillStatus = model.DrillStatusFailed
+		st.DrillNote = note
 		fmt.Fprintf(os.Stderr, "❌ Surface %s: Fire Drill could not run: %v\n", s.ID, err)
 	case report.Status != model.VerificationStatusPassed:
 		st.DrillFailures++
 		st.DrillStatus = model.DrillStatusFailed
+		st.DrillNote = note
 		fmt.Fprintf(os.Stderr, "❌ Surface %s: Fire Drill FAILED for %s: %s\n", s.ID, snapshotID, report.ErrorMessage)
 	default:
 		st.DrillFailures = 0
 		st.DrillStatus = ""
+		st.DrillNote = note
 		st.LastDrillSnapshotID = snapshotID
 		fmt.Printf("✅ Surface %s: Fire Drill passed (%s of %s, certificate %s).\n", s.ID, how, snapshotID, report.CertificateHash)
 	}

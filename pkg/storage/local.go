@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/safegrd/cli/pkg/diskspace"
 	"github.com/safegrd/cli/pkg/model"
 )
 
@@ -62,13 +63,21 @@ func (l *LocalStorageProvider) UploadSnapshot(ctx context.Context, snapshotID st
 		return "", fmt.Errorf("WORM violation: snapshot %s already exists and is immutable", snapshotID)
 	}
 
+	// A local sink is often the disk the host's own database and logs live
+	// on. The write stops before it would leave that filesystem with less
+	// than diskspace.KeepFreeShare free, rather than fill it.
+	what, remedy := "a backup to the local sink "+l.baseDir,
+		"free some space, move local_path to a larger disk, or back up to a bucket"
+	if err := diskspace.CheckFreeSpace(filepath.Dir(dstPath), max(size, 0), what, remedy); err != nil {
+		return "", err
+	}
 	tempFile := dstPath + ".tmp"
 	f, err := os.OpenFile(tempFile, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0600)
 	if err != nil {
 		return "", fmt.Errorf("failed to create snapshot file: %w", err)
 	}
 
-	if _, err := io.Copy(f, stream); err != nil {
+	if _, err := io.Copy(diskspace.NewGuard(f, filepath.Dir(dstPath), what, remedy), stream); err != nil {
 		f.Close()
 		os.Remove(tempFile)
 		return "", fmt.Errorf("failed writing snapshot data: %w", err)

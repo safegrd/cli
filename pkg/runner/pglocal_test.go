@@ -2,6 +2,9 @@ package runner
 
 import (
 	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/safegrd/cli/pkg/diskspace"
 	"github.com/safegrd/cli/pkg/model"
 )
 
@@ -106,12 +110,6 @@ func TestFindPgServerRefusesOneOlderThanTheSnapshot(t *testing.T) {
 // would leave its disk nearly full is refused before initdb runs.
 func TestCheckRoomRefusesARestoreThatWouldFillTheDisk(t *testing.T) {
 	dir := sandboxStateDir(t)
-	if err := checkRoom(dir, 1<<60); err == nil || !strings.Contains(err.Error(), "not enough disk under "+dir) {
-		t.Errorf("an exabyte restore: %v", err)
-	}
-	if err := checkRoom(dir, 1<<20); err != nil {
-		t.Errorf("a 1 MiB restore: %v", err)
-	}
 	if _, err := StartLocalPostgres(context.Background(), &PgServer{BinDir: t.TempDir()}, dir, 1<<60); err == nil ||
 		!strings.Contains(err.Error(), "not enough disk") {
 		t.Errorf("StartLocalPostgres did not check the disk first: %v", err)
@@ -214,5 +212,35 @@ func TestALocalSandboxUnderRootRunsAsTheStateDirsOwner(t *testing.T) {
 	}
 	if err := CheckSandboxEmpty(ctx, lp.URL); err != nil {
 		t.Errorf("the cluster does not answer: %v", err)
+	}
+}
+
+// A files drill restores the whole tree to this host's disk. One that cannot
+// fit is not run and not reported: it says nothing about the backup, and the
+// daemon reports it as blocked instead of failed.
+func TestARepoDrillThatCannotFitIsBlockedNotFailed(t *testing.T) {
+	posted := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { posted = true }))
+	defer srv.Close()
+	v := NewVerifier(nil, srv.URL)
+	v.SetServerToken("token")
+	scratch := filepath.Join(t.TempDir(), "restore-1")
+	if err := os.Mkdir(scratch, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	meta := &model.SnapshotMetadata{SnapshotID: "snap-big", SurfaceType: model.SurfaceTypeFiles, RawSizeBytes: 1 << 60}
+	report, err := v.RunRepoDrill(context.Background(), RepoDrill{Meta: meta, Scratch: scratch}, "")
+	var blocked *DrillBlockedError
+	if !errors.As(err, &blocked) || !errors.Is(err, diskspace.ErrNotEnoughDisk) || report != nil {
+		t.Fatalf("an exabyte tree: report %v, err %v; want blocked for disk", report, err)
+	}
+	if !strings.Contains(err.Error(), "for a Fire Drill of snap-big, which restores every file") {
+		t.Errorf("the reason does not name the drill: %v", err)
+	}
+	if posted {
+		t.Error("a drill that never ran was reported to the remote server")
+	}
+	if _, err := os.Stat(scratch); !os.IsNotExist(err) {
+		t.Errorf("the scratch directory was left behind (%v)", err)
 	}
 }

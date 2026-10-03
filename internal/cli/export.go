@@ -269,9 +269,6 @@ func exportOne(ctx context.Context, src, dst storage.StorageProvider, id string)
 // and the snapshot ids --snapshot asked for that it found.
 func exportRepos(ctx context.Context, srcCfg, dstCfg config.StorageConfig, onlySnapshots, onlyNodes []string) (copied, skipped, failed int, matched map[string]bool, err error) {
 	matched = map[string]bool{}
-	if srcCfg.Type == config.StorageTypeHosted && !hostedRepoReady {
-		return 0, 0, 0, matched, nil
-	}
 	backends, err := repoBackendsAll(ctx, srcCfg)
 	if err != nil {
 		return 0, 0, 0, matched, fmt.Errorf("listing incremental repositories: %w", err)

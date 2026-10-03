@@ -121,9 +121,14 @@ func TestDecide(t *testing.T) {
 		"monthly only grew":       {mid, cur(true), Retention{Days: 7, KeepDaily: 7, KeepWeekly: 4, KeepMonthly: 24}, false, false, Decision{}},
 		"format":                  {mid, &old, r, false, false, Decision{true, format.ReasonFormat}},
 	} {
-		if got := Decide(c.now, c.cur, c.r, c.lost, c.req); got != c.want {
+		if got := Decide(c.now, c.cur, c.r, c.lost, c.req, "age1x"); got != c.want {
 			t.Errorf("%s: %+v, want %+v", name, got, c.want)
 		}
+	}
+	// Packs are wrapped to one recipient per epoch: a new public key opens
+	// a new epoch at once, whatever else is unchanged.
+	if got := Decide(mid, cur(true), r, false, false, "age1other"); got != (Decision{true, format.ReasonRecipient}) {
+		t.Errorf("recipient changed: %+v", got)
 	}
 }
 

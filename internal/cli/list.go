@@ -189,9 +189,6 @@ type listedSnapshot struct {
 // listRepoSnapshots reads every repository snapshot under this storage. A
 // failure is said and leaves the rest of the listing in place.
 func listRepoSnapshots(ctx context.Context, storageCfg config.StorageConfig) []repoSnapshot {
-	if storageCfg.Type == config.StorageTypeHosted && !hostedRepoReady {
-		return nil
-	}
 	bs, err := repoBackendsAll(ctx, storageCfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "⚠️  Could not list the incremental repositories: %v\n", err)

@@ -15,7 +15,3 @@ func sandboxCredential(string) (*runAs, error) {
 
 func (r *runAs) own(string) error { return nil }
 func (r *runAs) apply(*exec.Cmd)  {}
-
-func diskSpace(string) (int64, int64, error) {
-	return 0, 0, errors.New("not supported on this system")
-}

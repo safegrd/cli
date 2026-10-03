@@ -298,6 +298,16 @@ func (c *Cache) Resume() (adopted []Pack, err error) {
 	return adopted, c.commitLocked()
 }
 
+// Run states. A run is running from BeginRun, publishing from the moment its
+// sidecar may exist in the store, complete once FinishRun has recorded it,
+// and abandoned when a later run finished without it ever completing.
+const (
+	runRunning    = "running"
+	runPublishing = "publishing"
+	runComplete   = "complete"
+	runAbandoned  = "abandoned"
+)
+
 // BeginRun records a run and clears the previous run's working tables.
 func (c *Cache) BeginRun(runID, snapshotID, class string, at time.Time) error {
 	c.mu.Lock()
@@ -307,11 +317,37 @@ func (c *Cache) BeginRun(runID, snapshotID, class string, at time.Time) error {
 			return err
 		}
 	}
-	if err := c.execLocked(`INSERT INTO runs (id, snapshot_id, started_at, state, class) VALUES (?, ?, ?, 'running', ?)`,
-		runID, snapshotID, at.UTC().Format(time.RFC3339Nano), class); err != nil {
+	if err := c.execLocked(`INSERT INTO runs (id, snapshot_id, started_at, state, class) VALUES (?, ?, ?, ?, ?)`,
+		runID, snapshotID, at.UTC().Format(time.RFC3339Nano), runRunning, class); err != nil {
 		return err
 	}
 	return c.commitLocked()
+}
+
+// MarkPublishing records, durably, that the run is about to write its
+// sidecar: from here its snapshot may exist in the store whether or not this
+// process lives to finish the run.
+func (c *Cache) MarkPublishing(runID string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.execLocked(`UPDATE runs SET state = ? WHERE id = ?`, runPublishing, runID); err != nil {
+		return err
+	}
+	return c.commitLocked()
+}
+
+// UnfinishedRun reports whether an earlier run reached its sidecar and never
+// finished. Its snapshot may exist, and the catalog table does not describe
+// it, so a delta against the table would skip what that run changed: the
+// next catalog must list every path instead.
+func (c *Cache) UnfinishedRun() (bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var n int
+	if err := c.tx.QueryRow(`SELECT COUNT(*) FROM runs WHERE state = ?`, runPublishing).Scan(&n); err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }
 
 // FileRow is what the cache remembers of one regular file.
@@ -591,6 +627,10 @@ func dedupe(s []string) []string {
 func (c *Cache) FinishRun(runID string, rescanned bool) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	rescans := c.rescans + 1
+	if rescanned {
+		rescans = 0
+	}
 	stmts := []struct {
 		q    string
 		args []any
@@ -598,14 +638,13 @@ func (c *Cache) FinishRun(runID string, rescanned bool) error {
 		{`UPDATE blobs SET indexed = 1, run_id = ? WHERE indexed = 0 AND pack_id IN (SELECT id FROM packs WHERE state = 'uploaded')`, []any{runID}},
 		{`DELETE FROM catalog`, nil},
 		{`INSERT INTO catalog SELECT path, type, value, size, mtime_ns, mode FROM pending`, nil},
-		{`UPDATE runs SET state = 'complete' WHERE id = ?`, []any{runID}},
-		{`UPDATE epoch SET opening_done = 1, runs_since_rescan = ? WHERE id = ?`, []any{0, c.epoch.EpochID}},
+		// Earlier runs that never finished are settled by this one: their
+		// packs are indexed above, and the catalog now lists every path
+		// when one of them may have published.
+		{`UPDATE runs SET state = ? WHERE state IN (?, ?) AND id != ?`, []any{runAbandoned, runRunning, runPublishing, runID}},
+		{`UPDATE runs SET state = ? WHERE id = ?`, []any{runComplete, runID}},
+		{`UPDATE epoch SET opening_done = 1, runs_since_rescan = ? WHERE id = ?`, []any{rescans, c.epoch.EpochID}},
 	}
-	rescans := c.rescans + 1
-	if rescanned {
-		rescans = 0
-	}
-	stmts[4].args[0] = rescans
 	for _, s := range stmts {
 		if _, err := c.tx.Exec(s.q, s.args...); err != nil {
 			return err

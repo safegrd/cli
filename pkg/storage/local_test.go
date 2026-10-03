@@ -3,12 +3,14 @@ package storage
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/safegrd/cli/pkg/diskspace"
 	"github.com/safegrd/cli/pkg/model"
 )
 
@@ -143,5 +145,22 @@ func TestLocalStorage_NodeSegmentationAndFallback(t *testing.T) {
 	snaps, err := flatProvider.ListSnapshots(ctx)
 	if err != nil || len(snaps) != 1 || snaps[0] != snapID {
 		t.Errorf("expected flatProvider to list segmented snapshot, got %v", snaps)
+	}
+}
+
+// A local sink is often the disk the host's own database lives on: a backup
+// that would leave it nearly full is refused, and leaves nothing behind.
+func TestALocalSinkRefusesABackupThatWouldFillTheDisk(t *testing.T) {
+	dir := t.TempDir()
+	provider, err := NewLocalStorage(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = provider.UploadSnapshot(context.Background(), "snap-20261003-000000-aaaaaa", bytes.NewReader([]byte("x")), 1<<60, time.Time{})
+	if !errors.Is(err, diskspace.ErrNotEnoughDisk) || !strings.Contains(err.Error(), "a backup to the local sink "+dir) {
+		t.Fatalf("an exabyte backup to a local sink: %v", err)
+	}
+	if left, _ := filepath.Glob(filepath.Join(dir, "*")); len(left) != 0 {
+		t.Errorf("a refused backup left %v", left)
 	}
 }

@@ -93,6 +93,10 @@ type Node struct {
 	DaemonFailures        int    `json:"daemon_failures,omitempty" yaml:"daemon_failures,omitempty"`
 	DaemonLastError       string `json:"daemon_last_error,omitempty" yaml:"daemon_last_error,omitempty"`
 	DrillStatus           string `json:"drill_status,omitempty" yaml:"drill_status,omitempty"`
+	// DrillNote says why the last drill was not the drill the plan sells:
+	// run in memory because this host could not start a sandbox, or not run
+	// at all for want of disk. Empty when the drill ran as it should.
+	DrillNote string `json:"drill_note,omitempty" yaml:"drill_note,omitempty"`
 
 	// Platform telemetry (OS / Arch) and update notification.
 	OS               string `json:"os,omitempty" yaml:"os,omitempty"`
@@ -122,6 +126,9 @@ const (
 	DrillStatusNoKey = "no_key"
 	// DrillStatusFailed: the last unattended drill did not pass.
 	DrillStatusFailed = "failed"
+	// DrillStatusBlocked: this host cannot run the drill for a reason that
+	// says nothing about the backup (not enough disk). DrillNote says which.
+	DrillStatusBlocked = "blocked"
 )
 
 // NodeRegisterRequest is sent by CLI `safegrd init` to register with the remote server.
@@ -191,6 +198,11 @@ type NodeRegisterResponse struct {
 	// as an error and prints the key for the operator to save.
 	KeyEscrowed    bool   `json:"key_escrowed"`
 	KeyFingerprint string `json:"key_fingerprint,omitempty"`
+
+	// StorageKind is "hosted" when the host said it has no storage of its own
+	// and its project backs up to hosted storage: the host writes that into
+	// its config, as a claim would have told it to.
+	StorageKind string `json:"storage_kind,omitempty"`
 }
 
 // SurfaceRegisterRequest is sent by `daemon run` for each surface in its
@@ -247,6 +259,7 @@ type HeartbeatRequest struct {
 	ConsecutiveFailures int    `json:"consecutive_failures,omitempty"`
 	LastError           string `json:"last_error,omitempty"`
 	DrillStatus         string `json:"drill_status,omitempty"`
+	DrillNote           string `json:"drill_note,omitempty"`
 	// Schedule and RetentionDays are what the daemon runs this surface on,
 	// after any setting from the console, so the remote server measures
 	// "overdue" against the schedule actually in force.

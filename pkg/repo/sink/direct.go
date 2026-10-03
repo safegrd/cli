@@ -3,6 +3,7 @@ package sink
 import (
 	"context"
 	"crypto/md5"
+	"errors"
 	"fmt"
 	"io"
 	"path"
@@ -58,7 +59,7 @@ func (d *Direct) Reserve(_ context.Context, e format.Epoch, class string, objs [
 		if err != nil {
 			return nil, err
 		}
-		out[i] = Slot{Kind: o.Kind, Key: key, Class: class, RetainUntil: e.RetainUntil(class)}
+		out[i] = Slot{Kind: o.Kind, Key: key, EpochID: e.EpochID, Class: class, RetainUntil: e.RetainUntil(class)}
 	}
 	return out, nil
 }
@@ -71,34 +72,57 @@ func (d *Direct) Uploaded(context.Context, format.Epoch, []string) error { retur
 
 func (d *Direct) Commit(context.Context, format.Epoch, RunCommit) error { return nil }
 
+// Epochs lists a surface's epochs by their descriptors. A store that can
+// list the names under a prefix is asked for the epoch directories and then
+// for each descriptor by key, which is one listing and one small read per
+// epoch; any other store is listed whole, which on a bucket walks every
+// pack of every epoch.
 func (d *Direct) Epochs(ctx context.Context, surfaceID string) ([]EpochInfo, error) {
 	base := path.Join(d.S.Root(), "repo", surfaceID) + "/"
-	objs, err := d.S.List(ctx, base)
-	if err != nil {
-		return nil, err
+	var ids []string
+	if c, ok := d.S.(Children); ok {
+		names, err := c.Children(ctx, base)
+		if err != nil {
+			return nil, err
+		}
+		for _, n := range names {
+			if format.ValidEpochID(n) {
+				ids = append(ids, n)
+			}
+		}
+	} else {
+		objs, err := d.S.List(ctx, base)
+		if err != nil {
+			return nil, err
+		}
+		for _, o := range objs {
+			parts := strings.Split(strings.TrimPrefix(o.Key, base), "/")
+			if len(parts) == 2 && parts[1] == "epoch.json" && format.ValidEpochID(parts[0]) {
+				ids = append(ids, parts[0])
+			}
+		}
 	}
 	var out []EpochInfo
-	for _, o := range objs {
-		rest := strings.TrimPrefix(o.Key, base)
-		parts := strings.Split(rest, "/")
-		if len(parts) != 2 || parts[1] != "epoch.json" || !format.ValidEpochID(parts[0]) {
-			continue
+	for _, id := range ids {
+		key := path.Join(base, id, "epoch.json")
+		body, err := d.Get(ctx, key)
+		if errors.Is(err, ErrNotFound) {
+			continue // a directory with no descriptor is not an epoch
 		}
-		body, err := d.Get(ctx, o.Key)
 		if err != nil {
-			return nil, fmt.Errorf("epoch %s: %w", parts[0], err)
+			return nil, fmt.Errorf("epoch %s: %w", id, err)
 		}
 		var e format.Epoch
 		if err := format.Unmarshal(body, &e); err != nil {
-			return nil, fmt.Errorf("epoch %s: epoch.json does not parse: %w", parts[0], err)
+			return nil, fmt.Errorf("epoch %s: epoch.json does not parse: %w", id, err)
 		}
 		if err := e.Validate(); err != nil {
 			return nil, err
 		}
-		if e.EpochID != parts[0] || e.SurfaceID != surfaceID {
-			return nil, fmt.Errorf("epoch %s: epoch.json names epoch %s of surface %s", parts[0], e.EpochID, e.SurfaceID)
+		if e.EpochID != id || e.SurfaceID != surfaceID {
+			return nil, fmt.Errorf("epoch %s: epoch.json names epoch %s of surface %s", id, e.EpochID, e.SurfaceID)
 		}
-		out = append(out, EpochInfo{Epoch: e, Prefix: path.Join(base, parts[0])})
+		out = append(out, EpochInfo{Epoch: e, Prefix: path.Join(base, id)})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Epoch.OpenedAt.Before(out[j].Epoch.OpenedAt) })
 	return out, nil

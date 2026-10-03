@@ -29,6 +29,9 @@ type Repo struct {
 	headers map[string]int
 	trees   map[string][]byte
 	sizes   map[string]int64
+	// first serialises the first read of each pack, so concurrent range
+	// fetches of one pack share one header read.
+	first sink.PerKey
 }
 
 // Open returns a reader for one epoch.
@@ -107,6 +110,7 @@ func (r *Repo) LoadIndex(ctx context.Context, s format.Snapshot) (Index, error) 
 
 // opener returns the key of a pack, reading its header once.
 func (r *Repo) opener(ctx context.Context, pack string) (*unseal.Opener, int, error) {
+	defer r.first.Lock(pack)()
 	r.mu.Lock()
 	if o, ok := r.keys[pack]; ok {
 		h := r.headers[pack]
@@ -195,7 +199,6 @@ type Item struct {
 // Walk lists every entry under the snapshot's root tree, depth first in
 // tree order. fn may return SkipDir for a directory.
 func (r *Repo) Walk(ctx context.Context, idx Index, root format.ID, fn func(Item) error) error {
-	seen := map[format.ID]int{}
 	var walk func(id format.ID, prefix string, depth int) error
 	walk = func(id format.ID, prefix string, depth int) error {
 		if depth > 4096 {
@@ -208,7 +211,6 @@ func (r *Repo) Walk(ctx context.Context, idx Index, root format.ID, fn func(Item
 		if err != nil {
 			return err
 		}
-		seen[id]++
 		for _, n := range t.Entries {
 			p := n.Name
 			if prefix != "" {

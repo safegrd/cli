@@ -156,8 +156,9 @@ type Decision struct {
 // Decide says whether a run at now continues cur or opens a new epoch, and
 // why. cur is nil when the writer knows no epoch; lost says it once did and its
 // cache is gone or unreadable, which is never repaired by reading the
-// repository back.
-func Decide(now time.Time, cur *Current, r Retention, lost, requested bool) Decision {
+// repository back. recipient is the public key this run seals to: an epoch
+// holds packs wrapped to one recipient, so another key opens a new one.
+func Decide(now time.Time, cur *Current, r Retention, lost, requested bool, recipient string) Decision {
 	switch {
 	case cur == nil && lost:
 		return Decision{true, format.ReasonCacheLost}
@@ -167,6 +168,8 @@ func Decide(now time.Time, cur *Current, r Retention, lost, requested bool) Deci
 		return Decision{true, format.ReasonRequested}
 	case cur.Epoch.Version != format.Version:
 		return Decision{true, format.ReasonFormat}
+	case cur.Epoch.Recipient != recipient:
+		return Decision{true, format.ReasonRecipient}
 	case r.TMidDays() > cur.Epoch.TMidDays:
 		// The customer asked for longer protection; it must not wait for the
 		// month to turn. A decrease waits: the frozen locks are longer anyway.

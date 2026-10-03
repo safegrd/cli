@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/safegrd/cli/pkg/diskspace"
 	"github.com/safegrd/cli/pkg/model"
 	_ "modernc.org/sqlite" // the "sqlite" database/sql driver, pure Go
 )
@@ -265,6 +266,12 @@ func (d *SQLiteDumper) Dump(ctx context.Context, databaseName string, dst io.Wri
 		d.Warn(fmt.Sprintf("%s is in %s journal mode: while the backup reads it, writers wait. WAL mode (PRAGMA journal_mode=WAL) lets them carry on.", path, journal))
 	}
 
+	// The copy is about the size of the database and its WAL, in the system
+	// temporary directory, which may share a disk with the database itself.
+	if err := diskspace.CheckFreeSpace(os.TempDir(), sqliteFileBytes(path), "a backup of "+path+", which copies the database first",
+		"free some space, or set TMPDIR to a larger disk"); err != nil {
+		return nil, err
+	}
 	// A private directory for the copy: it is the plaintext database.
 	tmpDir, err := sqliteWorkDir("")
 	if err != nil {
@@ -613,4 +620,16 @@ func SQLiteJournalMode(ctx context.Context, databaseURL string) (string, error) 
 	var mode string
 	err = db.QueryRowContext(ctx, "PRAGMA journal_mode").Scan(&mode)
 	return mode, err
+}
+
+// sqliteFileBytes is the size of the database at path and its WAL: the most
+// VACUUM INTO can write.
+func sqliteFileBytes(path string) int64 {
+	var n int64
+	for _, p := range []string{path, path + "-wal"} {
+		if fi, err := os.Stat(p); err == nil {
+			n += fi.Size()
+		}
+	}
+	return n
 }

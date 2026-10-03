@@ -132,6 +132,8 @@ func reasonText(reason string) string {
 		return "the repository format changed"
 	case format.ReasonRequested:
 		return "--new-epoch"
+	case format.ReasonRecipient:
+		return "the public key changed"
 	}
 	return reason
 }
