@@ -29,6 +29,8 @@ func newRestoreCmd() *cobra.Command {
 		privKey    string
 		fromPath   string
 		paths      []string
+		version    int
+		surfaceSel string
 	)
 
 	cmd := &cobra.Command{
@@ -54,7 +56,11 @@ from storage is.`,
 				}
 				fromDir, snapshotID = dir, id
 			}
-			if snapshotID == "" {
+			if version > 0 {
+				if snapshotID != "" || len(paths) != 1 {
+					return fmt.Errorf("--version restores one version of one file: give one --path, and leave out --snapshot")
+				}
+			} else if snapshotID == "" {
 				return fmt.Errorf("--snapshot flag is required")
 			}
 			given := 0
@@ -152,6 +158,13 @@ from storage is.`,
 				}
 				// A snapshot of an incremental repository has no single
 				// object to download; it is restored from its packs.
+				if version > 0 {
+					id, err := resolveVersion(ctx, storageCfg, resolvedKey, surfaceSel, paths[0], version)
+					if err != nil {
+						return err
+					}
+					snapshotID = id
+				}
 				if storageCfg.Type != config.StorageTypeHosted || hostedRepoReady {
 					rs, err := locateRepoSnapshot(ctx, storageCfg, snapshotID)
 					if err != nil {
@@ -385,6 +398,8 @@ from storage is.`,
 	_ = cmd.Flags().MarkDeprecated("engine", "there is one Postgres restore path; the flag is ignored")
 	cmd.Flags().StringVar(&keyPath, "key-path", "", "Path to Age private identity file")
 	cmd.Flags().StringVar(&privKey, "private-key", "", "Age private identity key string (AGE-SECRET-KEY-1...)")
+	cmd.Flags().IntVar(&version, "version", 0, "With one --path: restore that version of the file, as 'safegrd find' numbers them")
+	cmd.Flags().StringVar(&surfaceSel, "surface", "", "With --version: the surface whose repository holds the file")
 	cmd.Flags().StringArrayVar(&paths, "path", nil, "Restore only this path of a repository snapshot, relative to / (repeatable; '*', '?' and '**' match)")
 	cmd.Flags().StringVar(&fromPath, "from", "", "Restore from an export: the directory 'safegrd export --to-dir' wrote, or one .safegrd file in it")
 

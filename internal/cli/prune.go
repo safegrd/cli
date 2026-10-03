@@ -16,6 +16,7 @@ import (
 
 	"github.com/aws/smithy-go"
 	"github.com/safegrd/cli/pkg/config"
+	"github.com/safegrd/cli/pkg/repo/sink"
 	"github.com/safegrd/cli/pkg/storage"
 	"github.com/spf13/cobra"
 )
@@ -98,6 +99,12 @@ func runPruneWithGrace(ctx context.Context, b pruneBucket, keepFor func(node str
 	snaps := map[string]*pruneSnapshot{}
 	for _, v := range versions {
 		rel := strings.TrimPrefix(v.Key, prefix+"/")
+		// An incremental repository's objects are pruned by class of their
+		// epoch (pruneRepos). Its sidecars end in .meta.json too; read here
+		// as a tar snapshot with no data, the newest one could go.
+		if isRepoKey(rel) {
+			continue
+		}
 		name := path.Base(rel)
 		var id string
 		isMeta := false
@@ -324,7 +331,25 @@ func pruneOwnBucket(ctx context.Context, c *config.CLIConfig, grace time.Duratio
 		return pruneReport{}, errors.New("prune needs the S3 provider")
 	}
 	retainUntil := func(metaKey string) (time.Time, error) { return b.RecordedRetainUntil(ctx, metaKey) }
-	return runPruneWithGrace(ctx, b, func(node string) (map[string]bool, error) { return serverKeepList(ctx, c, node) }, retainUntil, grace, dryRun, out)
+	keepFor := func(node string) (map[string]bool, error) { return serverKeepList(ctx, c, node) }
+	r, err := runPruneWithGrace(ctx, b, keepFor, retainUntil, grace, dryRun, out)
+	if err != nil {
+		return r, err
+	}
+	client, bucket, _, mode := b.ObjectStore()
+	base := storageCfg
+	base.NodeID = ""
+	bp, err := storage.NewS3Storage(ctx, base)
+	if err != nil {
+		return r, err
+	}
+	_, _, basePrefix, _ := bp.ObjectStore()
+	now, err := b.BucketNow(ctx)
+	if err != nil {
+		return r, err
+	}
+	err = pruneRepos(ctx, &sink.S3{Client: client, Bucket: bucket, Prefix: basePrefix, Mode: mode}, keepFor, now, grace, dryRun, out, &r)
+	return r, err
 }
 
 func newPruneCmd() *cobra.Command {
