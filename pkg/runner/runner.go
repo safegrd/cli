@@ -303,12 +303,12 @@ func (v *Verifier) RunDryRestore(ctx context.Context, snapshotID, privateKey str
 	// Check decryption status
 	if decErr := <-decryptErrChan; decErr != nil {
 		report.Status = model.VerificationStatusFailed
-		why, actual := explainDecryptError(decErr)
+		why, expected, actual := explainDecryptError(decErr)
 		report.ErrorMessage = why
 		report.Assertions = append(report.Assertions, model.AssertionResult{
 			Name:     "DecryptionIntegrity",
 			Passed:   false,
-			Expected: "valid Age private key matching recipient public key",
+			Expected: expected,
 			Actual:   actual,
 			Message:  why,
 		})
@@ -624,7 +624,7 @@ func drillMilliseconds(d time.Duration) int64 {
 // clipped to printable text. A snapshot replaced in storage failed with the
 // first kilobyte of its binary header in the message, twice, under the words
 // "Age private key decryption failed": the key was blamed for a changed file.
-func explainDecryptError(err error) (why, actual string) {
+func explainDecryptError(err error) (why, expected, actual string) {
 	raw := err.Error()
 	clean := strings.Map(func(r rune) rune {
 		if r == utf8.RuneError || !unicode.IsPrint(r) {
@@ -632,16 +632,22 @@ func explainDecryptError(err error) (why, actual string) {
 		}
 		return r
 	}, raw)
+	// age quotes the bytes it could not parse; they say nothing to a person.
+	if i := strings.Index(clean, ": unexpected intro"); i >= 0 {
+		clean = clean[:i]
+	}
 	if len(clean) > 160 {
 		clean = clean[:160] + "..."
 	}
 	switch {
 	case strings.Contains(raw, "no identity matched"):
-		return "the key on this host is not the key this snapshot was encrypted to", clean
+		return "the key on this host is not the key this snapshot was encrypted to",
+			"a key this snapshot was encrypted to", clean
 	case strings.Contains(raw, "header"), strings.Contains(raw, "intro"),
 		strings.Contains(raw, "payload"), strings.Contains(raw, "chunk"), strings.Contains(raw, "authentication"):
 		return "the stored snapshot is not what was written at backup time: its encryption does not check out, " +
-			"so it was changed or corrupted in storage. The key is not the problem", clean
+				"so it was changed or corrupted in storage. The key is not the problem",
+			"the snapshot as it was written at backup time", "a file whose encryption does not check out"
 	}
-	return "decryption failed: " + clean, clean
+	return "decryption failed: " + clean, "a snapshot that decrypts with this host's key", clean
 }
