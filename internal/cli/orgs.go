@@ -87,7 +87,7 @@ func showCurrentOrg() error {
 	fmt.Printf("   Billing Plan:  %s (%s)\n", planDisplayName, planCost)
 	fmt.Printf("   Quota:         %d protected surfaces\n", org.MaxDatabases)
 	if overage != "" {
-		fmt.Printf("   Hosted storage above the included amount: %s\n", overage)
+		fmt.Printf("   Extra hosted storage: %s\n", overage)
 	}
 	fmt.Printf("   Created:       %s\n\n", org.CreatedAt.Format("2006-01-02 15:04:05 MST"))
 

@@ -16,7 +16,7 @@ func TestOrgShowsTheHostedOverageOnPaidPlans(t *testing.T) {
 	for _, c := range []struct {
 		plan, want string
 	}{
-		{"growth", "Hosted storage above the included amount: $0.20 per GB-month"},
+		{"growth", "Extra hosted storage: $0.20 per GB-month"},
 		{"free", ""},
 	} {
 		t.Run(c.plan, func(t *testing.T) {
