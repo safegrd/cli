@@ -87,6 +87,8 @@ cosign verify ghcr.io/safegrd/cli:<version>-pg18 \
 [`packaging/kubernetes`](packaging/kubernetes/cronjob.yaml) runs `daemon run --once` as a
 CronJob, and [`packaging/helm/safegrd`](packaging/helm/safegrd) runs the daemon as a
 Deployment.
+Each names the release it was cut with, such as `ghcr.io/safegrd/cli:0.0.10`; change
+the tag to upgrade.
 
 ### Release archives, or from source
 

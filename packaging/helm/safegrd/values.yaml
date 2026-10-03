@@ -1,7 +1,8 @@
 image:
   repository: ghcr.io/safegrd/cli
-  # The tag names the Postgres client the image carries, e.g. 0.4.0-pg18.
-  tag: latest
+  # Empty runs the CLI release this chart was cut with (its appVersion). A
+  # tag can also name the Postgres client the image carries, e.g. 0.0.10-pg18.
+  tag: ""
   pullPolicy: IfNotPresent
 
 # The Secret holding config.yaml and, when you hold the key yourself,

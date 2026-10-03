@@ -33,7 +33,7 @@ spec:
       # so the init container copies both at 0600 as that user.
       initContainers:
         - name: install-config
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: "{{ .Values.image.repository }}:{{ include "safegrd.tag" . }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: ["sh", "-c"]
           args:
@@ -46,7 +46,7 @@ spec:
             - { name: home, mountPath: /home/safegrd/.safegrd }
       containers:
         - name: safegrd
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: "{{ .Values.image.repository }}:{{ include "safegrd.tag" . }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args: ["daemon", "run", "--state-dir", "/var/lib/safegrd"]
           {{- with .Values.env }}

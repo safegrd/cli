@@ -77,6 +77,7 @@ check-tidy: ## Fail if go.mod or go.sum are not tidy
 ci: check-fmt check-tidy build ## Run every gate CI runs
 	go vet ./...
 	go test -race ./...
+	sh scripts/packaging-version.sh check
 
 clean: ## Clean build artifacts
 	rm -rf $(BIN_DIR) coverage.out coverage.html dist
@@ -98,8 +99,15 @@ release-tag: ## Tag and push a release (usage: make release-tag TAG=v0.0.5)
 		echo "Error: working directory has uncommitted changes"; \
 		exit 1; \
 	fi
+	@echo "==> Pointing the Compose file, the CronJob and the chart at $(TAG)..."
+	@sh scripts/packaging-version.sh set "$(patsubst v%,%,$(TAG))"
 	@echo "==> Running CI gate before tagging..."
 	@$(MAKE) ci
+	@if [ -n "$$(git status --porcelain)" ]; then \
+		git commit -q -am "chore: the packaging files run $(TAG)" && \
+		echo "==> Pushing the packaging commit to origin..." && \
+		git push origin HEAD; \
+	fi
 	@echo "==> Creating annotated tag $(TAG)..."
 	git tag -a "$(TAG)" -m "SafeGrd CLI $(TAG)"
 	@echo "==> Pushing tag $(TAG) to origin..."

@@ -12,7 +12,9 @@ permissions:
 # installs the moment it appears on releases/latest, and what `brew upgrade`
 # fetches next. So nothing is published until the exact archives about to be
 # uploaded have been installed through install.sh and taken a backup through to
-# a byte-identical restore on every platform a runner exists for.
+# a byte-identical restore on every platform a runner exists for, and the
+# GitHub Action (safegrd/backup-action@v0) has backed up and drilled
+# PostgreSQL, MySQL, MongoDB and a folder with them.
 jobs:
   test:
     name: Run Tests
@@ -26,6 +28,11 @@ jobs:
         with:
           go-version: '1.25'
           cache: true
+
+      # make release-tag points them at the tag before tagging; a tag pushed
+      # by hand would publish files that run another release.
+      - name: Check the packaging files run this release
+        run: sh scripts/packaging-version.sh check "${GITHUB_REF_NAME#v}"
 
       - name: Run CI gate
         run: make ci
@@ -82,9 +89,22 @@ jobs:
       - name: Install through install.sh and restore a backup
         run: sh scripts/release-smoke.sh dist "${GITHUB_REF_NAME#v}"
 
+  # The Action's own test workflow, run against the archives above instead of
+  # the latest release: what `uses: safegrd/backup-action@v0` does on a
+  # customer's runner the moment this release is published.
+  action:
+    name: The GitHub Action
+    needs: build
+    permissions:
+      contents: read
+    uses: safegrd/backup-action/.github/workflows/test.yml@v0
+    with:
+      cli-version: ${{ github.ref_name }}
+      dist-artifact: dist
+
   release:
     name: Publish Release
-    needs: smoke
+    needs: [smoke, action]
     runs-on: ubuntu-latest
     steps:
       - name: Fetch the archives that passed the smoke test
@@ -105,9 +125,10 @@ jobs:
 
   image:
     name: Publish the image
-    # After the smoke test, like the archives: the image is the same source,
-    # and nothing is published from a tag that has not restored a backup.
-    needs: smoke
+    # After the smoke test and the Action, like the archives: the image is the
+    # same source, and nothing is published from a tag that has not restored a
+    # backup.
+    needs: [smoke, action]
     runs-on: ubuntu-latest
     permissions:
       contents: read
