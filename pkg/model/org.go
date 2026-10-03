@@ -26,31 +26,16 @@ const (
 
 // Organization represents a top-level tenant account.
 type Organization struct {
-	ID           string         `json:"id" yaml:"id"`
-	Name         string         `json:"name" yaml:"name"`
-	Slug         string         `json:"slug" yaml:"slug"`
-	Plan         OrgPlan        `json:"plan" yaml:"plan"`
-	MaxSurfaces  int            `json:"max_surfaces" yaml:"max_surfaces"`
-	MaxDatabases int            `json:"max_databases" yaml:"max_databases"` // Deprecated backwards-compatibility alias for MaxSurfaces
-	OwnerUserID  string         `json:"owner_user_id" yaml:"owner_user_id"`
-	CreatedAt    time.Time      `json:"created_at" yaml:"created_at"`
-	UpdatedAt    time.Time      `json:"updated_at" yaml:"updated_at"`
-	KeyCustody   KeyCustodyMode `json:"key_custody" yaml:"key_custody,omitempty"`
+	ID           string    `json:"id" yaml:"id"`
+	Name         string    `json:"name" yaml:"name"`
+	Slug         string    `json:"slug" yaml:"slug"`
+	Plan         OrgPlan   `json:"plan" yaml:"plan"`
+	MaxSurfaces  int       `json:"max_surfaces" yaml:"max_surfaces"`
+	MaxDatabases int       `json:"max_databases" yaml:"max_databases"` // Deprecated backwards-compatibility alias for MaxSurfaces
+	OwnerUserID  string    `json:"owner_user_id" yaml:"owner_user_id"`
+	CreatedAt    time.Time `json:"created_at" yaml:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at" yaml:"updated_at"`
 }
-
-// KeyCustodyMode names who holds the Age identity that opens an organization's
-// snapshots.
-type KeyCustodyMode string
-
-const (
-	// KeyCustodyCustomer means the identity is generated on the customer's host
-	// and never leaves it. The remote server holds only the public recipient.
-	KeyCustodyCustomer KeyCustodyMode = "customer"
-
-	// KeyCustodyManaged means the remote server holds the identity,
-	// envelope-encrypted, and releases it to the organization's enrolled nodes at runtime.
-	KeyCustodyManaged KeyCustodyMode = "managed"
-)
 
 // OrgMember maps user membership and role inside an organization.
 type OrgMember struct {

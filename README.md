@@ -67,7 +67,7 @@ curl -fsSL https://safegrd.dev/install.sh | SAFEGRD_NO_SETUP=1 sh               
 | `SAFEGRD_STORAGE` | `hosted` or `local`: where backups go when the project has no bucket. |
 | `SAFEGRD_CLAIM` | The claim code the console shows for this machine. It carries the project, where backups go and the surfaces to protect, so enrollment writes them into the config and asks nothing. Needs a release whose `enroll` has `--claim`; an older one stops and says so. |
 | `SAFEGRD_NODE_NAME` | Name the machine is shown under. |
-| `SAFEGRD_KEY_CUSTODY` | `safegrd` or `local`: answers the key question in advance. |
+| `SAFEGRD_KEY_CUSTODY` | `local` keeps this host's key on the host. Without it the remote server keeps the key sealed and releases it only to your enrolled hosts. |
 | `SAFEGRD_SERVER_URL` | Remote server to log in and enroll with. Default: `https://safegrd.dev`. |
 
 ### Homebrew (macOS and Linux)

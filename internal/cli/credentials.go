@@ -224,8 +224,8 @@ type managedIdentityFetchResponse struct {
 	Notice     string `json:"notice"`
 }
 
-// errNoManagedKey is the remote server's 404: the organization holds its own
-// key, so there is nothing to fetch. An ordinary answer, not a fault.
+// errNoManagedKey is the remote server's 404: every host in the organization
+// keeps its own key, so there is nothing to fetch. An ordinary answer, not a fault.
 var errNoManagedKey = errors.New("the remote server holds no key for this organization")
 
 // fetchManagedIdentity asks the remote server for the Age identity it holds for
@@ -295,7 +295,8 @@ func resolveManagedIdentity(ctx context.Context, cfg *config.CLIConfig, verbose 
 // host is enrolled. A host that replaced a lost one has a key of its own that
 // cannot open the lost host's snapshots; the held key for that host can, and
 // trying the local key alone failed the restore managed custody exists for.
-// A customer-held organization answers 404 and only the local key is used. A
+// An organization whose hosts all keep their own key answers 404, and only
+// the local key is used. A
 // failed fetch is not reported while a local key exists: an offline restore
 // with the host's own key is the normal case, not a warning.
 func withManagedIdentities(ctx context.Context, cfg *config.CLIConfig, local string, verbose bool) string {

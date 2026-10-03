@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
@@ -308,6 +309,7 @@ func newVerifyHistoryCmd() *cobra.Command {
 		nodeID    string
 		keyStr    string
 		keyFile   string
+		keysFile  string
 		localFile string
 		jsonOut   bool
 	)
@@ -323,8 +325,12 @@ a file with --file:
 2. Every later record's PrevHash is the certificate hash of the one before it,
    so no record was changed, removed or inserted.
 3. Every signed record's Ed25519 signature is valid against the attestation
-   public key (from --key, --key-file or the remote server). Unsigned records
-   are counted and reported.`,
+   key that signed it. Each record names its key; the remote server publishes
+   the active key and every retired one, and a record under a retired key is
+   refused if it was completed, or chained, after the key retired. --key or
+   --key-file pins one public key for every record instead; --keys-file takes
+   the server's published key set, saved for an offline audit. Unsigned
+   records are counted and reported.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if nodeID == "" {
 				nodeID = cfg.NodeID
@@ -335,54 +341,10 @@ a file with --file:
 
 			serverURL := resolveServerURL()
 
-			// 1. Resolve attestation public key
-			var pubKey ed25519.PublicKey
-			if keyStr != "" {
-				raw, err := hex.DecodeString(strings.TrimSpace(keyStr))
-				if err != nil {
-					return fmt.Errorf("invalid hex public key: %w", err)
-				}
-				pubKey = ed25519.PublicKey(raw)
-			} else if keyFile != "" {
-				data, err := os.ReadFile(keyFile)
-				if err != nil {
-					return fmt.Errorf("failed to read public key file: %w", err)
-				}
-				raw, err := hex.DecodeString(strings.TrimSpace(string(data)))
-				if err != nil {
-					return fmt.Errorf("invalid hex in public key file: %w", err)
-				}
-				pubKey = ed25519.PublicKey(raw)
-			} else {
-				pkReq, err := http.NewRequestWithContext(cmd.Context(), http.MethodGet, serverURL+"/api/v1/attestations/public-key", nil)
-				if err != nil {
-					return err
-				}
-				resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(pkReq)
-				if err != nil {
-					return fmt.Errorf("failed to fetch attestation public key from %s: %w", serverURL, err)
-				}
-				defer resp.Body.Close()
-				if resp.StatusCode != http.StatusOK {
-					return fmt.Errorf("server returned status %d fetching public key", resp.StatusCode)
-				}
-				var pkResp struct {
-					PublicKey string `json:"public_key"`
-					KeyID     string `json:"key_id"`
-				}
-				if err := json.NewDecoder(resp.Body).Decode(&pkResp); err != nil {
-					return fmt.Errorf("failed to decode public key: %w", err)
-				}
-				raw, err := hex.DecodeString(pkResp.PublicKey)
-				if err != nil {
-					return fmt.Errorf("invalid hex in server public key: %w", err)
-				}
-				pubKey = ed25519.PublicKey(raw)
-			}
-			// A key of the wrong length used to skip every signature check
-			// and still report the signatures verified.
-			if len(pubKey) != ed25519.PublicKeySize {
-				return fmt.Errorf("the attestation public key is %d bytes; an Ed25519 public key is %d", len(pubKey), ed25519.PublicKeySize)
+			// 1. Resolve the attestation keys
+			keys, err := loadAttestationKeys(cmd.Context(), serverURL, keyStr, keyFile, keysFile)
+			if err != nil {
+				return err
 			}
 
 			// 2. Load verifications
@@ -443,16 +405,12 @@ a file with --file:
 						i, r.VerificationID, expectedPrev, r.PrevHash)
 				}
 
-				// 2. Verify the signature. A record with none is counted and
-				// said, never passed as verified.
+				// 2. Verify the signature under the key the record names. A
+				// record with none is counted and said, never passed as verified.
 				if r.Signature == "" {
 					unsigned++
-				} else {
-					sigBytes, err := hex.DecodeString(r.Signature)
-					if err != nil || !ed25519.Verify(pubKey, r.CanonicalBytes(), sigBytes) {
-						return fmt.Errorf("INVALID SIGNATURE at index %d (verification %s): the Ed25519 signature does not match the record",
-							i, r.VerificationID)
-					}
+				} else if err := keys.verify(i, r); err != nil {
+					return err
 				}
 
 				// Next link in chain must point to this report's certificate hash
@@ -468,6 +426,7 @@ a file with --file:
 					"head_hash":     reports[len(reports)-1].CertificateHash,
 					"signatures_ok": unsigned == 0,
 					"unsigned":      unsigned,
+					"signing_keys":  keys.used(),
 				}
 				enc := json.NewEncoder(os.Stdout)
 				enc.SetIndent("", "  ")
@@ -485,6 +444,9 @@ a file with --file:
 				fmt.Printf("   Signatures:      %d of %d valid (Ed25519); %d records carry no signature\n",
 					len(reports)-unsigned, len(reports), unsigned)
 			}
+			if line := keys.usedLine(); line != "" {
+				fmt.Printf("   Signing keys:    %s\n", line)
+			}
 			return nil
 		},
 	}
@@ -492,6 +454,7 @@ a file with --file:
 	cmd.Flags().StringVar(&nodeID, "node", "", "Node ID to verify history for")
 	cmd.Flags().StringVar(&keyStr, "key", "", "Hex-encoded Ed25519 attestation public key")
 	cmd.Flags().StringVar(&keyFile, "key-file", "", "Path to file containing hex-encoded public key")
+	cmd.Flags().StringVar(&keysFile, "keys-file", "", "JSON saved from the server's /api/v1/attestations/public-key: the active key and the retired ones, for an offline audit of a chain that spans a key rotation")
 	cmd.Flags().StringVar(&localFile, "file", "", "JSON file of verification records to check offline")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print the result as JSON on stdout")
 
@@ -533,4 +496,219 @@ func identityFingerprint(identity string) string {
 		return fmt.Sprintf("%d keys (%s)", len(prints), strings.Join(prints, ", "))
 	}
 	return strings.Join(prints, "")
+}
+
+// attestationKey is one key the remote server signs, or signed, records with.
+type attestationKey struct {
+	ID        string
+	Public    ed25519.PublicKey
+	RetiredAt time.Time // zero while the key is active
+	Records   int
+}
+
+// attestationKeySet is what a chain is checked against: either one pinned key
+// for every record (--key, --key-file), or the server's published set, where
+// each record is checked under the key it names.
+type attestationKeySet struct {
+	pinned *attestationKey
+	active *attestationKey
+	byID   map[string]*attestationKey
+	// newest is the rank of the newest key seen so far in the chain: a record
+	// under a key retired before it is out of order. Active ranks above every
+	// retired key.
+	newest time.Time
+	order  []*attestationKey
+}
+
+var activeForever = time.Date(9999, 12, 31, 0, 0, 0, 0, time.UTC)
+
+func (k *attestationKey) rank() time.Time {
+	if k.RetiredAt.IsZero() {
+		return activeForever
+	}
+	return k.RetiredAt
+}
+
+// publishedAttestationKeys is the body of GET /api/v1/attestations/public-key.
+type publishedAttestationKeys struct {
+	KeyID     string `json:"key_id"`
+	PublicKey string `json:"public_key"`
+	Retired   []struct {
+		KeyID     string    `json:"key_id"`
+		PublicKey string    `json:"public_key"`
+		RetiredAt time.Time `json:"retired_at"`
+	} `json:"retired"`
+}
+
+func parseHexPublicKey(what, s string) (ed25519.PublicKey, error) {
+	raw, err := hex.DecodeString(strings.TrimSpace(s))
+	if err != nil {
+		return nil, fmt.Errorf("%s: not hex: %w", what, err)
+	}
+	// A key of the wrong length used to skip every signature check and
+	// still report the signatures verified.
+	if len(raw) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("%s is %d bytes; an Ed25519 public key is %d", what, len(raw), ed25519.PublicKeySize)
+	}
+	return ed25519.PublicKey(raw), nil
+}
+
+func keySetFromPublished(pk publishedAttestationKeys) (*attestationKeySet, error) {
+	activePub, err := parseHexPublicKey("the server's attestation public key", pk.PublicKey)
+	if err != nil {
+		return nil, err
+	}
+	set := &attestationKeySet{byID: map[string]*attestationKey{}}
+	set.active = &attestationKey{ID: pk.KeyID, Public: activePub}
+	set.byID[pk.KeyID] = set.active
+	for _, r := range pk.Retired {
+		pub, err := parseHexPublicKey("retired attestation key "+r.KeyID, r.PublicKey)
+		if err != nil {
+			return nil, err
+		}
+		if r.RetiredAt.IsZero() {
+			return nil, fmt.Errorf("retired attestation key %s has no retired_at", r.KeyID)
+		}
+		set.byID[r.KeyID] = &attestationKey{ID: r.KeyID, Public: pub, RetiredAt: r.RetiredAt.UTC()}
+	}
+	return set, nil
+}
+
+// loadAttestationKeys resolves the keys from --key, --key-file, --keys-file or
+// the remote server, in that order of precedence.
+func loadAttestationKeys(ctx context.Context, serverURL, keyStr, keyFile, keysFile string) (*attestationKeySet, error) {
+	switch {
+	case keyStr != "":
+		pub, err := parseHexPublicKey("--key", keyStr)
+		if err != nil {
+			return nil, err
+		}
+		return &attestationKeySet{pinned: &attestationKey{ID: "pinned", Public: pub}}, nil
+	case keyFile != "":
+		data, err := os.ReadFile(keyFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read public key file: %w", err)
+		}
+		pub, err := parseHexPublicKey("--key-file", string(data))
+		if err != nil {
+			return nil, err
+		}
+		return &attestationKeySet{pinned: &attestationKey{ID: "pinned", Public: pub}}, nil
+	case keysFile != "":
+		data, err := os.ReadFile(keysFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read --keys-file: %w", err)
+		}
+		var pk publishedAttestationKeys
+		if err := json.Unmarshal(data, &pk); err != nil {
+			return nil, fmt.Errorf("--keys-file is not the JSON of /api/v1/attestations/public-key: %w", err)
+		}
+		return keySetFromPublished(pk)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, serverURL+"/api/v1/attestations/public-key", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch attestation public key from %s: %w", serverURL, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("server returned status %d fetching public key", resp.StatusCode)
+	}
+	var pk publishedAttestationKeys
+	if err := json.NewDecoder(resp.Body).Decode(&pk); err != nil {
+		return nil, fmt.Errorf("failed to decode public key: %w", err)
+	}
+	return keySetFromPublished(pk)
+}
+
+// verify checks record i's signature under the key it names.
+//
+// A pinned key is checked against every record, whatever key id it carries:
+// that is the air-gapped audit, where the auditor decides which key to trust.
+// Otherwise the record's signing_key_id picks the key. A record that names no
+// key was signed before records carried one and is checked under the active
+// key. A record under a retired key must have been completed before the key
+// retired, and must not follow a record signed under a newer key: the chain
+// is append-only, so once the server signs with the new key no honest record
+// under the old one can come after it.
+func (s *attestationKeySet) verify(i int, r *model.VerificationReport) error {
+	sigBytes, err := hex.DecodeString(r.Signature)
+	if err != nil {
+		return fmt.Errorf("INVALID SIGNATURE at index %d (verification %s): the signature is not hex", i, r.VerificationID)
+	}
+	key := s.pinned
+	if key == nil {
+		if r.SigningKeyID == "" {
+			key = s.active
+		} else if key = s.byID[r.SigningKeyID]; key == nil {
+			return fmt.Errorf("UNKNOWN SIGNING KEY at index %d (verification %s): signed under %s, which the remote server publishes as neither active nor retired",
+				i, r.VerificationID, r.SigningKeyID)
+		}
+	}
+	if !ed25519.Verify(key.Public, r.CanonicalBytes(), sigBytes) {
+		return fmt.Errorf("INVALID SIGNATURE at index %d (verification %s): the Ed25519 signature does not match the record under key %s",
+			i, r.VerificationID, key.ID)
+	}
+	if !key.RetiredAt.IsZero() {
+		completed := r.CompletedAt
+		if completed.IsZero() {
+			completed = r.StartedAt
+		}
+		if completed.After(key.RetiredAt) {
+			return fmt.Errorf("RETIRED KEY at index %d (verification %s): signed under %s, which retired at %s, but completed at %s",
+				i, r.VerificationID, key.ID, key.RetiredAt.Format(time.RFC3339), completed.UTC().Format(time.RFC3339))
+		}
+		if key.rank().Before(s.newest) {
+			return fmt.Errorf("RETIRED KEY OUT OF ORDER at index %d (verification %s): signed under %s, which retired at %s, after a record signed under a newer key",
+				i, r.VerificationID, key.ID, key.RetiredAt.Format(time.RFC3339))
+		}
+	}
+	if key.rank().After(s.newest) {
+		s.newest = key.rank()
+	}
+	if key.Records == 0 {
+		s.order = append(s.order, key)
+	}
+	key.Records++
+	return nil
+}
+
+// used lists the keys that signed the chain, for --json.
+func (s *attestationKeySet) used() []map[string]any {
+	out := make([]map[string]any, 0, len(s.order))
+	for _, k := range s.order {
+		entry := map[string]any{"key_id": k.ID, "records": k.Records, "status": "active"}
+		if k == s.pinned {
+			entry["status"] = "pinned"
+		} else if !k.RetiredAt.IsZero() {
+			entry["status"] = "retired"
+			entry["retired_at"] = k.RetiredAt.Format(time.RFC3339)
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+// usedLine is the same, one line for the text output. Empty when a pinned key
+// was used: the operator chose it and knows which it is.
+func (s *attestationKeySet) usedLine() string {
+	if s.pinned != nil {
+		return ""
+	}
+	parts := make([]string, 0, len(s.order))
+	for _, k := range s.order {
+		records := "records"
+		if k.Records == 1 {
+			records = "record"
+		}
+		if k.RetiredAt.IsZero() {
+			parts = append(parts, fmt.Sprintf("%s (active, %d %s)", k.ID, k.Records, records))
+		} else {
+			parts = append(parts, fmt.Sprintf("%s (retired %s, %d %s)", k.ID, k.RetiredAt.Format("2006-01-02"), k.Records, records))
+		}
+	}
+	return strings.Join(parts, "; ")
 }

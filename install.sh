@@ -31,10 +31,11 @@
 #   SAFEGRD_CLAIM        the code the console shows for this host: the project, where backups
 #                        go and the surfaces to protect, as chosen in the browser
 #   SAFEGRD_NODE_NAME    name this host is shown under (default: its hostname)
-#   SAFEGRD_KEY_CUSTODY  'safegrd' or 'local'; answers the key question in advance
+#   SAFEGRD_KEY_CUSTODY  'local' keeps this host's key on the host. Without it SafeGrd keeps
+#                        the key sealed and releases it only to your enrolled hosts
 #   SAFEGRD_TOKEN        a token from Tokens in the console (sg_pat_...). With it the host
 #                        enrolls with no terminal and no browser login: CI, cloud-init,
-#                        ssh host 'curl ... | sh'. Without a claim it needs SAFEGRD_KEY_CUSTODY
+#                        ssh host 'curl ... | sh'
 #   SAFEGRD_SERVER_URL   remote server to log in and enroll with (default: https://safegrd.dev)
 #   SAFEGRD_DOWNLOAD_BASE  where release archives are fetched from, for testing a
 #                        build before it is published (curl only; file:// works)
@@ -345,7 +346,8 @@ warn_if_shadowed() {
   printf "   Every safegrd command you type uses that one. Remove it (for Homebrew: brew uninstall safegrd),\n" >&2
   printf "   or put %s before it in PATH, then open a new shell.\n\n" "$(dirname "$SAFEGRD_BIN")" >&2
 }
-trap warn_if_shadowed EXIT
+# This replaces the EXIT trap set at step 7, so it removes the download too.
+trap 'warn_if_shadowed; cleanup' EXIT
 
 # 13. Connect this host, or say how to
 # A binary older than this script (a pinned VERSION, or a release published
@@ -506,11 +508,6 @@ if [ -z "${SAFEGRD_NO_SETUP:-}" ] && [ -n "${SAFEGRD_TOKEN:-}" ]; then
     *) setup_failed "SAFEGRD_TOKEN must be a token from Tokens in the console (sg_pat_...)." ;;
   esac
   use_claim
-  # A claim carries the key answer given in the console. Without one the
-  # answer has to be given, because it is decided once, when the key is made.
-  if [ -z "$CLAIM" ] && [ -z "$KEY_ON_HOST" ] && [ -z "$CUSTODY" ]; then
-    setup_failed "Set SAFEGRD_KEY_CUSTODY to 'safegrd' (SafeGrd keeps the key sealed and releases it only to your enrolled hosts) or 'local' (only you can decrypt these backups), or use a claim code from the console."
-  fi
   printf "\n"
   # By reference, so the token is not in the process table while enroll runs.
   export SAFEGRD_TOKEN
@@ -541,24 +538,6 @@ if ! "$SAFEGRD_BIN" login </dev/tty; then
 fi
 
 use_claim
-
-# A claim carries the answer given in the console, and enroll reads it from
-# the claim, so there is nothing to ask here.
-if [ -z "$CUSTODY" ] && [ -z "$KEY_ON_HOST" ] && [ -z "$CLAIM" ]; then
-  printf "\n${BOLD}Who keeps the key that decrypts this host's backups?${RESET}\n" >/dev/tty
-  printf "  This is decided once, when the key is made.\n\n" >/dev/tty
-  printf "  1) SafeGrd keeps it sealed and releases it only to your enrolled hosts,\n" >/dev/tty
-  printf "     so you can restore even after losing this host.\n" >/dev/tty
-  printf "  2) This host keeps it. Only you can decrypt these backups;\n" >/dev/tty
-  printf "     keep a copy of the key file somewhere safe.\n\n" >/dev/tty
-  while [ -z "$CUSTODY" ]; do
-    ask "Choose 1 or 2: "
-    case "$REPLY" in
-      1) CUSTODY="safegrd" ;;
-      2) CUSTODY="local" ;;
-    esac
-  done
-fi
 
 printf "\n"
 if ! enroll_with enroll </dev/tty; then
