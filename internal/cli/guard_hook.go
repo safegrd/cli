@@ -84,7 +84,7 @@ func runGuardHook(ctx context.Context, tool, surfaceID string, allowUnlocked boo
 	if err != nil {
 		return hookAnswer(tool, out, "", fmt.Sprintf(
 			"Blocked by safegrd guard: this command matches %q, and no locked snapshot could be taken first: %v. "+
-				"Fix the backup, then run the command again.", rule.Name, err))
+				"Fix the backup, then run the command again.", rule.Name, firstLine(err)))
 	}
 	return hookAnswer(tool, out, snap.SnapshotID, "")
 }
@@ -109,4 +109,14 @@ func hookAnswer(tool string, out io.Writer, snapshotID, reason string) error {
 	ans.HookSpecificOutput.PermissionDecision = "deny"
 	ans.HookSpecificOutput.PermissionDecisionReason = strings.TrimSpace(reason)
 	return json.NewEncoder(out).Encode(ans)
+}
+
+// firstLine is an error's first line. A connection error lists every address
+// it tried, and an agent reading the reason needs only what failed.
+func firstLine(err error) string {
+	msg := err.Error()
+	if i := strings.IndexByte(msg, '\n'); i >= 0 {
+		msg = strings.TrimRight(msg[:i], ": ")
+	}
+	return msg
 }

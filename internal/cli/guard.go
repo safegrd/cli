@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -282,11 +283,21 @@ func describeCommand(command []string) string {
 	if len(command) == 0 {
 		return ""
 	}
-	s := strings.Join(command, " ")
+	s := redactURLPasswords(strings.Join(command, " "))
 	if len(s) > 120 {
 		s = s[:117] + "..."
 	}
 	return "'" + s + "'"
+}
+
+// urlPassword matches the password in a URL's userinfo: scheme://user:PASS@.
+var urlPassword = regexp.MustCompile(`(://[^:/@\s]+:)[^@\s]+@`)
+
+// redactURLPasswords hides a password written into a connection URL. guard
+// echoed `psql postgres://user:pass@host/db ...` as it ran it, putting the
+// password into the terminal and into an agent's transcript.
+func redactURLPasswords(s string) string {
+	return urlPassword.ReplaceAllString(s, "${1}xxxxx@")
 }
 
 func printGuardRules(w io.Writer) error {

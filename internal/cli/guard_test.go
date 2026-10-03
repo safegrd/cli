@@ -166,3 +166,15 @@ func TestGuardNeedsASurfaceWhenTheConfigHasSeveral(t *testing.T) {
 		t.Errorf("--surface mail: %v %v %v", s, standalone, err)
 	}
 }
+
+// guard echoes the command it is about to run, and a database URL in it
+// carries a password that must not reach the terminal or an agent's log.
+func TestGuardEchoHidesAPasswordInAURL(t *testing.T) {
+	got := describeCommand([]string{"psql", "postgres://app:s3cret@db:5432/shop", "-c", "DROP TABLE x"})
+	if strings.Contains(got, "s3cret") {
+		t.Errorf("describeCommand printed the password: %s", got)
+	}
+	if !strings.Contains(got, "postgres://app:xxxxx@db:5432/shop") {
+		t.Errorf("describeCommand = %s, want the URL with the password replaced", got)
+	}
+}
