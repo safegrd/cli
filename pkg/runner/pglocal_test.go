@@ -37,6 +37,31 @@ func TestSourceMajorReadsTheRecordedServer(t *testing.T) {
 	}
 }
 
+// sandboxStateDir is a state directory a local sandbox can run under: the
+// test's own, or, as root, one handed to nobody in a tree nobody can reach.
+func sandboxStateDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if os.Geteuid() != 0 {
+		return dir
+	}
+	for _, d := range []string{filepath.Dir(dir), dir} {
+		if err := os.Chmod(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	state := filepath.Join(dir, "state")
+	if err := os.Mkdir(state, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chown(state, nobody, nobody); err != nil {
+		t.Fatal(err)
+	}
+	return state
+}
+
+const nobody = 65534
+
 // fakePgServer writes an initdb and a postgres that only answer --version.
 func fakePgServer(t *testing.T, version string, works bool) string {
 	t.Helper()
@@ -80,7 +105,7 @@ func TestFindPgServerRefusesOneOlderThanTheSnapshot(t *testing.T) {
 // The cluster lands on the host that may run production: a restore that
 // would leave its disk nearly full is refused before initdb runs.
 func TestCheckRoomRefusesARestoreThatWouldFillTheDisk(t *testing.T) {
-	dir := t.TempDir()
+	dir := sandboxStateDir(t)
 	if err := checkRoom(dir, 1<<60); err == nil || !strings.Contains(err.Error(), "not enough disk under "+dir) {
 		t.Errorf("an exabyte restore: %v", err)
 	}
@@ -109,7 +134,7 @@ func TestALocalSandboxStartsAndIsDeleted(t *testing.T) {
 		}
 		t.Skipf("this host cannot start a local PostgreSQL: %v", err)
 	}
-	stateDir := t.TempDir()
+	stateDir := sandboxStateDir(t)
 	lp, err := StartLocalPostgres(ctx, srv, stateDir, 1<<20)
 	if err != nil {
 		t.Fatal(err)
@@ -178,21 +203,7 @@ func TestALocalSandboxUnderRootRunsAsTheStateDirsOwner(t *testing.T) {
 	}
 
 	// The enrolling user's state directory, in a tree that user can reach.
-	base := t.TempDir()
-	if err := os.Chmod(base, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(filepath.Dir(base), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	stateDir := filepath.Join(base, "state")
-	if err := os.Mkdir(stateDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	const nobody = 65534
-	if err := os.Chown(stateDir, nobody, nobody); err != nil {
-		t.Fatal(err)
-	}
+	stateDir := sandboxStateDir(t)
 	lp, err := StartLocalPostgres(ctx, srv, stateDir, 1<<20)
 	if err != nil {
 		t.Fatal(err)

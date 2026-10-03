@@ -108,3 +108,18 @@ func TestDescribeRetentionNeverPrintsADateOverAnUnretainedSnapshot(t *testing.T)
 		}
 	}
 }
+
+// A directory enforces no lock, whatever mode the sidecar recorded: the
+// column must not read "COMPLIANCE until" over a file its owner can delete.
+func TestDescribeRetentionOnLocalStorageNamesNoLock(t *testing.T) {
+	until := time.Date(2026, 10, 21, 16, 1, 0, 0, time.UTC)
+	local := config.StorageConfig{Type: config.StorageTypeLocal, WORMMode: config.WORMModeCompliance}
+	meta := &model.SnapshotMetadata{WORMMode: "COMPLIANCE", WORMRetentionUntil: until}
+	got := describeRetention(meta, local)
+	if want := "kept until 2026-10-21 16:01 (no Object Lock)"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	if label := wormLabel(local); strings.Contains(label, "WORM Object Lock") {
+		t.Errorf("wormLabel for a local directory = %q, which claims a lock it does not have", label)
+	}
+}

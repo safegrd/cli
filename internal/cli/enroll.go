@@ -68,18 +68,14 @@ With neither, it uses the login saved by 'safegrd login'.`,
 			// cfg.NodeID out of a config LoadCLIConfig had invented from
 			// defaults, which registered a node with an empty identity and no
 			// keypair: enrolled, and unable to encrypt anything.
-			// A claim registers a new host with the key kept on it: the
-			// console has not asked this organization who should hold keys.
+			// A claim carries the custody answer given in the console; it is
+			// read once the claim is fetched below. An explicit --key-custody
+			// wins over it.
 			if claimCode != "" {
 				if token != "" && !strings.HasPrefix(token, "sg_pat_") {
 					return fmt.Errorf("--claim registers a new host, and a node token belongs to one that exists. " +
 						"Log in with 'safegrd login' instead. Nothing was changed")
 				}
-				if keyCustody == "safegrd" {
-					return fmt.Errorf("a claimed enrollment keeps the encryption key on this host; " +
-						"leave out --key-custody. Nothing was changed")
-				}
-				keyCustody = "local"
 			}
 
 			if storageFlag != "" && storageFlag != string(config.StorageTypeHosted) && storageFlag != string(config.StorageTypeLocal) {
@@ -243,16 +239,10 @@ With neither, it uses the login saved by 'safegrd login'.`,
 				default:
 					return fmt.Errorf("--key-custody must be 'safegrd' or 'local', got %q", keyCustody)
 				}
-				if keyExistedBeforeEnroll && keyCustody == "safegrd" {
-					return fmt.Errorf("refusing to send a key you supplied.\n" +
-						"  --key-custody=safegrd generates a new key and escrows it; it does not hand over an existing one.\n" +
-						"  The key already configured here stays yours. Remove it from the config first if you " +
-						"really want SafeGrd to hold a freshly generated one instead")
-				}
-				escrowRequested := generatedNow && keyCustody != "local"
 
 				// A claim says where this host goes and what it protects.
 				var claim *claimPreview
+				claimChoseSafeGrd := false
 				if claimCode != "" {
 					pv, err := fetchClaim(serverURL, apiKey, claimCode)
 					if err != nil {
@@ -264,7 +254,34 @@ With neither, it uses the login saved by 'safegrd login'.`,
 						cfg.Storage = config.StorageConfig{Type: config.StorageTypeHosted, WORMMode: config.WORMModeCompliance}
 						storageFlag = string(config.StorageTypeHosted)
 					}
+					// The console's answer, unless the flag gave one. A server
+					// that predates the question answers "local" or nothing,
+					// and the key stays on the host as it always did.
+					if keyCustody == "" {
+						if pv.KeyCustody == "safegrd" {
+							keyCustody = "safegrd"
+						} else {
+							keyCustody = "local"
+						}
+						// A key already on the host is never sent, whatever the
+						// console chose; enrolment says so below.
+						claimChoseSafeGrd = keyCustody == "safegrd"
+					}
 				}
+
+				// A key already here stays here. Refused only when the flag asked
+				// for SafeGrd to hold it; a claim's answer covers keys it
+				// generates, and enrolment states that this one was not sent.
+				if claimChoseSafeGrd && keyExistedBeforeEnroll {
+					keyCustody = "local"
+				}
+				if keyExistedBeforeEnroll && keyCustody == "safegrd" {
+					return fmt.Errorf("refusing to send a key you supplied.\n" +
+						"  --key-custody=safegrd generates a new key and escrows it; it does not hand over an existing one.\n" +
+						"  The key already configured here stays yours. Remove it from the config first if you " +
+						"really want SafeGrd to hold a freshly generated one instead")
+				}
+				escrowRequested := generatedNow && keyCustody != "local"
 
 				// Resolve organization ID for node registration if not provided.
 				if orgID == "" {

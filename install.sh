@@ -446,17 +446,15 @@ if [ -n "${SAFEGRD_CLAIM:-}" ]; then
 fi
 
 CUSTODY="${SAFEGRD_KEY_CUSTODY:-}"
-# A claimed enrollment keeps the key on this host, so there is nothing to ask.
-if [ -n "$CLAIM" ]; then
-  CUSTODY="local"
-fi
-if [ -z "$CUSTODY" ] && [ -z "$KEY_ON_HOST" ]; then
-  printf "\n${BOLD}Who holds the key that decrypts this host's backups?${RESET}\n" >/dev/tty
-  printf "  This is decided once, when the key is made, and cannot be changed later.\n\n" >/dev/tty
-  printf "  1) SafeGrd keeps a copy. Losing this host does not lose the backups,\n" >/dev/tty
-  printf "     and SafeGrd CAN decrypt them.\n" >/dev/tty
-  printf "  2) Only you. SafeGrd gets the public half and can NEVER decrypt them;\n" >/dev/tty
-  printf "     lose the key file and nobody can recover the backups.\n\n" >/dev/tty
+# A claim carries the answer given in the console, and enroll reads it from
+# the claim, so there is nothing to ask here.
+if [ -z "$CUSTODY" ] && [ -z "$KEY_ON_HOST" ] && [ -z "$CLAIM" ]; then
+  printf "\n${BOLD}Who keeps the key that decrypts this host's backups?${RESET}\n" >/dev/tty
+  printf "  This is decided once, when the key is made.\n\n" >/dev/tty
+  printf "  1) SafeGrd keeps it sealed and releases it only to your enrolled hosts,\n" >/dev/tty
+  printf "     so you can restore even after losing this host.\n" >/dev/tty
+  printf "  2) This host keeps it. Only you can decrypt these backups;\n" >/dev/tty
+  printf "     keep a copy of the key file somewhere safe.\n\n" >/dev/tty
   while [ -z "$CUSTODY" ]; do
     ask "Choose 1 or 2: "
     case "$REPLY" in
