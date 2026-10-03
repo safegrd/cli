@@ -96,8 +96,11 @@ func fetchNodeCredentials(ctx context.Context, serverURL, nodeID, token string) 
 //
 // Loopback is allowed because it is how the E2E suite and a developer's own
 // server run, and there is no network between the two ends of a loopback socket
-// to intercept. Anything else carrying a node token and returning a database
-// password over http:// is a mistake worth failing loudly on, not a warning.
+// to intercept. host.docker.internal is allowed for the same reason: inside a
+// container it names the machine the container runs on, so a container
+// reaching a server on its own host crosses no network either. Anything else
+// carrying a node token and returning a database password over http:// is a
+// mistake worth failing loudly on, not a warning.
 func refuseInsecureServerURL(serverURL string) error {
 	u, err := url.Parse(strings.TrimSpace(serverURL))
 	if err != nil {
@@ -107,7 +110,7 @@ func refuseInsecureServerURL(serverURL string) error {
 		return nil
 	}
 	host := u.Hostname()
-	if host == "localhost" {
+	if strings.EqualFold(host, "localhost") || strings.EqualFold(host, "host.docker.internal") {
 		return nil
 	}
 	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
