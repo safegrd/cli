@@ -359,3 +359,43 @@ func (r *Repo) Select(ctx context.Context, idx Index, s format.Snapshot, pattern
 }
 
 func depth(p string) int { return strings.Count(p, "/") }
+
+// ContentRoot recomputes a snapshot's content root from its trees. A restore
+// compares it with the root recorded at backup time before writing anything:
+// the snapshot object is sealed to a public recipient, so on its own it proves
+// nothing about who wrote it.
+func (r *Repo) ContentRoot(ctx context.Context, idx Index, s format.Snapshot) (string, int64, error) {
+	root, err := format.ParseID(s.RootTree)
+	if err != nil {
+		return "", 0, err
+	}
+	type line struct {
+		path  string
+		typ   byte
+		value string
+	}
+	var lines []line
+	var files int64
+	err = r.Walk(ctx, idx, root, func(it Item) error {
+		switch it.Node.Type {
+		case format.NodeDir:
+			lines = append(lines, line{it.Path, format.ContentDir, "-"})
+		case format.NodeSymlink:
+			lines = append(lines, line{it.Path, format.ContentSymlink, format.ContentValue(format.ContentSymlink, "", it.Node.Target)})
+		case format.NodeFile:
+			files++
+			lines = append(lines, line{it.Path, format.ContentFile, it.Node.SHA256})
+		}
+		return nil
+	})
+	if err != nil {
+		return "", 0, err
+	}
+	sort.Slice(lines, func(i, j int) bool { return lines[i].path < lines[j].path })
+	cr := format.NewContentRoot()
+	for _, l := range lines {
+		cr.Add(l.typ, l.value, l.path)
+	}
+	sum, err := cr.Sum()
+	return sum, files, err
+}

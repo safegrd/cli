@@ -18,6 +18,8 @@ import (
 	"github.com/safegrd/cli/pkg/crypto"
 	"github.com/safegrd/cli/pkg/dump"
 	"github.com/safegrd/cli/pkg/model"
+	"github.com/safegrd/cli/pkg/repo/format"
+	"github.com/safegrd/cli/pkg/repo/policy"
 	"github.com/safegrd/cli/pkg/storage"
 	"github.com/spf13/cobra"
 )
@@ -34,6 +36,10 @@ func newBackupCmd() *cobra.Command {
 		// File surface flags
 		filesPath string
 		excludes  []string
+		fileFmt   string
+		newEpoch  bool
+		rescan    bool
+		oneFS     bool
 
 		// Email surface flags
 		emailMode    bool
@@ -61,7 +67,7 @@ and never leaves this host.`,
 			ctx := context.Background()
 
 			if surfaceID != "" {
-				for _, f := range []string{"database-url", "files", "email", "json", "tag", "retention-days", "bucket", "prefix", "region", "endpoint"} {
+				for _, f := range []string{"database-url", "files", "email", "json", "tag", "retention-days", "bucket", "prefix", "region", "endpoint", "format", "one-filesystem"} {
 					if cmd.Flags().Changed(f) {
 						return fmt.Errorf("--surface backs up the surface as the config defines it; leave out --%s", f)
 					}
@@ -120,6 +126,48 @@ and never leaves this host.`,
 			if filesPath != "" {
 				if err := cfg.ValidateForFileBackup(); err != nil {
 					return err
+				}
+				ff, err := fileFormat(fileFmt)
+				if err != nil {
+					return err
+				}
+				if ff == formatRepo {
+					var oneFSFlag *bool
+					if cmd.Flags().Changed("one-filesystem") {
+						oneFSFlag = &oneFS
+					}
+					out := io.Writer(os.Stdout)
+					if jsonOutput {
+						out = os.Stderr
+					}
+					node := storageCfg.NodeID
+					if node == "" {
+						node = cfg.NodeID
+						storageCfg.NodeID = node
+					}
+					meta, _, err := runRepoBackup(ctx, repoParams{
+						SurfaceID: repoSurfaceID([]string{filesPath}), Roots: []string{filesPath}, Excludes: excludes, OneFS: oneFSFlag,
+						StorageCfg: storageCfg, NodeID: cfg.NodeID, Recipient: cfg.Encryption.PublicKey,
+						Retention: policy.Retention{Days: storageCfg.RetentionDays}, Tier: format.TierBase, Planned: retentionUntil,
+						NewEpoch: newEpoch, Rescan: rescan, SnapshotID: snapshotID, StateDir: resolveStateDir("", cfg), Out: out,
+					})
+					if err != nil {
+						retErr := fmt.Errorf("file backup failed: %w", err)
+						reportBackupFailure(ctx, cfg, snapshotID, model.SurfaceTypeFiles, "", retErr, !jsonOutput)
+						return retErr
+					}
+					if cfg.ServerURL != "" {
+						sendMetadataToServer(ctx, cfg.ServerURL, cfg.ServerToken, meta, !jsonOutput)
+					}
+					if jsonOutput {
+						enc := json.NewEncoder(os.Stdout)
+						enc.SetIndent("", "  ")
+						return enc.Encode(meta)
+					}
+					return nil
+				}
+				if newEpoch || rescan || cmd.Flags().Changed("one-filesystem") {
+					return fmt.Errorf("--new-epoch, --rescan and --one-filesystem apply to --format repo only")
 				}
 
 				if !jsonOutput {
@@ -492,6 +540,10 @@ and never leaves this host.`,
 	cmd.Flags().StringVar(&surfaceID, "surface", "", "Back up this surface from the config's surfaces now, as the daemon would, whatever its schedule")
 	cmd.Flags().StringVar(&filesPath, "files", "", "Path to directory tree for file-based backup")
 	cmd.Flags().StringSliceVar(&excludes, "exclude", nil, "Glob patterns to exclude from file backup (e.g. '*.tmp,node_modules/*')")
+	cmd.Flags().StringVar(&fileFmt, "format", "tar", "How --files is stored: tar (one archive per backup) or repo (incremental: each run uploads only what changed)")
+	cmd.Flags().BoolVar(&newEpoch, "new-epoch", false, "With --format repo: start a new epoch now, uploading every file once")
+	cmd.Flags().BoolVar(&rescan, "rescan", false, "With --format repo: read every file, not only those whose size or times changed")
+	cmd.Flags().BoolVar(&oneFS, "one-filesystem", false, "With --format repo: stay on the root's filesystem (the default when the root is /)")
 
 	// Flags for Email
 	cmd.Flags().BoolVar(&emailMode, "email", false, "Execute Universal IMAP email backup")

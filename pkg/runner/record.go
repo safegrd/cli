@@ -81,6 +81,12 @@ func (v *Verifier) fetchRecord(ctx context.Context, snapshotID string) snapshotR
 // was kept. Without one, the sidecar is all there is, and the run says so on
 // stderr and by the absence of the RemoteServerRecord assertion.
 func (v *Verifier) checkDigests(report *model.VerificationReport, meta *model.SnapshotMetadata, rec snapshotRecord, dec *crypto.StreamMetrics) string {
+	// A repository snapshot has no single stream: its digest is a content
+	// root, its EncryptedSha256 is empty by design, and RunRepoDrill checks
+	// it. Read here, that empty field would look legacy or tampered.
+	if meta.IsRepo() || (rec.record != nil && rec.record.IsRepo()) {
+		return "snapshot " + meta.SnapshotID + " is in an incremental repository; it is verified by restoring it, not as one stream"
+	}
 	if dec == nil {
 		return "the decrypted stream produced no digest"
 	}

@@ -61,11 +61,14 @@ type Options struct {
 	// PackTargetBytes is the pack size a new epoch closes packs at; zero
 	// means 32 MiB.
 	PackTargetBytes int
-	Host        string
-	SnapshotID  string
-	Now         func() time.Time
+	Host            string
+	SnapshotID      string
+	Now             func() time.Time
 	// Logf receives progress lines a person reads while the run goes on.
 	Logf func(format string, args ...any)
+	// OnStart is called once the epoch is decided, before the walk: Opened,
+	// Reason, Class, Resumed and the adopted packs are set.
+	OnStart func(*Result)
 	// Sidecar returns the plaintext metadata sidecar for the finished run,
 	// written last: the snapshot exists once it does.
 	Sidecar func(*Result) ([]byte, error)
@@ -211,7 +214,8 @@ func Run(ctx context.Context, b sink.Backend, o Options) (*Result, error) {
 		planned = started.Add(time.Duration(o.Retention.Days) * 24 * time.Hour)
 	}
 	res.Planned = planned
-	retain, capped := policy.RetainUntil(planned, res.Class, e)
+	retain, capped := policy.RetainUntil(planned.UTC(), res.Class, e)
+	retain = retain.UTC()
 	res.Capped = capped
 
 	adopted, err := cur.Resume()
@@ -223,6 +227,9 @@ func Run(ctx context.Context, b sink.Backend, o Options) (*Result, error) {
 		for _, p := range adopted {
 			res.AdoptedBytes += p.Bytes
 		}
+	}
+	if o.OnStart != nil {
+		o.OnStart(res)
 	}
 	runID := format.NewRandomID()
 	if err := cur.BeginRun(runID, o.SnapshotID, res.Class, started); err != nil {

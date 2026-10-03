@@ -116,6 +116,18 @@ func NewS3Storage(ctx context.Context, cfg config.StorageConfig) (*S3StorageProv
 	}, nil
 }
 
+// ObjectStore returns the client and bucket this provider writes to, the key
+// prefix its snapshots go under (the node segment included), and the Object
+// Lock mode it applies, "" when the sink has none. An incremental repository
+// writes its own objects through it with the same credentials.
+func (s *S3StorageProvider) ObjectStore() (client *s3.Client, bucket, prefix string, mode s3types.ObjectLockMode) {
+	prefix = s.prefix
+	if s.nodeID != "" && !strings.Contains(s.prefix, s.nodeID) {
+		prefix = path.Join(s.prefix, s.nodeID)
+	}
+	return s.client, s.bucket, prefix, s.wormMode
+}
+
 // SetNodeID configures the active node ID for scoped storage path segmentation.
 func (s *S3StorageProvider) SetNodeID(nodeID string) {
 	s.nodeID = strings.TrimSpace(nodeID)

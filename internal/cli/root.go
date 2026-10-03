@@ -115,6 +115,7 @@ func init() {
 	RootCmd.AddCommand(newListCmd())
 	RootCmd.AddCommand(newUndeleteCmd())
 	RootCmd.AddCommand(newVerifyCmd())
+	RootCmd.AddCommand(newCheckCmd())
 	RootCmd.AddCommand(newEnrollCmd())
 	RootCmd.AddCommand(newClaimCmd())
 	RootCmd.AddCommand(newLoginCmd())

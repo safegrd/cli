@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -67,8 +68,12 @@ other line to stderr, so the output can be piped to jq.`,
 			// different situations that used to print the same sentence.
 			shadowed := warnAboutShadowedSnapshots(ctx, storageProvider)
 
+			repoRows := listRepoSnapshots(ctx, storageCfg)
+			if len(repoRows) > 0 {
+				defer printRepoTable(repoRows, storageCfg)
+			}
 			if len(snapshots) == 0 {
-				if shadowed == 0 {
+				if shadowed == 0 && len(repoRows) == 0 {
 					fmt.Println("No snapshots found in storage.")
 				}
 				return nil
@@ -171,6 +176,56 @@ type listedSnapshot struct {
 	// MetadataError says why the snapshot could not be described. The
 	// snapshot itself may still restore.
 	MetadataError string `json:"metadata_error,omitempty"`
+	// Format is "repo-v1" for a snapshot in an incremental repository, which
+	// is filed under RepoSurface and EpochID. For it EncryptedSizeBytes is
+	// what that run uploaded, and LogicalSizeBytes the whole tree's size.
+	Format           string `json:"format,omitempty"`
+	RepoSurface      string `json:"repo_surface,omitempty"`
+	EpochID          string `json:"epoch_id,omitempty"`
+	ObjectClass      string `json:"object_class,omitempty"`
+	LogicalSizeBytes int64  `json:"logical_size_bytes,omitempty"`
+}
+
+// listRepoSnapshots reads every repository snapshot under this storage. A
+// failure is said and leaves the rest of the listing in place.
+func listRepoSnapshots(ctx context.Context, storageCfg config.StorageConfig) []repoSnapshot {
+	if storageCfg.Type == config.StorageTypeHosted && !hostedRepoReady {
+		return nil
+	}
+	bs, err := repoBackendsAll(ctx, storageCfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "⚠️  Could not list the incremental repositories: %v\n", err)
+		return nil
+	}
+	var out []repoSnapshot
+	for _, b := range bs {
+		rows, err := repoSnapshots(ctx, b)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "⚠️  Could not list the repository in %s: %v\n", b.Describe(), err)
+			continue
+		}
+		out = append(out, rows...)
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Meta.CreatedAt.Before(out[j].Meta.CreatedAt) })
+	return out
+}
+
+// printRepoTable lists repository snapshots: new is what each run uploaded,
+// logical the whole tree it holds.
+func printRepoTable(rows []repoSnapshot, storageCfg config.StorageConfig) {
+	fmt.Println()
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+	fmt.Fprintln(w, "INCREMENTAL SNAPSHOT\tSURFACE\tEPOCH\tCLASS\tCONTENTS\tLOGICAL\tNEW\tRETENTION\tSTATUS")
+	for _, r := range rows {
+		m := r.Meta
+		status := string(m.Status)
+		if m.IsPoisonPillFrozen {
+			status = "🚨 ANOMALOUS"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", m.SnapshotID, r.SurfaceID, m.EpochID, m.ObjectClass,
+			describeContents(m), formatBytes(m.RawSizeBytes), formatBytes(m.EncryptedSizeBytes), describeRetention(m, storageCfg), status)
+	}
+	w.Flush()
 }
 
 // listJSON writes every snapshot as one JSON array to out.
@@ -232,6 +287,26 @@ func listJSON(ctx context.Context, out io.Writer) error {
 		e.TotalContainers = meta.TotalContainers
 		e.WORMMode = meta.WORMMode
 		e.Anomalous = meta.IsPoisonPillFrozen
+		if e.WORMMode != string(config.WORMModeNone) && !meta.WORMRetentionUntil.IsZero() {
+			e.LockedUntil = meta.WORMRetentionUntil.UTC().Format(time.RFC3339)
+			e.Locked = meta.WORMRetentionUntil.After(now) && storageCfg.Type != config.StorageTypeLocal
+		}
+		entries = append(entries, e)
+	}
+
+	for _, rs := range listRepoSnapshots(ctx, storageCfg) {
+		meta := rs.Meta
+		e := listedSnapshot{SnapshotID: meta.SnapshotID, NodeID: meta.NodeID, Surface: string(meta.SurfaceType),
+			Status: string(meta.Status), EncryptedSizeBytes: meta.EncryptedSizeBytes, TotalItems: meta.TotalItems,
+			TotalContainers: meta.TotalContainers, WORMMode: meta.WORMMode, Anomalous: meta.IsPoisonPillFrozen,
+			Format: meta.Format, EpochID: meta.EpochID, ObjectClass: meta.ObjectClass, RepoSurface: rs.SurfaceID,
+			LogicalSizeBytes: meta.RawSizeBytes}
+		if !meta.CreatedAt.IsZero() {
+			e.CreatedAt = meta.CreatedAt.UTC().Format(time.RFC3339)
+		}
+		if meta.CompletedAt != nil {
+			e.CompletedAt = meta.CompletedAt.UTC().Format(time.RFC3339)
+		}
 		if e.WORMMode != string(config.WORMModeNone) && !meta.WORMRetentionUntil.IsZero() {
 			e.LockedUntil = meta.WORMRetentionUntil.UTC().Format(time.RFC3339)
 			e.Locked = meta.WORMRetentionUntil.After(now) && storageCfg.Type != config.StorageTypeLocal

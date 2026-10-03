@@ -23,6 +23,7 @@ import (
 	"github.com/safegrd/cli/pkg/crypto"
 	"github.com/safegrd/cli/pkg/dump"
 	"github.com/safegrd/cli/pkg/model"
+	"github.com/safegrd/cli/pkg/repo/policy"
 	"github.com/spf13/cobra"
 )
 
@@ -770,7 +771,7 @@ func backupSurfaceNow(ctx context.Context, c *config.CLIConfig, surface *config.
 	}
 	if backupErr == nil {
 		sState.notRecorded = ""
-		meta, plan, backupErr = runSurfaceBackup(ctx, c, surface, nodeID, sState)
+		meta, plan, backupErr = runSurfaceBackup(ctx, c, surface, nodeID, sState, filepath.Dir(lockDir))
 	}
 	// post_backup runs after every attempt, so whatever pre_backup paused is
 	// resumed even when the backup fails. Its failure does not undo a backup
@@ -828,7 +829,7 @@ func backupSurfaceNow(ctx context.Context, c *config.CLIConfig, surface *config.
 // node the remote server assigned, or the surface's own id without one). The
 // snapshot is written under the same id, so the node a restore finds on the
 // remote server's record is the prefix it looks under.
-func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.SurfaceConfig, nodeID string, st *SurfaceState) (*model.SnapshotMetadata, retentionPlan, error) {
+func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.SurfaceConfig, nodeID string, st *SurfaceState, stateDir string) (*model.SnapshotMetadata, retentionPlan, error) {
 	var plan retentionPlan
 	storageCfg := c.Storage
 	if s.Storage != nil {
@@ -886,6 +887,31 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 		roots := s.Roots
 		if len(roots) == 0 {
 			return nil, plan, fmt.Errorf("surface %s has no root paths specified", s.ID)
+		}
+		ff, err := fileFormat(s.Format)
+		if err != nil {
+			return nil, plan, fmt.Errorf("surface %s: %w", s.ID, err)
+		}
+		if ff == formatRepo {
+			if storageCfg.NodeID == "" {
+				storageCfg.NodeID = nodeID
+			}
+			meta, _, err := runRepoBackup(ctx, repoParams{
+				SurfaceID: s.ID, Roots: roots, Excludes: s.Excludes, OneFS: s.OneFilesystem, StorageCfg: storageCfg,
+				NodeID: nodeID, Recipient: pubKey,
+				Retention: policy.Retention{Days: storageCfg.RetentionDays, KeepDaily: tiers.Days, KeepWeekly: tiers.Weeks, KeepMonthly: tiers.Months},
+				Tier:      plan.Tier, Planned: plan.Until, SnapshotID: snapshotID, StateDir: stateDir, Out: os.Stdout,
+			})
+			if err != nil {
+				return nil, plan, err
+			}
+			if hostIsEnrolled(c) {
+				st.notRecorded = reportSnapshot(ctx, c, st, meta)
+			}
+			return meta, plan, nil
+		}
+		if len(roots) > 1 {
+			return nil, plan, fmt.Errorf("surface %s lists %d roots; a tar surface backs up one, so give it format: repo or one root", s.ID, len(roots))
 		}
 		started := time.Now()
 		collector := dump.NewFileCollector(dump.FileCollectorConfig{

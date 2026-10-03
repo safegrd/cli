@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/safegrd/cli/pkg/config"
 	"github.com/safegrd/cli/pkg/crypto"
 	"github.com/safegrd/cli/pkg/dump"
 	"github.com/safegrd/cli/pkg/model"
@@ -27,6 +28,7 @@ func newRestoreCmd() *cobra.Command {
 		keyPath    string
 		privKey    string
 		fromPath   string
+		paths      []string
 	)
 
 	cmd := &cobra.Command{
@@ -148,11 +150,29 @@ from storage is.`,
 				if recorded := recordedNodeID(ctx, cfg, snapshotID); recorded != "" && recorded != storageCfg.NodeID {
 					storageCfg.NodeID = recorded
 				}
+				// A snapshot of an incremental repository has no single
+				// object to download; it is restored from its packs.
+				if storageCfg.Type != config.StorageTypeHosted || hostedRepoReady {
+					rs, err := locateRepoSnapshot(ctx, storageCfg, snapshotID)
+					if err != nil {
+						return fmt.Errorf("looking for %s among the repositories in storage: %w", snapshotID, err)
+					}
+					if rs != nil {
+						if targetDir == "" {
+							return fmt.Errorf("snapshot %s is a files snapshot; specify --target-dir to restore", snapshotID)
+						}
+						fmt.Printf("Restoring %s (epoch %s, %s) into %s\n", snapshotID, rs.Epoch.Epoch.EpochID, rs.SurfaceID, targetDir)
+						return restoreRepoSnapshot(ctx, rs, resolvedKey, targetDir, paths)
+					}
+				}
 				opened, err := openStorage(ctx, cfg, storageCfg)
 				if err != nil {
 					return fmt.Errorf("storage initialization failed: %w", err)
 				}
 				storageProvider = opened
+			}
+			if len(paths) > 0 {
+				return fmt.Errorf("--path restores part of an incremental (--format repo) snapshot; %s is one archive, so restore it whole", snapshotID)
 			}
 			// Not where this config looks: a recovery machine rebuilding a lost
 			// host does not know the node id its backups were filed under.
@@ -365,6 +385,7 @@ from storage is.`,
 	_ = cmd.Flags().MarkDeprecated("engine", "there is one Postgres restore path; the flag is ignored")
 	cmd.Flags().StringVar(&keyPath, "key-path", "", "Path to Age private identity file")
 	cmd.Flags().StringVar(&privKey, "private-key", "", "Age private identity key string (AGE-SECRET-KEY-1...)")
+	cmd.Flags().StringArrayVar(&paths, "path", nil, "Restore only this path of a repository snapshot, relative to / (repeatable; '*', '?' and '**' match)")
 	cmd.Flags().StringVar(&fromPath, "from", "", "Restore from an export: the directory 'safegrd export --to-dir' wrote, or one .safegrd file in it")
 
 	return cmd

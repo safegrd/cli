@@ -162,6 +162,13 @@ type SurfaceConfig struct {
 	// Files fields
 	Roots    []string `yaml:"roots,omitempty" json:"roots,omitempty"`
 	Excludes []string `yaml:"excludes,omitempty" json:"excludes,omitempty"`
+	// Format is how a files surface is stored: "tar" (the default), one
+	// archive per backup, or "repo", an incremental repository where each
+	// run uploads only what changed.
+	Format string `yaml:"format,omitempty" json:"format,omitempty"`
+	// OneFilesystem keeps a repo surface's walk on each root's filesystem.
+	// Unset means yes when a root is "/", no otherwise.
+	OneFilesystem *bool `yaml:"one_filesystem,omitempty" json:"one_filesystem,omitempty"`
 
 	// Email fields
 	Host     string   `yaml:"host,omitempty" json:"host,omitempty"`

@@ -104,17 +104,30 @@ func (d *Direct) Epochs(ctx context.Context, surfaceID string) ([]EpochInfo, err
 	return out, nil
 }
 
+// Children is a store that can list the names directly under a prefix.
+type Children interface {
+	Children(ctx context.Context, prefix string) ([]string, error)
+}
+
 // Surfaces lists the surface ids that have a repository in this store.
 func (d *Direct) Surfaces(ctx context.Context) ([]string, error) {
-	base := path.Join(d.S.Root(), "repo") + "/"
-	objs, err := d.S.List(ctx, base)
+	base := path.Join(d.S.Root(), "repo")
+	if c, ok := d.S.(Children); ok {
+		names, err := c.Children(ctx, base)
+		if err != nil {
+			return nil, err
+		}
+		sort.Strings(names)
+		return names, nil
+	}
+	objs, err := d.S.List(ctx, base+"/")
 	if err != nil {
 		return nil, err
 	}
 	seen := map[string]bool{}
 	var out []string
 	for _, o := range objs {
-		parts := strings.Split(strings.TrimPrefix(o.Key, base), "/")
+		parts := strings.Split(strings.TrimPrefix(o.Key, base+"/"), "/")
 		if len(parts) == 3 && parts[2] == "epoch.json" && !seen[parts[0]] {
 			seen[parts[0]] = true
 			out = append(out, parts[0])

@@ -36,7 +36,7 @@ func NewDir(base, root string) (*Dir, error) {
 }
 
 func (d *Dir) Root() string     { return d.root }
-func (d *Dir) Describe() string { return d.base }
+func (d *Dir) Describe() string { return filepath.Join(d.base, filepath.FromSlash(d.root)) }
 
 // Path is where key lives on disk.
 func (d *Dir) Path(key string) (string, error) {
@@ -161,4 +161,23 @@ func (d *Dir) Remove(key string) error {
 		return err
 	}
 	return os.Remove(p)
+}
+
+// Children lists the names directly under prefix, like a delimiter listing.
+func (d *Dir) Children(_ context.Context, prefix string) ([]string, error) {
+	p := filepath.Join(d.base, filepath.FromSlash(strings.Trim(prefix, "/")))
+	des, err := os.ReadDir(p)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, de := range des {
+		if de.IsDir() {
+			out = append(out, de.Name())
+		}
+	}
+	return out, nil
 }

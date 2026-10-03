@@ -316,12 +316,12 @@ func (c *Cache) BeginRun(runID, snapshotID, class string, at time.Time) error {
 
 // FileRow is what the cache remembers of one regular file.
 type FileRow struct {
-	Path                    string
-	Dev, Ino                uint64
-	Size, MTimeNs, CTimeNs  int64
-	Mode                    uint32
-	SHA256                  string
-	Blobs                   []format.ID
+	Path                   string
+	Dev, Ino               uint64
+	Size, MTimeNs, CTimeNs int64
+	Mode                   uint32
+	SHA256                 string
+	Blobs                  []format.ID
 }
 
 // File returns the row for path, if any.

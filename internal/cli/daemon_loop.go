@@ -316,6 +316,21 @@ func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, s *config.Surf
 		how = "restore into the sandbox database"
 		fmt.Printf("🔥 Surface %s: Fire Drill due: restoring snapshot %s into its sandbox database.\n", s.ID, snapshotID)
 		report, err = verifier.RunSandboxDrill(ctx, snapshotID, key, sandbox)
+	case strings.EqualFold(s.Format, formatRepo):
+		// A repository snapshot is proven by restoring every file and
+		// recomputing its content root from what landed on disk.
+		how = "full restore"
+		var rs *repoSnapshot
+		if rb, berr := repoBackend(ctx, c, storageCfg); berr != nil {
+			err = berr
+		} else if rs, err = findRepoSnapshot(ctx, rb, snapshotID); err == nil && rs == nil {
+			err = fmt.Errorf("snapshot %s is not in the surface's repository", snapshotID)
+		}
+		if err == nil {
+			fmt.Printf("🔥 Surface %s: Fire Drill due: restoring snapshot %s and recomputing its content root.\n", s.ID, snapshotID)
+			report, err = verifier.RunRepoDrill(ctx, runner.RepoDrill{Backend: rs.Backend, Epoch: rs.Epoch, Meta: rs.Meta,
+				Scratch: drillScratchIn(stateDirOf(c))}, key)
+		}
 	default:
 		fmt.Printf("🔥 Surface %s: Fire Drill due: restoring snapshot %s in memory.\n", s.ID, snapshotID)
 		report, _, err = verifier.RunDryRestore(ctx, snapshotID, key)

@@ -123,6 +123,18 @@ executes a full active restore drill into the target ephemeral database.`,
 			if recorded := recordedNodeID(ctx, cfg, snapshotID); recorded != "" && recorded != storageCfg.NodeID {
 				storageCfg.NodeID = recorded
 			}
+			if storageCfg.Type != config.StorageTypeHosted || hostedRepoReady {
+				rs, err := locateRepoSnapshot(ctx, storageCfg, snapshotID)
+				if err != nil {
+					return fmt.Errorf("looking for %s among the repositories in storage: %w", snapshotID, err)
+				}
+				if rs != nil {
+					if sandboxURL != "" && !dryRun {
+						return fmt.Errorf("snapshot %s is a files snapshot; it is proven by restoring it, so leave out --sandbox-target", snapshotID)
+					}
+					return verifyRepoSnapshot(ctx, rs, resolvedKey)
+				}
+			}
 			storageProvider, err := openStorage(ctx, cfg, storageCfg)
 			if err != nil {
 				return fmt.Errorf("storage error: %w", err)
