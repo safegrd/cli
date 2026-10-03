@@ -585,7 +585,7 @@ func TestAFileChangingDuringTheBackupIsReported(t *testing.T) {
 	res := h.backup(nil)
 	close(stop)
 	<-done
-	if len(res.Snapshot.Inconsistent) != 1 || !strings.HasSuffix(res.Snapshot.Inconsistent[0], "growing.log") {
+	if len(res.Snapshot.Inconsistent) != 1 || !strings.HasSuffix(string(res.Snapshot.Inconsistent[0]), "growing.log") {
 		t.Fatalf("inconsistent %v", res.Snapshot.Inconsistent)
 	}
 	// What is restored is exactly one read: a prefix of the file as it is now.

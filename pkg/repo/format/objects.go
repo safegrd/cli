@@ -1,8 +1,10 @@
 package format
 
 import (
+	"encoding/base64"
 	"fmt"
 	"time"
+	"unicode/utf8"
 )
 
 // Object classes. Objects written by an epoch's opening run, which stores the
@@ -165,10 +167,68 @@ type SnapshotStats struct {
 	NewPacks     int64 `json:"new_packs"`
 }
 
-// Skipped is a path the walk did not store, and why.
+// Skipped is a path the walk did not store, and why. A path that is not
+// valid UTF-8 is written as path_b64.
 type Skipped struct {
-	Path   string `json:"path"`
-	Reason string `json:"reason"`
+	Path   string
+	Reason string
+}
+
+type wireSkipped struct {
+	Path    string `json:"path,omitempty"`
+	PathB64 string `json:"path_b64,omitempty"`
+	Reason  string `json:"reason"`
+}
+
+func (k Skipped) MarshalJSON() ([]byte, error) {
+	w := wireSkipped{Reason: k.Reason}
+	w.Path, w.PathB64 = rawString(k.Path)
+	return Marshal(w)
+}
+
+func (k *Skipped) UnmarshalJSON(b []byte) error {
+	var w wireSkipped
+	if err := Unmarshal(b, &w); err != nil {
+		return err
+	}
+	p, err := fromRawString(w.Path, w.PathB64)
+	if err != nil {
+		return fmt.Errorf("skipped path: %w", err)
+	}
+	*k = Skipped{Path: p, Reason: w.Reason}
+	return nil
+}
+
+// RawPath is a path that keeps its raw bytes through JSON: a string when
+// valid UTF-8, {"b64": …} otherwise. The snapshot's inconsistent list uses it.
+type RawPath string
+
+func (p RawPath) MarshalJSON() ([]byte, error) {
+	plain, b64 := rawString(string(p))
+	if b64 == "" {
+		return Marshal(plain)
+	}
+	return Marshal(map[string]string{"b64": b64})
+}
+
+func (p *RawPath) UnmarshalJSON(b []byte) error {
+	var s string
+	if err := Unmarshal(b, &s); err == nil {
+		*p = RawPath(s)
+		return nil
+	}
+	var w struct {
+		B64 string `json:"b64"`
+	}
+	if err := Unmarshal(b, &w); err != nil {
+		return err
+	}
+	raw, err := fromRawString("", w.B64)
+	if err != nil {
+		return err
+	}
+	*p = RawPath(raw)
+	return nil
 }
 
 // Snapshot is the Age-encrypted snapshot object.
@@ -188,7 +248,7 @@ type Snapshot struct {
 	Packs        []string      `json:"packs"`
 	Stats        SnapshotStats `json:"stats"`
 	Skipped      []Skipped     `json:"skipped"`
-	Inconsistent []string      `json:"inconsistent"`
+	Inconsistent []RawPath     `json:"inconsistent"`
 	RetainUntil  time.Time     `json:"retain_until"`
 }
 
@@ -229,15 +289,73 @@ const (
 )
 
 // CatalogEntry is one path a run saw added, changed or deleted, or, in an
-// opening run, present. Path is relative to / with no leading slash.
+// opening run, present. Path is relative to / with no leading slash, as raw
+// bytes: a path that is not valid UTF-8 is written as path_b64, like a tree's
+// names, because a JSON string cannot carry it.
 type CatalogEntry struct {
-	Path   string     `json:"path"`
-	Event  string     `json:"event"`
-	Type   string     `json:"type"`
-	SHA256 string     `json:"sha256,omitempty"`
-	Size   int64      `json:"size,omitempty"`
-	MTime  *time.Time `json:"mtime,omitempty"`
-	Mode   uint32     `json:"mode,omitempty"`
+	Path   string
+	Event  string
+	Type   string
+	SHA256 string
+	Size   int64
+	MTime  *time.Time
+	Mode   uint32
+}
+
+type wireCatalogEntry struct {
+	Path    string     `json:"path,omitempty"`
+	PathB64 string     `json:"path_b64,omitempty"`
+	Event   string     `json:"event"`
+	Type    string     `json:"type"`
+	SHA256  string     `json:"sha256,omitempty"`
+	Size    int64      `json:"size,omitempty"`
+	MTime   *time.Time `json:"mtime,omitempty"`
+	Mode    uint32     `json:"mode,omitempty"`
+}
+
+func (e CatalogEntry) MarshalJSON() ([]byte, error) {
+	w := wireCatalogEntry{Event: e.Event, Type: e.Type, SHA256: e.SHA256, Size: e.Size, MTime: e.MTime, Mode: e.Mode}
+	w.Path, w.PathB64 = rawString(e.Path)
+	return Marshal(w)
+}
+
+func (e *CatalogEntry) UnmarshalJSON(b []byte) error {
+	var w wireCatalogEntry
+	if err := Unmarshal(b, &w); err != nil {
+		return err
+	}
+	p, err := fromRawString(w.Path, w.PathB64)
+	if err != nil {
+		return fmt.Errorf("catalog entry: %w", err)
+	}
+	*e = CatalogEntry{Path: p, Event: w.Event, Type: w.Type, SHA256: w.SHA256, Size: w.Size, MTime: w.MTime, Mode: w.Mode}
+	return nil
+}
+
+// rawString splits raw bytes into a JSON string field and a base64 one:
+// the string when they are valid UTF-8, the base64 otherwise.
+func rawString(s string) (plain, b64 string) {
+	if utf8.ValidString(s) {
+		return s, ""
+	}
+	return "", base64.StdEncoding.EncodeToString([]byte(s))
+}
+
+func fromRawString(plain, b64 string) (string, error) {
+	switch {
+	case plain != "" && b64 != "":
+		return "", fmt.Errorf("both a string and its base64")
+	case b64 != "":
+		raw, err := base64.StdEncoding.DecodeString(b64)
+		if err != nil {
+			return "", err
+		}
+		if utf8.Valid(raw) {
+			return "", fmt.Errorf("base64 of valid UTF-8, which is written as a string")
+		}
+		return string(raw), nil
+	}
+	return plain, nil
 }
 
 // Catalog is one run's catalog delta.

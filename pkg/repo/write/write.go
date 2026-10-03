@@ -350,7 +350,7 @@ func Run(ctx context.Context, b sink.Backend, o Options) (*Result, error) {
 		snap.Skipped = []format.Skipped{}
 	}
 	if snap.Inconsistent == nil {
-		snap.Inconsistent = []string{}
+		snap.Inconsistent = []format.RawPath{}
 	}
 	if snap.Packs == nil {
 		snap.Packs = []string{}
@@ -588,7 +588,7 @@ type walker struct {
 	readBytes    int64
 	changed      int64
 	skipped      []format.Skipped
-	inconsistent []string
+	inconsistent []format.RawPath
 }
 
 type rootNode struct {
@@ -928,7 +928,7 @@ func (w *walker) file(abs, rel string, fi os.FileInfo) (n format.Node, ok bool, 
 		if attempt == 1 {
 			// It changed during both reads: keep the second, and say so.
 			n.Inconsistent = true
-			w.inconsistent = append(w.inconsistent, rel)
+			w.inconsistent = append(w.inconsistent, format.RawPath(rel))
 		}
 	}
 	w.changed++

@@ -314,3 +314,34 @@ func TestIndexValidate(t *testing.T) {
 		t.Fatal("a blob past its pack's end accepted")
 	}
 }
+
+// Paths are raw bytes. A catalog path, a skipped path or an inconsistent one
+// that is not valid UTF-8 keeps every byte through JSON.
+func TestRawPathsSurviveJSON(t *testing.T) {
+	raw := "dir/caf\xe9\xff"
+	c := Catalog{Version: 1, EpochID: "e202610-3fa94c1d", RunID: strings.Repeat("a", 32), Complete: true,
+		Entries: []CatalogEntry{{Path: raw, Event: EventPresent, Type: "f"}, {Path: "plain", Event: EventPresent, Type: "d"}}}
+	b, err := Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"path_b64"`) || !strings.Contains(string(b), `"path":"plain"`) {
+		t.Fatalf("catalog JSON %s", b)
+	}
+	var back Catalog
+	if err := Unmarshal(b, &back); err != nil {
+		t.Fatal(err)
+	}
+	if back.Entries[0].Path != raw || back.Entries[1].Path != "plain" {
+		t.Fatalf("catalog paths %q %q", back.Entries[0].Path, back.Entries[1].Path)
+	}
+	s := Snapshot{Skipped: []Skipped{{Path: raw, Reason: "fifo"}}, Inconsistent: []RawPath{RawPath(raw), "ok.log"}}
+	b, _ = Marshal(s)
+	var sb Snapshot
+	if err := Unmarshal(b, &sb); err != nil {
+		t.Fatal(err)
+	}
+	if sb.Skipped[0].Path != raw || string(sb.Inconsistent[0]) != raw || sb.Inconsistent[1] != "ok.log" {
+		t.Fatalf("snapshot paths %+v %+v", sb.Skipped, sb.Inconsistent)
+	}
+}
