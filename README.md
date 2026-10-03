@@ -228,19 +228,17 @@ so guard refuses there unless you pass `--allow-unlocked`.
 
 ### Claude Code plugin
 
-The plugin connects Claude Code to the remote server's MCP tools, with skills that take
-a backup and prove it restores before a risky change, report on backup health, and set up
-the guard hook:
+The plugin in [safegrd/agent-plugins](https://github.com/safegrd/agent-plugins) connects
+Claude Code to the remote server's MCP tools, with skills that take a backup and prove it
+restores before a risky change:
 
 ```text
-/plugin marketplace add safegrd/cli
+/plugin marketplace add safegrd/agent-plugins
 /plugin install safegrd@safegrd
 ```
 
-It asks for a personal access token from the console's Tokens page. The token reads backups
-and drills and can ask for a backup or a drill. It cannot delete, disable, re-route or
-re-key one. On a host with the CLI, `claude mcp add safegrd-local -- safegrd mcp` adds the
-local server, which backs up, verifies and restores with this host's config and key.
+On a host with the CLI, `claude mcp add safegrd-local -- safegrd mcp` adds the local server,
+which backs up, verifies and restores with this host's config and key.
 
 ### 8. Back up a directory tree, and get one file back
 
