@@ -1433,14 +1433,34 @@ func newDaemonInstallCmd() *cobra.Command {
 
 			fmt.Printf("✅ Installed %s\n", targetPath)
 			fmt.Printf("   Config:     %s\n   State:      %s\n", svc.configPath, svc.stateDir)
+			// It used to stop here and print the command that starts it, so a
+			// host the console said was "installed as a service that starts at
+			// boot" ran nothing until someone ran one more command.
+			var steps [][]string
+			var manual string
 			switch {
 			case runtime.GOOS == "darwin":
-				fmt.Printf("   To activate:\n   %s\n", launchctlCommand("bootstrap", userScope, targetPath))
+				// A reinstall replaces a loaded job: boot it out first.
+				_ = exec.Command("launchctl", strings.Fields(launchctlCommand("bootout", userScope, ""))[1:]...).Run()
+				steps = [][]string{strings.Fields(strings.TrimPrefix(launchctlCommand("bootstrap", userScope, targetPath), "sudo "))}
+				manual = launchctlCommand("bootstrap", userScope, targetPath)
 			case userScope:
-				fmt.Println("   To activate:\n   systemctl --user daemon-reload && systemctl --user enable --now safegrd")
-				fmt.Println("   To keep it running after you log out:\n   loginctl enable-linger $USER")
+				steps = [][]string{{"systemctl", "--user", "daemon-reload"}, {"systemctl", "--user", "enable", "--now", "safegrd"}}
+				manual = "systemctl --user daemon-reload && systemctl --user enable --now safegrd"
 			default:
-				fmt.Println("   To activate:\n   sudo systemctl daemon-reload && sudo systemctl enable --now safegrd")
+				steps = [][]string{{"systemctl", "daemon-reload"}, {"systemctl", "enable", "--now", "safegrd"}}
+				manual = "sudo systemctl daemon-reload && sudo systemctl enable --now safegrd"
+			}
+			for _, st := range steps {
+				if out, err := exec.Command(st[0], st[1:]...).CombinedOutput(); err != nil {
+					fmt.Printf("   Not started: %s %s failed: %v %s\n   Start it with:\n   %s\n",
+						st[0], strings.Join(st[1:], " "), err, strings.TrimSpace(string(out)), manual)
+					return nil
+				}
+			}
+			fmt.Printf("✅ Started. It runs now and at every %s.\n", map[bool]string{true: "login", false: "boot"}[userScope])
+			if userScope && runtime.GOOS != "darwin" {
+				fmt.Println("   To keep it running after you log out:\n   loginctl enable-linger $USER")
 			}
 			return nil
 		},
@@ -1650,6 +1670,17 @@ func newDaemonUninstallCmd() *cobra.Command {
 			if runtime.GOOS == "darwin" {
 				targetPath, stop = launchdPath(userScope), launchctlCommand("bootout", userScope, "")
 			}
+			// Stop it first. Removing the file used to leave the job running,
+			// and said so, which made removing one service two commands.
+			if _, err := os.Stat(targetPath); err == nil {
+				stopArgs := strings.Fields(strings.TrimPrefix(stop, "sudo "))
+				if out, err := exec.Command(stopArgs[0], stopArgs[1:]...).CombinedOutput(); err == nil {
+					fmt.Printf("✅ Stopped: %s\n", strings.TrimPrefix(stop, "sudo "))
+					stop = ""
+				} else if len(out) > 0 {
+					fmt.Fprintf(os.Stderr, "   Could not stop it (%s); it may not have been running.\n", strings.TrimSpace(string(out)))
+				}
+			}
 			// It printed "Removed" whether or not anything was, including
 			// when the delete was refused for want of sudo.
 			switch err := os.Remove(targetPath); {
@@ -1660,7 +1691,9 @@ func newDaemonUninstallCmd() *cobra.Command {
 				return fmt.Errorf("could not remove %s (try sudo, or --user for a user service): %w", targetPath, err)
 			}
 			fmt.Printf("✅ Removed %s\n", targetPath)
-			fmt.Printf("   A service that was running keeps running until it is stopped:\n   %s\n", stop)
+			if stop != "" {
+				fmt.Printf("   If it is still running, stop it with:\n   %s\n", stop)
+			}
 			return nil
 		},
 	}
