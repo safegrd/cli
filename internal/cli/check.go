@@ -92,13 +92,21 @@ which downloads the snapshot's data. It needs the private key.`,
 			}
 			rows := listRepoSnapshots(ctx, storageCfg)
 			checked, failed := 0, 0
+			// One memo per epoch: the rows are in snapshot order, so the
+			// catalog is replayed once across an epoch's snapshots, and its
+			// listing, indexes and trailers are read once.
+			memos := map[string]*check.Memo{}
 			for _, rs := range rows {
 				id := rs.Meta.SnapshotID
 				if snapshotID != "" && id != snapshotID || epochID != "" && rs.Epoch.Epoch.EpochID != epochID {
 					continue
 				}
 				checked++
-				rep, err := check.Snapshot(ctx, rs.Backend, rs.Epoch, id, ids, check.Options{ReadData: readData})
+				mk := rs.Backend.Describe() + "\x00" + rs.Epoch.Prefix
+				if memos[mk] == nil {
+					memos[mk] = check.NewMemo(rs.Backend, rs.Epoch, ids)
+				}
+				rep, err := check.Snapshot(ctx, rs.Backend, rs.Epoch, id, ids, check.Options{ReadData: readData, Memo: memos[mk]})
 				if err != nil {
 					failed++
 					fmt.Fprintf(os.Stderr, "FAIL %s: %v\n", id, err)

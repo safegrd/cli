@@ -81,7 +81,7 @@ func backupNamedSurface(ctx context.Context, c *config.CLIConfig, surfaceID stri
 	}
 	if sState.LastError != "" {
 		// The backup is taken; what follows is about its report or its hook.
-		fmt.Fprintf(os.Stderr, "⚠️  Surface %s: %s\n", surface.ID, sState.LastError)
+		fmt.Fprintf(os.Stderr, "⚠️  Surface %s: %s %s\n", surface.ID, sState.BackupReason.Words(), sState.LastError)
 	}
 	return nil
 }

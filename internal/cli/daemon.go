@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"io"
 	"math/rand"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -21,6 +23,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/safegrd/cli/pkg/config"
 	"github.com/safegrd/cli/pkg/crypto"
+	"github.com/safegrd/cli/pkg/diskspace"
 	"github.com/safegrd/cli/pkg/dump"
 	"github.com/safegrd/cli/pkg/model"
 	"github.com/safegrd/cli/pkg/repo/policy"
@@ -37,6 +40,9 @@ type SurfaceState struct {
 	ConsecutiveFailures int       `json:"consecutive_failures"`
 	NextDue             time.Time `json:"next_due,omitempty"`
 	LastError           string    `json:"last_error,omitempty"`
+	// BackupReason is why the last backup failed, or what went wrong after
+	// one that was taken. LastError is the same in words.
+	BackupReason model.BackupReason `json:"backup_reason,omitempty"`
 	// Retired is the remote server's word that this surface was retired in
 	// the console. It is not backed up while the config still names it.
 	Retired string `json:"retired,omitempty"`
@@ -60,15 +66,16 @@ type SurfaceState struct {
 	LastBackupRequestID string `json:"last_backup_request_id,omitempty"`
 	// LastDrillRequestID is the last "drill now" this surface ran, so each
 	// request is run once.
-	LastDrillRequestID string `json:"last_drill_request_id,omitempty"`
-	DrillStatus        string `json:"drill_status,omitempty"`
-	// DrillNote is why the last drill was not the one the plan sells: run in
-	// memory for want of a sandbox, or blocked for want of disk. It travels on
-	// the heartbeat, so the console says it too.
-	DrillNote           string    `json:"drill_note,omitempty"`
-	LastDrillAttempt    time.Time `json:"last_drill_attempt,omitempty"`
-	DrillFailures       int       `json:"drill_failures,omitempty"`
-	LastDrillSnapshotID string    `json:"last_drill_snapshot_id,omitempty"`
+	LastDrillRequestID string            `json:"last_drill_request_id,omitempty"`
+	DrillStatus        model.DrillStatus `json:"drill_status,omitempty"`
+	// DrillReason is why the last drill was not the one the plan includes,
+	// or why it did not pass; DrillDetail is the same in this host's words.
+	// Both travel on the heartbeat, so the console says it too.
+	DrillReason         model.DrillReason `json:"drill_reason,omitempty"`
+	DrillDetail         string            `json:"drill_detail,omitempty"`
+	LastDrillAttempt    time.Time         `json:"last_drill_attempt,omitempty"`
+	DrillFailures       int               `json:"drill_failures,omitempty"`
+	LastDrillSnapshotID string            `json:"last_drill_snapshot_id,omitempty"`
 	// DrillInFlight is saved before a drill starts and cleared when it ends.
 	// Found set at the next start, the drill took the process down with it
 	// (an out-of-memory kill, say) and counts as a failure. Otherwise a
@@ -88,6 +95,12 @@ type SurfaceState struct {
 	// surface back on its config's schedule.
 	ConsoleSchedule      string `json:"console_schedule,omitempty"`
 	ConsoleRetentionDays int    `json:"console_retention_days,omitempty"`
+}
+
+// setDrill records how the last drill went. The three always change
+// together, so a reason never outlives the status it explained.
+func (st *SurfaceState) setDrill(status model.DrillStatus, reason model.DrillReason, detail string) {
+	st.DrillStatus, st.DrillReason, st.DrillDetail = status, reason, detail
 }
 
 // DaemonState persists state across daemon ticks.
@@ -599,7 +612,7 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 		if st.DrillInFlight {
 			st.DrillInFlight = false
 			st.DrillFailures++
-			st.DrillStatus = model.DrillStatusFailed
+			st.setDrill(model.DrillStatusFailed, model.DrillReasonInterrupted, "")
 			fmt.Fprintf(os.Stderr, "❌ Surface %s: the last Fire Drill did not finish; the daemon stopped during it. "+
 				"Counted as a failure; the next is at least %s away.\n", st.SurfaceID, drillBackoff(st.DrillFailures))
 		}
@@ -712,7 +725,7 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 				}
 				drills = append(drills, d)
 			} else if sState.DrillStatus == model.DrillStatusNoKey {
-				sState.DrillStatus = ""
+				sState.setDrill("", "", "")
 			}
 		}
 		warnIfStateUnsaved(saveDaemonState(statePath, daemonState), statePath)
@@ -774,7 +787,7 @@ func backupSurfaceNow(ctx context.Context, c *config.CLIConfig, surface *config.
 	// target, which is the thing the hook exists to prevent.
 	if surface.PreBackup != "" {
 		if err := runHook(ctx, surface, "pre_backup", surface.PreBackup); err != nil {
-			backupErr = fmt.Errorf("not backed up: %w", err)
+			backupErr = stageErr(model.BackupReasonPreBackupHook, fmt.Errorf("not backed up: %w", err))
 		}
 	}
 	if backupErr == nil {
@@ -803,17 +816,18 @@ func backupSurfaceNow(ctx context.Context, c *config.CLIConfig, surface *config.
 	if backupErr != nil {
 		sState.ConsecutiveFailures++
 		sState.LastError = backupErr.Error()
+		sState.BackupReason = backupReasonOf(backupErr)
 		fmt.Fprintf(os.Stderr, "❌ Surface %s backup failed: %v\n", surface.ID, backupErr)
 	} else {
 		sState.ConsecutiveFailures = 0
-		sState.LastError = ""
+		sState.LastError, sState.BackupReason = "", ""
 		// The backup is taken; a post_backup that failed is still reported,
 		// since it may have left the application paused.
 		if postErr != nil {
-			sState.LastError = "post_backup: " + postErr.Error()
+			sState.LastError, sState.BackupReason = postErr.Error(), model.BackupReasonPostBackupHook
 		}
 		if sState.notRecorded != "" {
-			sState.LastError = "not recorded: " + sState.notRecorded
+			sState.LastError, sState.BackupReason = sState.notRecorded, model.BackupReasonNotRecorded
 		}
 		sState.LastSuccess = time.Now().UTC()
 		if meta != nil {
@@ -833,6 +847,50 @@ func backupSurfaceNow(ctx context.Context, c *config.CLIConfig, surface *config.
 	return meta, nil
 }
 
+// backupStageError names the stage a backup failed at, so the daemon can
+// report a reason as well as the words. The message is the wrapped error's.
+type backupStageError struct {
+	reason model.BackupReason
+	err    error
+}
+
+func (e *backupStageError) Error() string { return e.err.Error() }
+func (e *backupStageError) Unwrap() error { return e.err }
+
+func stageErr(r model.BackupReason, err error) error {
+	return &backupStageError{reason: r, err: err}
+}
+
+// backupReasonOf is the reason a failed backup reports. A full disk wins
+// over the stage it was found at; a backup that failed somewhere no stage
+// names is "other".
+func backupReasonOf(err error) model.BackupReason {
+	var he *hostedError
+	var se *backupStageError
+	switch {
+	case errors.Is(err, diskspace.ErrNotEnoughDisk):
+		return model.BackupReasonNoDisk
+	case errors.As(err, &he) && he.Status == http.StatusInsufficientStorage:
+		return model.BackupReasonQuota
+	case errors.As(err, &se):
+		return se.reason
+	}
+	return model.BackupReasonOther
+}
+
+// uploadErr is a failed upload of a stream another goroutine was producing.
+// When the producer failed, the upload only saw the pipe close, so the
+// producer's error is the one reported. A producer that did not fail is
+// blocked on the pipe and never answers, so the wait is short.
+func uploadErr(err error, producer <-chan error, what string) error {
+	select {
+	case perr := <-producer:
+		return stageErr(model.BackupReasonSource, fmt.Errorf("%s: %w", what, perr))
+	case <-time.After(2 * time.Second):
+	}
+	return stageErr(model.BackupReasonStorage, fmt.Errorf("storage upload failed: %w", err))
+}
+
 // runSurfaceBackup backs one surface up and reports it as nodeID (the child
 // node the remote server assigned, or the surface's own id without one). The
 // snapshot is written under the same id, so the node a restore finds on the
@@ -843,10 +901,10 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 	if s.Storage != nil {
 		storageCfg = *s.Storage
 		if err := checkSurfaceStorage(ctx, c, &storageCfg); err != nil {
-			return nil, plan, err
+			return nil, plan, stageErr(model.BackupReasonStorage, err)
 		}
 	} else if err := routeProjectSink(ctx, c, &storageCfg, false, true); err != nil {
-		return nil, plan, err
+		return nil, plan, stageErr(model.BackupReasonStorage, err)
 	}
 	if nodeID != "" && storageCfg.NodeID == "" {
 		storageCfg.NodeID = nodeID
@@ -859,13 +917,13 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 	// Hosted storage: a write lease, refused when the organization is full.
 	lease, err := resolveHostedStorage(ctx, c, &storageCfg, true)
 	if err != nil {
-		return nil, plan, err
+		return nil, plan, stageErr(model.BackupReasonStorage, err)
 	}
 	applyHeldSinkKey(ctx, c, &storageCfg)
 
 	storageProvider, err := openStorage(ctx, c, storageCfg)
 	if err != nil {
-		return nil, plan, fmt.Errorf("storage provider init failed: %w", err)
+		return nil, plan, stageErr(model.BackupReasonStorage, fmt.Errorf("storage provider init failed: %w", err))
 	}
 
 	pubKey := c.Encryption.PublicKey
@@ -873,7 +931,7 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 		pubKey = s.Encryption.PublicKey
 	}
 	if pubKey == "" {
-		return nil, plan, fmt.Errorf("encryption public key missing for surface %s", s.ID)
+		return nil, plan, stageErr(model.BackupReasonConfig, fmt.Errorf("encryption public key missing for surface %s", s.ID))
 	}
 
 	snapshotID := fmt.Sprintf("snap-%s-%s", time.Now().UTC().Format("20060102-150405"), uuid.New().String()[:6])
@@ -886,19 +944,27 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 	plan = planRetention(time.Now(), storageCfg.RetentionDays, tiers, st)
 	retentionUntil := plan.Until
 	// Under worm_mode NONE nothing is locked, so no tier is claimed either.
+	// On hosted storage the remote server decides the lock within the plan,
+	// and a trial's locks end with the trial; the upload says what it kept.
+	// Promising a date here and warning about a shorter one a line later was
+	// the first thing a new customer read.
 	if plan.Tier != "base" && storageCfg.WORMMode != config.WORMModeNone {
-		fmt.Printf("   Surface %s: this is the %s backup, locked until %s\n", s.ID, plan.Tier, retentionUntil.UTC().Format("2006-01-02"))
+		if storageCfg.Type == config.StorageTypeHosted {
+			fmt.Printf("   Surface %s: kept as the %s copy\n", s.ID, plan.Tier)
+		} else {
+			fmt.Printf("   Surface %s: kept as the %s copy, locked until %s\n", s.ID, plan.Tier, retentionUntil.UTC().Format("2006-01-02"))
+		}
 	}
 
 	switch strings.ToLower(s.Type) {
 	case "files":
 		roots := s.Roots
 		if len(roots) == 0 {
-			return nil, plan, fmt.Errorf("surface %s has no root paths specified", s.ID)
+			return nil, plan, stageErr(model.BackupReasonConfig, fmt.Errorf("surface %s has no root paths specified", s.ID))
 		}
 		ff, err := fileFormat(s.Format)
 		if err != nil {
-			return nil, plan, fmt.Errorf("surface %s: %w", s.ID, err)
+			return nil, plan, stageErr(model.BackupReasonConfig, fmt.Errorf("surface %s: %w", s.ID, err))
 		}
 		if ff == formatRepo {
 			if storageCfg.NodeID == "" {
@@ -929,7 +995,7 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 			return meta, plan, nil
 		}
 		if len(roots) > 1 {
-			return nil, plan, fmt.Errorf("surface %s lists %d roots; a tar surface backs up one, so give it format: repo or one root", s.ID, len(roots))
+			return nil, plan, stageErr(model.BackupReasonConfig, fmt.Errorf("surface %s lists %d roots; a tar surface backs up one, so give it format: repo or one root", s.ID, len(roots)))
 		}
 		started := time.Now()
 		collector := dump.NewFileCollector(dump.FileCollectorConfig{
@@ -940,7 +1006,7 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 		// What the walk left out is said out loud, even when the backup succeeds.
 		warnSkipped(collector.Skipped())
 		if err != nil {
-			return nil, plan, fmt.Errorf("file collection failed: %w", err)
+			return nil, plan, stageErr(model.BackupReasonSource, fmt.Errorf("file collection failed: %w", err))
 		}
 
 		cipherReader, cipherWriter := io.Pipe()
@@ -960,7 +1026,7 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 
 		storageURI, err := storageProvider.UploadSnapshot(ctx, snapshotID, cipherReader, -1, retentionUntil)
 		if err != nil {
-			return nil, plan, fmt.Errorf("storage upload failed: %w", err)
+			return nil, plan, uploadErr(err, errChan, "reading the surface failed")
 		}
 		metrics := <-metricsChan
 
@@ -999,14 +1065,14 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 			return nil, plan, err
 		}
 		if user == "" || pass == "" {
-			return nil, plan, fmt.Errorf("email credentials unresolved for surface %s", s.ID)
+			return nil, plan, stageErr(model.BackupReasonConfig, fmt.Errorf("email credentials unresolved for surface %s", s.ID))
 		}
 
 		// The same private-CA trust `backup --email-ca-file` has: without it a
 		// self-hosted mailbox could be backed up by hand and never by the daemon.
 		tlsCfg, err := emailTLSConfig(host, os.Getenv("SAFEGRD_EMAIL_CA_FILE"))
 		if err != nil {
-			return nil, plan, fmt.Errorf("surface %s: %w", s.ID, err)
+			return nil, plan, stageErr(model.BackupReasonConfig, fmt.Errorf("surface %s: %w", s.ID, err))
 		}
 
 		started := time.Now()
@@ -1021,7 +1087,7 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 		})
 		rawStream, meta, err := collector.ScanAndStream(ctx, nil)
 		if err != nil {
-			return nil, plan, fmt.Errorf("email collection failed: %w", err)
+			return nil, plan, stageErr(model.BackupReasonSource, fmt.Errorf("email collection failed: %w", err))
 		}
 
 		cipherReader, cipherWriter := io.Pipe()
@@ -1041,7 +1107,7 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 
 		storageURI, err := storageProvider.UploadSnapshot(ctx, snapshotID, cipherReader, -1, retentionUntil)
 		if err != nil {
-			return nil, plan, fmt.Errorf("storage upload failed: %w", err)
+			return nil, plan, uploadErr(err, errChan, "reading the surface failed")
 		}
 		metrics := <-metricsChan
 
@@ -1071,7 +1137,7 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 			return nil, plan, err
 		}
 		if dbURL == "" {
-			return nil, plan, fmt.Errorf("database URL unresolved for surface %s", s.ID)
+			return nil, plan, stageErr(model.BackupReasonConfig, fmt.Errorf("database URL unresolved for surface %s", s.ID))
 		}
 
 		dumper := dump.NewDumper(dump.EngineTypeNative, dbURL)
@@ -1106,13 +1172,13 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 
 		storageURI, err := storageProvider.UploadSnapshot(ctx, snapshotID, cipherReader, -1, retentionUntil)
 		if err != nil {
-			return nil, plan, fmt.Errorf("storage upload failed: %w", err)
+			return nil, plan, uploadErr(err, dumpErrChan, "database dump failed")
 		}
 
 		var dumpMeta *model.SnapshotMetadata
 		select {
 		case dumpErr := <-dumpErrChan:
-			return nil, plan, fmt.Errorf("database dump failed: %w", dumpErr)
+			return nil, plan, stageErr(model.BackupReasonSource, fmt.Errorf("database dump failed: %w", dumpErr))
 		case dumpMeta = <-metaChan:
 		}
 
@@ -1176,6 +1242,13 @@ func newDaemonStatusCmd() *cobra.Command {
 				Status        string `json:"status"`
 				LastSnapshot  string `json:"last_snapshot_id,omitempty"`
 				LastError     string `json:"last_error,omitempty"`
+				// BackupReason, DrillStatus and DrillReason are the codes the
+				// daemon reports to the remote server; the words are LastError
+				// and DrillDetail.
+				BackupReason model.BackupReason `json:"backup_reason,omitempty"`
+				DrillStatus  model.DrillStatus  `json:"drill_status,omitempty"`
+				DrillReason  model.DrillReason  `json:"drill_reason,omitempty"`
+				DrillDetail  string             `json:"drill_detail,omitempty"`
 				// Unsent counts backups whose record the remote server has
 				// not received yet; the daemon sends them when it answers.
 				Unsent int `json:"unsent_records,omitempty"`
@@ -1198,6 +1271,10 @@ func newDaemonStatusCmd() *cobra.Command {
 				failures := 0
 				lastSnap := ""
 				lastErr := ""
+				var backupReason model.BackupReason
+				var drillStatus model.DrillStatus
+				var drillReason model.DrillReason
+				drillDetail := ""
 				unsent := 0
 				status := "OK"
 
@@ -1217,6 +1294,7 @@ func newDaemonStatusCmd() *cobra.Command {
 					failures = st.ConsecutiveFailures
 					lastSnap = st.LastSnapshotID
 					lastErr = st.LastError
+					backupReason, drillStatus, drillReason, drillDetail = st.BackupReason, st.DrillStatus, st.DrillReason, st.DrillDetail
 					unsent = len(st.Unsent)
 					if failures > 0 {
 						status = fmt.Sprintf("FAILED (%d)", failures)
@@ -1250,6 +1328,10 @@ func newDaemonStatusCmd() *cobra.Command {
 					Status:          status,
 					LastSnapshot:    lastSnap,
 					LastError:       lastErr,
+					BackupReason:    backupReason,
+					DrillStatus:     drillStatus,
+					DrillReason:     drillReason,
+					DrillDetail:     drillDetail,
 					Unsent:          unsent,
 				})
 			}
@@ -1441,6 +1523,18 @@ func systemdPath(userScope bool) string {
 	return filepath.Join(home, ".config/systemd/user/safegrd.service")
 }
 
+// installedUserScope reports whether only the user-scoped service is
+// installed on this host.
+func installedUserScope() bool {
+	path := systemdPath
+	if runtime.GOOS == "darwin" {
+		path = launchdPath
+	}
+	_, systemErr := os.Stat(path(false))
+	_, userErr := os.Stat(path(true))
+	return systemErr != nil && userErr == nil
+}
+
 func launchdPath(userScope bool) string {
 	if !userScope {
 		return "/Library/LaunchDaemons/dev.safegrd.daemon.plist"
@@ -1582,6 +1676,11 @@ func newDaemonRestartCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// It printed "Signaling daemon service restart..." and restarted
 			// nothing; it now runs the service manager and says what happened.
+			// Without --user it restarts whichever scope is installed: after
+			// `install --user` it used to aim at the system service and fail.
+			if !cmd.Flags().Changed("user") {
+				userScope = installedUserScope()
+			}
 			var name string
 			var argv []string
 			switch {

@@ -125,7 +125,7 @@ func newListOrgsCmd() *cobra.Command {
 			defer resp.Body.Close()
 
 			if resp.StatusCode != http.StatusOK {
-				return fmt.Errorf("server returned status %d", resp.StatusCode)
+				return serverStatusError(resp.StatusCode)
 			}
 
 			var orgs []*model.Organization
@@ -180,7 +180,7 @@ func newOrgMembersCmd() *cobra.Command {
 			defer resp.Body.Close()
 
 			if resp.StatusCode != http.StatusOK {
-				return fmt.Errorf("server returned status %d", resp.StatusCode)
+				return serverStatusError(resp.StatusCode)
 			}
 
 			var members []*model.OrgMember
@@ -215,7 +215,7 @@ func fetchUserOrg(serverURL, token string) (*model.Organization, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("server returned status %d", resp.StatusCode)
+		return nil, serverStatusError(resp.StatusCode)
 	}
 
 	var orgs []*model.Organization
@@ -265,4 +265,17 @@ func fetchPlansCatalogue(serverURL string) ([]model.Plan, error) {
 	cachedPlans = payload.Plans
 	cachedPlansAt = time.Now()
 	return cachedPlans, nil
+}
+
+// serverStatusError says what an HTTP status means for the person at the
+// terminal. A revoked access token used to end in "server returned status 401"
+// and nothing about logging in again.
+func serverStatusError(code int) error {
+	switch code {
+	case http.StatusUnauthorized:
+		return fmt.Errorf("the remote server rejected this login (HTTP 401): it expired or was revoked. Run 'safegrd login'")
+	case http.StatusForbidden:
+		return fmt.Errorf("the remote server refused this (HTTP 403): your role in the organization does not allow it")
+	}
+	return fmt.Errorf("server returned status %d", code)
 }

@@ -98,9 +98,9 @@ func TestDescribeRetentionNeverPrintsADateOverAnUnretainedSnapshot(t *testing.T)
 		want string
 	}{
 		{"recorded NONE", "NONE", locked, "none (deletable)"},
-		{"recorded COMPLIANCE", "COMPLIANCE", none, "COMPLIANCE until 2026-10-21 16:01"},
+		{"recorded COMPLIANCE", "COMPLIANCE", none, "COMPLIANCE until 2026-10-21 16:01 UTC"},
 		{"legacy under a NONE config", "", none, "none (deletable; mode not recorded)"},
-		{"legacy under a locked config", "", locked, "2026-10-21 16:01 (mode not recorded)"},
+		{"legacy under a locked config", "", locked, "2026-10-21 16:01 UTC (mode not recorded)"},
 	} {
 		meta := &model.SnapshotMetadata{WORMMode: tc.mode, WORMRetentionUntil: until}
 		if got := describeRetention(meta, tc.cfg); got != tc.want {
@@ -116,7 +116,7 @@ func TestDescribeRetentionOnLocalStorageNamesNoLock(t *testing.T) {
 	local := config.StorageConfig{Type: config.StorageTypeLocal, WORMMode: config.WORMModeCompliance}
 	meta := &model.SnapshotMetadata{WORMMode: "COMPLIANCE", WORMRetentionUntil: until}
 	got := describeRetention(meta, local)
-	if want := "kept until 2026-10-21 16:01 (no Object Lock)"; got != want {
+	if want := "kept until 2026-10-21 16:01 UTC (no Object Lock)"; got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
 	if label := wormLabel(local); strings.Contains(label, "WORM Object Lock") {

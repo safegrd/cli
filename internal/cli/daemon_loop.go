@@ -25,6 +25,7 @@ import (
 
 	"github.com/safegrd/cli/pkg/config"
 	"github.com/safegrd/cli/pkg/crypto"
+	"github.com/safegrd/cli/pkg/diskspace"
 	"github.com/safegrd/cli/pkg/model"
 	"github.com/safegrd/cli/pkg/runner"
 	"github.com/safegrd/cli/pkg/storage"
@@ -156,19 +157,22 @@ func sendHeartbeat(ctx context.Context, c *config.CLIConfig, nodeID string, st *
 		return nil
 	}
 	var resp model.HeartbeatResponse
+	failing := st.ConsecutiveFailures > 0
 	status, err := postJSON(ctx, c, "/api/v1/nodes/heartbeat", model.HeartbeatRequest{
 		NodeID:              nodeID,
 		CLI_Version:         Version,
 		OS:                  runtime.GOOS,
 		Arch:                runtime.GOARCH,
-		PostgresUp:          st.ConsecutiveFailures == 0,
-		StorageUp:           st.ConsecutiveFailures == 0,
+		PostgresUp:          !(failing && st.BackupReason == model.BackupReasonSource),
+		StorageUp:           !(failing && storageReason(st.BackupReason)),
 		LastSnapshot:        st.LastSnapshotID,
 		TickSeconds:         int(tick / time.Second),
 		ConsecutiveFailures: st.ConsecutiveFailures,
 		LastError:           st.LastError,
+		BackupReason:        st.BackupReason,
 		DrillStatus:         st.DrillStatus,
-		DrillNote:           st.DrillNote,
+		DrillReason:         st.DrillReason,
+		DrillDetail:         st.DrillDetail,
 		Schedule:            s.Schedule,
 		RetentionDays:       s.RetentionDays,
 	}, &resp)
@@ -179,13 +183,26 @@ func sendHeartbeat(ctx context.Context, c *config.CLIConfig, nodeID string, st *
 		return nil
 	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "⚠️  Surface %s: heartbeat failed (%v). Backups carry on; the console will show this host as silent if it persists.\n", st.SurfaceID, err)
+		// "Backups carry on" was false on hosted storage, which needs the
+		// remote server for every upload; and a rejected token never said
+		// which token or how to replace it.
+		hint := "Backups to your own bucket carry on; hosted storage waits for the remote server. The console shows this host as silent if it persists."
+		if strings.Contains(err.Error(), "HTTP 401") {
+			hint = "This host's token was replaced or revoked in the console. Put the current one in with: safegrd enroll --token <node token from the console>"
+		}
+		fmt.Fprintf(os.Stderr, "⚠️  Surface %s: heartbeat failed (%v). %s\n", st.SurfaceID, err, hint)
 		return nil
 	}
 	if resp.UpgradeAvailable {
 		notifyUpgrade(resp.LatestCLIVersion)
 	}
 	return &resp
+}
+
+// storageReason reports whether a backup that failed for r could not write
+// to its storage.
+func storageReason(r model.BackupReason) bool {
+	return r == model.BackupReasonStorage || r == model.BackupReasonNoDisk || r == model.BackupReasonQuota
 }
 
 // pendingDrill is a drill the remote server asked for this tick, run after
@@ -274,7 +291,7 @@ func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, d pendingDrill
 				"   The daemon never copies it here. Run 'safegrd verify --snapshot %s' where the key is,\n"+
 				"   or set key_path / SAFEGRD_PRIVATE_KEY on this host. The console shows this surface as unproven.\n", s.ID, snapshotID)
 		}
-		st.DrillStatus = model.DrillStatusNoKey
+		st.setDrill(model.DrillStatusNoKey, model.DrillReasonNoKey, "")
 		// Looked again after the same spacing, not every tick: looking asks
 		// the remote server for a managed identity each time.
 		st.LastDrillAttempt = now
@@ -311,7 +328,7 @@ func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, d pendingDrill
 	}
 	if err != nil {
 		st.DrillFailures++
-		st.DrillStatus = model.DrillStatusFailed
+		st.setDrill(model.DrillStatusFailed, model.DrillReasonStorage, err.Error())
 		fmt.Fprintf(os.Stderr, "❌ Surface %s: Fire Drill could not open storage: %v\n", s.ID, err)
 		return
 	}
@@ -326,13 +343,14 @@ func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, d pendingDrill
 		rs = repoDrillTarget(ctx, c, storageCfg, snapshotID)
 	}
 	var local *runner.LocalPostgres
-	// note is why this drill is shallower than the plan's, said on the
+	// shallow is why this drill is shallower than the plan's, said on the
 	// heartbeat as well as here: the report alone reads as a passing drill.
-	var note string
+	var shallow model.DrillReason
+	var shallowWhy string
 	if sandboxErr == nil && sandbox == "" && d.sandboxIncluded && surfaceIsPostgres(s) {
 		var why error
-		if local, why = startLocalSandbox(ctx, provider, snapshotID, d.stateDir); why != nil {
-			note = "Drilled in memory, not in a sandbox: " + why.Error()
+		if local, shallow, why = startLocalSandbox(ctx, provider, snapshotID, d.stateDir); why != nil {
+			shallowWhy = why.Error()
 			fmt.Fprintf(os.Stderr, "⚠️  Surface %s: drilling in memory, not in a local sandbox: %v\n", s.ID, why)
 		} else if local != nil {
 			defer local.Stop()
@@ -367,23 +385,31 @@ func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, d pendingDrill
 	case errors.As(err, &blocked):
 		// Not a failure: nothing was learned about the backup. It is tried
 		// again after the usual spacing.
-		st.DrillStatus = model.DrillStatusBlocked
-		st.DrillNote = "Fire Drill not run: " + blocked.Error()
+		reason := model.DrillReasonOther
+		if errors.Is(err, diskspace.ErrNotEnoughDisk) {
+			reason = model.DrillReasonNoDisk
+		}
+		st.setDrill(model.DrillStatusBlocked, reason, blocked.Error())
 		fmt.Fprintf(os.Stderr, "⚠️  Surface %s: Fire Drill not run: %v\n", s.ID, blocked)
+	case sandboxErr != nil:
+		st.DrillFailures++
+		st.setDrill(model.DrillStatusFailed, model.DrillReasonSandboxRefused, err.Error())
+		fmt.Fprintf(os.Stderr, "❌ Surface %s: Fire Drill could not run: %v\n", s.ID, err)
 	case err != nil:
 		st.DrillFailures++
-		st.DrillStatus = model.DrillStatusFailed
-		st.DrillNote = note
+		st.setDrill(model.DrillStatusFailed, model.DrillReasonRestoreFailed, err.Error())
 		fmt.Fprintf(os.Stderr, "❌ Surface %s: Fire Drill could not run: %v\n", s.ID, err)
 	case report.Status != model.VerificationStatusPassed:
 		st.DrillFailures++
-		st.DrillStatus = model.DrillStatusFailed
-		st.DrillNote = note
+		st.setDrill(model.DrillStatusFailed, failedDrillReason(report), report.ErrorMessage)
 		fmt.Fprintf(os.Stderr, "❌ Surface %s: Fire Drill FAILED for %s: %s\n", s.ID, snapshotID, report.ErrorMessage)
 	default:
 		st.DrillFailures = 0
-		st.DrillStatus = ""
-		st.DrillNote = note
+		if shallow != "" {
+			st.setDrill(model.DrillStatusShallow, shallow, shallowWhy)
+		} else {
+			st.setDrill(model.DrillStatusPassed, "", "")
+		}
 		st.LastDrillSnapshotID = snapshotID
 		fmt.Printf("✅ Surface %s: Fire Drill passed (%s of %s, certificate %s).\n", s.ID, how, snapshotID, report.CertificateHash)
 	}
@@ -424,37 +450,59 @@ func surfaceIsPostgres(s *config.SurfaceConfig) bool {
 }
 
 // startLocalSandbox starts a throwaway cluster for the snapshot's drill, or
-// says why it cannot: no PostgreSQL server here, one older than the snapshot's,
-// no room on the disk, or an extension the snapshot uses that the server lacks.
+// says why it cannot, as a reason and in words: no PostgreSQL server here,
+// one older than the snapshot's, no room on the disk, or an extension the
+// snapshot uses that the server lacks.
 // A drill that cannot have one replays the snapshot in memory instead: a
 // restore that failed for one of these reasons would report the backup as
 // broken when the host was the problem.
-func startLocalSandbox(ctx context.Context, provider storage.StorageProvider, snapshotID, stateDir string) (*runner.LocalPostgres, error) {
+func startLocalSandbox(ctx context.Context, provider storage.StorageProvider, snapshotID, stateDir string) (*runner.LocalPostgres, model.DrillReason, error) {
 	meta, err := provider.DownloadMetadata(ctx, snapshotID)
 	if err != nil {
-		return nil, fmt.Errorf("cannot read the snapshot's manifest: %w", err)
+		return nil, model.DrillReasonManifestUnreadable, fmt.Errorf("cannot read the snapshot's manifest: %w", err)
 	}
 	if meta.SurfaceType != "" && meta.SurfaceType != model.SurfaceTypePostgres {
-		return nil, nil
+		return nil, "", nil
 	}
 	srv, err := runner.FindPgServer(ctx, runner.SourceMajor(meta))
-	if err != nil {
-		return nil, err
+	switch {
+	case errors.Is(err, runner.ErrNoPgServer):
+		return nil, model.DrillReasonNoPostgresServer, err
+	case errors.Is(err, runner.ErrPgServerBroken):
+		return nil, model.DrillReasonPostgresServerBroken, err
+	case errors.Is(err, runner.ErrPgServerTooOld):
+		return nil, model.DrillReasonPostgresServerOld, err
+	case err != nil:
+		return nil, model.DrillReasonSandboxStartFailed, err
 	}
 	lp, err := runner.StartLocalPostgres(ctx, srv, stateDir, runner.SandboxBytesNeeded(meta))
-	if err != nil {
-		return nil, err
+	if errors.Is(err, diskspace.ErrNotEnoughDisk) {
+		return nil, model.DrillReasonSandboxNoDisk, err
+	} else if err != nil {
+		return nil, model.DrillReasonSandboxStartFailed, err
 	}
 	missing, err := lp.MissingExtensions(ctx, meta.Extensions)
-	if err == nil && len(missing) > 0 {
-		err = fmt.Errorf("the snapshot uses %s, which this host's PostgreSQL %s does not have; install them for %s, "+
-			"or point drill.sandbox_url at a database that has them", strings.Join(missing, ", "), srv.Version, srv.BinDir)
-	}
 	if err != nil {
 		lp.Stop()
-		return nil, err
+		return nil, model.DrillReasonSandboxStartFailed, err
 	}
-	return lp, nil
+	if len(missing) > 0 {
+		lp.Stop()
+		return nil, model.DrillReasonMissingExtensions, fmt.Errorf("the snapshot uses %s, which this host's PostgreSQL %s does not have; install them for %s, "+
+			"or point drill.sandbox_url at a database that has them", strings.Join(missing, ", "), srv.Version, srv.BinDir)
+	}
+	return lp, "", nil
+}
+
+// failedDrillReason tells a drill whose data did not match the manifest from
+// one that did not restore at all.
+func failedDrillReason(report *model.VerificationReport) model.DrillReason {
+	for _, a := range report.Assertions {
+		if !a.Passed {
+			return model.DrillReasonAssertionsFailed
+		}
+	}
+	return model.DrillReasonRestoreFailed
 }
 
 // surfaceSandboxURL is the scratch database a Postgres surface drills into, or

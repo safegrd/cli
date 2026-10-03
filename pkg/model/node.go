@@ -92,11 +92,19 @@ type Node struct {
 	DaemonIntervalSeconds int    `json:"daemon_interval_seconds,omitempty" yaml:"daemon_interval_seconds,omitempty"`
 	DaemonFailures        int    `json:"daemon_failures,omitempty" yaml:"daemon_failures,omitempty"`
 	DaemonLastError       string `json:"daemon_last_error,omitempty" yaml:"daemon_last_error,omitempty"`
-	DrillStatus           string `json:"drill_status,omitempty" yaml:"drill_status,omitempty"`
-	// DrillNote says why the last drill was not the drill the plan sells:
-	// run in memory because this host could not start a sandbox, or not run
-	// at all for want of disk. Empty when the drill ran as it should.
-	DrillNote string `json:"drill_note,omitempty" yaml:"drill_note,omitempty"`
+	// BackupReason is why the last backup failed, or what went wrong after
+	// one that was taken; DaemonLastError is the host's words for it.
+	BackupReason BackupReason `json:"backup_reason,omitempty" yaml:"backup_reason,omitempty"`
+	DrillStatus  DrillStatus  `json:"drill_status,omitempty" yaml:"drill_status,omitempty"`
+	// DrillReason is why the last drill was not the drill the plan includes,
+	// or why it did not pass. DrillDetail is the host's words for it, shown
+	// and never parsed.
+	DrillReason DrillReason `json:"drill_reason,omitempty" yaml:"drill_reason,omitempty"`
+	DrillDetail string      `json:"drill_detail,omitempty" yaml:"drill_detail,omitempty"`
+	// BackupWords and DrillWords are the two reasons in a sentence, filled
+	// in when nodes are listed so the console words them as alerts do.
+	BackupWords string `json:"backup_words,omitempty" yaml:"-"`
+	DrillWords  string `json:"drill_words,omitempty" yaml:"-"`
 
 	// Platform telemetry (OS / Arch) and update notification.
 	OS               string `json:"os,omitempty" yaml:"os,omitempty"`
@@ -117,18 +125,6 @@ const (
 	AlertStateSilent = "silent"
 	// AlertStateOverdue: no backup for twice the schedule's interval.
 	AlertStateOverdue = "overdue"
-)
-
-// Drill statuses a daemon reports. Empty means nothing to report.
-const (
-	// DrillStatusNoKey: a drill is due and this host does not hold the
-	// private key, which the daemon never copies.
-	DrillStatusNoKey = "no_key"
-	// DrillStatusFailed: the last unattended drill did not pass.
-	DrillStatusFailed = "failed"
-	// DrillStatusBlocked: this host cannot run the drill for a reason that
-	// says nothing about the backup (not enough disk). DrillNote says which.
-	DrillStatusBlocked = "blocked"
 )
 
 // NodeRegisterRequest is sent by CLI `safegrd init` to register with the remote server.
@@ -255,11 +251,13 @@ type HeartbeatRequest struct {
 	// Sent by `daemon run`, so the console can tell "the daemon is dead" from
 	// "the daemon is alive and this surface is failing".
 	// TickSeconds is how often the daemon looks; silence is measured in it.
-	TickSeconds         int    `json:"tick_seconds,omitempty"`
-	ConsecutiveFailures int    `json:"consecutive_failures,omitempty"`
-	LastError           string `json:"last_error,omitempty"`
-	DrillStatus         string `json:"drill_status,omitempty"`
-	DrillNote           string `json:"drill_note,omitempty"`
+	TickSeconds         int          `json:"tick_seconds,omitempty"`
+	ConsecutiveFailures int          `json:"consecutive_failures,omitempty"`
+	LastError           string       `json:"last_error,omitempty"`
+	BackupReason        BackupReason `json:"backup_reason,omitempty"`
+	DrillStatus         DrillStatus  `json:"drill_status,omitempty"`
+	DrillReason         DrillReason  `json:"drill_reason,omitempty"`
+	DrillDetail         string       `json:"drill_detail,omitempty"`
 	// Schedule and RetentionDays are what the daemon runs this surface on,
 	// after any setting from the console, so the remote server measures
 	// "overdue" against the schedule actually in force.

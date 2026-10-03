@@ -190,6 +190,12 @@ func runValidationChecks(path string, c *config.CLIConfig) []CheckResult {
 				Message: fmt.Sprintf("S3 bucket %s configured", c.Storage.Bucket),
 			})
 		}
+	} else if c.Storage.Type == config.StorageTypeHosted {
+		results = append(results, CheckResult{
+			Name:    "Storage Configuration",
+			Status:  "PASS",
+			Message: "SafeGrd hosted storage (the remote server leases it for each run)",
+		})
 	} else {
 		results = append(results, CheckResult{
 			Name:    "Storage Configuration",
@@ -308,7 +314,19 @@ func runDoctorChecks(path string, c *config.CLIConfig) []CheckResult {
 		resolvedKey = os.Getenv("SAFEGRD_PRIVATE_KEY")
 	}
 
-	if resolvedKey == "" {
+	_, keyFileErr := os.Stat(c.Encryption.KeyPath)
+	if resolvedKey == "" && c.Encryption.KeyPath != "" && os.IsNotExist(keyFileErr) {
+		// The config names a key and the file is gone: nothing taken by
+		// this host can be restored or drilled here, and backups go on
+		// encrypting to a key nobody may still have. Passing doctor over
+		// that was the wrong answer.
+		results = append(results, CheckResult{
+			Name:   "Decryption Private Key",
+			Status: "FAIL",
+			Message: fmt.Sprintf("%s is missing, so this host cannot restore or drill its backups. "+
+				"Put the key file back from your copy", c.Encryption.KeyPath),
+		})
+	} else if resolvedKey == "" {
 		results = append(results, CheckResult{
 			Name:    "Decryption Private Key",
 			Status:  "WARN",
@@ -560,8 +578,13 @@ func credentialProvenanceCheck(c *config.CLIConfig) []CheckResult {
 	}
 
 	out := []CheckResult{
-		{Name: "Database Credential Source", Status: status(src.DatabaseURL), Message: src.DatabaseURL},
 		{Name: "Encryption Recipient Source", Status: status(src.PublicKey), Message: src.PublicKey},
+	}
+	// A host that lists surfaces names each one's credential on its own
+	// line; the top-level database_url is the single-database form, and a
+	// warning that it is unset is about nothing this host uses.
+	if len(c.Surfaces) == 0 || c.DatabaseURL != "" {
+		out = append([]CheckResult{{Name: "Database Credential Source", Status: status(src.DatabaseURL), Message: src.DatabaseURL}}, out...)
 	}
 	// Local WORM storage has no credential to have a source, so reporting one
 	// missing would be a warning about something that is not wrong.

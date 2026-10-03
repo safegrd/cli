@@ -74,7 +74,7 @@ other line to stderr, so the output can be piped to jq.`,
 			}
 			if len(snapshots) == 0 {
 				if shadowed == 0 && len(repoRows) == 0 {
-					fmt.Println("No snapshots found in storage.")
+					fmt.Println(noSnapshotsLine(storageCfg))
 				}
 				return nil
 			}
@@ -357,7 +357,9 @@ func describeRetention(meta *model.SnapshotMetadata, storageCfg config.StorageCo
 	if meta.WORMRetentionUntil.IsZero() {
 		return "unknown"
 	}
-	until := meta.WORMRetentionUntil.Format("2006-01-02 15:04")
+	// One clock for every row: archive sidecars carried the host's local
+	// time and repository ones UTC, so one table mixed the two unlabelled.
+	until := meta.WORMRetentionUntil.UTC().Format("2006-01-02 15:04") + " UTC"
 	if storageCfg.Type == config.StorageTypeLocal {
 		// The sidecar may say COMPLIANCE (the config's default mode), but a
 		// directory enforces nothing: only safegrd's own refusal to delete.
@@ -380,4 +382,18 @@ func describeMissingMetadata(err error) string {
 		return "no metadata sidecar"
 	}
 	return "sidecar unreadable: " + err.Error()
+}
+
+// noSnapshotsLine says where list looked when it found nothing. A recovery
+// config with the wrong prefix printed "No snapshots found in storage" over a
+// bucket full of them, and nothing said the prefix was the thing to check.
+func noSnapshotsLine(c config.StorageConfig) string {
+	switch c.Type {
+	case config.StorageTypeS3:
+		return fmt.Sprintf("No snapshots under s3://%s/%s. If the bucket holds backups under another prefix, set storage.prefix to it.",
+			c.Bucket, strings.Trim(c.Prefix, "/"))
+	case config.StorageTypeLocal:
+		return fmt.Sprintf("No snapshots in %s.", c.LocalPath)
+	}
+	return "No snapshots found in storage."
 }

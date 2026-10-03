@@ -31,6 +31,10 @@ import (
 type Options struct {
 	// ReadData opens every blob a snapshot references and checks its hash.
 	ReadData bool
+	// Memo, when set, is shared by every check of the same epoch, so that
+	// objects they have in common are read once. Without it each check reads
+	// the epoch's listing, indexes, trailers and catalogs for itself.
+	Memo *Memo
 }
 
 // Report is what a check found.
@@ -86,7 +90,13 @@ func Snapshots(ctx context.Context, b sink.Backend, e sink.EpochInfo) ([]string,
 // Snapshot checks one snapshot of an epoch.
 func Snapshot(ctx context.Context, b sink.Backend, e sink.EpochInfo, snapshotID string, ids []age.Identity, o Options) (*Report, error) {
 	rep := &Report{Snapshots: 1}
-	r := read.Open(b, e, ids)
+	m := o.Memo
+	if m == nil {
+		m = NewMemo(b, e, ids)
+	} else if m.e.Prefix != e.Prefix || m.e.Epoch.EpochID != e.Epoch.EpochID {
+		return nil, fmt.Errorf("the memo is for epoch %s, not %s", m.e.Epoch.EpochID, e.Epoch.EpochID)
+	}
+	r := m.r
 	metaKey, err := sink.ObjectKey(e.Prefix, sink.KindMeta, snapshotID)
 	if err != nil {
 		return nil, err
@@ -101,7 +111,7 @@ func Snapshot(ctx context.Context, b sink.Backend, e sink.EpochInfo, snapshotID 
 		rep.add("snapshot %s: the sidecar does not parse: %v", snapshotID, err)
 		return rep, nil
 	}
-	snap, err := r.Snapshot(ctx, snapshotID)
+	snap, err := m.snapshot(ctx, snapshotID)
 	if err != nil {
 		rep.add("%v", err)
 		return rep, nil
@@ -112,13 +122,9 @@ func Snapshot(ctx context.Context, b sink.Backend, e sink.EpochInfo, snapshotID 
 	}
 
 	// Every pack the snapshot names is present.
-	listed, err := b.List(ctx, e, "packs")
+	sizes, err := m.packSizes(ctx)
 	if err != nil {
 		return nil, err
-	}
-	sizes := map[string]int64{}
-	for _, ob := range listed {
-		sizes[ob.Key[strings.LastIndex(ob.Key, "/")+1:]] = ob.Size
 	}
 	for _, p := range snap.Packs {
 		if _, ok := sizes[p]; !ok {
@@ -128,7 +134,7 @@ func Snapshot(ctx context.Context, b sink.Backend, e sink.EpochInfo, snapshotID 
 	if !rep.OK() {
 		return rep, nil
 	}
-	idx, err := r.LoadIndex(ctx, snap)
+	idx, err := m.index(ctx, snap)
 	if err != nil {
 		rep.add("%v", err)
 		return rep, nil
@@ -146,7 +152,7 @@ func Snapshot(ctx context.Context, b sink.Backend, e sink.EpochInfo, snapshotID 
 	for p := range needed {
 		rep.Packs++
 		size := sizes[p]
-		if err := checkTrailer(ctx, b, r, e, p, size, byPack[p], ids); err != nil {
+		if err := m.trailer(ctx, p, size, byPack[p]); err != nil {
 			rep.add("pack %s: %v", p, err)
 		}
 	}
@@ -226,7 +232,12 @@ func Snapshot(ctx context.Context, b sink.Backend, e sink.EpochInfo, snapshotID 
 	}
 
 	// The catalog, replayed to this snapshot, agrees with the trees.
-	if err := checkCatalog(ctx, b, r, e, snap, lines2map(lines, func(l line) (string, byte, string) { return l.path, l.typ, l.value }), ids); err != nil {
+	state, err := m.catalogState(ctx, snapshotID)
+	if err != nil {
+		rep.add("snapshot %s: %v", snapshotID, err)
+		return rep, nil
+	}
+	if err := compareCatalog(state, lines2map(lines, func(l line) (string, byte, string) { return l.path, l.typ, l.value })); err != nil {
 		rep.add("snapshot %s: %v", snapshotID, err)
 	}
 	return rep, nil
@@ -241,7 +252,7 @@ func lines2map[T any](ls []T, f func(T) (string, byte, string)) map[string][2]st
 	return m
 }
 
-func checkTrailer(ctx context.Context, b sink.Backend, r *read.Repo, e sink.EpochInfo, pack string, size int64, want []format.BlobEntry, ids []age.Identity) error {
+func checkTrailer(ctx context.Context, b sink.Backend, e sink.EpochInfo, pack string, size int64, want []format.BlobEntry, ids []age.Identity) error {
 	key, _ := sink.ObjectKey(e.Prefix, sink.KindPack, pack)
 	head, err := b.GetRange(ctx, key, 0, format.PackHeaderProbe)
 	if err != nil {
@@ -351,58 +362,11 @@ func readData(ctx context.Context, b sink.Backend, r *read.Repo, e sink.EpochInf
 // checkCatalog replays the epoch's catalog deltas in run order up to snap and
 // compares the result with the trees: the same paths, of the same types, and
 // for files the same SHA-256.
-func checkCatalog(ctx context.Context, b sink.Backend, r *read.Repo, e sink.EpochInfo, snap format.Snapshot, trees map[string][2]string, ids []age.Identity) error {
-	snapIDs, err := Snapshots(ctx, b, e)
-	if err != nil {
-		return err
-	}
-	var snaps []format.Snapshot
-	for _, id := range snapIDs {
-		s, err := r.Snapshot(ctx, id)
-		if err != nil {
-			return err
-		}
-		snaps = append(snaps, s)
-	}
-	sort.Slice(snaps, func(i, j int) bool { return snaps[i].CreatedAt.Before(snaps[j].CreatedAt) })
-	state := map[string][2]string{}
-	found := false
-	for _, s := range snaps {
-		key, _ := sink.ObjectKey(e.Prefix, sink.KindCatalog, s.RunID)
-		body, err := b.Get(ctx, key)
-		if err != nil {
-			return fmt.Errorf("the catalog of run %s: %w", s.RunID, err)
-		}
-		var c format.Catalog
-		if err := unseal.Object(body, ids, &c); err != nil {
-			return fmt.Errorf("the catalog of run %s: %w", s.RunID, err)
-		}
-		if err := c.Validate(); err != nil {
-			return err
-		}
-		if c.Complete {
-			state = map[string][2]string{}
-		}
-		for _, en := range c.Entries {
-			switch en.Event {
-			case format.EventDeleted:
-				delete(state, en.Path)
-			default:
-				v := en.SHA256
-				if en.Type != "f" {
-					v = ""
-				}
-				state[en.Path] = [2]string{en.Type, v}
-			}
-		}
-		if s.SnapshotID == snap.SnapshotID {
-			found = true
-			break
-		}
-	}
-	if !found {
-		return fmt.Errorf("no catalog leads to snapshot %s", snap.SnapshotID)
-	}
+// compareCatalog checks that the catalog's state at a snapshot names every
+// path the trees hold, with the same type and content, and nothing else.
+// Modes, owners and times are not compared: a change to one alone is not a
+// catalog event, and the trees carry each snapshot's own.
+func compareCatalog(state, trees map[string][2]string) error {
 	for p, t := range trees {
 		c, ok := state[p]
 		if !ok {

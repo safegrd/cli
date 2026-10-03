@@ -67,6 +67,21 @@ func pgServerDirs() []string {
 	return out
 }
 
+// Why FindPgServer found no server to use, for errors.Is.
+var (
+	ErrNoPgServer     = errors.New("no PostgreSQL server on this host")
+	ErrPgServerBroken = errors.New("the PostgreSQL server on this host does not run")
+	ErrPgServerTooOld = errors.New("the PostgreSQL server on this host is too old")
+)
+
+type pgServerError struct {
+	kind error
+	msg  string
+}
+
+func (e *pgServerError) Error() string        { return e.msg }
+func (e *pgServerError) Is(target error) bool { return target == e.kind }
+
 // FindPgServer returns the newest PostgreSQL server installed here that is at
 // least minMajor, or an error that says what was found and what is needed. A
 // pg_dump schema loads into its own major or a newer one; an older server may
@@ -105,16 +120,16 @@ func FindPgServer(ctx context.Context, minMajor int) (*PgServer, error) {
 	}
 	if len(found) == 0 {
 		if len(broken) > 0 {
-			return nil, fmt.Errorf("%s does not run (postgres --version failed); install %s, or set SAFEGRD_PG_BINDIR",
-				strings.Join(broken, ", "), need)
+			return nil, &pgServerError{ErrPgServerBroken, fmt.Sprintf("%s does not run (postgres --version failed); install %s, or set SAFEGRD_PG_BINDIR",
+				strings.Join(broken, ", "), need)}
 		}
-		return nil, fmt.Errorf("no PostgreSQL server (initdb and postgres) on this host; install %s, or set SAFEGRD_PG_BINDIR", need)
+		return nil, &pgServerError{ErrNoPgServer, fmt.Sprintf("no PostgreSQL server (initdb and postgres) on this host; install %s, or set SAFEGRD_PG_BINDIR", need)}
 	}
 	sort.Slice(found, func(i, j int) bool { return found[i].Major > found[j].Major })
 	best := found[0]
 	if minMajor > 0 && best.Major < minMajor {
-		return nil, fmt.Errorf("the newest PostgreSQL server here is %s (%s), older than the PostgreSQL %d database "+
-			"this snapshot came from; install %s, or set SAFEGRD_PG_BINDIR", best.Version, best.BinDir, minMajor, need)
+		return nil, &pgServerError{ErrPgServerTooOld, fmt.Sprintf("the newest PostgreSQL server here is %s (%s), older than the PostgreSQL %d database "+
+			"this snapshot came from; install %s, or set SAFEGRD_PG_BINDIR", best.Version, best.BinDir, minMajor, need)}
 	}
 	return best, nil
 }

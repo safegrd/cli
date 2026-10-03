@@ -378,7 +378,7 @@ With neither, it uses the login saved by 'safegrd login'.`,
 					return fmt.Errorf("enrollment completed but key escrow failed: save the key above before running a backup")
 				}
 
-				fmt.Printf("✅ Enrolled node '%s'\n", regResp.NodeID)
+				fmt.Printf("✅ Enrolled node %s as '%s'\n", regResp.NodeID, name)
 				// Only enough of the token to tell it apart: the whole of it
 				// would stay in terminal scrollback, and in the job log when
 				// enrolment runs in CI. The config file below holds it.
@@ -407,9 +407,11 @@ With neither, it uses the login saved by 'safegrd login'.`,
 				}
 				if claim != nil {
 					addClaimSurfaces(cfg, claim.Surfaces)
-					fmt.Printf("\n   Next: run 'safegrd doctor', then 'sudo safegrd daemon install --system'\n")
-					fmt.Printf("   (on macOS: 'safegrd daemon install'). The daemon registers each surface and\n")
-					fmt.Printf("   takes its first backup; the console shows each as it lands.\n")
+					// The same two steps the console's host step shows.
+					fmt.Printf("\n   Next: take the first backups now, and watch them land in the console:\n")
+					fmt.Printf("     safegrd daemon run --once\n")
+					fmt.Printf("   Then keep it running as a service that starts at boot:\n")
+					fmt.Printf("     sudo safegrd daemon install --system\n")
 				}
 			}
 

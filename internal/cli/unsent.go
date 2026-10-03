@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/safegrd/cli/pkg/config"
@@ -69,14 +68,14 @@ func resendUnsent(ctx context.Context, c *config.CLIConfig, st *SurfaceState) in
 			continue
 		}
 		sent++
+		// The last backup's "not recorded" is no longer true once its record
+		// is in.
+		if rec.Meta.SnapshotID == st.LastSnapshotID && st.BackupReason == model.BackupReasonNotRecorded {
+			st.LastError, st.BackupReason = "", ""
+		}
 	}
 	if len(st.Unsent) == 0 {
 		st.Unsent = nil
-		// The last backup's "not recorded" is no longer true once its record
-		// is in.
-		if strings.HasPrefix(st.LastError, "not recorded: ") && strings.Contains(st.LastError, "sent again") {
-			st.LastError = ""
-		}
 	}
 	if sent > 0 {
 		fmt.Printf("📨 Surface %s: sent %d backup record(s) the remote server had not received.\n", st.SurfaceID, sent)

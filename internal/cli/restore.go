@@ -394,7 +394,7 @@ from storage is.`,
 					fmt.Printf("   Tables:         %d\n", pgMeta.TotalTables)
 					fmt.Printf("   Total Rows:     %d\n", pgMeta.TotalRows)
 				}
-				fmt.Println("   Target state is verified and ready for traffic.")
+				fmt.Println("   Check the tables and rows above against what you expect before you point an application at it.")
 			}
 
 			return nil
@@ -480,7 +480,7 @@ func checkRestoreDigest(ctx context.Context, meta *model.SnapshotMetadata, snaps
 		return fmt.Errorf("cryptographic tamper detected: the ciphertext read from the sink (%s) is not the one written at backup time (%s)", decMetrics.EncryptedSha256, rec.EncryptedSha256)
 	case rec == nil:
 		fmt.Fprintf(os.Stderr, "\n[!] Digest checked against the sidecar only: %s.\n"+
-			"    Whoever can write the bucket can replace a snapshot and its sidecar together.\n", why)
+			"    It was not compared with SafeGrd's record from backup time; run this on an enrolled host to compare.\n", why)
 	default:
 		fmt.Printf("   Digest:          matches the remote server's record from backup time\n")
 	}

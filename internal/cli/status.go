@@ -54,6 +54,9 @@ func newStatusCmd() *cobra.Command {
 				} else {
 					fmt.Printf("   %s ❌ Failed to connect (%v)\n", label, err)
 				}
+			} else if len(cfg.Surfaces) > 0 {
+				// Each surface names its own database; `daemon status` shows them.
+				fmt.Printf("   Surfaces:          %d configured (see 'safegrd daemon status')\n", len(cfg.Surfaces))
 			} else {
 				fmt.Printf("   Database:          ⚠️  Not configured (set database_url)\n")
 			}

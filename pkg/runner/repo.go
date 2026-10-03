@@ -133,7 +133,7 @@ func (v *Verifier) RunRepoDrill(ctx context.Context, d RepoDrill, privateKey str
 	pass("DigestIntegrity", expected, root, "The content root of the restored files matches the "+source+" exactly")
 	if rec.record == nil {
 		fmt.Fprintf(os.Stderr, "\n[!] Content root checked against the sidecar only: %s.\n"+
-			"    Whoever can write the bucket can replace a snapshot and its sidecar together.\n", rec.why)
+			"    It was not compared with SafeGrd's record from backup time; run this on an enrolled host to compare.\n", rec.why)
 	} else if meta.Sha256Checksum != rec.record.Sha256Checksum {
 		return fail("RemoteServerRecord", rec.record.Sha256Checksum, meta.Sha256Checksum,
 			fmt.Sprintf("the sidecar's content root (%s) is not the one the remote server recorded at backup time (%s): the sidecar at the sink has been changed",

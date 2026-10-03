@@ -81,31 +81,47 @@ type Index map[format.ID]Location
 func (r *Repo) LoadIndex(ctx context.Context, s format.Snapshot) (Index, error) {
 	idx := Index{}
 	for _, run := range s.Runs {
-		body, err := r.B.Get(ctx, r.key(sink.KindIndex, run))
+		x, err := r.RunIndex(ctx, s, run)
 		if err != nil {
-			return nil, fmt.Errorf("the index of run %s: %w", run, err)
-		}
-		var x format.Index
-		if err := unseal.Object(body, r.IDs, &x); err != nil {
-			return nil, fmt.Errorf("the index of run %s: %w", run, err)
-		}
-		if err := x.Validate(); err != nil {
 			return nil, err
 		}
-		if x.RunID != run || x.EpochID != s.EpochID {
-			return nil, fmt.Errorf("index %s names run %s of epoch %s", run, x.RunID, x.EpochID)
-		}
-		for _, p := range x.Packs {
-			r.mu.Lock()
-			r.sizes[p.PackID] = p.Bytes
-			r.mu.Unlock()
-			for _, b := range p.Blobs {
-				id, _ := format.ParseID(b.ID)
-				idx[id] = Location{Pack: p.PackID, Bytes: p.Bytes, Entry: b}
-			}
-		}
+		r.AddRunIndex(idx, x)
 	}
 	return idx, nil
+}
+
+// RunIndex reads and checks the index of one run the snapshot lists. A
+// caller checking many snapshots of an epoch keeps each run's index and
+// merges them with AddRunIndex, so a run's index is read once.
+func (r *Repo) RunIndex(ctx context.Context, s format.Snapshot, run string) (format.Index, error) {
+	body, err := r.B.Get(ctx, r.key(sink.KindIndex, run))
+	if err != nil {
+		return format.Index{}, fmt.Errorf("the index of run %s: %w", run, err)
+	}
+	var x format.Index
+	if err := unseal.Object(body, r.IDs, &x); err != nil {
+		return format.Index{}, fmt.Errorf("the index of run %s: %w", run, err)
+	}
+	if err := x.Validate(); err != nil {
+		return format.Index{}, err
+	}
+	if x.RunID != run || x.EpochID != s.EpochID {
+		return format.Index{}, fmt.Errorf("index %s names run %s of epoch %s", run, x.RunID, x.EpochID)
+	}
+	return x, nil
+}
+
+// AddRunIndex merges one run's index into idx and records its pack sizes.
+func (r *Repo) AddRunIndex(idx Index, x format.Index) {
+	for _, p := range x.Packs {
+		r.mu.Lock()
+		r.sizes[p.PackID] = p.Bytes
+		r.mu.Unlock()
+		for _, b := range p.Blobs {
+			id, _ := format.ParseID(b.ID)
+			idx[id] = Location{Pack: p.PackID, Bytes: p.Bytes, Entry: b}
+		}
+	}
 }
 
 // opener returns the key of a pack, reading its header once.

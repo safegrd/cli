@@ -40,7 +40,8 @@ func TestResendKeepsOrderAndDropsRefusals(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := &config.CLIConfig{ServerURL: srv.URL, ServerToken: "sg_tok_x"}
-	st := &SurfaceState{SurfaceID: "db", LastError: "not recorded: x; sent again when the remote server answers"}
+	st := &SurfaceState{SurfaceID: "db", LastSnapshotID: "snap-busy", BackupReason: model.BackupReasonNotRecorded,
+		LastError: "x; sent again when the remote server answers"}
 	for _, id := range []string{"snap-refused", "snap-ok", "snap-busy", "snap-ok"} {
 		st.Unsent = append(st.Unsent, UnsentRecord{Meta: model.SnapshotMetadata{SnapshotID: id, NodeID: "n"}})
 	}
@@ -50,7 +51,14 @@ func TestResendKeepsOrderAndDropsRefusals(t *testing.T) {
 	if len(st.Unsent) != 2 || st.Unsent[0].Meta.SnapshotID != "snap-busy" {
 		t.Fatalf("left %+v, want snap-busy then snap-ok", st.Unsent)
 	}
-	if st.LastError == "" {
-		t.Error("the not-recorded error was cleared while records still wait")
+	if st.LastError == "" || st.BackupReason != model.BackupReasonNotRecorded {
+		t.Error("the not-recorded error was cleared while the last backup's record still waits")
+	}
+
+	// Once the last backup's own record is in, it is recorded.
+	answers["snap-busy"] = http.StatusCreated
+	resendUnsent(context.Background(), c, st)
+	if st.LastError != "" || st.BackupReason != "" {
+		t.Errorf("the last backup's record was delivered and it still reads %q (%s)", st.LastError, st.BackupReason)
 	}
 }

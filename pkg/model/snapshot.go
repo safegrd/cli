@@ -137,6 +137,9 @@ type SnapshotMetadata struct {
 	DurationMs         int64              `json:"duration_ms" yaml:"duration_ms"`
 	IsPoisonPillFrozen bool               `json:"is_poison_pill_frozen" yaml:"is_poison_pill_frozen"`
 	ErrorMessage       string             `json:"error_message,omitempty" yaml:"error_message,omitempty"`
+	// FailureReason is why a failed backup failed, as a code; ErrorMessage
+	// is the same in the host's words.
+	FailureReason BackupReason `json:"failure_reason,omitempty" yaml:"failure_reason,omitempty"`
 
 	// Format is how the snapshot is stored: empty for one archive object,
 	// SnapshotFormatRepo for a snapshot in an incremental file repository.

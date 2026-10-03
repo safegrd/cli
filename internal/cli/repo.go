@@ -426,7 +426,7 @@ func checkRepoContentRoot(ctx context.Context, meta *model.SnapshotMetadata, sna
 		return fmt.Errorf("snapshot %s has content root %s, the %s says %s: it is not the snapshot that was backed up; nothing was restored", snapshotID, root, source, expected)
 	case rec == nil:
 		fmt.Fprintf(os.Stderr, "[!] Content root checked against the sidecar only: %s.\n"+
-			"    Whoever can write the bucket can replace a snapshot and its sidecar together.\n", why)
+			"    It was not compared with SafeGrd's record from backup time; run this on an enrolled host to compare.\n", why)
 	default:
 		if meta.Sha256Checksum != rec.Sha256Checksum {
 			return fmt.Errorf("the sidecar of %s records content root %s, the remote server %s: the sidecar was changed; nothing was restored", snapshotID, meta.Sha256Checksum, rec.Sha256Checksum)

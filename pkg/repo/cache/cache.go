@@ -508,7 +508,9 @@ type Delta struct {
 
 // Deltas returns what changed since the last complete snapshot: every path
 // when complete is set (an opening run), otherwise the added, changed and
-// deleted ones, in raw byte order.
+// deleted ones, in raw byte order. A path is changed when its type or its
+// content differs. A new mode, owner or mtime alone is no event: the tree
+// of every snapshot carries its own, and a restore applies the tree's.
 func (c *Cache) Deltas(complete bool) ([]Delta, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

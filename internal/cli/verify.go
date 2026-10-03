@@ -159,10 +159,15 @@ executes a full active restore drill into the target ephemeral database.`,
 			if isDryRun {
 				fmt.Printf("🛡️  SafeGrd In-Memory Dry Restore Verification...\n")
 				fmt.Printf("   Snapshot ID:    %s\n", snapshotID)
-				if cfg.Storage.Type == config.StorageTypeS3 {
-					fmt.Printf("   Storage Source: s3://%s (pulling encrypted ciphertext)\n", cfg.Storage.Bucket)
-				} else {
-					fmt.Printf("   Storage Source: %s (local WORM repository)\n", cfg.Storage.LocalPath)
+				// The storage this run reads, after routing: a hosted or
+				// console-set bucket is not in cfg.Storage.
+				switch storageCfg.Type {
+				case config.StorageTypeS3:
+					fmt.Printf("   Storage Source: s3://%s\n", storageCfg.Bucket)
+				case config.StorageTypeHosted:
+					fmt.Printf("   Storage Source: SafeGrd hosted storage\n")
+				default:
+					fmt.Printf("   Storage Source: %s (a directory on this host)\n", storageCfg.LocalPath)
 				}
 				fmt.Printf("   Key:            %s\n", identityFingerprint(resolvedKey))
 				fmt.Printf("   Engine:         Pure in-memory catalog & COPY inspector (no real target required)\n\n")
@@ -490,9 +495,21 @@ func formatNumber(n int64) string {
 // characters of the identity itself are "AGE-SECRET-KEY-1" for every key, so
 // they name nothing.
 func identityFingerprint(identity string) string {
-	recipient, err := recipientFor(identity)
-	if err != nil {
-		return "unreadable identity"
+	// Restore and verify may hold several identities, one per line: the
+	// host's own and the ones SafeGrd holds for the organization.
+	var prints []string
+	for _, line := range strings.Split(strings.TrimSpace(identity), "\n") {
+		if line = strings.TrimSpace(line); line == "" {
+			continue
+		}
+		recipient, err := recipientFor(line)
+		if err != nil {
+			return "unreadable identity"
+		}
+		prints = append(prints, crypto.Fingerprint(recipient))
 	}
-	return crypto.Fingerprint(recipient)
+	if len(prints) > 1 {
+		return fmt.Sprintf("%d keys (%s)", len(prints), strings.Join(prints, ", "))
+	}
+	return strings.Join(prints, "")
 }

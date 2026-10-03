@@ -106,7 +106,12 @@ and never leaves this host.`,
 				VerifyBucketObjectLock(ctx context.Context) error
 			}); ok {
 				if err := locker.VerifyBucketObjectLock(ctx); err != nil {
-					return fmt.Errorf("immutable storage preflight check failed: %w", err)
+					if strings.Contains(err.Error(), "ObjectLockConfigurationNotFound") {
+						return fmt.Errorf("bucket %s has no Object Lock, so a backup there could be deleted. "+
+							"Use a bucket created with Object Lock, or, for a provider that has none, set "+
+							"storage.worm_mode: NONE in the config to back up without a lock. Nothing was written", storageCfg.Bucket)
+					}
+					return fmt.Errorf("could not check Object Lock on bucket %s: %w. Nothing was written", storageCfg.Bucket, err)
 				}
 			}
 
@@ -190,7 +195,7 @@ and never leaves this host.`,
 				// What the walk left out is said out loud, even when the backup succeeds.
 				warnSkipped(collector.Skipped())
 				if err != nil {
-					retErr := fmt.Errorf("file collection failed: %w", err)
+					retErr := stageErr(model.BackupReasonSource, fmt.Errorf("file collection failed: %w", err))
 					reportBackupFailure(ctx, cfg, snapshotID, model.SurfaceTypeFiles, "", retErr, !jsonOutput)
 					return retErr
 				}
@@ -212,7 +217,7 @@ and never leaves this host.`,
 
 				storageURI, err := storageProvider.UploadSnapshot(ctx, snapshotID, cipherReader, -1, retentionUntil)
 				if err != nil {
-					retErr := fmt.Errorf("upload to immutable storage failed: %w", err)
+					retErr := uploadErr(err, cryptoErrChan, "reading the surface failed")
 					reportBackupFailure(ctx, cfg, snapshotID, model.SurfaceTypeFiles, "", retErr, !jsonOutput)
 					return retErr
 				}
@@ -220,7 +225,7 @@ and never leaves this host.`,
 				var cryptoMetrics *crypto.StreamMetrics
 				select {
 				case err := <-cryptoErrChan:
-					retErr := fmt.Errorf("streaming encryption failed: %w", err)
+					retErr := stageErr(model.BackupReasonSource, fmt.Errorf("streaming encryption failed: %w", err))
 					reportBackupFailure(ctx, cfg, snapshotID, model.SurfaceTypeFiles, "", retErr, !jsonOutput)
 					return retErr
 				case cryptoMetrics = <-cryptoMetricsChan:
@@ -328,7 +333,7 @@ and never leaves this host.`,
 
 				rawStream, meta, err := collector.ScanAndStream(ctx, nil)
 				if err != nil {
-					retErr := fmt.Errorf("email collection failed: %w", err)
+					retErr := stageErr(model.BackupReasonSource, fmt.Errorf("email collection failed: %w", err))
 					reportBackupFailure(ctx, cfg, snapshotID, model.SurfaceTypeEmail, user, retErr, !jsonOutput)
 					return retErr
 				}
@@ -350,7 +355,7 @@ and never leaves this host.`,
 
 				storageURI, err := storageProvider.UploadSnapshot(ctx, snapshotID, cipherReader, -1, retentionUntil)
 				if err != nil {
-					retErr := fmt.Errorf("upload to immutable storage failed: %w", err)
+					retErr := uploadErr(err, cryptoErrChan, "reading the surface failed")
 					reportBackupFailure(ctx, cfg, snapshotID, model.SurfaceTypeEmail, user, retErr, !jsonOutput)
 					return retErr
 				}
@@ -358,7 +363,7 @@ and never leaves this host.`,
 				var cryptoMetrics *crypto.StreamMetrics
 				select {
 				case err := <-cryptoErrChan:
-					retErr := fmt.Errorf("streaming encryption failed: %w", err)
+					retErr := stageErr(model.BackupReasonSource, fmt.Errorf("streaming encryption failed: %w", err))
 					reportBackupFailure(ctx, cfg, snapshotID, model.SurfaceTypeEmail, user, retErr, !jsonOutput)
 					return retErr
 				case cryptoMetrics = <-cryptoMetricsChan:
@@ -470,7 +475,7 @@ and never leaves this host.`,
 
 			storageURI, err := storageProvider.UploadSnapshot(ctx, snapshotID, cipherReader, -1, retentionUntil)
 			if err != nil {
-				retErr := fmt.Errorf("upload to immutable storage failed: %w", err)
+				retErr := uploadErr(err, dumpErrChan, "database dump failed")
 				reportBackupFailure(ctx, cfg, snapshotID, dbSurface, string(dbSurface), retErr, !jsonOutput)
 				return retErr
 			}
@@ -478,7 +483,7 @@ and never leaves this host.`,
 			var dumpMeta *model.SnapshotMetadata
 			select {
 			case err := <-dumpErrChan:
-				retErr := fmt.Errorf("database dump failed: %w", err)
+				retErr := stageErr(model.BackupReasonSource, fmt.Errorf("database dump failed: %w", err))
 				reportBackupFailure(ctx, cfg, snapshotID, dbSurface, string(dbSurface), retErr, !jsonOutput)
 				return retErr
 			case dumpMeta = <-dumpMetaChan:
@@ -487,7 +492,7 @@ and never leaves this host.`,
 			var cryptoMetrics *crypto.StreamMetrics
 			select {
 			case err := <-cryptoErrChan:
-				retErr := fmt.Errorf("streaming encryption failed: %w", err)
+				retErr := stageErr(model.BackupReasonSource, fmt.Errorf("streaming encryption failed: %w", err))
 				reportBackupFailure(ctx, cfg, snapshotID, dbSurface, string(dbSurface), retErr, !jsonOutput)
 				return retErr
 			case cryptoMetrics = <-cryptoMetricsChan:
@@ -708,14 +713,15 @@ func reportBackupFailure(ctx context.Context, cfg *config.CLIConfig, snapshotID 
 	}
 	now := time.Now().UTC()
 	meta := &model.SnapshotMetadata{
-		SnapshotID:   snapshotID,
-		NodeID:       cfg.NodeID,
-		DatabaseName: dbName,
-		SurfaceType:  surfaceType,
-		Status:       model.SnapshotStatusFailed,
-		ErrorMessage: backupErr.Error(),
-		CreatedAt:    now,
-		CompletedAt:  &now,
+		SnapshotID:    snapshotID,
+		NodeID:        cfg.NodeID,
+		DatabaseName:  dbName,
+		SurfaceType:   surfaceType,
+		Status:        model.SnapshotStatusFailed,
+		ErrorMessage:  backupErr.Error(),
+		FailureReason: backupReasonOf(backupErr),
+		CreatedAt:     now,
+		CompletedAt:   &now,
 	}
 	sendMetadataToServer(ctx, cfg.ServerURL, cfg.ServerToken, meta, verbose)
 }

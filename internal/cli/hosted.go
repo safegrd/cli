@@ -167,6 +167,13 @@ func (c *hostedClient) call(ctx context.Context, method, sub string, in, out any
 	}
 	resp, err := c.api.Do(req)
 	if err != nil {
+		// A refused or unresolvable connection is the remote server being
+		// down. A request it accepted and never answered is usually the
+		// hosted bucket behind it: that outage was reported as the server
+		// being unreachable while the server answered everything else.
+		if errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "Client.Timeout") {
+			return fmt.Errorf("hosted storage did not answer in time (the remote server accepted the request; its storage may be unavailable). Nothing was stored; the next run tries again: %w", err)
+		}
 		return fmt.Errorf("hosted storage: the remote server could not be reached: %w", err)
 	}
 	defer resp.Body.Close()
@@ -239,9 +246,10 @@ func (p *hostedProvider) UploadSnapshot(ctx context.Context, snapshotID string, 
 		}
 		p.kept[snapshotID] = kept
 		p.mu.Unlock()
+		// Not a warning: the plan, or a trial's end, sets how long hosted
+		// storage locks a copy, and the host asked within its own tiers.
 		if !retentionUntil.IsZero() && !sameDay(kept, retentionUntil) {
-			fmt.Fprintf(os.Stderr, "⚠️  hosted storage keeps snapshot %s until %s, not %s as this host asked: the plan sets the range\n",
-				snapshotID, kept.UTC().Format("2006-01-02"), retentionUntil.UTC().Format("2006-01-02"))
+			fmt.Printf("   Hosted storage locks it until %s, the longest your plan allows now.\n", kept.UTC().Format("2006-01-02"))
 		}
 	}
 	return uri, nil

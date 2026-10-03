@@ -59,7 +59,7 @@ func newListProjectsCmd() *cobra.Command {
 			defer resp.Body.Close()
 
 			if resp.StatusCode != http.StatusOK {
-				return fmt.Errorf("server returned status %d", resp.StatusCode)
+				return serverStatusError(resp.StatusCode)
 			}
 
 			var projects []*model.Project

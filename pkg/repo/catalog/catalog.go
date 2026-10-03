@@ -33,7 +33,9 @@ type Snapshot struct {
 }
 
 // Version is one content of one path, kept by a run of consecutive
-// snapshots.
+// snapshots. A change of mode, owner or mtime alone is not a version:
+// Mode is the mode when the content was first seen, and restoring a
+// version applies the mode its snapshot recorded.
 type Version struct {
 	N      int    `json:"version"`
 	Type   string `json:"type"`
