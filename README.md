@@ -4,13 +4,27 @@
 [![Go Version](https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat&logo=go)](https://go.dev/)
 [![License: BSL 1.1](https://img.shields.io/badge/License-BSL%201.1-blue.svg)](LICENSE)
 
-> **Agent-Safe, Cryptographically Air-Gapped Backup and Verification CLI**
+`safegrd` backs up PostgreSQL, MySQL, MariaDB, MongoDB and SQLite databases, directory trees
+and IMAP mailboxes. Each backup is compressed with zstd and encrypted with age on the host that
+takes it, written to S3-compatible storage under Object Lock, and restored on a schedule to
+check that every table, row and file came back.
 
-`safegrd` protects modern engineering teams and autonomous AI agents from data corruption and accidental drops. It delivers **PostgreSQL backups that restore as the database** (schema from `pg_dump`, rows over binary `COPY`, one snapshot), **streaming POSIX file tree archives**, **universal IMAP email extraction**, **client-side Age (X25519) encryption**, **Zstandard compression**, **immutable WORM storage**, and **automated Fire Drill restore verifications**.
+It is the CLI and daemon of [SafeGrd](https://safegrd.dev). Documentation is at
+[safegrd.dev/docs](https://safegrd.dev/docs), and every command and flag is in the
+[command reference](https://safegrd.dev/docs/cli).
 
-Fire Drills run here, in your environment, and the remote server receives a signed attestation report, never your data. You choose who holds the private key. By default the remote server keeps it sealed and releases it only to your enrolled hosts, so you can restore even after losing a host. With `enroll --key-custody local` it stays on your machines and only you can decrypt the backups.
-
-**Surfaces.** Supports PostgreSQL, MySQL, MariaDB and MongoDB databases, POSIX file trees, and IMAP email mailboxes under one Age keypair, Object Lock WORM policy, and attestation chain.
+- **Backups go from your host straight to storage.** The remote server receives a record of each
+  backup (when it ran, its size, its digest and the date its lock ends) and the signed result
+  of each restore test. The data never passes through it.
+- **You choose who holds the key.** By default the remote server keeps your key sealed and
+  releases it only to your enrolled hosts, so you can restore even after losing a host. With
+  `enroll --key-custody local`, only you can decrypt these backups.
+- **Restores are tested.** A Fire Drill restores the newest backup into a throwaway database or
+  directory, compares its tables, rows and digests with what was backed up, and signs the
+  result.
+- **An agent cannot remove a backup.** `safegrd guard` takes a locked snapshot before a
+  destructive command runs, and a personal access token cannot delete a backup or shorten its
+  lock.
 
 ---
 
@@ -104,13 +118,13 @@ make build
 
 ## Quickstart
 
-### 1. Initialize Configuration & Encryption Keys
+### 1. Create a config and a key
 
 Skip this if you let the install script connect the machine: it already wrote the
 keypair and `~/.safegrd/config.yaml`, and `init` refuses to overwrite them.
 
 ```bash
-# Generates an Age X25519 keypair and creates ~/.safegrd/config.yaml
+# writes an age X25519 keypair and ~/.safegrd/config.yaml
 safegrd init \
   --database-url "postgres://postgres:password@localhost:5432/myapp_prod" \
   --storage local \
@@ -145,17 +159,17 @@ safegrd daemon restart
 safegrd whoami
 ```
 
-### 3. Create an Encrypted Immutable Backup
+### 3. Back up
 
 ```bash
 # dumps, compresses, encrypts with age on this host, and writes to locked storage
 safegrd backup
 ```
 
-### 4. Run an Automated "Fire Drill" Verification
+### 4. Run a Fire Drill
 
 ```bash
-# Proves backups work by restoring into an ephemeral sandbox and verifying row counts
+# restores into an empty database and checks every table's row count
 safegrd verify \
   --snapshot snap-20260919-01 \
   --sandbox-target "postgres://postgres:password@localhost:5432/ephemeral_test_db"
@@ -237,13 +251,14 @@ what a restore brings back: [safegrd.dev/docs/surfaces/files](https://safegrd.de
 
 ---
 
-## Core Features
+## What it backs up
 
-- **Postgres, restored whole:** the schema comes from `pg_dump` and the rows stream over binary `COPY` from the same snapshot, so arrays, enums, foreign keys, views, triggers and sequence positions all come back. Needs a `pg_dump` at least as new as the server on the host.
-- **Encrypted before it leaves the host:** backups are encrypted with age (X25519) on your machine. You choose who holds the private key: the remote server keeps it sealed and releases it only to your enrolled hosts (the default), or you keep it on your hosts.
-- **Incremental file backups:** each run uploads only the chunks that changed, every object is locked once when it is written, and `safegrd find` lists every kept version of a file for `restore --path --version`.
-- **Immutable WORM Storage:** Supports AWS S3 Object Lock (Governance and Compliance modes) and local filesystem WORM locking.
-- **Fire Drill restores:** restores backups on a schedule, counts what came back, and signs a certificate of each test.
+- **PostgreSQL, restored whole:** the schema comes from `pg_dump` and the rows stream over binary `COPY` from the same snapshot, so arrays, enums, foreign keys, views, triggers and sequence positions all come back. Needs a `pg_dump` at least as new as the server on the host.
+- **MySQL and MariaDB** through `mysqldump --single-transaction`, **MongoDB** through `mongodump --archive`, and **SQLite** through `VACUUM INTO`, which captures transactions still in the WAL.
+- **Directory trees, incrementally:** each run uploads only the chunks that changed, every object is locked once when it is written, and `safegrd find` lists every kept version of a file for `restore --path --version`.
+- **IMAP mailboxes,** every message as RFC 5322 mail, checked by SHA-256 on every drill.
+- **Locked storage:** S3 Object Lock in compliance mode, or governance mode where a lock may need lifting. Storage on the host's own disk, and a bucket with `worm_mode: NONE`, keep backups without a lock.
+- **Fire Drills:** restore backups on a schedule, count what came back, and sign a record of each test.
 
 ---
 
