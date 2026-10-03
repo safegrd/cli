@@ -21,7 +21,7 @@ import (
 // write over what this run saved. The worst that does is a scheduled backup
 // sooner than it needed to be; the surface lock still keeps the two from
 // backing up the same surface at once.
-func backupNamedSurface(ctx context.Context, c *config.CLIConfig, surfaceID string) error {
+func backupNamedSurface(ctx context.Context, c *config.CLIConfig, surfaceID string, newEpoch, rescan bool) error {
 	var surface *config.SurfaceConfig
 	var ids []string
 	for i := range c.Surfaces {
@@ -59,6 +59,10 @@ func backupNamedSurface(ctx context.Context, c *config.CLIConfig, surfaceID stri
 	}
 	configured := *surface
 	applyConsoleSettings(surface, &configured, sState)
+	if (newEpoch || rescan) && !strings.EqualFold(surface.Format, formatRepo) {
+		return fmt.Errorf("--new-epoch and --rescan apply to a surface with format: repo; %s is not one", surface.ID)
+	}
+	sState.newEpoch, sState.rescan = newEpoch, rescan
 
 	fmt.Printf("⏰ Surface %s (%s): backing up now.\n", surface.ID, surface.Type)
 	fetchHeldSurfaceSecret(ctx, c, nodeID, surface)

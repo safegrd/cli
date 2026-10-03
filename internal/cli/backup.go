@@ -72,7 +72,7 @@ and never leaves this host.`,
 						return fmt.Errorf("--surface backs up the surface as the config defines it; leave out --%s", f)
 					}
 				}
-				return backupNamedSurface(ctx, cfg, surfaceID)
+				return backupNamedSurface(ctx, cfg, surfaceID, newEpoch, rescan)
 			}
 
 			// Resolve storage according to the routing precedence rule:
@@ -541,8 +541,8 @@ and never leaves this host.`,
 	cmd.Flags().StringVar(&filesPath, "files", "", "Path to directory tree for file-based backup")
 	cmd.Flags().StringSliceVar(&excludes, "exclude", nil, "Glob patterns to exclude from file backup (e.g. '*.tmp,node_modules/*')")
 	cmd.Flags().StringVar(&fileFmt, "format", "tar", "How --files is stored: tar (one archive per backup) or repo (incremental: each run uploads only what changed)")
-	cmd.Flags().BoolVar(&newEpoch, "new-epoch", false, "With --format repo: start a new epoch now, uploading every file once")
-	cmd.Flags().BoolVar(&rescan, "rescan", false, "With --format repo: read every file, not only those whose size or times changed")
+	cmd.Flags().BoolVar(&newEpoch, "new-epoch", false, "With --format repo, or --surface of a repo surface: start a new epoch now, uploading every file once")
+	cmd.Flags().BoolVar(&rescan, "rescan", false, "With --format repo, or --surface of a repo surface: read every file, not only those whose size or times changed")
 	cmd.Flags().BoolVar(&oneFS, "one-filesystem", false, "With --format repo: stay on the root's filesystem (the default when the root is /)")
 
 	// Flags for Email

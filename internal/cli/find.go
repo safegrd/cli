@@ -211,4 +211,3 @@ func resolveVersion(ctx context.Context, storageCfg config.StorageConfig, key, s
 	}
 	return "", fmt.Errorf("%s has %d kept versions, not %d; run 'safegrd find %s'", want, len(hits[0].Versions), n, want)
 }
-

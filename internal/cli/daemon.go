@@ -45,6 +45,9 @@ type SurfaceState struct {
 	// recorded is still reported as an error, because the console shows no
 	// backup for it.
 	notRecorded string
+	// newEpoch and rescan are `backup --surface --new-epoch/--rescan` for a
+	// repository surface's next run. Memory only, like notRecorded.
+	newEpoch, rescan bool
 	// Unsent holds the records of backups the remote server could not be
 	// reached for, to send once it answers (unsent.go).
 	Unsent []UnsentRecord `json:"unsent,omitempty"`
@@ -901,7 +904,9 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 				NodeID: nodeID, Recipient: pubKey,
 				Retention: policy.Retention{Days: storageCfg.RetentionDays, KeepDaily: tiers.Days, KeepWeekly: tiers.Weeks, KeepMonthly: tiers.Months},
 				Tier:      plan.Tier, Planned: plan.Until, SnapshotID: snapshotID, StateDir: stateDir, Out: os.Stdout,
+				NewEpoch: st.newEpoch, Rescan: st.rescan,
 			})
+			st.newEpoch, st.rescan = false, false
 			if err != nil {
 				return nil, plan, err
 			}

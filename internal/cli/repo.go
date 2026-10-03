@@ -89,6 +89,14 @@ func repoBackend(ctx context.Context, c *config.CLIConfig, storageCfg config.Sto
 	return nil, fmt.Errorf("storage type %q holds no repository", storageCfg.Type)
 }
 
+// epochURI names where an epoch's objects are, as a snapshot report gives it.
+func epochURI(b sink.Backend, e format.Epoch, surfaceID string) string {
+	if u, ok := b.(interface{ EpochURI(format.Epoch) string }); ok {
+		return u.EpochURI(e)
+	}
+	return b.Describe() + "/" + path.Join("repo", surfaceID, e.EpochID)
+}
+
 // repoParams are one repository backup.
 type repoParams struct {
 	SurfaceID  string
@@ -165,6 +173,9 @@ func runRepoBackup(ctx context.Context, p repoParams) (*model.SnapshotMetadata, 
 	if p.StorageCfg.Type == config.StorageTypeLocal || p.StorageCfg.Type == "" {
 		locked = false
 	}
+	if p.StorageCfg.Type == config.StorageTypeHosted {
+		locked = true
+	}
 	var skip []string
 	if p.StorageCfg.Type == config.StorageTypeLocal || p.StorageCfg.Type == "" {
 		lp := p.StorageCfg.LocalPath
@@ -202,7 +213,7 @@ func runRepoBackup(ctx context.Context, p repoParams) (*model.SnapshotMetadata, 
 				RawSizeBytes:       r.Snapshot.Stats.LogicalBytes,
 				EncryptedSizeBytes: r.WrittenBytes,
 				Sha256Checksum:     r.Snapshot.ContentRoot,
-				StorageURI:         b.Describe() + "/" + path.Join("repo", p.SurfaceID, r.Epoch.EpochID),
+				StorageURI:         epochURI(b, r.Epoch, p.SurfaceID),
 				FileStats:          &model.FileStatsSummary{TotalFiles: r.Snapshot.Stats.Files, TotalDirectories: int(r.Snapshot.Stats.Dirs)},
 				DurationMs:         backupMilliseconds(started),
 				Format:             model.SnapshotFormatRepo,

@@ -82,6 +82,7 @@ func resolveHostedStorage(ctx context.Context, cfg *config.CLIConfig, storageCfg
 	// to choose, and the remote server clamps the date to the plan.
 	storageCfg.WORMMode = config.WORMMode(info.WORMMode)
 	storageCfg.Prefix = info.Prefix
+	storageCfg.Bucket = info.Bucket
 	if storageCfg.RetentionDays == 0 {
 		storageCfg.RetentionDays = info.RetentionDays
 	}
