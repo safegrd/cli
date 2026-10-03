@@ -174,7 +174,7 @@ func (c *hostedClient) call(ctx context.Context, method, sub string, in, out any
 		if errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "Client.Timeout") {
 			return fmt.Errorf("hosted storage did not answer in time (the remote server accepted the request; its storage may be unavailable). Nothing was stored; the next run tries again: %w", err)
 		}
-		return fmt.Errorf("hosted storage: the remote server could not be reached: %w", err)
+		return fmt.Errorf("hosted storage: the remote server could not be reached: %w\nHosted storage is reached through the remote server. To restore while it is down, use a copy made earlier with 'safegrd export': safegrd restore --from <export dir>", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {

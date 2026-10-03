@@ -1070,7 +1070,7 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 
 		// The same private-CA trust `backup --email-ca-file` has: without it a
 		// self-hosted mailbox could be backed up by hand and never by the daemon.
-		tlsCfg, err := emailTLSConfig(host, os.Getenv("SAFEGRD_EMAIL_CA_FILE"))
+		tlsCfg, err := emailTLSConfig(host, emailCAFileFor(s))
 		if err != nil {
 			return nil, plan, stageErr(model.BackupReasonConfig, fmt.Errorf("surface %s: %w", s.ID, err))
 		}
@@ -1743,4 +1743,13 @@ func newDaemonRestartCmd() *cobra.Command {
 // configured server URL and token.
 func hostIsEnrolled(c *config.CLIConfig) bool {
 	return c.ServerURL != "" && c.ServerToken != ""
+}
+
+// emailCAFileFor is the CA bundle a daemon email surface trusts: its own
+// ca_file, else $SAFEGRD_EMAIL_CA_FILE for every surface on the host.
+func emailCAFileFor(s *config.SurfaceConfig) string {
+	if s.CAFile != "" {
+		return s.CAFile
+	}
+	return os.Getenv("SAFEGRD_EMAIL_CA_FILE")
 }

@@ -230,10 +230,14 @@ func runValidationChecks(path string, c *config.CLIConfig) []CheckResult {
 			switch strings.ToLower(s.Type) {
 			case "postgres", "mysql", "mongodb", "sqlite":
 				if s.DatabaseURL == "" && s.Credential == nil && c.DatabaseURL == "" {
+					msg := "missing credential (from: safegrd, env, command or file) or database_url"
+					if strings.EqualFold(s.Type, "sqlite") {
+						msg = "missing database_url: give the file as database_url: sqlite:///path/to/app.db"
+					}
 					results = append(results, CheckResult{
 						Name:    fmt.Sprintf("Surface %s (%s)", s.ID, strings.ToLower(s.Type)),
 						Status:  "FAIL",
-						Message: "missing credential (from: safegrd, env, command or file) or database_url",
+						Message: msg,
 					})
 				} else {
 					results = append(results, CheckResult{

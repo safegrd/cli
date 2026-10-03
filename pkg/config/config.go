@@ -175,6 +175,9 @@ type SurfaceConfig struct {
 	Port     int      `yaml:"port,omitempty" json:"port,omitempty"`
 	Username string   `yaml:"username,omitempty" json:"username,omitempty"`
 	Folders  []string `yaml:"folders,omitempty" json:"folders,omitempty"`
+	// CAFile is a PEM bundle trusted for this mailbox's TLS certificate, on
+	// top of the system roots: a mail server behind a private CA.
+	CAFile string `yaml:"ca_file,omitempty" json:"ca_file,omitempty"`
 
 	// Credential is where this surface's credential comes from: a
 	// database's whole connection URL, or a mailbox's password. One block,

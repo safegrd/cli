@@ -32,6 +32,9 @@
 #                        go and the surfaces to protect, as chosen in the browser
 #   SAFEGRD_NODE_NAME    name this host is shown under (default: its hostname)
 #   SAFEGRD_KEY_CUSTODY  'safegrd' or 'local'; answers the key question in advance
+#   SAFEGRD_TOKEN        a token from Tokens in the console (sg_pat_...). With it the host
+#                        enrolls with no terminal and no browser login: CI, cloud-init,
+#                        ssh host 'curl ... | sh'. Without a claim it needs SAFEGRD_KEY_CUSTODY
 #   SAFEGRD_SERVER_URL   remote server to log in and enroll with (default: https://safegrd.dev)
 #   SAFEGRD_DOWNLOAD_BASE  where release archives are fetched from, for testing a
 #                        build before it is published (curl only; file:// works)
@@ -353,9 +356,32 @@ if "$SAFEGRD_BIN" enroll --help 2>/dev/null | grep -q "safegrd login"; then
   ENROLL_USES_LOGIN=1
 fi
 
+# The enroll command the console's choices make, for printing. The claim
+# carries the project, the storage and the key answer, so it needs no more.
+claim_enroll_line() {
+  line="safegrd enroll --claim ${SAFEGRD_CLAIM}"
+  if [ -n "${SAFEGRD_NODE_NAME:-}" ]; then line="${line} --node-name ${SAFEGRD_NODE_NAME}"; fi
+  printf "%s" "$line"
+}
+
 print_next_steps() {
   printf "\n"
   printf "${BOLD} Next steps${RESET}\n"
+  # A claim made in the console names this host's surfaces; generic steps
+  # would drop every one of them.
+  if [ -n "${SAFEGRD_CLAIM:-}" ] && [ -n "$ENROLL_USES_LOGIN" ]; then
+    printf "   1. Log in. Prints a URL and a code; open it in a browser on any device:\n"
+    printf "      ${CYAN}safegrd login${RESET}\n\n"
+    printf "   2. Enroll this host with the surfaces named in the console:\n"
+    printf "      ${CYAN}%s${RESET}\n\n" "$(claim_enroll_line)"
+    printf "   3. Take the first backups, then keep the daemon running:\n"
+    printf "      ${CYAN}safegrd daemon run --once${RESET}\n"
+    printf "      ${CYAN}safegrd daemon install${RESET}\n\n"
+    printf "   With no terminal, set SAFEGRD_TOKEN to a token from Tokens in the console and run the\n"
+    printf "   one-liner again: it enrolls with the claim and nothing to answer.\n"
+    printf " Docs: ${CYAN}https://safegrd.dev/docs/install${RESET}\n\n"
+    return
+  fi
   if [ -n "$ENROLL_USES_LOGIN" ]; then
     printf "   1. Log in. Prints a URL and a code; open it in a browser on any device:\n"
     printf "      ${CYAN}safegrd login${RESET}\n\n"
@@ -396,20 +422,105 @@ setup_failed() {
   exit 1
 }
 
+# A key already on this host (from `safegrd init`, or a key you put there) is
+# yours and is never sent, so there is nothing to ask; enroll says so.
+KEY_ON_HOST=""
+if [ -f "${HOME}/.safegrd/keys/daemon.key" ] || grep -q '^ *public_key: *age1' "${HOME}/.safegrd/config.yaml" 2>/dev/null; then
+  KEY_ON_HOST=1
+fi
+CUSTODY="${SAFEGRD_KEY_CUSTODY:-}"
+CLAIM=""
+
+# Only a release whose enroll takes --claim can use one. An older release is
+# told so, rather than enrolled without the setup the console prepared.
+use_claim() {
+  if [ -n "${SAFEGRD_CLAIM:-}" ]; then
+    if "$SAFEGRD_BIN" enroll --help 2>/dev/null | grep -q -- "--claim"; then
+      CLAIM="$SAFEGRD_CLAIM"
+    else
+      setup_failed "This release of safegrd cannot use the console's claim code yet. Install the latest release, or enroll with: safegrd enroll"
+    fi
+  fi
+}
+
+enroll_with() {
+  # $@: enroll followed by the credential flags, if any
+  if [ -n "$CUSTODY" ] && [ -z "$KEY_ON_HOST" ]; then
+    set -- "$@" --key-custody "$CUSTODY"
+  fi
+  if [ -n "${SAFEGRD_PROJECT:-}" ]; then
+    set -- "$@" --project "$SAFEGRD_PROJECT"
+  fi
+  if [ -n "${SAFEGRD_NODE_NAME:-}" ]; then
+    set -- "$@" --node-name "$SAFEGRD_NODE_NAME"
+  fi
+  if [ -n "$CLAIM" ]; then
+    set -- "$@" --claim "$CLAIM"
+  fi
+  # Only a release whose enroll has --storage is given it. An older one would
+  # stop at "unknown flag"; it also never reports its storage, so the remote
+  # server does not refuse it for lacking one.
+  if [ -n "${SAFEGRD_STORAGE:-}" ] && "$SAFEGRD_BIN" enroll --help 2>/dev/null | grep -q -- "--storage"; then
+    set -- "$@" --storage "$SAFEGRD_STORAGE"
+  fi
+  "$SAFEGRD_BIN" "$@"
+}
+
+print_enrolled() {
+  printf "\n"
+  # A claimed host already has its surfaces in its config, so the daemon is what
+  # runs them; a one-off backup command would ignore every choice made in the
+  # console.
+  if [ -n "$CLAIM" ]; then
+    log_success "This host is enrolled with the surfaces named in the console. Take the first backups with:"
+    printf "      ${CYAN}safegrd daemon run --once${RESET}\n"
+    printf "   then keep it running: ${CYAN}safegrd daemon install${RESET} (see https://safegrd.dev/docs/daemon)\n\n"
+  else
+    log_success "This host is enrolled. Take the first backup with:"
+    printf "      ${CYAN}safegrd backup --database-url \"\$DATABASE_URL\"${RESET}\n"
+    printf "   or run it unattended: ${CYAN}https://safegrd.dev/docs/daemon${RESET}\n\n"
+  fi
+}
+
+already_enrolled() {
+  [ -f "${HOME}/.safegrd/config.yaml" ] && grep -q '^server_token: *sg_tok_' "${HOME}/.safegrd/config.yaml" 2>/dev/null
+}
+
 printf "\n"
 log_success "SafeGrd CLI ${TAG} is installed."
 
-if [ -n "${SAFEGRD_NO_SETUP:-}" ] || [ -z "$ENROLL_USES_LOGIN" ] || ! have_tty; then
-  print_next_steps
-  exit 0
-fi
-
 # A host that is already enrolled keeps its key and its node: re-running the
 # installer is how people upgrade, and it must not re-register anything.
-if [ -f "${HOME}/.safegrd/config.yaml" ] && grep -q '^server_token: *sg_tok_' "${HOME}/.safegrd/config.yaml" 2>/dev/null; then
+if [ -z "${SAFEGRD_NO_SETUP:-}" ] && already_enrolled; then
   printf "   This host is already enrolled (%s).\n" "${HOME}/.safegrd/config.yaml"
   printf "   To add the surfaces named for it in the console: ${CYAN}safegrd claim${RESET}\n"
   printf "   Check it with: ${CYAN}safegrd status${RESET}\n\n"
+  exit 0
+fi
+
+# With a token there is nothing to ask and no browser login, so this runs
+# where there is no terminal: CI, cloud-init, ssh host 'curl ... | sh'.
+if [ -z "${SAFEGRD_NO_SETUP:-}" ] && [ -n "${SAFEGRD_TOKEN:-}" ]; then
+  case "$SAFEGRD_TOKEN" in
+    sg_pat_*) ;;
+    *) setup_failed "SAFEGRD_TOKEN must be a token from Tokens in the console (sg_pat_...)." ;;
+  esac
+  use_claim
+  # A claim carries the key answer given in the console. Without one the
+  # answer has to be given, because it is decided once, when the key is made.
+  if [ -z "$CLAIM" ] && [ -z "$KEY_ON_HOST" ] && [ -z "$CUSTODY" ]; then
+    setup_failed "Set SAFEGRD_KEY_CUSTODY to 'safegrd' (SafeGrd keeps the key sealed and releases it only to your enrolled hosts) or 'local' (only you can decrypt these backups), or use a claim code from the console."
+  fi
+  printf "\n"
+  if ! enroll_with enroll --token "$SAFEGRD_TOKEN" </dev/null; then
+    setup_failed "Enrollment failed, so this host is not registered."
+  fi
+  print_enrolled
+  exit 0
+fi
+
+if [ -n "${SAFEGRD_NO_SETUP:-}" ] || [ -z "$ENROLL_USES_LOGIN" ] || ! have_tty; then
+  print_next_steps
   exit 0
 fi
 
@@ -427,25 +538,8 @@ if ! "$SAFEGRD_BIN" login </dev/tty; then
   setup_failed "Login did not complete, so this host is not enrolled."
 fi
 
-# A key already on this host (from `safegrd init`, or a key you put there) is
-# yours and is never sent, so there is nothing to ask; enroll says so.
-KEY_ON_HOST=""
-if [ -f "${HOME}/.safegrd/keys/daemon.key" ] || grep -q '^ *public_key: *age1' "${HOME}/.safegrd/config.yaml" 2>/dev/null; then
-  KEY_ON_HOST=1
-fi
+use_claim
 
-# Only a release whose enroll takes --claim can use one. An older release is
-# told so, rather than enrolled without the setup the console prepared.
-CLAIM=""
-if [ -n "${SAFEGRD_CLAIM:-}" ]; then
-  if "$SAFEGRD_BIN" enroll --help 2>/dev/null | grep -q -- "--claim"; then
-    CLAIM="$SAFEGRD_CLAIM"
-  else
-    setup_failed "This release of safegrd cannot use the console's claim code yet. Install the latest release, or enroll with: safegrd enroll"
-  fi
-fi
-
-CUSTODY="${SAFEGRD_KEY_CUSTODY:-}"
 # A claim carries the answer given in the console, and enroll reads it from
 # the claim, so there is nothing to ask here.
 if [ -z "$CUSTODY" ] && [ -z "$KEY_ON_HOST" ] && [ -z "$CLAIM" ]; then
@@ -464,41 +558,8 @@ if [ -z "$CUSTODY" ] && [ -z "$KEY_ON_HOST" ] && [ -z "$CLAIM" ]; then
   done
 fi
 
-set -- enroll
-if [ -n "$CUSTODY" ] && [ -z "$KEY_ON_HOST" ]; then
-  set -- "$@" --key-custody "$CUSTODY"
-fi
-if [ -n "${SAFEGRD_PROJECT:-}" ]; then
-  set -- "$@" --project "$SAFEGRD_PROJECT"
-fi
-if [ -n "${SAFEGRD_NODE_NAME:-}" ]; then
-  set -- "$@" --node-name "$SAFEGRD_NODE_NAME"
-fi
-# Only a release whose enroll has --storage is given it. An older one would
-# stop at "unknown flag"; it also never reports its storage, so the remote
-# server does not refuse it for lacking one.
-if [ -n "$CLAIM" ]; then
-  set -- "$@" --claim "$CLAIM"
-fi
-if [ -n "${SAFEGRD_STORAGE:-}" ] && "$SAFEGRD_BIN" enroll --help 2>/dev/null | grep -q -- "--storage"; then
-  set -- "$@" --storage "$SAFEGRD_STORAGE"
-fi
-
 printf "\n"
-if ! "$SAFEGRD_BIN" "$@" </dev/tty; then
+if ! enroll_with enroll </dev/tty; then
   setup_failed "Enrollment failed, so this host is not registered."
 fi
-
-printf "\n"
-# A claimed host already has its surfaces in its config, so the daemon is what
-# runs them; a one-off backup command would ignore every choice made in the
-# console.
-if [ -n "$CLAIM" ]; then
-  log_success "This host is enrolled with the surfaces named in the console. Take the first backups with:"
-  printf "      ${CYAN}safegrd daemon run --once${RESET}\n"
-  printf "   then keep it running: ${CYAN}safegrd daemon install${RESET} (see https://safegrd.dev/docs/daemon)\n\n"
-else
-  log_success "This host is enrolled. Take the first backup with:"
-  printf "      ${CYAN}safegrd backup --database-url \"\$DATABASE_URL\"${RESET}\n"
-  printf "   or run it unattended: ${CYAN}https://safegrd.dev/docs/daemon${RESET}\n\n"
-fi
+print_enrolled
