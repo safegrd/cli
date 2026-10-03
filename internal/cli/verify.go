@@ -119,7 +119,7 @@ when this host is enrolled.`,
 			if _, err := resolveHostedStorage(ctx, cfg, &storageCfg, false); err != nil {
 				return err
 			}
-			resolveRuntimeCredentials(ctx, cfg, &storageCfg, false)
+			resolveSinkCredentials(ctx, cfg, &storageCfg)
 			if cfg.NodeID != "" && storageCfg.NodeID == "" {
 				storageCfg.NodeID = cfg.NodeID
 			}

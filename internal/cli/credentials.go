@@ -143,6 +143,19 @@ type credentialSource struct {
 //
 // cfg is mutated in memory only. Nothing on this path calls SaveCLIConfig.
 func resolveRuntimeCredentials(ctx context.Context, cfg *config.CLIConfig, storageCfg *config.StorageConfig, verbose bool) credentialSource {
+	return resolveCredentials(ctx, cfg, storageCfg, verbose, true)
+}
+
+// resolveSinkCredentials fills in only the storage sink's secret. A command
+// that reads backups (verify, restore) needs neither the database URL nor
+// the recipient key, so it does not ask for them: a token that may read
+// backups but not the surface's credentials, such as the one a drill run on
+// the remote server gets, is not refused for something it never needed.
+func resolveSinkCredentials(ctx context.Context, cfg *config.CLIConfig, storageCfg *config.StorageConfig) credentialSource {
+	return resolveCredentials(ctx, cfg, storageCfg, false, false)
+}
+
+func resolveCredentials(ctx context.Context, cfg *config.CLIConfig, storageCfg *config.StorageConfig, verbose, surface bool) credentialSource {
 	src := credentialSource{DatabaseURL: "local config", SinkSecret: "local config", PublicKey: "local config"}
 	if cfg.DatabaseURL == "" {
 		src.DatabaseURL = "not configured"
@@ -158,7 +171,10 @@ func resolveRuntimeCredentials(ctx context.Context, cfg *config.CLIConfig, stora
 		src.PublicKey = "not configured"
 	}
 
-	needsSomething := cfg.DatabaseURL == "" || (storageCfg.SecretAccessKey == "" && !hosted) || cfg.Encryption.PublicKey == ""
+	needsSomething := storageCfg.SecretAccessKey == "" && !hosted
+	if surface {
+		needsSomething = needsSomething || cfg.DatabaseURL == "" || cfg.Encryption.PublicKey == ""
+	}
 	if !needsSomething || cfg.ServerURL == "" || cfg.NodeID == "" || cfg.ServerToken == "" {
 		return src
 	}
@@ -171,7 +187,7 @@ func resolveRuntimeCredentials(ctx context.Context, cfg *config.CLIConfig, stora
 		return src
 	}
 
-	if cfg.DatabaseURL == "" && creds.DatabaseURL != "" {
+	if surface && cfg.DatabaseURL == "" && creds.DatabaseURL != "" {
 		cfg.DatabaseURL = creds.DatabaseURL
 		src.DatabaseURL = "remote server"
 	}
@@ -180,7 +196,7 @@ func resolveRuntimeCredentials(ctx context.Context, cfg *config.CLIConfig, stora
 		storageCfg.SecretAccessKey = creds.Sink.SecretAccessKey
 		src.SinkSecret = "remote server"
 	}
-	if cfg.Encryption.PublicKey == "" && creds.PublicKey != "" {
+	if surface && cfg.Encryption.PublicKey == "" && creds.PublicKey != "" {
 		cfg.Encryption.PublicKey = creds.PublicKey
 		src.PublicKey = "remote server (managed custody)"
 	}
