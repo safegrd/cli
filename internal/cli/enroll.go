@@ -319,11 +319,14 @@ file:/path, which keeps the token out of 'ps' and shell history.`,
 				}
 
 				regReq := model.NodeRegisterRequest{
-					NodeID:        cfg.NodeID,
-					OrgID:         orgID,
-					ProjectID:     projectID,
-					Name:          name,
-					DatabaseName:  "postgres",
+					NodeID:    cfg.NodeID,
+					OrgID:     orgID,
+					ProjectID: projectID,
+					Name:      name,
+					// No database is known at enrolment: the first backup
+					// names it. Every host was registered as "postgres", and
+					// a SQLite host read "SQLITE postgres" in the console.
+					DatabaseName:  "",
 					StorageBucket: cfg.Storage.Bucket,
 					RetentionDays: cfg.Storage.RetentionDays,
 					// Where this host's own config sends backups, so the
