@@ -470,7 +470,10 @@ func LoadCLIConfig(path string) (*CLIConfig, error) {
 
 	// Backwards compatibility:
 	// A v1 config with top-level database_url and no surfaces: loads as a single implicit postgres surface.
-	if len(cfg.Surfaces) == 0 && (cfg.DatabaseURL != "" || cfg.NodeID != "") {
+	// A node_id alone is not one: a host enrolled to restore, or not yet given a surface, has
+	// nothing to back up, and doctor failed it twice for the credential of a database it does
+	// not have.
+	if len(cfg.Surfaces) == 0 && cfg.DatabaseURL != "" {
 		sID := cfg.NodeID
 		if sID == "" {
 			sID = "default-postgres"
