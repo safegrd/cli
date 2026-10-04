@@ -247,7 +247,8 @@ func (l *LocalStorageProvider) DeleteSnapshot(ctx context.Context, snapshotID st
 	}
 	snapPath := l.snapshotPath(snapshotID)
 	metaPath := l.metadataPath(snapshotID)
-	paths := []string{snapPath, metaPath}
+	base := strings.TrimSuffix(metaPath, ".meta.json")
+	paths := []string{snapPath, metaPath, base + RecoveryDocSuffix(false), base + RecoveryDocSuffix(true)}
 	if l.nodeID != "" {
 		paths = append(paths, filepath.Join(l.baseDir, snapshotID+".safegrd"), filepath.Join(l.baseDir, snapshotID+".meta.json"))
 	}

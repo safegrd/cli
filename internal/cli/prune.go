@@ -70,6 +70,7 @@ type pruneSnapshot struct {
 	id, node string
 	data     []storage.VersionInfo // the .safegrd key's versions and markers
 	meta     []storage.VersionInfo // the .meta.json key's
+	docs     []storage.VersionInfo // the .RECOVERY.md (or .RECOVERY.md.age) key's
 	dataKey  string
 	metaKey  string
 	newest   time.Time
@@ -107,12 +108,16 @@ func runPruneWithGrace(ctx context.Context, b pruneBucket, keepFor func(node str
 		}
 		name := path.Base(rel)
 		var id string
-		isMeta := false
+		isMeta, isDoc := false, false
 		switch {
 		case strings.HasSuffix(name, ".safegrd"):
 			id = strings.TrimSuffix(name, ".safegrd")
 		case strings.HasSuffix(name, ".meta.json"):
 			id, isMeta = strings.TrimSuffix(name, ".meta.json"), true
+		case strings.HasSuffix(name, storage.RecoveryDocSuffix(true)):
+			id, isDoc = strings.TrimSuffix(name, storage.RecoveryDocSuffix(true)), true
+		case strings.HasSuffix(name, storage.RecoveryDocSuffix(false)):
+			id, isDoc = strings.TrimSuffix(name, storage.RecoveryDocSuffix(false)), true
 		default:
 			continue
 		}
@@ -126,9 +131,12 @@ func runPruneWithGrace(ctx context.Context, b pruneBucket, keepFor func(node str
 			s = &pruneSnapshot{id: id, node: node}
 			snaps[k] = s
 		}
-		if isMeta {
+		switch {
+		case isDoc:
+			s.docs = append(s.docs, v)
+		case isMeta:
 			s.meta, s.metaKey = append(s.meta, v), v.Key
-		} else {
+		default:
 			s.data, s.dataKey = append(s.data, v), v.Key
 			if !v.IsMarker && v.LastModified.After(s.newest) {
 				s.newest = v.LastModified
@@ -267,6 +275,9 @@ func pruneOne(ctx context.Context, b pruneBucket, s *pruneSnapshot, now time.Tim
 	if !purge(s.data) {
 		return
 	}
+	// The recovery document goes before the manifest: under worm_mode NONE
+	// the manifest is the only record of the date, and expired() reads it.
+	purge(s.docs)
 	purge(s.meta)
 }
 

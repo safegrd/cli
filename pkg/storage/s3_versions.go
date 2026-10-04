@@ -207,7 +207,8 @@ func (s *S3StorageProvider) UndeleteSnapshot(ctx context.Context, snapshotID str
 	if err := ValidateSnapshotID(snapshotID); err != nil {
 		return 0, err
 	}
-	keys := []string{s.snapshotKey(snapshotID), s.metadataKey(snapshotID)}
+	base := strings.TrimSuffix(s.metadataKey(snapshotID), ".meta.json")
+	keys := []string{s.snapshotKey(snapshotID), s.metadataKey(snapshotID), base + RecoveryDocSuffix(false), base + RecoveryDocSuffix(true)}
 	if s.nodeID != "" {
 		keys = append(keys,
 			path.Join(s.prefix, snapshotID+".safegrd"),

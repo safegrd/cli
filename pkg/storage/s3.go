@@ -455,7 +455,9 @@ func (s *S3StorageProvider) DeleteSnapshot(ctx context.Context, snapshotID strin
 		}
 	}
 
-	keys := []string{s.snapshotKey(snapshotID), s.metadataKey(snapshotID)}
+	// The archive, the manifest and the recovery document beside them.
+	base := strings.TrimSuffix(s.metadataKey(snapshotID), ".meta.json")
+	keys := []string{s.snapshotKey(snapshotID), s.metadataKey(snapshotID), base + RecoveryDocSuffix(false), base + RecoveryDocSuffix(true)}
 	if s.nodeID != "" {
 		keys = append(keys,
 			path.Join(s.prefix, snapshotID+".safegrd"),
