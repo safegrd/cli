@@ -1,12 +1,14 @@
 package cli
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -308,6 +310,14 @@ file:/path, which keeps the token out of 'ps' and shell history.`,
 					fmt.Printf("Organization: %s\n", orgID)
 				}
 
+				// Nothing named a project: ask, or say which one and how to
+				// pick another. Hosts landed in Production unannounced, so an
+				// agency's client host joined another client's project (M78).
+				projectName := ""
+				if projectID == "" && claim == nil && !strings.HasPrefix(apiKey, "sg_tok_") {
+					projectID, projectName = chooseEnrollProject(serverURL, apiKey, orgID)
+				}
+
 				regReq := model.NodeRegisterRequest{
 					NodeID:        cfg.NodeID,
 					OrgID:         orgID,
@@ -419,7 +429,11 @@ file:/path, which keeps the token out of 'ps' and shell history.`,
 					fmt.Printf("                Keep a copy of %s somewhere safe: it is the key that opens them.\n", cfg.Encryption.KeyPath)
 				}
 				if cfg.ProjectID != "" {
-					fmt.Printf("   Project ID:  %s\n", cfg.ProjectID)
+					if projectName != "" {
+						fmt.Printf("   Project:     %s (%s)\n", projectName, cfg.ProjectID)
+					} else {
+						fmt.Printf("   Project ID:  %s\n", cfg.ProjectID)
+					}
 				}
 				if claim != nil {
 					addClaimSurfaces(cfg, claim.Surfaces)
@@ -593,4 +607,88 @@ func maskToken(tok string) string {
 		return prefix + "…"
 	}
 	return prefix + "…" + tok[len(tok)-4:]
+}
+
+// chooseEnrollProject picks the project a new host joins when nothing named
+// one. One project: that one, said nothing about. More: asked on the
+// terminal, defaulting to the organization's default project; with no
+// terminal (CI, cloud-init), the default, named, with the flag to choose
+// another. A list that cannot be read leaves the choice to the server.
+func chooseEnrollProject(serverURL, token, orgID string) (id, name string) {
+	req, err := http.NewRequest("GET", fmt.Sprintf("%s/api/v1/orgs/%s/projects", strings.TrimRight(serverURL, "/"), orgID), nil)
+	if err != nil {
+		return "", ""
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+	if err != nil {
+		return "", ""
+	}
+	defer resp.Body.Close()
+	var all []*model.Project
+	if resp.StatusCode != http.StatusOK || json.NewDecoder(resp.Body).Decode(&all) != nil {
+		return "", ""
+	}
+	var projects []*model.Project
+	def := -1
+	for _, p := range all {
+		if p.ArchivedAt != nil {
+			continue
+		}
+		if def < 0 && (strings.EqualFold(p.Slug, "production") || strings.EqualFold(p.Name, "Production")) {
+			def = len(projects)
+		}
+		projects = append(projects, p)
+	}
+	if len(projects) == 0 {
+		return "", ""
+	}
+	if def < 0 {
+		def = 0
+	}
+	if len(projects) == 1 {
+		return projects[0].ID, projects[0].Name
+	}
+	// Asked only when a person is watching: stdout a terminal as well, so a
+	// script or a test that captures the output is never left waiting.
+	var tty *os.File
+	if fi, statErr := os.Stdout.Stat(); statErr == nil && fi.Mode()&os.ModeCharDevice != 0 {
+		tty, _ = os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	}
+	if tty == nil {
+		var slugs []string
+		for _, p := range projects {
+			slugs = append(slugs, p.Slug)
+		}
+		fmt.Printf("Project: %s, the organization's default. To choose another, re-run with --project: %s.\n",
+			projects[def].Name, strings.Join(slugs, ", "))
+		return projects[def].ID, projects[def].Name
+	}
+	defer tty.Close()
+	fmt.Fprintln(tty, "Which project is this host for?")
+	for i, p := range projects {
+		fmt.Fprintf(tty, "  %d. %s (%s)\n", i+1, p.Name, p.Slug)
+	}
+	in := bufio.NewReader(tty)
+	for attempt := 0; attempt < 3; attempt++ {
+		fmt.Fprintf(tty, "Project [%d]: ", def+1)
+		line, err := in.ReadString('\n')
+		line = strings.TrimSpace(line)
+		if line == "" {
+			if err != nil && attempt == 0 {
+				break
+			}
+			return projects[def].ID, projects[def].Name
+		}
+		if n, convErr := strconv.Atoi(line); convErr == nil && n >= 1 && n <= len(projects) {
+			return projects[n-1].ID, projects[n-1].Name
+		}
+		for _, p := range projects {
+			if strings.EqualFold(line, p.Slug) || strings.EqualFold(line, p.Name) {
+				return p.ID, p.Name
+			}
+		}
+		fmt.Fprintf(tty, "Type a number from 1 to %d, or press Enter for %s.\n", len(projects), projects[def].Name)
+	}
+	return projects[def].ID, projects[def].Name
 }
