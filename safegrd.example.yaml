@@ -112,6 +112,13 @@ encryption:
 #     # ...or, instead of a credential block, inline a URL with no secret in it,
 #     # for a passwordless local socket:
 #     # database_url: "postgres://postgres@localhost:5432/myapp?sslmode=disable"
+#     # Each run uploads only the chunks of each table that changed.
+#     # format: "tar" keeps one archive per backup instead.
+#     # format: "tar"
+#     # Skip reading tables nothing wrote since the last run. This puts a
+#     # trigger on each table and a safegrd schema in the database, which
+#     # DROP SCHEMA safegrd CASCADE removes.
+#     # change_log: true
 #     # Commands run around each of the daemon's backups of this surface.
 #     # pre_backup must succeed or the backup is skipped; post_backup always
 #     # runs, with SAFEGRD_BACKUP_STATUS=success|failed.
