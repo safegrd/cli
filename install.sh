@@ -485,9 +485,10 @@ print_enrolled() {
   # runs them; a one-off backup command would ignore every choice made in the
   # console.
   if [ -n "$CLAIM" ]; then
-    log_success "This host is enrolled with the surfaces named in the console. Take the first backups with:"
-    printf "      ${CYAN}safegrd daemon run --once${RESET}\n"
-    printf "   then keep it running: ${CYAN}safegrd daemon install${RESET} (see https://safegrd.dev/docs/daemon)\n\n"
+    # enroll --claim has just printed the two next steps; saying them again
+    # here printed them twice, one under the other.
+    log_success "This host is enrolled with the surfaces named in the console."
+    printf "\n"
   else
     log_success "This host is enrolled. Take the first backup with:"
     printf "      ${CYAN}safegrd backup --database-url \"\$DATABASE_URL\"${RESET}\n"

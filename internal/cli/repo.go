@@ -283,9 +283,12 @@ func printRepoKept(out io.Writer, label string, res *write.Result, locked bool) 
 	default:
 		fmt.Fprintf(out, "%s Snapshot %s complete. Immutable until %s.\n", label, snap.SnapshotID, snap.RetainUntil.UTC().Format("2006-01-02"))
 	}
+	// A capped lock is said once, as the reason, not as a second date: "Kept
+	// until 2026-10-19, not 2027-01-04" named a date nobody chose on a
+	// trial's first backup (ADR-0041 ends a trial's hosted locks with the
+	// trial, which is what capped it).
 	if res.Capped {
-		fmt.Fprintf(out, "%s Kept until %s, not %s: that is as long as this epoch's objects are locked.\n", label,
-			snap.RetainUntil.UTC().Format("2006-01-02"), res.Planned.UTC().Format("2006-01-02"))
+		fmt.Fprintf(out, "%s The lock ends with this repository's month of objects, or with a trial, whichever comes first.\n", label)
 	}
 }
 

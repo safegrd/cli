@@ -388,7 +388,14 @@ func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, d pendingDrill
 	case rs != nil:
 		// A repository snapshot is proven by restoring every file and
 		// recomputing its content root from what landed on disk.
+		// A database run is decrypted and checked table by table in
+		// memory, not loaded anywhere: the record says in memory, and so
+		// does this line (it said "full restore" right after a warning
+		// that the drill would run in memory).
 		how = "full restore"
+		if dbRun {
+			how = "in-memory restore"
+		}
 		fmt.Printf("Surface %s: Fire Drill due: restoring snapshot %s and recomputing its content root.\n", s.ID, snapshotID)
 		report, err = verifier.RunRepoDrill(ctx, runner.RepoDrill{Backend: rs.Backend, Epoch: rs.Epoch, Meta: rs.Meta,
 			Scratch: drillScratchIn(d.stateDir)}, key)

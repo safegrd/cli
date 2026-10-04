@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/safegrd/cli/pkg/repo/cache"
 	"github.com/safegrd/cli/pkg/repo/check"
 	"github.com/safegrd/cli/pkg/repo/format"
 	"github.com/safegrd/cli/pkg/repo/sink"
@@ -160,22 +161,23 @@ func TestAnInterruptedRunResumesAtEveryPoint(t *testing.T) {
 			// with the trees, one that misses what changed since would not.
 			m.apply(t, 10)
 			want := oracle(t, h.src)
+			adoptable := unindexedPacks(t, h)
 			res := h.backup(opts)
 			if res.Resumed {
 				resumed++
 			}
-			if n > 0 && n < total-4 && opening && !res.Resumed && f.puts != nil {
-				// Some packs were uploaded before the kill; the rerun must
-				// have adopted them.
-				var packs int
-				for k := range f.puts {
-					if strings.Contains(k, "/packs/") {
-						packs++
-					}
-				}
-				if packs > 1 {
-					t.Fatalf("%s (seed %d): %d packs uploaded before the kill, none adopted", name, s, packs)
-				}
+			// Packs the dead run uploaded and confirmed, but no index names
+			// yet, are what a rerun must adopt rather than upload again.
+			// Packs an index already names are not: the rerun dedups against
+			// the index. Counting every pack put before the kill, with a guess
+			// that indexes are written only in a run's last four calls,
+			// failed for trees whose index was flushed earlier (CI, seed
+			// 1791107398478961523), though nothing was uploaded twice.
+			if adoptable > 0 && !res.Resumed {
+				t.Fatalf("%s (seed %d): %d uploaded packs no index named were left behind, none adopted", name, s, adoptable)
+			}
+			if adoptable > 0 && res.AdoptedPacks != adoptable {
+				t.Fatalf("%s (seed %d): %d packs to adopt, the rerun adopted %d", name, s, adoptable, res.AdoptedPacks)
 			}
 			got, _, _ := h.restore(res.Epoch.EpochID, res.Snapshot.SnapshotID, nil)
 			if d := diffOracle(want, got); d != "" {
@@ -214,4 +216,23 @@ func TestAnInterruptedRunResumesAtEveryPoint(t *testing.T) {
 	if resumed == 0 {
 		t.Fatalf("seed %d: no rerun adopted an uploaded pack", s)
 	}
+}
+
+// unindexedPacks counts the packs the local cache holds as uploaded whose
+// blobs no index names yet: what a rerun's Resume adopts.
+func unindexedPacks(t *testing.T, h *harness) int {
+	t.Helper()
+	c, _, err := cache.Current(cache.Dir(h.state, "files-test"), "files-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c == nil {
+		return 0
+	}
+	defer c.Close()
+	pending, err := c.Unindexed()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(pending)
 }

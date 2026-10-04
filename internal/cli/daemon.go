@@ -973,12 +973,10 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 	// and a trial's locks end with the trial; the upload says what it kept.
 	// Promising a date here and warning about a shorter one a line later was
 	// the first thing a new customer read.
-	if plan.Tier != "base" && storageCfg.WORMMode != config.WORMModeNone {
-		if storageCfg.Type == config.StorageTypeHosted {
-			fmt.Printf("   Surface %s: kept as the %s copy\n", s.ID, plan.Tier)
-		} else {
-			fmt.Printf("   Surface %s: kept as the %s copy, locked until %s\n", s.ID, plan.Tier, retentionUntil.UTC().Format("2006-01-02"))
-		}
+	// On hosted storage the upload's own line says the tier and the date the
+	// remote server locked it to; a line here as well said it twice.
+	if plan.Tier != "base" && storageCfg.WORMMode != config.WORMModeNone && storageCfg.Type != config.StorageTypeHosted {
+		fmt.Printf("   Surface %s: kept as the %s copy, locked until %s\n", s.ID, plan.Tier, retentionUntil.UTC().Format("2006-01-02"))
 	}
 
 	switch strings.ToLower(s.Type) {

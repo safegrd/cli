@@ -14,7 +14,7 @@ DIST_TARGETS ?= linux/amd64 linux/arm64 darwin/amd64 darwin/arm64
 DIST_DIR     ?= dist
 CLI_BIN := $(BIN_DIR)/safegrd
 
-.PHONY: help all build dist test vet fmt tidy clean ci check-fmt check-tidy release-tag tag
+.PHONY: help all hooks build dist test vet fmt tidy clean ci check-fmt check-tidy release-tag tag
 
 .DEFAULT_GOAL := help
 
@@ -66,6 +66,9 @@ dist: ## Cross-compile release archives and checksums into $(DIST_DIR)/
 # `ci` depends on `build` because `go vet` and `go test` can succeed even if
 # the main command package is missing or misconfigured. Compiling ensures
 # cmd/safegrd builds successfully.
+hooks: ## Install the pre-push hook (gofmt on the pushed commits)
+	git config core.hooksPath .githooks
+
 check-fmt: ## Fail if any file needs gofmt
 	@out="$$(gofmt -l .)"; \
 	if [ -n "$$out" ]; then echo "These files need gofmt:"; echo "$$out"; exit 1; fi
