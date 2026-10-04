@@ -621,9 +621,8 @@ func restoreRepoSQLite(ctx context.Context, rs *repoSnapshot, privateKey, target
 	got, err := dump.NewSQLiteRestorer(targetURL).Restore(ctx, pr)
 	_ = pr.CloseWithError(fmt.Errorf("the restore stopped"))
 	if aerr := <-archived; aerr != nil && err == nil {
-		// The archive is read whole before the restorer renames the file
-		// into place, so a chunk that fails its hash stops it first; this
-		// is a failure after the rename, and the file is taken back.
+		// The restorer reads the archive to its end before it renames the
+		// file into place, so only closing the archive can fail after that.
 		_ = dump.SQLiteResetDatabase(target)
 		err = aerr
 	}

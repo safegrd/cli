@@ -453,7 +453,8 @@ func printFileRestoreLimits(res *dump.FileExtractionResult) {
 // schemaSourceLabel says how a Postgres snapshot's schema was captured.
 func schemaSourceLabel(source string) string {
 	switch {
-	case strings.HasPrefix(source, "pg_dump "), strings.HasPrefix(source, "mysqldump"), strings.HasPrefix(source, "mariadb-dump"), strings.HasPrefix(source, "mongodump"):
+	case strings.HasPrefix(source, "pg_dump "), strings.HasPrefix(source, "mysqldump"), strings.HasPrefix(source, "mariadb-dump"), strings.HasPrefix(source, "mongodump"),
+		strings.HasPrefix(source, "sqlite "):
 		return source
 	case source == dump.SchemaSourceNative:
 		return "re-derived without pg_dump (no foreign keys, views, triggers or enum types)"
