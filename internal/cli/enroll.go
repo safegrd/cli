@@ -385,7 +385,7 @@ file:/path, which keeps the token out of 'ps' and shell history.`,
 				// hosted storage, so this host does too.
 				if regResp.StorageKind == string(config.StorageTypeHosted) && regReq.LocalStorage == "none" {
 					cfg.Storage = config.StorageConfig{Type: config.StorageTypeHosted, WORMMode: config.WORMModeCompliance}
-					fmt.Printf("Storage: SafeGrd's hosted storage, as the project's other hosts use.\n")
+					fmt.Printf("Storage: SafeGrd's hosted storage, as the project is set up.\n")
 				}
 				if regResp.ProjectID != "" {
 					cfg.ProjectID = regResp.ProjectID

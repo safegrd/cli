@@ -201,6 +201,9 @@ func runRepoBackup(ctx context.Context, p repoParams) (*model.SnapshotMetadata, 
 				fmt.Fprintf(out, "%s Resuming epoch %s: %d %s (%s) already uploaded are reused.\n", label, r.Epoch.EpochID,
 					r.AdoptedPacks, pluralWord(int64(r.AdoptedPacks), "pack", "packs"), formatBytes(r.AdoptedBytes))
 			}
+			if !r.Opened && !r.Resumed {
+				fmt.Fprintf(out, "%s Incremental, in epoch %s: only what changed since the last run is uploaded.\n", label, r.Epoch.EpochID)
+			}
 		},
 		Sidecar: func(r *write.Result) ([]byte, error) {
 			now := time.Now().UTC()

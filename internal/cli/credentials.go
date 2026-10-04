@@ -215,8 +215,17 @@ func resolveCredentials(ctx context.Context, cfg *config.CLIConfig, storageCfg *
 	}
 
 	if verbose {
-		fmt.Printf("   Credentials:     database=%s sink=%s recipient=%s\n",
-			src.DatabaseURL, src.SinkSecret, src.PublicKey)
+		// Only what SafeGrd supplied is news: "database=not configured"
+		// printed before every --database-url backup read like a fault.
+		var from []string
+		for _, f := range []struct{ name, src string }{{"database URL", src.DatabaseURL}, {"bucket key", src.SinkSecret}, {"public key", src.PublicKey}} {
+			if strings.HasPrefix(f.src, "remote server") {
+				from = append(from, f.name)
+			}
+		}
+		if len(from) > 0 {
+			fmt.Printf("   From SafeGrd:    %s\n", strings.Join(from, ", "))
+		}
 		if creds.Notice != "" {
 			fmt.Printf("   Notice:          %s\n", creds.Notice)
 		}

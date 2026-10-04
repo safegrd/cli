@@ -455,6 +455,10 @@ a file with --file:
 				return enc.Encode(res)
 			}
 
+			if nodeID == "" {
+				// A file names its node in every record; --node is optional with --file.
+				nodeID = reports[0].NodeID
+			}
 			fmt.Println("Attestation History Verified")
 			fmt.Printf("   Node ID:         %s\n", nodeID)
 			fmt.Printf("   Records:         %d, each linked to the one before it from genesis\n", len(reports))

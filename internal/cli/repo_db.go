@@ -211,6 +211,10 @@ func runRepoDatabaseBackup(ctx context.Context, p repoDBParams) (*model.Snapshot
 				fmt.Fprintf(out, "%s Resuming epoch %s: %d %s (%s) already uploaded are reused.\n", label, r.Epoch.EpochID,
 					r.AdoptedPacks, pluralWord(int64(r.AdoptedPacks), "pack", "packs"), formatBytes(r.AdoptedBytes))
 			}
+			if !r.Opened && !r.Resumed {
+				// Said so: only a first run said anything about the epoch.
+				fmt.Fprintf(out, "%s Incremental, in epoch %s: only what changed since the last run is uploaded.\n", label, r.Epoch.EpochID)
+			}
 		},
 		State: func(r *write.Result) ([]byte, error) {
 			if !p.ChangeLog || plan == nil || dumpMeta == nil {

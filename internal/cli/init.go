@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/safegrd/cli/pkg/config"
@@ -22,6 +23,7 @@ func newInitCmd() *cobra.Command {
 		s3Endpoint    string
 		localPath     string
 		retentionDays int
+		wormMode      string
 		nodeName      string
 		initForce     bool
 	)
@@ -116,7 +118,7 @@ you if you have not already).`,
 					Endpoint:      s3Endpoint,
 					Prefix:        s3Prefix,
 					RetentionDays: retentionDays,
-					WORMMode:      config.WORMModeCompliance,
+					WORMMode:      config.WORMMode(wormMode),
 					LocalPath:     localPath,
 				},
 				Encryption: config.EncryptionConfig{
@@ -140,15 +142,26 @@ you if you have not already).`,
 				cfg.Storage.LocalPath = filepath.Join(configDir, "storage")
 			}
 
+			if cfg.Storage.Type == config.StorageTypeS3 {
+				if _, err := cfg.Storage.ResolveWORMMode(); err != nil {
+					return fmt.Errorf("--worm-mode: %w. Nothing was written", err)
+				}
+			}
+
 			// Verify S3 Object Lock if S3 storage is configured
 			if cfg.Storage.Type == config.StorageTypeS3 && cfg.Storage.Bucket != "" {
 				s3Prov, err := storage.NewS3Storage(cmd.Context(), cfg.Storage)
 				if err == nil {
 					err = s3Prov.VerifyBucketObjectLock(cmd.Context())
 				}
-				if err == nil {
-					fmt.Printf("Object Lock: compliance mode is on for bucket %s\n", cfg.Storage.Bucket)
-				} else {
+				switch {
+				case cfg.Storage.WORMMode == config.WORMModeNone:
+					// The check passes without asking under NONE; "compliance
+					// mode is on" here would claim a lock nothing applies.
+					fmt.Printf("Object Lock: none (worm_mode: NONE). Backups in bucket %s can be deleted.\n", cfg.Storage.Bucket)
+				case err == nil:
+					fmt.Printf("Object Lock: %s mode is on for bucket %s\n", strings.ToLower(string(cfg.Storage.WORMMode)), cfg.Storage.Bucket)
+				default:
 					fmt.Fprintf(os.Stderr, "Warning: could not confirm Object Lock on bucket %s: %v\n   %s.\n",
 						cfg.Storage.Bucket, err, objectLockAdvice(err))
 				}
@@ -185,6 +198,7 @@ you if you have not already).`,
 	cmd.Flags().StringVar(&s3Endpoint, "s3-endpoint", "", "S3 endpoint, for MinIO, R2 or another S3-compatible store")
 	cmd.Flags().StringVar(&localPath, "local-path", "", "Directory for --storage local (default ~/.safegrd/storage)")
 	cmd.Flags().IntVar(&retentionDays, "retention-days", 14, "Days each backup is locked (Object Lock retention)")
+	cmd.Flags().StringVar(&wormMode, "worm-mode", "COMPLIANCE", "Object Lock mode for --storage s3: COMPLIANCE, GOVERNANCE, or NONE for a bucket with no Object Lock (DigitalOcean Spaces)")
 	cmd.Flags().StringVar(&nodeName, "node-name", "", "Name this host is shown under (default: the hostname)")
 	cmd.Flags().BoolVar(&initForce, "force", false,
 		"Overwrite an existing config. This discards the settings in it and generates a NEW "+

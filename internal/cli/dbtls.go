@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 )
 
 // databaseTLSWarning says when a database URL would carry its password to a
@@ -97,9 +98,16 @@ func allLoopback(hosts []string) bool {
 	return true
 }
 
-// sayDatabaseTLS prints the warning for one surface to stderr.
+// saidTLS remembers what was said: doctor resolves a surface's URL once per
+// check, and printed the same warning three times before its table.
+var saidTLS sync.Map
+
+// sayDatabaseTLS prints the warning for one surface to stderr, once a run.
 func sayDatabaseTLS(who, raw string) {
 	if w := databaseTLSWarning(raw); w != "" {
-		fmt.Fprintf(os.Stderr, "Warning: %s: %s.\n", who, w)
+		line := fmt.Sprintf("Warning: %s: %s.\n", who, w)
+		if _, said := saidTLS.LoadOrStore(line, true); !said {
+			fmt.Fprint(os.Stderr, line)
+		}
 	}
 }
