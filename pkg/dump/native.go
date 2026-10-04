@@ -19,7 +19,10 @@ import (
 
 // A Postgres snapshot is a tar archive, written and read strictly in order:
 //
-//	pre-data.sql      pg_dump --section=pre-data: types, tables, functions, views
+//	roles.sql         pg_dumpall --roles-only, cut to the roles the schema names
+//	                  (roles.go); absent when the schema names none
+//	pre-data.sql      pg_dump --section=pre-data: types, tables, functions, views,
+//	                  with their owners and privileges
 //	                  (schema.sql instead, when no usable pg_dump was on the host)
 //	data/<s>/<t>.copy each table's rows as binary COPY, in chunks (copy_stream.go)
 //	post-data.sql     pg_dump --section=post-data: indexes, constraints, triggers
@@ -57,6 +60,10 @@ type NativeDumper struct {
 	// row-level security filters for this role. An error is warned about
 	// and every table is read.
 	Carry func(ctx context.Context, tx pgx.Tx, meta *model.SnapshotMetadata, filtered map[string]int64, serverVersionNum int) (map[string]int64, error)
+	// RolesWithoutPasswords leaves role passwords out of roles.sql. By
+	// default they ride along, sealed with everything else, so a restored
+	// role logs in as it did.
+	RolesWithoutPasswords bool
 }
 
 // NewNativeDumper creates a dumper for databaseURL.
@@ -217,6 +224,21 @@ func (d *NativeDumper) Dump(ctx context.Context, databaseName string, dst io.Wri
 		if postData, err = pgDump.Section(ctx, d.databaseURL, snapshot, "post-data"); err != nil {
 			return nil, err
 		}
+		// The roles the schema names, before the schema, so a restore meets
+		// them first. A backup that cannot read them still runs, and says
+		// what its restore will need.
+		if meta.RolesNamed = namedRoles(preData, postData); len(meta.RolesNamed) > 0 {
+			rolesSQL, source, warn := d.rolesEntry(ctx, pgDump, meta.RolesNamed)
+			if warn != "" {
+				d.Warn(warn)
+			}
+			if rolesSQL != nil {
+				if err := writeTarEntry(tw, entryRoles, rolesSQL); err != nil {
+					return nil, err
+				}
+				meta.RolesSource = source
+			}
+		}
 		if err := writeTarEntry(tw, entryPreData, preData); err != nil {
 			return nil, err
 		}
@@ -294,6 +316,30 @@ func (d *NativeDumper) Dump(ctx context.Context, databaseName string, dst io.Wri
 		return nil, fmt.Errorf("failed to close the archive: %w", err)
 	}
 	return meta, nil
+}
+
+// rolesEntry is roles.sql for the roles named, how it was taken, and a
+// warning when something was not: no pg_dumpall, a role the dump lacks, or
+// passwords the backup role may not read.
+func (d *NativeDumper) rolesEntry(ctx context.Context, pgDump *PgDump, named []string) (sql []byte, source, warn string) {
+	all, passwords, err := pgDump.Roles(ctx, d.databaseURL, !d.RolesWithoutPasswords)
+	if err != nil {
+		return nil, "", fmt.Sprintf("The roles this schema names (%s) were not backed up: %v.\n"+
+			"   A restore into a cluster that lacks them fails until they are created there first.", strings.Join(named, ", "), err)
+	}
+	sql, missing := parseRolesSQL(all).only(named)
+	source = "pg_dumpall " + pgDump.Version
+	if !passwords {
+		source += ", no passwords"
+		if !d.RolesWithoutPasswords {
+			warn = "The backup role may not read role passwords (pg_authid), so the roles this schema names are backed up without them.\n" +
+				"   A restore creates them without a password; set one after the restore, or back up as a superuser."
+		}
+	}
+	if len(missing) > 0 {
+		warn = strings.TrimSpace(warn + fmt.Sprintf("\nThe schema names roles the cluster does not list: %s. A restore has to create them first.", strings.Join(missing, ", ")))
+	}
+	return sql, source, warn
 }
 
 // rowSecurityTables returns the live-row estimate of each table row-level
@@ -407,6 +453,21 @@ type NativeRestorer struct {
 	// empty, and its schemas are not the customer's to recreate.
 	Schemas         map[string]bool
 	DataOnlySchemas map[string]bool
+	// NoOwner restores without ownership, privileges and default
+	// privileges, as pg_restore --no-owner --no-acl would: every object
+	// belongs to the restoring role. The roles roles.sql carries are still
+	// created, because a policy names its roles and cannot be restored
+	// without them.
+	NoOwner bool
+	// CreatedRoles are the roles the restore created on the target, in
+	// order, because the schema names them and the target lacked them.
+	CreatedRoles []string
+	// SkippedOwnership are the ownership and privilege statements a
+	// restoring role that is not a superuser could not run: an OWNER TO a
+	// role it is not a member of, a privilege on an object it does not own.
+	// Each is skipped under a savepoint and the objects belong to the
+	// restoring role; Warn says so once.
+	SkippedOwnership []string
 	// Warn is told what the restore could not bring back. Stderr by default.
 	Warn func(string)
 	// BeforeCommit, if set, runs after everything is loaded and before the
@@ -468,6 +529,10 @@ func (r *NativeRestorer) Restore(ctx context.Context, src io.Reader) (*model.Sna
 	var manifest *model.SnapshotMetadata
 	loaded := map[string]int64{}
 	var sawSchema, sawSequences, legacySchema bool
+	var super bool
+	if err := conn.QueryRow(ctx, "SELECT rolsuper FROM pg_roles WHERE rolname = current_user").Scan(&super); err != nil {
+		return nil, fmt.Errorf("could not read the restoring role: %w", err)
+	}
 
 	streams := &tableStreams{
 		consume: func(schema, table string, rd io.Reader) error {
@@ -497,12 +562,29 @@ func (r *NativeRestorer) Restore(ctx context.Context, src io.Reader) (*model.Sna
 					return fmt.Errorf("the archive's manifest is unreadable: %w", err)
 				}
 				manifest = &m
+			case entryRoles:
+				data, err := io.ReadAll(rd)
+				if err != nil {
+					return err
+				}
+				return r.createRoles(ctx, conn, parseRolesSQL(data), super)
 			case entryPreData, entrySchema, entryPostData, entrySequences:
 				data, err := io.ReadAll(rd)
 				if err != nil {
 					return err
 				}
-				sqlText := dropUnknownSettings(string(data), known)
+				sqlText := stripPublicSchemaOwner(dropUnknownSettings(string(data), known))
+				var ownership []string
+				switch {
+				case r.NoOwner:
+					sqlText = stripOwnership(sqlText)
+				case !super && hdr.Name != entrySequences:
+					// A role that is not a superuser may own what it
+					// creates and grant on what it owns, and no more. What
+					// it cannot do is run afterwards, one statement at a
+					// time, so one refusal does not end the restore.
+					sqlText, ownership = splitOwnership(sqlText)
+				}
 				if filtered {
 					if hdr.Name == entrySequences {
 						sqlText = filterSequenceSQL(sqlText, wantSQL)
@@ -515,6 +597,24 @@ func (r *NativeRestorer) Restore(ctx context.Context, src io.Reader) (*model.Sna
 						return fmt.Errorf("%w. The chosen schemas' objects have to be absent from the target: drop them first, or restore their rows only with --data-only-schema", err)
 					}
 					return err
+				}
+				for _, stmt := range ownership {
+					if filtered && !ownershipStatementWanted(stmt, wantSQL) {
+						continue
+					}
+					if err := exec("saving", "SAVEPOINT safegrd_ownership"); err != nil {
+						return err
+					}
+					if _, err := pgConn.Exec(ctx, stmt).ReadAll(); err != nil {
+						if err := exec("rolling back", "ROLLBACK TO SAVEPOINT safegrd_ownership"); err != nil {
+							return err
+						}
+						r.SkippedOwnership = append(r.SkippedOwnership, strings.TrimSuffix(stmt, ";"))
+						continue
+					}
+					if err := exec("releasing", "RELEASE SAVEPOINT safegrd_ownership"); err != nil {
+						return err
+					}
 				}
 				switch hdr.Name {
 				case entrySchema:
@@ -564,11 +664,73 @@ func (r *NativeRestorer) Restore(ctx context.Context, src io.Reader) (*model.Sna
 		r.Warn("This snapshot's schema was captured without pg_dump. The rows are restored in full, but foreign keys,\n" +
 			"   views, triggers, functions and enum types are not, and a column type the old extractor did not know may differ.")
 	}
+	if n := len(r.SkippedOwnership); n > 0 {
+		shown := r.SkippedOwnership
+		if len(shown) > 5 {
+			shown = shown[:5]
+		}
+		r.Warn(fmt.Sprintf("%d ownership or privilege statements were skipped: the restoring role is not a superuser and may not run them.\n"+
+			"   Those objects belong to the restoring role. Restore as a superuser to keep every owner and grant.\n     %s", n, strings.Join(shown, "\n     ")))
+	}
 	if !sawSequences {
 		r.Warn("This snapshot predates recorded sequence positions: every sequence starts over, so the next insert\n" +
 			"   may reuse an existing id. Set each one past its column's maximum before the application writes.")
 	}
 	return manifest, nil
+}
+
+// createRoles creates, inside the restore's transaction, every role roles.sql
+// carries that the target lacks, and records each. On a connection that is
+// not a superuser the new role is granted to the restoring role, so the
+// OWNER TO statements that follow, and the sandbox's cleanup, may act as it.
+func (r *NativeRestorer) createRoles(ctx context.Context, conn *pgx.Conn, d *roleDump, super bool) error {
+	have := map[string]bool{}
+	rows, err := conn.Query(ctx, "SELECT rolname FROM pg_roles")
+	if err != nil {
+		return fmt.Errorf("could not list the target's roles: %w", err)
+	}
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			rows.Close()
+			return err
+		}
+		have[n] = true
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	pgConn := conn.PgConn()
+	created := map[string]bool{}
+	for _, name := range d.names() {
+		if have[name] {
+			continue
+		}
+		for _, stmt := range d.createStatements(name) {
+			if _, err := pgConn.Exec(ctx, stmt).ReadAll(); err != nil {
+				return fmt.Errorf("creating role %s, which the snapshot's schema names and the target lacks: %w. "+
+					"Restore as a superuser or a role with CREATEROLE, or create the role on the target first", name, err)
+			}
+		}
+		if !super {
+			if _, err := pgConn.Exec(ctx, "GRANT "+quoteRole(name)+" TO CURRENT_USER").ReadAll(); err != nil {
+				return fmt.Errorf("granting the new role %s to the restoring role: %w", name, err)
+			}
+		}
+		created[name] = true
+		r.CreatedRoles = append(r.CreatedRoles, name)
+	}
+	// Memberships among the carried roles, for the roles created here. A
+	// role the target already had keeps the memberships it has.
+	for _, m := range d.members {
+		if created[m[1]] && (have[m[0]] || created[m[0]]) {
+			if _, err := pgConn.Exec(ctx, "GRANT "+quoteRole(m[0])+" TO "+quoteRole(m[1])).ReadAll(); err != nil {
+				return fmt.Errorf("granting %s to %s as the snapshot had it: %w", m[0], m[1], err)
+			}
+		}
+	}
+	return nil
 }
 
 var sessionSetRe = regexp.MustCompile(`(?m)^SET ([a-z_]+) = [^;\n]*;\n`)

@@ -41,6 +41,7 @@ func newBackupCmd() *cobra.Command {
 		// serverCache: see repoDBParams.ServerCache.
 		serverCache bool
 		changeLog   bool
+		noRolePw    bool
 		rescan      bool
 		oneFS       bool
 
@@ -482,7 +483,7 @@ and never leaves this host.`,
 					StorageCfg: storageCfg, NodeID: cfg.NodeID, Recipient: cfg.Encryption.PublicKey,
 					Retention: policy.Retention{Days: storageCfg.RetentionDays}, Tier: format.TierBase, Planned: retentionUntil,
 					NewEpoch: newEpoch, SnapshotID: snapshotID, StateDir: resolveStateDir("", cfg), Out: out,
-					ServerCache: serverCache, ChangeLog: changeLog,
+					ServerCache: serverCache, ChangeLog: changeLog, RolesWithoutPasswords: noRolePw,
 				})
 				if err != nil {
 					retErr := fmt.Errorf("database backup failed: %w", err)
@@ -516,6 +517,9 @@ and never leaves this host.`,
 			cipherReader, cipherWriter := io.Pipe()
 
 			dumper := dump.NewDumper(engine, cfg.DatabaseURL)
+			if nd, ok := dumper.(*dump.NativeDumper); ok {
+				nd.RolesWithoutPasswords = noRolePw
+			}
 
 			dumpMetaChan := make(chan *model.SnapshotMetadata, 1)
 			dumpErrChan := make(chan error, 1)
@@ -626,6 +630,7 @@ and never leaves this host.`,
 	cmd.Flags().StringVar(&fileFmt, "format", formatRepo, "How the backup is stored: repo (incremental: each run uploads only what changed) or tar (one archive per backup). Repo is the default for --files and a PostgreSQL or SQLite database; MySQL and MongoDB are one archive")
 	cmd.Flags().BoolVar(&newEpoch, "new-epoch", false, "With --format repo, or --surface of a repo surface: start a new epoch now, uploading everything once")
 	cmd.Flags().BoolVar(&rescan, "rescan", false, "With --format repo, or --surface of a repo surface: read every file, not only those whose size or times changed")
+	cmd.Flags().BoolVar(&noRolePw, "roles-without-passwords", false, "PostgreSQL: leave role passwords out of the backup. By default the roles the schema names travel with their password hashes, sealed like everything else")
 	cmd.Flags().BoolVar(&changeLog, "change-log", false, "With a PostgreSQL repo backup: skip reading tables nothing wrote since the last run. Installs a trigger on each table and a safegrd schema in the database (DROP SCHEMA safegrd CASCADE removes it)")
 	cmd.Flags().BoolVar(&serverCache, "server-cache", false, "Keep the repository cache on the remote server between runs, for a run on a machine that does not outlive it")
 	_ = cmd.Flags().MarkHidden("server-cache")

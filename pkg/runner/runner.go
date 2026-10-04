@@ -28,6 +28,9 @@ type Verifier struct {
 	storage     storage.StorageProvider
 	serverURL   string
 	serverToken string
+	// createdRoles are the roles the last sandbox restore created, for the
+	// sandbox's cleanup to drop with everything else the drill made.
+	createdRoles []string
 }
 
 // NewVerifier creates a Fire Drill restore verifier.
@@ -112,7 +115,11 @@ func (v *Verifier) RunFireDrill(ctx context.Context, snapshotID, privateKey, san
 
 	// 4. Restore into ephemeral sandbox database
 	restorer := dump.NewRestorer(dump.EngineTypeNative, sandboxTargetURL)
+	v.createdRoles = nil
 	_, restoreErr := restorer.Restore(ctx, plainReader)
+	if native, ok := restorer.(*dump.NativeRestorer); ok {
+		v.createdRoles = native.CreatedRoles
+	}
 	// A restore that stops early leaves the rest of the stream unread, and
 	// the decrypting goroutine blocked on it forever. Read it out, so the
 	// digest is still checked and the restore's own error is the one reported.

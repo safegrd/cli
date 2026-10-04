@@ -100,51 +100,52 @@ func FindPgDump(ctx context.Context, serverMajor int) (*PgDump, error) {
 }
 
 // Section runs pg_dump for one section of the schema under an exported
-// snapshot, as plain SQL a single Exec can run.
+// snapshot, as plain SQL a single Exec can run. Ownership and privileges are
+// dumped: a restore recreates them, and the roles they name travel in
+// roles.sql (roles.go).
 func (p *PgDump) Section(ctx context.Context, databaseURL, snapshot, section string) ([]byte, error) {
-	dsn, password := splitPassword(databaseURL)
-	args := []string{"--dbname=" + dsn, "--section=" + section, "--no-owner", "--no-acl"}
+	args := []string{"--section=" + section}
 	if snapshot != "" {
 		args = append(args, "--snapshot="+snapshot)
 	}
-	cmd := exec.CommandContext(ctx, p.Path, args...)
-	// The password travels in a 0600 file named by PGPASSFILE: never in argv,
-	// which every user on the host reads from the process table, and not in
-	// the environment, which the same user's other processes and a core dump
-	// read from /proc/<pid>/environ. MySQL and MongoDB take theirs the same
-	// way (defaultsFile, mongoPasswordFile).
-	cmd.Env = os.Environ()
+	out, stderr, err := p.run(ctx, p.Path, databaseURL, args)
+	if err != nil {
+		return nil, fmt.Errorf("pg_dump %s (--section=%s) failed: %v: %s", p.Version, section, err, stderr)
+	}
+	return stripPsqlMetaCommands(out), nil
+}
+
+// pgEnv is the environment pg_dump and pg_dumpall run with, and what removes
+// the password file afterwards. The password travels in a 0600 file named by
+// PGPASSFILE: never in argv, which every user on the host reads from the
+// process table, and not in the environment, which the same user's other
+// processes and a core dump read from /proc/<pid>/environ. MySQL and MongoDB
+// take theirs the same way (defaultsFile, mongoPasswordFile).
+func pgEnv(password string) (env []string, cleanup func(), err error) {
+	env = os.Environ()
+	cleanup = func() {}
 	if password != "" {
-		passfile, cleanup, err := pgPassFile(password)
+		passfile, remove, err := pgPassFile(password)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		defer cleanup()
+		cleanup = remove
 		// libpq reads PGPASSWORD before PGPASSFILE, so one inherited from
 		// the operator's shell would win over the URL's password.
-		env := cmd.Env[:0]
-		for _, kv := range cmd.Env {
+		kept := env[:0]
+		for _, kv := range env {
 			if !strings.HasPrefix(kv, "PGPASSWORD=") {
-				env = append(env, kv)
+				kept = append(kept, kv)
 			}
 		}
-		cmd.Env = append(env, "PGPASSFILE="+passfile)
+		env = append(kept, "PGPASSFILE="+passfile)
 	}
 	// The same bound as the connection above (connectPostgres); a
 	// connect_timeout in the URL still wins over the environment.
 	if os.Getenv("PGCONNECT_TIMEOUT") == "" {
-		cmd.Env = append(cmd.Env, "PGCONNECT_TIMEOUT=30")
+		env = append(env, "PGCONNECT_TIMEOUT=30")
 	}
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(stderr.String())
-		if len(msg) > 500 {
-			msg = msg[:500] + "..."
-		}
-		return nil, fmt.Errorf("pg_dump %s (--section=%s) failed: %v: %s", p.Version, section, err, msg)
-	}
-	return stripPsqlMetaCommands(stdout.Bytes()), nil
+	return env, cleanup, nil
 }
 
 // pgPassFile writes password as one .pgpass line matching every host, port,

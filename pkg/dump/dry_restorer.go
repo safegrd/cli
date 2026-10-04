@@ -76,6 +76,9 @@ func (d *DryRestorer) InspectArchive(ctx context.Context, src io.Reader) (*DryRe
 		manifestFound bool
 		schemaFound   bool
 		sequencesSeen bool
+		rolesCarried  []string
+		rolesSeen     bool
+		sections      [][]byte
 		schemaTables  = make(map[string][]TableColumnInfo) // "schema.table" -> columns
 		tableRows     = make(map[string]int64)             // "schema.table" -> rows parsed
 		tableCols     = make(map[string]int)
@@ -127,6 +130,19 @@ func (d *DryRestorer) InspectArchive(ctx context.Context, src io.Reader) (*DryRe
 					return fmt.Errorf("failed reading %s: %w", hdr.Name, err)
 				}
 				schemaTables, result.Extensions = parseSchemaDDL(string(schemaBytes))
+				sections = append(sections, schemaBytes)
+			case entryPostData:
+				data, err := io.ReadAll(rd)
+				if err != nil {
+					return fmt.Errorf("failed reading %s: %w", hdr.Name, err)
+				}
+				sections = append(sections, data)
+			case entryRoles:
+				data, err := io.ReadAll(rd)
+				if err != nil {
+					return fmt.Errorf("failed reading %s: %w", hdr.Name, err)
+				}
+				rolesSeen, rolesCarried = true, parseRolesSQL(data).names()
 			case entrySequences:
 				sequencesSeen = true
 			}
@@ -314,8 +330,50 @@ func (d *DryRestorer) InspectArchive(ctx context.Context, src io.Reader) (*DryRe
 		}
 	}
 
+	// 9. Every role the schema names is carried, so a fresh cluster can load
+	// it. A policy, a grant or an owner naming a role the archive does not
+	// carry failed the restore at that line and left the database empty,
+	// while this drill passed and issued a certificate.
+	if a := rolesCarriedAssertion(namedRoles(sections...), rolesSeen, rolesCarried); a != nil {
+		result.Assertions = append(result.Assertions, *a)
+		if !a.Passed {
+			result.Passed = false
+		}
+	}
+
 	result.DurationMs = elapsedMilliseconds(startTime)
 	return result, nil
+}
+
+// rolesCarriedAssertion holds the roles the schema names to roles.sql, or
+// is nil when the schema names none.
+func rolesCarriedAssertion(named []string, rolesSeen bool, carried []string) *model.AssertionResult {
+	if len(named) == 0 {
+		return nil
+	}
+	have := map[string]bool{}
+	for _, n := range carried {
+		have[n] = true
+	}
+	var missing []string
+	for _, n := range named {
+		if !have[n] {
+			missing = append(missing, n)
+		}
+	}
+	a := &model.AssertionResult{Name: "Roles Carried", Expected: fmt.Sprintf("the %d roles the schema names in roles.sql", len(named))}
+	switch {
+	case !rolesSeen:
+		a.Actual = "no roles.sql"
+		a.Message = "the schema names " + strings.Join(named, ", ") + " and the snapshot carries no roles, so a restore into a cluster without them fails; take a new backup"
+	case len(missing) > 0:
+		a.Actual = "missing: " + strings.Join(missing, ", ")
+		a.Message = "the schema names roles the snapshot does not carry; create them on the target before a restore"
+	default:
+		a.Passed = true
+		a.Actual = fmt.Sprintf("%d carried", len(named))
+	}
+	return a
 }
 
 // parseBinaryCopyStream reads PostgreSQL binary COPY wire format tuples and counts rows and columns.

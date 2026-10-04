@@ -174,6 +174,11 @@ type SurfaceConfig struct {
 	// safegrd schema in the database, which `DROP SCHEMA safegrd CASCADE`
 	// removes.
 	ChangeLog bool `yaml:"change_log,omitempty" json:"change_log,omitempty"`
+	// RolesWithoutPasswords leaves role passwords out of a PostgreSQL
+	// surface's backups. By default the roles the schema names travel with
+	// their password hashes, sealed like everything else, so a restored role
+	// logs in as it did.
+	RolesWithoutPasswords bool `yaml:"roles_without_passwords,omitempty" json:"roles_without_passwords,omitempty"`
 	// OneFilesystem keeps a repo surface's walk on each root's filesystem.
 	// Unset means yes when a root is "/", no otherwise.
 	OneFilesystem *bool `yaml:"one_filesystem,omitempty" json:"one_filesystem,omitempty"`

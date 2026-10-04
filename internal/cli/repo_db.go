@@ -78,6 +78,8 @@ type repoDBParams struct {
 	// customer's consent, and carries forward unread the tables it shows
 	// nothing wrote since the last run.
 	ChangeLog bool
+	// RolesWithoutPasswords leaves role passwords out of roles.sql.
+	RolesWithoutPasswords bool
 }
 
 // runRepoDatabaseBackup dumps a database into its repository as one
@@ -127,6 +129,7 @@ func runRepoDatabaseBackup(ctx context.Context, p repoDBParams) (*model.Snapshot
 		source = dbrun.Source(sd, "", &dumpMeta)
 	} else {
 		dumper = dump.NewNativeDumper(p.DatabaseURL)
+		dumper.RolesWithoutPasswords = p.RolesWithoutPasswords
 		source = dbrun.Source(dumper, "", &dumpMeta)
 	}
 	var (
@@ -290,7 +293,7 @@ func runRepoDatabaseBackup(ctx context.Context, p repoDBParams) (*model.Snapshot
 
 // restoreRepo restores a repository snapshot: a files snapshot into a
 // directory, a database run into an empty database.
-func restoreRepo(ctx context.Context, rs *repoSnapshot, privateKey, targetDir, targetURL, toSQL string, paths, tables []string) error {
+func restoreRepo(ctx context.Context, rs *repoSnapshot, privateKey, targetDir, targetURL, toSQL string, paths, tables []string, noOwner bool) error {
 	id := rs.Meta.SnapshotID
 	if len(tables) > 0 && !runner.IsRepoDatabase(rs.Meta) {
 		return fmt.Errorf("--table restores tables of a database snapshot; %s is a files snapshot", id)
@@ -339,7 +342,7 @@ func restoreRepo(ctx context.Context, rs *repoSnapshot, privateKey, targetDir, t
 		return restoreRepoTables(ctx, rs, privateKey, targetURL, tables)
 	}
 	fmt.Printf("Restoring %s (epoch %s, %s) into %s\n", id, rs.Epoch.Epoch.EpochID, rs.SurfaceID, dump.RedactURL(targetURL))
-	return restoreRepoDatabase(ctx, rs, privateKey, targetURL)
+	return restoreRepoDatabase(ctx, rs, privateKey, targetURL, noOwner)
 }
 
 // tablePath is the file a database run keeps a table's rows in. A name with
@@ -554,7 +557,7 @@ func restoreRepoSQL(ctx context.Context, rs *repoSnapshot, privateKey, dir strin
 // restoreRepoDatabase loads a database run into an empty database in one
 // transaction, which commits only once every file has matched its SHA-256
 // and the content root matched the one recorded at backup time.
-func restoreRepoDatabase(ctx context.Context, rs *repoSnapshot, privateKey, targetURL string) error {
+func restoreRepoDatabase(ctx context.Context, rs *repoSnapshot, privateKey, targetURL string, noOwner bool) error {
 	id := rs.Meta.SnapshotID
 	r, idx, files, err := openRun(ctx, rs, privateKey)
 	if err != nil {
@@ -569,6 +572,10 @@ func restoreRepoDatabase(ctx context.Context, rs *repoSnapshot, privateKey, targ
 		archived <- err
 	}()
 	restorer := dump.NewNativeRestorer(targetURL)
+	restorer.NoOwner = noOwner
+	if noOwner {
+		fmt.Printf("   Ownership:      not restored (--no-owner); every object belongs to the restoring role\n")
+	}
 	waited := false
 	restorer.BeforeCommit = func() error {
 		_, _ = io.Copy(io.Discard, pr)
@@ -590,6 +597,7 @@ func restoreRepoDatabase(ctx context.Context, rs *repoSnapshot, privateKey, targ
 	fmt.Printf("Restored %d %s, %s rows, from %s in %s. Every table matched its SHA-256 and its row count.\n",
 		len(got.TableStats), pluralWord(int64(len(got.TableStats)), "table", "tables"), formatNumber(rows), id,
 		shortDuration(time.Since(started)))
+	printCreatedRoles(restorer.CreatedRoles)
 	return nil
 }
 

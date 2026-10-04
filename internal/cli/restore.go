@@ -34,6 +34,7 @@ func newRestoreCmd() *cobra.Command {
 		tables     []string
 		schemas    []string
 		dataOnly   []string
+		noOwner    bool
 	)
 
 	cmd := &cobra.Command{
@@ -50,6 +51,12 @@ in order. The files hold the data unencrypted; the directory is 0700.
 directory with --snapshot, or one .safegrd file, whose name gives the snapshot ID.
 The copy is checked against the digest recorded at backup time, as a restore
 from storage is.
+
+A PostgreSQL restore creates the roles the schema names that the target lacks
+(owners, grantees, the roles policies apply to) before the schema runs, and
+prints each one. --no-owner restores without ownership and privileges, so
+every object belongs to the restoring role; the roles are still created,
+because a policy cannot be restored without them.
 
 --schema and --data-only-schema restore part of a PostgreSQL snapshot into a
 database that already has other schemas, such as a Supabase project after an
@@ -168,7 +175,7 @@ left alone, and the whole restore is still one transaction.`,
 					return fmt.Errorf("looking for %s in %s: %w", snapshotID, fromDir, err)
 				}
 				if rs != nil {
-					return restoreRepo(ctx, rs, resolvedKey, targetDir, targetURL, toSQL, paths, tables)
+					return restoreRepo(ctx, rs, resolvedKey, targetDir, targetURL, toSQL, paths, tables, noOwner)
 				}
 			}
 			if fromDir != "" {
@@ -217,7 +224,7 @@ left alone, and the whole restore is still one transaction.`,
 					fmt.Fprintf(os.Stderr, "Warning: could not look among the incremental repositories: %v\n", err)
 				}
 				if rs != nil {
-					return restoreRepo(ctx, rs, resolvedKey, targetDir, targetURL, toSQL, paths, tables)
+					return restoreRepo(ctx, rs, resolvedKey, targetDir, targetURL, toSQL, paths, tables, noOwner)
 				}
 				opened, err := openStorage(ctx, cfg, storageCfg)
 				if err != nil {
@@ -319,6 +326,7 @@ left alone, and the whole restore is still one transaction.`,
 			digestChecked := false
 			var (
 				pgMeta   *model.SnapshotMetadata
+				native   *dump.NativeRestorer
 				sqlRes   *dump.SQLExport
 				fileRes  *dump.FileExtractionResult
 				emailRes *dump.EmailExtractionResult
@@ -351,7 +359,12 @@ left alone, and the whole restore is still one transaction.`,
 				// A Postgres restore is one transaction, so it can wait for the
 				// digest before committing: a snapshot that fails the check is
 				// rolled back and never becomes a database anyone uses.
-				if native, ok := restorer.(*dump.NativeRestorer); ok {
+				if n, ok := restorer.(*dump.NativeRestorer); ok {
+					native = n
+					native.NoOwner = noOwner
+					if noOwner {
+						fmt.Printf("   Ownership:      not restored (--no-owner); every object belongs to the restoring role\n")
+					}
 					if len(schemas) > 0 || len(dataOnly) > 0 {
 						native.Schemas, native.DataOnlySchemas = map[string]bool{}, map[string]bool{}
 						for _, sc := range schemas {
@@ -434,6 +447,9 @@ left alone, and the whole restore is still one transaction.`,
 					fmt.Printf("   Tables:         %d\n", pgMeta.TotalTables)
 					fmt.Printf("   Rows:           %d\n", pgMeta.TotalRows)
 				}
+				if native != nil {
+					printCreatedRoles(native.CreatedRoles)
+				}
 				fmt.Println("   Check the tables and rows above against what you expect before you point an application at it.")
 			}
 
@@ -452,12 +468,21 @@ left alone, and the whole restore is still one transaction.`,
 	cmd.Flags().IntVar(&version, "version", 0, "With one --path or --table: restore that version, as 'safegrd find' numbers them")
 	cmd.Flags().StringArrayVar(&schemas, "schema", nil, "Restore only this schema of a PostgreSQL snapshot, objects and rows, into a database that has other schemas (repeatable)")
 	cmd.Flags().StringArrayVar(&dataOnly, "data-only-schema", nil, "Load only this schema's rows into tables the target already has (repeatable)")
+	cmd.Flags().BoolVar(&noOwner, "no-owner", false, "PostgreSQL: restore without ownership and privileges, so every object belongs to the restoring role. The roles the schema names are still created")
 	cmd.Flags().StringArrayVar(&tables, "table", nil, "Restore only this table (schema.table) of a database run, into a table of the same definition that is empty in --target (repeatable)")
 	cmd.Flags().StringVar(&surfaceSel, "surface", "", "With --version: the surface whose repository holds the file")
 	cmd.Flags().StringArrayVar(&paths, "path", nil, "Restore only this path of a repository snapshot, relative to / (repeatable; '*', '?' and '**' match)")
 	cmd.Flags().StringVar(&fromPath, "from", "", "Restore from an export: the directory 'safegrd export --to-dir' wrote, or one .safegrd file in it")
 
 	return cmd
+}
+
+// printCreatedRoles names the roles a restore created on the target because
+// the schema named them and the target lacked them, one per line.
+func printCreatedRoles(roles []string) {
+	for _, r := range roles {
+		fmt.Printf("   Created role:   %s\n", r)
+	}
 }
 
 // printFileRestoreLimits says what a file restore did not bring back. A

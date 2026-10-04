@@ -93,6 +93,9 @@ func ExportSQL(src io.Reader, dir string) (*SQLExport, error) {
 				}
 				manifest = &m
 				return write(entryManifest, strings.NewReader(string(data)))
+			case entryRoles:
+				sqlFiles[hdr.Name] = true
+				return write(hdr.Name, rd)
 			case entryPreData, entrySchema, entryPostData, entrySequences:
 				data, err := io.ReadAll(rd)
 				if err != nil {
@@ -131,6 +134,11 @@ func ExportSQL(src io.Reader, dir string) (*SQLExport, error) {
 	b.WriteString("-- Loads this SafeGrd snapshot into an empty PostgreSQL database, in one\n")
 	b.WriteString("-- transaction. Run it from this directory:\n")
 	b.WriteString("--   psql \"postgres://user@host/empty_db\" -f load.sql\n")
+	if sqlFiles[entryRoles] {
+		b.WriteString("-- The schema names roles. roles.sql holds them as pg_dumpall wrote them:\n")
+		b.WriteString("-- create the ones this cluster lacks first (psql -f roles.sql, after\n")
+		b.WriteString("-- deleting the lines for roles it already has).\n")
+	}
 	b.WriteString("\\set ON_ERROR_STOP on\nBEGIN;\n")
 	for _, name := range []string{entryPreData, entrySchema} {
 		if sqlFiles[name] {

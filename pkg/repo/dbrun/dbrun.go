@@ -2,6 +2,7 @@
 // reads it back. The snapshot's files are the dump archive's entries, one per
 // section and one per table:
 //
+//	roles.sql                    the roles the schema names, when it names any
 //	pre-data.sql                 (schema.sql when no pg_dump was usable)
 //	data/<schema>/<table>.copy   a table's rows as one binary COPY stream
 //	post-data.sql
@@ -90,6 +91,7 @@ func Source(d dump.Dumper, database string, meta **model.SnapshotMetadata) write
 
 // Sections a run holds, in the order the archive restorers read them.
 const (
+	Roles     = "roles.sql"
 	PreData   = "pre-data.sql"
 	Schema    = "schema.sql"
 	PostData  = "post-data.sql"
@@ -125,7 +127,7 @@ func Files(ctx context.Context, r *read.Repo, idx read.Index, s format.Snapshot)
 			return fmt.Errorf("snapshot %s holds %s, which is not part of a database dump", s.SnapshotID, it.Path)
 		case strings.HasPrefix(it.Path, dataDir) && strings.HasSuffix(it.Path, ".copy"):
 			tables = append(tables, it)
-		case it.Path == PreData || it.Path == Schema || it.Path == PostData || it.Path == Sequences || it.Path == Manifest:
+		case it.Path == Roles || it.Path == PreData || it.Path == Schema || it.Path == PostData || it.Path == Sequences || it.Path == Manifest:
 			sections[it.Path] = it
 		default:
 			return fmt.Errorf("snapshot %s holds %s, which is not part of a database dump", s.SnapshotID, it.Path)
@@ -152,7 +154,7 @@ func Files(ctx context.Context, r *read.Repo, idx read.Index, s format.Snapshot)
 	}
 	sort.Slice(tables, func(i, j int) bool { return tables[i].Path < tables[j].Path })
 	var out []read.Item
-	for _, name := range []string{PreData, Schema} {
+	for _, name := range []string{Roles, PreData, Schema} {
 		if it, ok := sections[name]; ok {
 			out = append(out, it)
 		}

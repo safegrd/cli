@@ -145,6 +145,14 @@ type SnapshotMetadata struct {
 	// types. Empty on snapshots taken before it existed, which
 	// were all native.
 	SchemaSource string `json:"schema_source,omitempty" yaml:"schema_source,omitempty"`
+	// RolesNamed are the roles a Postgres snapshot's schema names (owners,
+	// grantees, the roles policies apply to), sorted. RolesSource says how
+	// roles.sql carried them: "pg_dumpall 16.4", with ", no passwords" when
+	// the surface opted out or the backup role could not read them. Empty
+	// RolesSource with roles named means the snapshot does not carry them,
+	// and a restore into a cluster without them fails.
+	RolesNamed  []string `json:"roles_named,omitempty" yaml:"roles_named,omitempty"`
+	RolesSource string   `json:"roles_source,omitempty" yaml:"roles_source,omitempty"`
 	// SourceSnapshot is the PostgreSQL snapshot the backup read under
 	// (pg_current_snapshot, xmin:xmax:xip), and SourceLSN the WAL position
 	// read inside it, at or just after the moment it was taken. They order

@@ -194,7 +194,9 @@ func (v *Verifier) RunRepoDatabaseDrill(ctx context.Context, d RepoDrill, privat
 			archiveErr = drain()
 			return archiveErr
 		}
+		v.createdRoles = nil
 		_, restoreErr = restorer.Restore(ctx, pr)
+		v.createdRoles = restorer.CreatedRoles
 	}
 	if !drained {
 		archiveErr = drain()

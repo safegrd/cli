@@ -82,6 +82,14 @@ func CheckSandboxEmpty(ctx context.Context, sandboxURL string) error {
 // ResetSandbox drops everything a drill restored. It is only ever called after
 // CheckSandboxEmpty passed, so everything in the database is the drill's.
 func ResetSandbox(ctx context.Context, sandboxURL string) error {
+	return resetSandbox(ctx, sandboxURL, nil)
+}
+
+// resetSandbox is ResetSandbox for a drill that created roles on the
+// sandbox's cluster because the snapshot's schema named them: the objects
+// they own are dropped with the rest, and then the roles themselves, so the
+// cluster is as it was. A role the cluster already had is never touched.
+func resetSandbox(ctx context.Context, sandboxURL string, createdRoles []string) error {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 	if dump.IsSQLiteURL(sandboxURL) {
@@ -126,8 +134,30 @@ func ResetSandbox(ctx context.Context, sandboxURL string) error {
 	if err := conn.QueryRow(ctx, `SELECT rolsuper FROM pg_roles WHERE rolname = current_user`).Scan(&super); err != nil {
 		return err
 	}
+	// Roles the restore created exist only if it committed; a rolled-back
+	// restore leaves none. Only the ones that exist are handled.
+	var roles []string
+	for _, r := range createdRoles {
+		var exists bool
+		if err := conn.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1)`, r).Scan(&exists); err != nil {
+			return err
+		}
+		if exists {
+			roles = append(roles, r)
+		}
+	}
 	if !super {
-		return dropOwnedHere(ctx, conn)
+		// What the drill restored belongs to the roles it created, which it
+		// was granted; made ours, dropOwnedHere takes it all.
+		for _, r := range roles {
+			if _, err := conn.Exec(ctx, "REASSIGN OWNED BY "+pgx.Identifier{r}.Sanitize()+" TO CURRENT_USER"); err != nil {
+				return fmt.Errorf("taking over what role %s owns: %w", r, err)
+			}
+		}
+		if err := dropOwnedHere(ctx, conn); err != nil {
+			return err
+		}
+		return dropRoles(ctx, conn, roles)
 	}
 	rows, err := conn.Query(ctx, userSchemasQuery)
 	if err != nil {
@@ -146,8 +176,27 @@ func ResetSandbox(ctx context.Context, sandboxURL string) error {
 			return fmt.Errorf("dropping schema %s: %w", n, err)
 		}
 	}
-	_, err = conn.Exec(ctx, "CREATE SCHEMA IF NOT EXISTS public")
-	return err
+	if _, err := conn.Exec(ctx, "CREATE SCHEMA IF NOT EXISTS public"); err != nil {
+		return err
+	}
+	return dropRoles(ctx, conn, roles)
+}
+
+// dropRoles removes roles a drill created, and first the privileges they were
+// granted on what remains (the public schema, the database), which would
+// otherwise keep them. These roles are new to the cluster, so DROP OWNED BY
+// reaches nothing of anyone else's.
+func dropRoles(ctx context.Context, conn *pgx.Conn, roles []string) error {
+	for _, r := range roles {
+		ident := pgx.Identifier{r}.Sanitize()
+		if _, err := conn.Exec(ctx, "DROP OWNED BY "+ident); err != nil {
+			return fmt.Errorf("dropping what role %s was granted: %w", r, err)
+		}
+		if _, err := conn.Exec(ctx, "DROP ROLE IF EXISTS "+ident); err != nil {
+			return fmt.Errorf("dropping role %s, which the drill created: %w", r, err)
+		}
+	}
+	return nil
 }
 
 // SameDatabase reports whether two connection URLs name the same database on
@@ -177,7 +226,7 @@ func (v *Verifier) RunSandboxDrill(ctx context.Context, snapshotID, privateKey, 
 		return nil, err
 	}
 	report, err := v.RunFireDrill(ctx, snapshotID, privateKey, sandboxURL)
-	if resetErr := ResetSandbox(ctx, sandboxURL); resetErr != nil && err == nil {
+	if resetErr := resetSandbox(ctx, sandboxURL, v.createdRoles); resetErr != nil && err == nil {
 		err = fmt.Errorf("the drill ran, but the sandbox could not be emptied for the next one: %w", resetErr)
 	}
 	return report, err
@@ -189,7 +238,7 @@ func (v *Verifier) RunRepoSandboxDrill(ctx context.Context, d RepoDrill, private
 	if err != nil {
 		return report, err
 	}
-	if resetErr := ResetSandbox(ctx, sandboxURL); resetErr != nil {
+	if resetErr := resetSandbox(ctx, sandboxURL, v.createdRoles); resetErr != nil {
 		err = fmt.Errorf("the drill ran, but the sandbox could not be emptied for the next one: %w", resetErr)
 	}
 	return report, err
