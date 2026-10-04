@@ -387,6 +387,11 @@ func LoadCLIConfig(path string) (*CLIConfig, error) {
 			return nil, fmt.Errorf("failed to parse config file %s: %w", path, err)
 		}
 		cfg.UnknownKeys = unknownKeys(data)
+		// A relative key_path is relative to this file, not to wherever the
+		// command runs (SaveCLIConfig writes it that way).
+		if kp := cfg.Encryption.KeyPath; kp != "" && !filepath.IsAbs(kp) {
+			cfg.Encryption.KeyPath = filepath.Join(filepath.Dir(absOrSelf(path)), kp)
+		}
 		if err := replacedCredentialKeys(cfg.UnknownKeys); err != nil {
 			return nil, fmt.Errorf("%s: %w", path, err)
 		}
@@ -518,7 +523,15 @@ func SaveCLIConfig(cfg *CLIConfig, path string) error {
 		return fmt.Errorf("failed to create config dir %s: %w", dir, err)
 	}
 
-	data, err := yaml.Marshal(cfg)
+	// A key kept beside the config is written relative to it, so the file
+	// names no laptop path when it is copied elsewhere: into a CI secret, the
+	// config lands in a temporary folder with no key beside it, which reads as
+	// a host without the private key (CUJ P2b).
+	out := *cfg
+	if rel, ok := keyPathBeside(cfg.Encryption.KeyPath, path); ok {
+		out.Encryption.KeyPath = rel
+	}
+	data, err := yaml.Marshal(&out)
 	if err != nil {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
@@ -528,6 +541,26 @@ func SaveCLIConfig(cfg *CLIConfig, path string) error {
 	}
 
 	return nil
+}
+
+// keyPathBeside returns keyPath relative to the folder holding configPath,
+// when the key is inside that folder.
+func keyPathBeside(keyPath, configPath string) (string, bool) {
+	if keyPath == "" {
+		return "", false
+	}
+	rel, err := filepath.Rel(filepath.Dir(absOrSelf(configPath)), absOrSelf(keyPath))
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return rel, true
+}
+
+func absOrSelf(p string) string {
+	if a, err := filepath.Abs(p); err == nil {
+		return a
+	}
+	return p
 }
 
 // ResolveWORMMode returns the Object Lock mode this storage configuration asks

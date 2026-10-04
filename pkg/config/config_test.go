@@ -369,3 +369,59 @@ func TestSaveCLIConfigNeverWritesThePrivateKey(t *testing.T) {
 		t.Fatal("config.yaml lost key_path, which is how the identity is resolved back")
 	}
 }
+
+// A key kept beside the config is written relative to it, so a config copied
+// into a CI secret names no laptop path, and it still resolves from any
+// working directory where it was written (CUJ P2b: the copied config named
+// /root/..., which a GitHub runner cannot enter).
+func TestAKeyBesideTheConfigIsWrittenRelativeToIt(t *testing.T) {
+	t.Setenv("SAFEGRD_PRIVATE_KEY", "")
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "safegrd.yaml")
+	keyPath := filepath.Join(dir, "keys", "daemon.key")
+	if err := os.MkdirAll(filepath.Dir(keyPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, []byte("AGE-SECRET-KEY-1BESIDE\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := NewDefaultCLIConfig()
+	cfg.Encryption.PublicKey = "age1beside"
+	cfg.Encryption.KeyPath = keyPath
+	if err := SaveCLIConfig(cfg, cfgPath); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(cfgPath)
+	if !strings.Contains(string(raw), "key_path: "+filepath.Join("keys", "daemon.key")) || strings.Contains(string(raw), dir) {
+		t.Fatalf("the saved config names the key path as:\n%s", raw)
+	}
+	if cfg.Encryption.KeyPath != keyPath {
+		t.Errorf("saving changed the in-memory key path to %q", cfg.Encryption.KeyPath)
+	}
+
+	// Loaded from another working directory, it is the key beside the file.
+	t.Chdir(t.TempDir())
+	got, err := LoadCLIConfig(cfgPath)
+	if err != nil || got.Encryption.KeyPath != keyPath || got.Encryption.PrivateKey != "AGE-SECRET-KEY-1BESIDE" {
+		t.Fatalf("loaded from elsewhere: %v, key path %q, key %q", err, got.Encryption.KeyPath, got.Encryption.PrivateKey)
+	}
+
+	// Copied alone, as into a CI secret: no key beside it, so none is loaded.
+	ci := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(ci, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := LoadCLIConfig(ci); err != nil || got.Encryption.PrivateKey != "" || got.Encryption.PublicKey != "age1beside" {
+		t.Fatalf("the copied config: %v, %+v", err, got.Encryption)
+	}
+
+	// A key kept elsewhere keeps its absolute path.
+	elsewhere := filepath.Join(t.TempDir(), "daemon.key")
+	cfg.Encryption.KeyPath = elsewhere
+	if err := SaveCLIConfig(cfg, cfgPath); err != nil {
+		t.Fatal(err)
+	}
+	if raw, _ := os.ReadFile(cfgPath); !strings.Contains(string(raw), elsewhere) {
+		t.Fatalf("a key outside the config's folder lost its path:\n%s", raw)
+	}
+}
