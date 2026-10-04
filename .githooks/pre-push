@@ -1,7 +1,8 @@
 #!/bin/sh
 # Refuses a push that CI would fail in its first minute: every Go file the
-# push changes must be gofmt-clean. Installed by `make hooks`. It checks the
-# commits being pushed, not the working tree.
+# push changes must be gofmt-clean, and gitleaks must find no secret in the
+# pushed commits (this repository is public). Installed by `make hooks`. It
+# checks the commits being pushed, not the working tree.
 set -eu
 cd "$(git rev-parse --show-toplevel)"
 
@@ -22,5 +23,17 @@ while read -r _ local_sha _ remote_sha; do
 			fail=1
 		fi
 	done
+	if command -v gitleaks >/dev/null; then
+		range="$local_sha"
+		[ -n "$base" ] && range="$base..$local_sha"
+		if ! gitleaks git --no-banner --redact --exit-code 1 --log-opts="$range" . >/dev/null 2>&1; then
+			gitleaks git --no-banner --redact --exit-code 1 --log-opts="$range" . 2>&1 | grep -E "^(Finding|File|Line|Commit):" >&2 || true
+			echo "Error: gitleaks found a secret in the commits being pushed. Remove it and rewrite the commit." >&2
+			fail=1
+		fi
+	else
+		echo "Error: gitleaks is not installed, so the push was not scanned for secrets: brew install gitleaks" >&2
+		fail=1
+	fi
 done
 exit $fail
