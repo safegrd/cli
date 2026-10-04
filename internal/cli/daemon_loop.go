@@ -395,6 +395,12 @@ func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, d pendingDrill
 		how = "full restore"
 		if dbRun {
 			how = "in-memory restore"
+			// A SQLite run is written out to a scratch file and opened,
+			// which is the whole of a SQLite restore; the server counts it
+			// as one, and this line said "in-memory" over it.
+			if rs.Meta.SurfaceType == model.SurfaceTypeSQLite {
+				how = "restore to a scratch file"
+			}
 		}
 		fmt.Printf("Surface %s: Fire Drill due: restoring snapshot %s and recomputing its content root.\n", s.ID, snapshotID)
 		report, err = verifier.RunRepoDrill(ctx, runner.RepoDrill{Backend: rs.Backend, Epoch: rs.Epoch, Meta: rs.Meta,

@@ -436,7 +436,13 @@ setup_failed() {
   printf "\n"
   log_error "$1"
   printf "   safegrd itself is installed at %s. Finish setting up with:\n" "$SAFEGRD_BIN" >&2
-  printf "      safegrd login && safegrd enroll\n\n" >&2
+  # The project and name asked for go into the command, or the retry
+  # enrols into the default project.
+  hint="safegrd login && safegrd enroll"
+  if [ -n "${SAFEGRD_PROJECT:-}" ]; then hint="${hint} --project ${SAFEGRD_PROJECT}"; fi
+  if [ -n "${SAFEGRD_NODE_NAME:-}" ]; then hint="${hint} --node-name ${SAFEGRD_NODE_NAME}"; fi
+  if [ "${SAFEGRD_KEY_CUSTODY:-}" = "local" ]; then hint="${hint} --key-custody local"; fi
+  printf "      %s\n\n" "$hint" >&2
   exit 1
 }
 

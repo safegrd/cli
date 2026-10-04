@@ -49,7 +49,9 @@ func resolveSecret(flagName, val string, isFlag bool) (string, error) {
 		return strings.TrimSpace(string(data)), nil
 	}
 
-	if isFlag {
+	// A SQLite URL is a file path and carries no secret: the docs' own
+	// `backup --database-url sqlite:///…` warned on every run.
+	if isFlag && !strings.HasPrefix(strings.ToLower(val), "sqlite:") {
 		fmt.Fprintf(os.Stderr, "Warning: the value of --%s is visible in `ps` and shell history. Pass env:VAR or file:/path instead.\n", flagName)
 	}
 	return val, nil

@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -57,5 +58,19 @@ func TestResolveSecretRef(t *testing.T) {
 	}
 	if res != "postgres://user:pass@localhost:5432/db" {
 		t.Fatalf("expected raw value preserved, got %q", res)
+	}
+}
+
+// A SQLite URL names a file, not a secret. The SQLite docs' own command,
+// `backup --database-url sqlite:///…`, warned that it was visible in `ps`
+// on every run (production CUJ P4). A postgres URL still warns.
+func TestASQLitePathOnTheCommandLineIsNotASecret(t *testing.T) {
+	stderr := captureStderr(t, func() { _, _ = ResolveSecretRef("database-url", "sqlite:///srv/app/app.db") })
+	if strings.Contains(stderr, "visible in") {
+		t.Errorf("warned about a SQLite path:\n%s", stderr)
+	}
+	stderr = captureStderr(t, func() { _, _ = ResolveSecretRef("database-url", "postgres://u:p@h/db") })
+	if !strings.Contains(stderr, "visible in") {
+		t.Errorf("no warning for a URL with a password:\n%s", stderr)
 	}
 }
