@@ -44,6 +44,10 @@ type VerificationReport struct {
 	Assertions       []AssertionResult  `json:"assertions" yaml:"assertions"`
 	CertificateHash  string             `json:"certificate_hash" yaml:"certificate_hash"`
 	ErrorMessage     string             `json:"error_message,omitempty" yaml:"error_message,omitempty"`
+	// RanOn is RanOnSafeGrd when a machine the remote server started ran
+	// this drill, set by the server from the job that reported it; empty
+	// for a drill a host ran. It is not part of the signed bytes.
+	RanOn string `json:"ran_on,omitempty" yaml:"ran_on,omitempty"`
 	// Tamper-Evident Attestation Record
 	PrevHash     string `json:"prev_hash,omitempty" yaml:"prev_hash,omitempty"`
 	Signature    string `json:"signature,omitempty" yaml:"signature,omitempty"`

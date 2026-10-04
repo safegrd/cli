@@ -42,14 +42,17 @@
 
 set -e
 
-# ANSI styling
+# ANSI styling. The variables hold the escape characters themselves, not
+# "\033" text: printf expands that only in its format, so a colour passed in
+# as an argument (log_info "... ${BOLD}${TAG}${RESET}") printed as \033[1m.
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
-  BOLD="\033[1m"
-  GREEN="\033[32m"
-  CYAN="\033[36m"
-  YELLOW="\033[33m"
-  RED="\033[31m"
-  RESET="\033[0m"
+  ESC="$(printf '\033')"
+  BOLD="${ESC}[1m"
+  GREEN="${ESC}[32m"
+  CYAN="${ESC}[36m"
+  YELLOW="${ESC}[33m"
+  RED="${ESC}[31m"
+  RESET="${ESC}[0m"
 else
   BOLD=""
   GREEN=""

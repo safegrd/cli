@@ -31,6 +31,12 @@ type hostedRepo struct {
 	// the surface's when the daemon registered one for it.
 	node   string
 	bucket string
+	// allNodes lists every node's repositories in the organization, for
+	// list, find and export: the daemon files a surface under its own node
+	// (host--surface), and a host restoring after a lost one has another id
+	// again, so a list scoped to this host's id found nothing. Writes stay
+	// on node: a host never appends to another node's epoch.
+	allNodes bool
 
 	mu       sync.Mutex
 	prefixes map[string]string // epoch id -> key prefix
@@ -318,7 +324,9 @@ func (h *hostedRepo) Commit(ctx context.Context, e format.Epoch, c sink.RunCommi
 
 func (h *hostedRepo) listEpochs(ctx context.Context, surfaceID string) ([]hostedEpochView, error) {
 	q := url.Values{}
-	q.Set("node_id", h.node)
+	if !h.allNodes {
+		q.Set("node_id", h.node)
+	}
 	if surfaceID != "" {
 		q.Set("surface_id", surfaceID)
 	}

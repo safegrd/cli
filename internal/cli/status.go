@@ -98,7 +98,11 @@ host is configured for, one line each. Exits 1 if any check fails.`,
 			if err == nil {
 				snaps, err := storageProvider.ListSnapshots(ctx)
 				if err == nil {
-					fmt.Printf("Storage:           %s, readable (%d snapshots)\n", storageCfg.Type, len(snaps))
+					// Incremental runs live in repositories beside the
+					// single-archive snapshots, and are the default format:
+					// counting only the latter said 0 after a backup.
+					n := len(snaps) + len(listRepoSnapshots(ctx, storageCfg))
+					fmt.Printf("Storage:           %s, readable (%d snapshots)\n", storageCfg.Type, n)
 				} else {
 					fail("Storage:           FAILED: could not list snapshots in %s storage: %v\n", storageCfg.Type, err)
 				}

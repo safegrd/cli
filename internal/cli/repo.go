@@ -515,6 +515,11 @@ func repoBackendsAll(ctx context.Context, storageCfg config.StorageConfig) ([]si
 		return nil, err
 	}
 	out := []sink.Backend{primary}
+	// Hosted storage answers for the whole organization at once.
+	if h, ok := primary.(*hostedRepo); ok {
+		h.allNodes = true
+		return out, nil
+	}
 	d, ok := primary.(*sink.Direct)
 	if !ok {
 		return out, nil
