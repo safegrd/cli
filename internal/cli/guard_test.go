@@ -179,7 +179,6 @@ func TestGuardEchoHidesAPasswordInAURL(t *testing.T) {
 	}
 }
 
-
 // A locked snapshot taken recently stands in for a new backup (--max-age), and
 // only one of this surface, completed, locked and young enough counts.
 func TestARecentLockedSnapshotStandsInForANewBackup(t *testing.T) {
