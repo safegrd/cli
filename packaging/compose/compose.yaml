@@ -29,7 +29,7 @@ services:
       - db-data:/var/lib/postgresql/data
 
   safegrd:
-    image: ghcr.io/safegrd/cli:0.0.21
+    image: ghcr.io/safegrd/cli:0.0.22
     command: ["daemon", "run"]
     restart: unless-stopped
     depends_on:
