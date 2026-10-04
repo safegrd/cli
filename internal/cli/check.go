@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/safegrd/cli/pkg/crypto"
 	"github.com/safegrd/cli/pkg/repo/check"
@@ -37,7 +38,11 @@ func resolveIdentity(ctx context.Context, keyPath, privKey string) (string, erro
 			}
 		}
 	}
-	key = withManagedIdentities(ctx, cfg, key, true)
+	// A whole repository has no one snapshot to name: ask for the key this
+	// host backs up to, when it has none of its own.
+	if key == "" {
+		key = withManagedIdentity(ctx, cfg, "", heldKeyQuery{recipient: strings.TrimSpace(cfg.Encryption.PublicKey)}, true)
+	}
 	if key == "" {
 		return "", fmt.Errorf("decryption key required: specify --private-key or configure ~/.safegrd/keys/daemon.key")
 	}

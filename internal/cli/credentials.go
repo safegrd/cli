@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"filippo.io/age"
 	"fmt"
 	"io"
 	"net"
@@ -236,28 +237,47 @@ type managedIdentityFetchResponse struct {
 	Notice     string `json:"notice"`
 }
 
-// errNoManagedKey is the remote server's 404: every host in the organization
-// keeps its own key, so there is nothing to fetch. An ordinary answer, not a fault.
-var errNoManagedKey = errors.New("the remote server holds no key for this organization")
+// errNoManagedKey is the remote server's 404: it holds no key for what was
+// asked, because the host that took it keeps its own. An ordinary answer.
+var errNoManagedKey = errors.New("the remote server holds no key for this")
 
-// fetchManagedIdentity asks the remote server for the Age identity it holds for
-// this node's organization.
+// errHeldLocally is the remote server's 204: the key asked for is one this
+// host already has, so nothing was released.
+var errHeldLocally = errors.New("this host already holds the key")
+
+// heldKeyQuery names what a restore needs: the snapshot, or for a whole
+// repository the recipient it is sealed to; and the keys this host already
+// holds, so the server releases nothing when one of them is the key.
+type heldKeyQuery struct {
+	snapshotID string
+	recipient  string
+	have       []string
+}
+
+// fetchManagedIdentity asks the remote server for the one Age identity it
+// holds for what the query names (M91: one key per release, never every key
+// the organization holds).
 //
 // The returned key is never written anywhere. It is not saved to key_path, not
 // written into the config, and not logged; it exists in one local variable for
 // the length of one restore. Writing it to key_path would quietly convert a
 // managed-custody organization into a customer-held one on that host, which is
 // the opposite of what the operator chose and would survive revocation.
-//
-// A 404 here is an ordinary answer, not a fault: it means the organization
-// holds its own key and the remote server has no copy. The caller reports the
-// original "no key" error in that case, because that is the true situation.
-func fetchManagedIdentity(ctx context.Context, serverURL, nodeID, token string) (*managedIdentityFetchResponse, error) {
+func fetchManagedIdentity(ctx context.Context, serverURL, nodeID, token string, hq heldKeyQuery) (*managedIdentityFetchResponse, error) {
 	if err := refuseInsecureServerURL(serverURL); err != nil {
 		return nil, err
 	}
+	q := url.Values{}
+	if hq.snapshotID != "" {
+		q.Set("snapshot", hq.snapshotID)
+	} else {
+		q.Set("recipient", hq.recipient)
+	}
+	for _, h := range hq.have {
+		q.Add("have", h)
+	}
 	req, err := http.NewRequestWithContext(ctx, "GET",
-		fmt.Sprintf("%s/api/v1/nodes/%s/identity", strings.TrimRight(serverURL, "/"), nodeID), nil)
+		fmt.Sprintf("%s/api/v1/nodes/%s/identity?%s", strings.TrimRight(serverURL, "/"), nodeID, q.Encode()), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -270,14 +290,20 @@ func fetchManagedIdentity(ctx context.Context, serverURL, nodeID, token string) 
 		return nil, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNotFound {
-		return nil, errNoManagedKey
+	if resp.StatusCode == http.StatusNoContent {
+		return nil, errHeldLocally
 	}
 	if resp.StatusCode != http.StatusOK {
 		var e struct {
 			Error string `json:"error"`
 		}
 		_ = json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&e)
+		if resp.StatusCode == http.StatusNotFound {
+			if e.Error != "" {
+				return nil, fmt.Errorf("%w: %s", errNoManagedKey, e.Error)
+			}
+			return nil, errNoManagedKey
+		}
 		if e.Error != "" {
 			return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, e.Error)
 		}
@@ -290,89 +316,89 @@ func fetchManagedIdentity(ctx context.Context, serverURL, nodeID, token string) 
 	return &res, nil
 }
 
-// resolveManagedIdentity asks whether SafeGrd holds keys for this
-// organization, for restore and verify when no key is on this host.
-//
-// Returns "" whenever it cannot, including for a customer-held org, so the
-// caller's existing "decryption key required" error stands unchanged. In an
-// organization that holds keys for some hosts but not this one, it returns
-// those keys (an older snapshot may be sealed to one) and says on stderr that
-// this host's own key has to be passed in.
+// resolveManagedIdentity is the key a daemon drill of this host's own surfaces
+// needs when the host has none: the one its own recipient names. "" when the
+// server holds no such key (customer-held), so the caller's error stands.
 func resolveManagedIdentity(ctx context.Context, cfg *config.CLIConfig, verbose bool) string {
-	return fetchManagedKeys(ctx, cfg, verbose, true)
+	return withManagedIdentity(ctx, cfg, "", heldKeyQuery{recipient: strings.TrimSpace(cfg.Encryption.PublicKey)}, verbose)
 }
 
-// withManagedIdentities is the key set restore and verify decrypt with: the
-// host's own key, plus every key SafeGrd holds for the organization when the
-// host is enrolled. A host that replaced a lost one has a key of its own that
-// cannot open the lost host's snapshots; the held key for that host can, and
-// trying the local key alone failed the restore managed custody exists for.
-// An organization whose hosts all keep their own key answers 404, and only
-// the local key is used. A
-// failed fetch is not reported while a local key exists: an offline restore
-// with the host's own key is the normal case, not a warning.
-func withManagedIdentities(ctx context.Context, cfg *config.CLIConfig, local string, verbose bool) string {
-	if local == "" {
-		return fetchManagedKeys(ctx, cfg, verbose, true)
-	}
-	held := fetchManagedKeys(ctx, cfg, verbose, false)
-	if held == "" {
+// withManagedIdentity is the key set restore, verify, check and find decrypt
+// with: the host's own key, plus the one key SafeGrd holds for what is being
+// read, when the host's own key is not it. A host that replaced a lost one
+// has a key of its own that cannot open the lost host's snapshots; the held
+// key for that host can. The server is told which keys the host has, so a
+// host whose own key opens the snapshot is released nothing (M91; it used to
+// be sent every key the organization held on every restore).
+//
+// A failed fetch is said out loud only when the host has no key of its own:
+// an offline restore with the host's own key is the normal case.
+func withManagedIdentity(ctx context.Context, cfg *config.CLIConfig, local string, hq heldKeyQuery, verbose bool) string {
+	if cfg.ServerURL == "" || cfg.NodeID == "" || cfg.ServerToken == "" {
 		return local
 	}
-	return local + "\n" + held
-}
-
-// noLocalKey is true when the caller has no key of its own, so a failed fetch
-// or a missing key for this host is what the operator needs to hear.
-func fetchManagedKeys(ctx context.Context, cfg *config.CLIConfig, verbose, noLocalKey bool) string {
-	if cfg.ServerURL == "" || cfg.NodeID == "" || cfg.ServerToken == "" {
-		return ""
+	if hq.snapshotID == "" && hq.recipient == "" {
+		return local
 	}
-	res, err := fetchManagedIdentity(ctx, cfg.ServerURL, cfg.NodeID, cfg.ServerToken)
-	if err != nil && !errors.Is(err, errNoManagedKey) && noLocalKey {
-		// The caller goes on to report that no key was found, which is true
-		// but not why. Say why first.
-		fmt.Fprintf(os.Stderr, "Warning: could not fetch the key the remote server holds: %v\n", err)
+	if local != "" {
+		ids, err := crypto.ParseIdentities(local)
+		if err == nil {
+			for _, id := range ids {
+				if x, ok := id.(*age.X25519Identity); ok {
+					hq.have = append(hq.have, x.Recipient().String())
+				}
+			}
+		}
 	}
-	if err != nil || res == nil {
+	res, err := fetchManagedIdentity(ctx, cfg.ServerURL, cfg.NodeID, cfg.ServerToken, hq)
+	switch {
+	case errors.Is(err, errHeldLocally):
+		return local
+	case err != nil && local == "":
+		if errors.Is(err, errNoManagedKey) {
+			// Says which key it is and where it could be: the decrypt error
+			// that follows would only say no identity matched.
+			fmt.Fprintf(os.Stderr, "Warning: this host has no key that opens it (%s). %s\n",
+				keyLocation(cfg), strings.TrimPrefix(err.Error(), errNoManagedKey.Error()+": "))
+		} else {
+			fmt.Fprintf(os.Stderr, "Warning: could not fetch the key the remote server holds: %v\n", err)
+		}
 		return ""
+	case err != nil:
+		return local
 	}
 	var keys []string
-	ownHeld := cfg.Encryption.PublicKey == ""
 	for _, id := range res.Identities {
 		if id.Identity != "" {
 			keys = append(keys, id.Identity)
-			ownHeld = ownHeld || id.PublicKey == cfg.Encryption.PublicKey
 		}
 	}
 	if len(keys) == 0 {
-		return ""
-	}
-	if !ownHeld {
-		// The organization holds keys for its other hosts, but this host's
-		// key is the customer's. Those keys open only snapshots sealed to
-		// them, so the decrypt error that follows needs this said first.
-		// With the key on the host there is no error to explain: the
-		// warning used to print over a drill that then passed with it.
-		if !noLocalKey {
-			return strings.Join(keys, "\n")
-		}
-		fmt.Fprintf(os.Stderr, "Warning: you hold this host's key (%s), and it is not on this host.\n"+
-			"   Pass it with --private-key or SAFEGRD_PRIVATE_KEY. Trying the keys the remote server holds for other hosts.\n",
-			crypto.Fingerprint(cfg.Encryption.PublicKey))
-		return strings.Join(keys, "\n")
+		return local
 	}
 	if verbose {
 		// The fingerprint, never the key. An operator needs to know which key
 		// opened the archive and where it came from; printing the identity
 		// itself would put it in a terminal scrollback and a CI log.
-		fmt.Printf("   Decryption key:  SafeGrd-managed identity for org %s (fetched, not stored)\n", res.OrgID)
+		fmt.Printf("   Decryption key:  %s, held by SafeGrd for org %s (fetched, not stored)\n",
+			crypto.Fingerprint(res.Identities[0].PublicKey), res.OrgID)
 		if res.Notice != "" {
 			fmt.Printf("   Notice:          %s\n", res.Notice)
 		}
 	}
-	// One per line; the decryptor uses whichever the snapshot was sealed to.
-	return strings.Join(keys, "\n")
+	if local == "" {
+		return strings.Join(keys, "\n")
+	}
+	return local + "\n" + strings.Join(keys, "\n")
+}
+
+// keyLocation is where this host looks for its own key, for an error that
+// says the key is missing.
+func keyLocation(cfg *config.CLIConfig) string {
+	if cfg.Encryption.KeyPath != "" {
+		return "looked in " + cfg.Encryption.KeyPath + "; pass another with --key-path or SAFEGRD_PRIVATE_KEY"
+	}
+	return "pass it with --key-path or SAFEGRD_PRIVATE_KEY"
 }
 
 // fetchHeldSurfaceSecret fills in the credential the remote server holds for

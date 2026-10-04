@@ -153,7 +153,7 @@ left alone, and the whole restore is still one transaction.`,
 			// host's. They are tried beside the host's own key, never written
 			// to key_path; they open this archive and then go away. A
 			// customer-held org answers 404 and the local key stands alone.
-			resolvedKey = withManagedIdentities(ctx, cfg, resolvedKey, true)
+			resolvedKey = withManagedIdentity(ctx, cfg, resolvedKey, heldKeyQuery{snapshotID: snapshotID}, true)
 
 			if resolvedKey == "" {
 				return fmt.Errorf("decryption key required: specify --private-key or configure ~/.safegrd/keys/daemon.key")

@@ -108,7 +108,7 @@ when this host is enrolled.`,
 			// Same key set as restore: the host's own key and a
 			// managed-custody organization's keys, fetched for this
 			// verification only and never written to disk.
-			resolvedKey = withManagedIdentities(ctx, cfg, resolvedKey, true)
+			resolvedKey = withManagedIdentity(ctx, cfg, resolvedKey, heldKeyQuery{snapshotID: snapshotID}, true)
 
 			if resolvedKey == "" {
 				return fmt.Errorf("decryption key required for verification: specify --private-key or configure ~/.safegrd/keys/daemon.key")
