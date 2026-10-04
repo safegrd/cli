@@ -5,7 +5,7 @@
 #
 #   docker build --build-arg VERSION=0.4.0 -t safegrd/cli .
 
-ARG GO_VERSION=1.25
+ARG GO_VERSION=1.26
 ARG ALPINE_VERSION=3.24
 
 FROM --platform=$BUILDPLATFORM golang:${GO_VERSION} AS build

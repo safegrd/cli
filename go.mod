@@ -2,6 +2,8 @@ module github.com/safegrd/cli
 
 go 1.26.0
 
+toolchain go1.26.8
+
 require (
 	filippo.io/age v1.2.1
 	github.com/aws/aws-sdk-go-v2 v1.47.0
