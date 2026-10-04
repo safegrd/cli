@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -28,14 +29,32 @@ import (
 
 // repoDatabaseSurfaceID names the repository of an ad-hoc
 // `backup --database-url … --format repo`: the same database always lands in
-// the same repository, whatever password or options the URL carries.
+// the same repository, whatever password or options the URL carries, or
+// whichever path names a SQLite file.
 func repoDatabaseSurfaceID(databaseURL string) string {
+	if dump.IsSQLiteURL(databaseURL) {
+		key := databaseURL
+		if p, err := dump.SQLitePath(databaseURL); err == nil {
+			if real, err := filepath.EvalSymlinks(p); err == nil {
+				p = real
+			}
+			key = "sqlite://" + p
+		}
+		sum := sha256.Sum256([]byte(key))
+		return "sqlite-" + hex.EncodeToString(sum[:])[:12]
+	}
 	key := databaseURL
 	if c, err := pgx.ParseConfig(databaseURL); err == nil {
 		key = fmt.Sprintf("postgres://%s:%d/%s", c.Host, c.Port, c.Database)
 	}
 	sum := sha256.Sum256([]byte(key))
 	return "postgres-" + hex.EncodeToString(sum[:])[:12]
+}
+
+// repoDatabaseKind reports whether a database backs up as a run of its
+// repository: PostgreSQL and SQLite do; MySQL and MongoDB are one archive.
+func repoDatabaseKind(t model.SurfaceType) bool {
+	return t == model.SurfaceTypePostgres || t == model.SurfaceTypeSQLite
 }
 
 // repoDBParams are one database backup into a repository.
@@ -61,17 +80,26 @@ type repoDBParams struct {
 	ChangeLog bool
 }
 
-// runRepoDatabaseBackup dumps a PostgreSQL database into its repository as
-// one snapshot, one file per section and per table, and returns the metadata
-// it recorded in the sidecar. Reporting it to the remote server is the
-// caller's.
+// runRepoDatabaseBackup dumps a database into its repository as one
+// snapshot, and returns the metadata it recorded in the sidecar: PostgreSQL
+// as one file per section and per table, SQLite as its database file copied
+// page for page. Reporting it to the remote server is the caller's.
 func runRepoDatabaseBackup(ctx context.Context, p repoDBParams) (*model.SnapshotMetadata, *write.Result, error) {
 	out := p.Out
 	if out == nil {
 		out = io.Discard
 	}
-	if dump.SurfaceTypeOfURL(p.DatabaseURL) != model.SurfaceTypePostgres {
-		return nil, nil, fmt.Errorf("--format repo backs up PostgreSQL databases and files; this database is backed up as one archive (leave out --format)")
+	kind := dump.SurfaceTypeOfURL(p.DatabaseURL)
+	if !repoDatabaseKind(kind) {
+		return nil, nil, fmt.Errorf("--format repo backs up PostgreSQL and SQLite databases and files; this database is backed up as one archive (leave out --format)")
+	}
+	if p.ChangeLog && kind != model.SurfaceTypePostgres {
+		return nil, nil, fmt.Errorf("the change log applies to a PostgreSQL database")
+	}
+	// What a run that cannot reuse the epoch uploads again.
+	everything := "every table"
+	if kind == model.SurfaceTypeSQLite {
+		everything = "the whole database"
 	}
 	b, err := repoBackend(ctx, cfg, p.StorageCfg)
 	if err != nil {
@@ -83,15 +111,24 @@ func runRepoDatabaseBackup(ctx context.Context, p repoDBParams) (*model.Snapshot
 	if p.ServerCache {
 		var note string
 		if sc, note, err = fetchServerCache(ctx, cfg, p.SurfaceID, p.StateDir); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: %s the cache kept on the remote server could not be fetched (%v). This run uploads every table again.\n", label, err)
+			fmt.Fprintf(os.Stderr, "Warning: %s the cache kept on the remote server could not be fetched (%v). This run uploads %s again.\n", label, err, everything)
 		} else if note != "" && strings.HasPrefix(note, "no cache") {
 			fmt.Fprintf(out, "%s %s.\n", label, strings.ToUpper(note[:1])+note[1:])
 		} else if note != "" {
-			fmt.Fprintf(os.Stderr, "Warning: %s %s. This run uploads every table again.\n", label, note)
+			fmt.Fprintf(os.Stderr, "Warning: %s %s. This run uploads %s again.\n", label, note, everything)
 		}
 	}
 	var dumpMeta, meta *model.SnapshotMetadata
-	dumper := dump.NewNativeDumper(p.DatabaseURL)
+	var source write.Source
+	var dumper *dump.NativeDumper
+	if kind == model.SurfaceTypeSQLite {
+		sd := dump.NewSQLiteDumper(p.DatabaseURL)
+		sd.PageCopy = true
+		source = dbrun.Source(sd, "", &dumpMeta)
+	} else {
+		dumper = dump.NewNativeDumper(p.DatabaseURL)
+		source = dbrun.Source(dumper, "", &dumpMeta)
+	}
 	var (
 		prior    *dump.ChangeLogState
 		plan     *dump.ChangeLogPlan
@@ -99,7 +136,6 @@ func runRepoDatabaseBackup(ctx context.Context, p repoDBParams) (*model.Snapshot
 		canCarry func(string) bool
 		priorRaw []byte
 	)
-	source := dbrun.Source(dumper, "", &dumpMeta)
 	if p.ChangeLog {
 		inner := source
 		source = func(ctx context.Context, emit func(write.Entry) error) error {
@@ -165,7 +201,8 @@ func runRepoDatabaseBackup(ctx context.Context, p repoDBParams) (*model.Snapshot
 		OnStart: func(r *write.Result) {
 			priorRaw, canCarry = r.PriorState, r.CanCarry
 			if r.Opened {
-				fmt.Fprintf(out, "%s Epoch %s opened (%s). Every table is uploaded once this month.\n", label, r.Epoch.EpochID, reasonText(r.Reason))
+				fmt.Fprintf(out, "%s Epoch %s opened (%s). %s is uploaded once this month.\n", label, r.Epoch.EpochID, reasonText(r.Reason),
+					strings.ToUpper(everything[:1])+everything[1:])
 			}
 			if r.Resumed {
 				fmt.Fprintf(out, "%s Resuming epoch %s: %d %s (%s) already uploaded are reused.\n", label, r.Epoch.EpochID,
@@ -236,7 +273,7 @@ func runRepoDatabaseBackup(ctx context.Context, p repoDBParams) (*model.Snapshot
 	if sc != nil {
 		if n, err := sc.save(ctx); err != nil {
 			cacheKept = false
-			fmt.Fprintf(os.Stderr, "Warning: %s the cache could not be kept on the remote server (%v). The next run uploads every table again.\n", label, err)
+			fmt.Fprintf(os.Stderr, "Warning: %s the cache could not be kept on the remote server (%v). The next run uploads %s again.\n", label, err, everything)
 		} else {
 			fmt.Fprintf(out, "%s Cache kept on the remote server (%s, encrypted).\n", label, formatBytes(n))
 		}
@@ -262,6 +299,9 @@ func restoreRepo(ctx context.Context, rs *repoSnapshot, privateKey, targetDir, t
 		if !runner.IsRepoDatabase(rs.Meta) {
 			return fmt.Errorf("snapshot %s is a files snapshot; --to-sql reads PostgreSQL snapshots only", id)
 		}
+		if rs.Meta.SurfaceType == model.SurfaceTypeSQLite {
+			return fmt.Errorf("snapshot %s is a SQLite snapshot; --to-sql reads PostgreSQL snapshots only. Restore it with --target sqlite:///path/new.db and open that file", id)
+		}
 		if len(tables) > 0 || len(paths) > 0 {
 			return fmt.Errorf("--to-sql writes the whole snapshot; leave out --table and --path")
 		}
@@ -280,6 +320,16 @@ func restoreRepo(ctx context.Context, rs *repoSnapshot, privateKey, targetDir, t
 	}
 	if len(paths) > 0 {
 		return fmt.Errorf("--path restores files; %s is a database snapshot and restores whole", id)
+	}
+	if rs.Meta.SurfaceType == model.SurfaceTypeSQLite {
+		if len(tables) > 0 {
+			return fmt.Errorf("--table restores tables of a PostgreSQL snapshot; %s is a SQLite snapshot and restores whole", id)
+		}
+		if !dump.IsSQLiteURL(targetURL) {
+			return fmt.Errorf("snapshot %s is a SQLite snapshot; --target must be a sqlite: URL naming a new file", id)
+		}
+		fmt.Printf("Restoring %s (epoch %s, %s) into %s\n", id, rs.Epoch.Epoch.EpochID, rs.SurfaceID, dump.RedactURL(targetURL))
+		return restoreRepoSQLite(ctx, rs, privateKey, targetURL)
 	}
 	if dump.SurfaceTypeOfURL(targetURL) != model.SurfaceTypePostgres {
 		return fmt.Errorf("snapshot %s is a PostgreSQL snapshot; --target must be a PostgreSQL database", id)
@@ -539,6 +589,53 @@ func restoreRepoDatabase(ctx context.Context, rs *repoSnapshot, privateKey, targ
 	}
 	fmt.Printf("Restored %d %s, %s rows, from %s in %s. Every table matched its SHA-256 and its row count.\n",
 		len(got.TableStats), pluralWord(int64(len(got.TableStats)), "table", "tables"), formatNumber(rows), id,
+		shortDuration(time.Since(started)))
+	return nil
+}
+
+// restoreRepoSQLite writes a SQLite run's database to a new file. The file
+// appears only once every chunk matched its hash, the content root matched
+// the one recorded at backup time, and the copy passed PRAGMA
+// integrity_check.
+func restoreRepoSQLite(ctx context.Context, rs *repoSnapshot, privateKey, targetURL string) error {
+	id := rs.Meta.SnapshotID
+	target, err := dump.SQLitePath(targetURL)
+	if err != nil {
+		return err
+	}
+	if err := dump.SQLiteCheckEmpty(target); err != nil {
+		return err
+	}
+	r, idx, files, err := openRun(ctx, rs, privateKey)
+	if err != nil {
+		return err
+	}
+	started := time.Now()
+	pr, pw := io.Pipe()
+	archived := make(chan error, 1)
+	go func() {
+		err := dbrun.Archive(ctx, r, idx, files, pw)
+		_ = pw.CloseWithError(err)
+		archived <- err
+	}()
+	got, err := dump.NewSQLiteRestorer(targetURL).Restore(ctx, pr)
+	_ = pr.CloseWithError(fmt.Errorf("the restore stopped"))
+	if aerr := <-archived; aerr != nil && err == nil {
+		// The archive is read whole before the restorer renames the file
+		// into place, so a chunk that fails its hash stops it first; this
+		// is a failure after the rename, and the file is taken back.
+		_ = dump.SQLiteResetDatabase(target)
+		err = aerr
+	}
+	if err != nil {
+		return fmt.Errorf("restore failed, and nothing was written to %s: %w", target, err)
+	}
+	var rows int64
+	for _, t := range got.TableStats {
+		rows += t.RowCount
+	}
+	fmt.Printf("Restored %d %s, %s rows, from %s into %s in %s. The database matched its SHA-256 and passed PRAGMA integrity_check.\n",
+		len(got.TableStats), pluralWord(int64(len(got.TableStats)), "table", "tables"), formatNumber(rows), id, target,
 		shortDuration(time.Since(started)))
 	return nil
 }

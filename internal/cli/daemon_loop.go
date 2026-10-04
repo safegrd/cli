@@ -339,10 +339,10 @@ func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, d pendingDrill
 	// A surface whose last snapshot is still an archive from before it was
 	// incremental takes the archive's drill.
 	var rs *repoSnapshot
-	// A PostgreSQL surface is a run of its repository unless it says
-	// format: tar.
+	// A PostgreSQL or SQLite surface is a run of its repository unless it
+	// says format: tar.
 	notTar := !strings.EqualFold(strings.TrimSpace(s.Format), formatTar)
-	if notTar && (strings.EqualFold(s.Type, "files") || surfaceIsPostgres(s) || strings.TrimSpace(s.Type) == "") {
+	if notTar && (strings.EqualFold(s.Type, "files") || surfaceIsPostgres(s) || strings.EqualFold(s.Type, "sqlite") || strings.TrimSpace(s.Type) == "") {
 		rs = repoDrillTarget(ctx, c, storageCfg, snapshotID)
 	}
 	dbRun := rs != nil && runner.IsRepoDatabase(rs.Meta)

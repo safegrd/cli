@@ -18,6 +18,13 @@ const (
 // RunsOnSafeGrd marks a surface the remote server backs up and drills itself.
 const RunsOnSafeGrd = "safegrd"
 
+// How a backup is stored: a run of the surface's repository (incremental),
+// or one archive (full).
+const (
+	BackupFormatRepo = "repo"
+	BackupFormatTar  = "tar"
+)
+
 // Node represents an enrolled CLI daemon or backup runner.
 type Node struct {
 	ID                string     `json:"id" yaml:"id"`
@@ -64,6 +71,12 @@ type Node struct {
 	// server takes its backups and drills on machines it starts, with the
 	// credential it holds for the surface. Empty for a surface a host runs.
 	RunsOn string `json:"runs_on,omitempty" yaml:"runs_on,omitempty"`
+	// BackupFormat is how the remote server stores a surface it backs up
+	// itself, chosen when the surface is added: BackupFormatRepo, a run of
+	// the surface's repository that uploads only what changed, or
+	// BackupFormatTar, one whole archive per backup. Empty on a surface a
+	// host runs, whose config says.
+	BackupFormat string `json:"backup_format,omitempty" yaml:"backup_format,omitempty"`
 
 	// CredentialSource is where a surface's own credential comes from, as its
 	// host's config says: "held" (the remote server holds it and the host

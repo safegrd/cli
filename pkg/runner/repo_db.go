@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/safegrd/cli/pkg/diskspace"
 	"github.com/safegrd/cli/pkg/dump"
 	"github.com/safegrd/cli/pkg/model"
 	"github.com/safegrd/cli/pkg/repo/check"
@@ -30,23 +31,36 @@ func IsRepoDatabase(meta *model.SnapshotMetadata) bool {
 //     checked against its SHA-256 on the way;
 //  4. that archive is restored: in memory when sandboxURL is empty, or into
 //     the empty database sandboxURL names, and held to the manifest's tables
-//     and row counts.
+//     and row counts. A SQLite run's database is written out and opened by
+//     the SQLite engine either way, as an archive's drill does.
 func (v *Verifier) RunRepoDatabaseDrill(ctx context.Context, d RepoDrill, privateKey, sandboxURL string) (*model.VerificationReport, error) {
 	started := time.Now()
 	meta := d.Meta
+	kind := meta.SurfaceType
+	if kind != model.SurfaceTypeSQLite {
+		kind = model.SurfaceTypePostgres
+	}
 	if sandboxURL != "" {
-		if dump.SurfaceTypeOfURL(sandboxURL) != model.SurfaceTypePostgres {
-			return nil, fmt.Errorf("snapshot %s is a PostgreSQL snapshot; its sandbox must be a PostgreSQL database too", meta.SnapshotID)
+		if dump.SurfaceTypeOfURL(sandboxURL) != kind {
+			return nil, fmt.Errorf("snapshot %s is a %s snapshot; its sandbox must be a %s database too", meta.SnapshotID, kind, kind)
 		}
 		if err := CheckSandboxEmpty(ctx, sandboxURL); err != nil {
 			return nil, err
+		}
+	}
+	// A SQLite drill writes the database out and opens it, in the system
+	// temporary directory, as an archive's does.
+	if kind == model.SurfaceTypeSQLite && sandboxURL == "" {
+		if err := diskspace.CheckFreeSpace(os.TempDir(), meta.RawSizeBytes, "a Fire Drill of "+meta.SnapshotID+", which writes the database out",
+			"free some space, or set TMPDIR to a larger disk"); err != nil {
+			return nil, &DrillBlockedError{Err: err}
 		}
 	}
 	report := &model.VerificationReport{
 		VerificationID: "verif-dry-" + uuid.New().String()[:8],
 		SnapshotID:     meta.SnapshotID,
 		NodeID:         meta.NodeID,
-		SurfaceType:    model.SurfaceTypePostgres,
+		SurfaceType:    kind,
 		DatabaseName:   meta.DatabaseName,
 		StartedAt:      started,
 		SandboxEngine:  "in-memory-dry-restore",
@@ -54,7 +68,7 @@ func (v *Verifier) RunRepoDatabaseDrill(ctx context.Context, d RepoDrill, privat
 	}
 	if sandboxURL != "" {
 		report.VerificationID = "verif-" + uuid.New().String()[:8]
-		report.SandboxEngine = "ephemeral-postgres-sandbox"
+		report.SandboxEngine = "ephemeral-" + string(kind) + "-sandbox"
 	}
 	fail := func(name, expected, actual, msg string) (*model.VerificationReport, error) {
 		report.Assertions = append(report.Assertions, model.AssertionResult{Name: name, Passed: false, Expected: expected, Actual: actual, Message: msg})
@@ -133,7 +147,13 @@ func (v *Verifier) RunRepoDatabaseDrill(ctx context.Context, d RepoDrill, privat
 	}
 
 	if sandboxURL == "" {
-		res, inspectErr := dump.NewDryRestorer().InspectArchive(ctx, pr)
+		var res *dump.DryRestoreResult
+		var inspectErr error
+		if kind == model.SurfaceTypeSQLite {
+			res, inspectErr = dump.InspectSQLiteArchive(ctx, pr)
+		} else {
+			res, inspectErr = dump.NewDryRestorer().InspectArchive(ctx, pr)
+		}
 		if err := drain(); err != nil {
 			return fail("RestoreIntegrity", "every file of the run matches its SHA-256", err.Error(), "the run could not be read back: "+err.Error())
 		}
@@ -161,15 +181,21 @@ func (v *Verifier) RunRepoDatabaseDrill(ctx context.Context, d RepoDrill, privat
 		return report, nil
 	}
 
-	restorer := dump.NewNativeRestorer(sandboxURL)
-	var archiveErr error
+	var archiveErr, restoreErr error
 	drained := false
-	restorer.BeforeCommit = func() error {
-		drained = true
-		archiveErr = drain()
-		return archiveErr
+	if kind == model.SurfaceTypeSQLite {
+		// The SQLite restorer reads the archive to its end before it puts
+		// the file in place.
+		_, restoreErr = dump.NewSQLiteRestorer(sandboxURL).Restore(ctx, pr)
+	} else {
+		restorer := dump.NewNativeRestorer(sandboxURL)
+		restorer.BeforeCommit = func() error {
+			drained = true
+			archiveErr = drain()
+			return archiveErr
+		}
+		_, restoreErr = restorer.Restore(ctx, pr)
 	}
-	_, restoreErr := restorer.Restore(ctx, pr)
 	if !drained {
 		archiveErr = drain()
 	}

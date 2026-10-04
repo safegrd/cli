@@ -162,10 +162,10 @@ type SurfaceConfig struct {
 	// Files fields
 	Roots    []string `yaml:"roots,omitempty" json:"roots,omitempty"`
 	Excludes []string `yaml:"excludes,omitempty" json:"excludes,omitempty"`
-	// Format is how a files or PostgreSQL surface is stored: "tar", one
-	// archive per backup, or "repo", an incremental repository where each
-	// run uploads only what changed. Unset is repo for files and a
-	// PostgreSQL database, and tar for every other database.
+	// Format is how a files, PostgreSQL or SQLite surface is stored: "tar",
+	// one archive per backup, or "repo", an incremental repository where
+	// each run uploads only what changed. Unset is repo for files and a
+	// PostgreSQL or SQLite database, and tar for MySQL and MongoDB.
 	Format string `yaml:"format,omitempty" json:"format,omitempty"`
 	// ChangeLog lets a PostgreSQL repo surface skip reading tables nothing
 	// wrote since its last run. It installs a trigger on each table and a

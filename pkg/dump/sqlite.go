@@ -18,7 +18,7 @@ import (
 
 	"github.com/safegrd/cli/pkg/diskspace"
 	"github.com/safegrd/cli/pkg/model"
-	_ "modernc.org/sqlite" // the "sqlite" database/sql driver, pure Go
+	sqlite "modernc.org/sqlite" // the "sqlite" database/sql driver, pure Go
 )
 
 // SQLite. A database that is being written cannot be copied as a file: cp
@@ -34,6 +34,13 @@ import (
 // The snapshot is a tar of that database file and the manifest. Restoring it
 // needs nothing from SafeGrd but the key: decrypt, untar, and it is a SQLite
 // database.
+//
+// A backup into a repository copies the database with SQLite's online
+// backup API instead, which also reads one committed state, WAL included,
+// but keeps every page where the database has it. VACUUM INTO rewrites the
+// file in key order, so one row inserted into an index moves every page of
+// that index after it, and each run uploads them all again; a page copy
+// changes only the pages the writes changed.
 
 const sqliteDBEntry = "sqlite/database.sqlite"
 
@@ -234,6 +241,10 @@ func sqliteTables(ctx context.Context, db *sql.DB) ([]model.TableStat, error) {
 type SQLiteDumper struct {
 	databaseURL string
 	Warn        func(string)
+	// PageCopy copies the database page for page with the online backup
+	// API, for a run of a repository, instead of compacting it with VACUUM
+	// INTO.
+	PageCopy bool
 }
 
 // NewSQLiteDumper creates a dumper for a sqlite: URL.
@@ -279,7 +290,13 @@ func (d *SQLiteDumper) Dump(ctx context.Context, databaseName string, dst io.Wri
 	}
 	defer os.RemoveAll(tmpDir)
 	copyPath := filepath.Join(tmpDir, "copy.sqlite")
-	if _, err := src.ExecContext(ctx, "VACUUM INTO ?", copyPath); err != nil {
+	schemaSource := "sqlite VACUUM INTO"
+	if d.PageCopy {
+		schemaSource = "sqlite online backup"
+		if err := copySQLitePages(ctx, src, copyPath); err != nil {
+			return nil, fmt.Errorf("copying %s with the online backup API: %w (it needs free space in %s about the size of the database; set TMPDIR to use another disk)", path, err, os.TempDir())
+		}
+	} else if _, err := src.ExecContext(ctx, "VACUUM INTO ?", copyPath); err != nil {
 		return nil, fmt.Errorf("copying %s with VACUUM INTO: %w (it needs free space in %s about the size of the database; set TMPDIR to use another disk)", path, err, os.TempDir())
 	}
 	_ = src.Close()
@@ -324,7 +341,7 @@ func (d *SQLiteDumper) Dump(ctx context.Context, databaseName string, dst io.Wri
 		CreatedAt:     started,
 		DatabaseName:  databaseName,
 		ServerVersion: "SQLite " + version,
-		SchemaSource:  "sqlite VACUUM INTO",
+		SchemaSource:  schemaSource,
 		TableStats:    stats,
 	}
 	if meta.DatabaseName == "" {
@@ -337,6 +354,53 @@ func (d *SQLiteDumper) Dump(ctx context.Context, databaseName string, dst io.Wri
 		return nil, err
 	}
 	return meta, nil
+}
+
+// copySQLitePages writes a copy of the database src has open to dst, page
+// for page, in one step: one read transaction, so one committed state with
+// what is still in the WAL, while writers carry on in WAL mode. The copy
+// keeps the source's journal mode in its header, which would make every
+// later open of it leave a -wal and -shm beside it, so it is put in
+// rollback mode, as a VACUUM INTO copy is.
+func copySQLitePages(ctx context.Context, src *sql.DB, dst string) error {
+	conn, err := src.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	err = conn.Raw(func(dc any) error {
+		b, ok := dc.(interface {
+			NewBackup(string) (*sqlite.Backup, error)
+		})
+		if !ok {
+			return fmt.Errorf("the SQLite driver has no online backup")
+		}
+		bk, err := b.NewBackup(dst)
+		if err != nil {
+			return err
+		}
+		if _, err := bk.Step(-1); err != nil {
+			_ = bk.Finish()
+			return err
+		}
+		return bk.Finish()
+	})
+	_ = conn.Close()
+	if err != nil {
+		return err
+	}
+	cp, err := openSQLite(dst, false)
+	if err != nil {
+		return err
+	}
+	defer cp.Close()
+	var mode string
+	if err := cp.QueryRowContext(ctx, "PRAGMA journal_mode=DELETE").Scan(&mode); err != nil {
+		return fmt.Errorf("putting the copy in rollback mode: %w", err)
+	}
+	if !strings.EqualFold(mode, "delete") {
+		return fmt.Errorf("the copy stayed in %s journal mode", mode)
+	}
+	return cp.Close()
 }
 
 // sqliteArchive reads a SQLite snapshot: it writes the database entry to

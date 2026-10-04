@@ -449,10 +449,11 @@ and never leaves this host.`,
 			engine := dump.EngineType(engineStr)
 			dbSurface := dump.SurfaceTypeOfURL(cfg.DatabaseURL)
 
-			// A PostgreSQL database is a run of its repository unless --format
-			// tar asks for one archive; every other engine is one archive.
+			// A PostgreSQL or SQLite database is a run of its repository
+			// unless --format tar asks for one archive; MySQL and MongoDB are
+			// one archive.
 			dbFormat := formatTar
-			if dbSurface == model.SurfaceTypePostgres {
+			if repoDatabaseKind(dbSurface) {
 				dbFormat = formatRepo
 			}
 			if cmd.Flags().Changed("format") {
@@ -620,7 +621,7 @@ and never leaves this host.`,
 	cmd.Flags().StringVar(&surfaceID, "surface", "", "Back up this surface from the config's surfaces now, as the daemon would, whatever its schedule")
 	cmd.Flags().StringVar(&filesPath, "files", "", "Back up this directory tree")
 	cmd.Flags().StringSliceVar(&excludes, "exclude", nil, "Glob patterns to leave out of --files (e.g. '*.tmp,node_modules/*')")
-	cmd.Flags().StringVar(&fileFmt, "format", formatRepo, "How the backup is stored: repo (incremental: each run uploads only what changed) or tar (one archive per backup). Repo is the default for --files and a PostgreSQL database; MySQL, MongoDB and SQLite are one archive")
+	cmd.Flags().StringVar(&fileFmt, "format", formatRepo, "How the backup is stored: repo (incremental: each run uploads only what changed) or tar (one archive per backup). Repo is the default for --files and a PostgreSQL or SQLite database; MySQL and MongoDB are one archive")
 	cmd.Flags().BoolVar(&newEpoch, "new-epoch", false, "With --format repo, or --surface of a repo surface: start a new epoch now, uploading everything once")
 	cmd.Flags().BoolVar(&rescan, "rescan", false, "With --format repo, or --surface of a repo surface: read every file, not only those whose size or times changed")
 	cmd.Flags().BoolVar(&changeLog, "change-log", false, "With a PostgreSQL repo backup: skip reading tables nothing wrote since the last run. Installs a trigger on each table and a safegrd schema in the database (DROP SCHEMA safegrd CASCADE removes it)")

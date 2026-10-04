@@ -479,8 +479,9 @@ func SchemaFidelity(m *model.SnapshotMetadata) model.AssertionResult {
 			Actual: m.SchemaSource, Passed: strings.HasPrefix(m.SchemaSource, "mysqldump") || strings.HasPrefix(m.SchemaSource, "mariadb-dump")}
 	}
 	if m != nil && m.SurfaceType == model.SurfaceTypeSQLite {
-		return model.AssertionResult{Name: "Copied By The SQLite Engine", Expected: "sqlite VACUUM INTO",
-			Actual: m.SchemaSource, Passed: strings.HasPrefix(m.SchemaSource, "sqlite VACUUM INTO")}
+		// VACUUM INTO for an archive, the online backup API for a run.
+		return model.AssertionResult{Name: "Copied By The SQLite Engine", Expected: "sqlite VACUUM INTO or sqlite online backup",
+			Actual: m.SchemaSource, Passed: strings.HasPrefix(m.SchemaSource, "sqlite VACUUM INTO") || strings.HasPrefix(m.SchemaSource, "sqlite online backup")}
 	}
 	if m != nil && m.SurfaceType == model.SurfaceTypeMongoDB {
 		return model.AssertionResult{Name: "Captured By mongodump", Expected: "mongodump",

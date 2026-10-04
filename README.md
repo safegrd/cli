@@ -268,7 +268,8 @@ what a restore brings back: [safegrd.dev/docs/surfaces/files](https://safegrd.de
 ## What it backs up
 
 - **PostgreSQL, incrementally:** the schema comes from `pg_dump` and the rows stream over binary `COPY` from the same snapshot, so arrays, enums, foreign keys, views, triggers and sequence positions all come back. Each run uploads only the chunks of each table that changed, `restore --table` loads chosen tables into a running database, and `--change-log` skips reading tables nothing wrote since the last run. `--format tar` keeps one archive per backup. Needs a `pg_dump` at least as new as the server on the host.
-- **MySQL and MariaDB** through `mysqldump --single-transaction`, **MongoDB** through `mongodump --archive`, and **SQLite** through `VACUUM INTO`, which captures transactions still in the WAL.
+- **SQLite, incrementally:** copied through SQLite's online backup in one read transaction, so transactions still in the WAL are in it and writers carry on. The copy keeps the database's pages in place, so each run uploads only the chunks whose pages changed. `--format tar` keeps one archive per backup. Needs nothing installed on the host.
+- **MySQL and MariaDB** through `mysqldump --single-transaction`, and **MongoDB** through `mongodump --archive`, one archive per backup.
 - **Directory trees, incrementally:** each run uploads only the chunks that changed, every object is locked once when it is written, and `safegrd find` lists every kept version of a file for `restore --path --version`.
 - **IMAP mailboxes,** every message as RFC 5322 mail, checked by SHA-256 on every drill.
 - **Locked storage:** S3 Object Lock in compliance mode, or governance mode where a lock may need lifting. Storage on the host's own disk, and a bucket with `worm_mode: NONE`, keep backups without a lock.

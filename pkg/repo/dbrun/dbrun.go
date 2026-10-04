@@ -10,6 +10,14 @@
 //
 // so a table whose rows did not move stores no new chunks, and a restore
 // rebuilds the archive stream the archive restorers already read.
+//
+// A SQLite run holds the database file, copied page for page, and the
+// manifest:
+//
+//	sqlite/database.sqlite
+//	manifest.json
+//
+// so a page no write touched stores no new chunk.
 package dbrun
 
 import (
@@ -88,11 +96,15 @@ const (
 	Sequences = "sequences.sql"
 	Manifest  = "manifest.json"
 	dataDir   = "data/"
+	// SQLiteDatabase is a SQLite run's database file.
+	SQLiteDatabase = "sqlite/database.sqlite"
+	sqliteDir      = "sqlite"
 )
 
 // Files lists the files of a database run in archive order: the schema,
-// every table's rows, the post-data section, the sequences and the manifest.
-// It refuses a snapshot holding anything else, which is not a database run.
+// every table's rows, the post-data section, the sequences and the manifest;
+// or, for SQLite, the database file and the manifest. It refuses a snapshot
+// holding anything else, or both shapes at once, which is not a database run.
 func Files(ctx context.Context, r *read.Repo, idx read.Index, s format.Snapshot) ([]read.Item, error) {
 	root, err := format.ParseID(s.RootTree)
 	if err != nil {
@@ -100,10 +112,15 @@ func Files(ctx context.Context, r *read.Repo, idx read.Index, s format.Snapshot)
 	}
 	var sections = map[string]read.Item{}
 	var tables []read.Item
+	var sqliteDB *read.Item
 	err = r.Walk(ctx, idx, root, func(it read.Item) error {
 		switch {
 		case it.Node.Type == format.NodeDir && (it.Path == "data" || strings.HasPrefix(it.Path, dataDir)):
 			return nil
+		case it.Node.Type == format.NodeDir && it.Path == sqliteDir:
+			return nil
+		case it.Node.Type == format.NodeFile && it.Path == SQLiteDatabase:
+			sqliteDB = &it
 		case it.Node.Type != format.NodeFile:
 			return fmt.Errorf("snapshot %s holds %s, which is not part of a database dump", s.SnapshotID, it.Path)
 		case strings.HasPrefix(it.Path, dataDir) && strings.HasSuffix(it.Path, ".copy"):
@@ -118,8 +135,15 @@ func Files(ctx context.Context, r *read.Repo, idx read.Index, s format.Snapshot)
 	if err != nil {
 		return nil, err
 	}
-	if _, ok := sections[Manifest]; !ok {
+	manifest, ok := sections[Manifest]
+	if !ok {
 		return nil, fmt.Errorf("snapshot %s has no %s: it is not a database run", s.SnapshotID, Manifest)
+	}
+	if sqliteDB != nil {
+		if len(sections) > 1 || len(tables) > 0 {
+			return nil, fmt.Errorf("snapshot %s holds a SQLite database and PostgreSQL sections: it is not one database run", s.SnapshotID)
+		}
+		return []read.Item{*sqliteDB, manifest}, nil
 	}
 	_, pre := sections[PreData]
 	_, schema := sections[Schema]

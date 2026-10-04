@@ -101,3 +101,20 @@ func TestClaimPutsThePreviousConfigBackWhenTheResultDoesNotLoad(t *testing.T) {
 		t.Errorf("the previous config was not put back:\n%s", raw)
 	}
 }
+
+// The backup type chosen in the console is written into the config as the
+// surface's format, for the surfaces that have both; a MySQL surface gets
+// none, whatever the claim says.
+func TestAClaimedSurfaceKeepsTheBackupTypeChosenInTheConsole(t *testing.T) {
+	for _, c := range []struct{ kind, format, want string }{
+		{"sqlite", "tar", "tar"}, {"sqlite", "repo", "repo"}, {"postgres", "tar", "tar"},
+		{"files", "repo", "repo"}, {"postgres", "", ""}, {"mysql", "repo", ""},
+	} {
+		var s claimSurface
+		s.Key, s.SurfaceType = "s", c.kind
+		s.Config.Path, s.Config.Format = "/var/lib/app.db", c.format
+		if got := surfaceConfigFor(s).Format; got != c.want {
+			t.Errorf("a %s surface claimed with format %q is written with %q, want %q", c.kind, c.format, got, c.want)
+		}
+	}
+}

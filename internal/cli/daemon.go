@@ -1164,17 +1164,17 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 		if dbURL == "" {
 			return nil, plan, stageErr(model.BackupReasonConfig, fmt.Errorf("database URL unresolved for surface %s", s.ID))
 		}
-		// A PostgreSQL surface is a run of its repository unless it says
-		// format: tar; every other engine is one archive.
+		// A PostgreSQL or SQLite surface is a run of its repository unless
+		// it says format: tar; MySQL and MongoDB are one archive.
 		dbFormat := strings.ToLower(strings.TrimSpace(s.Format))
-		if dbFormat == "" && dump.SurfaceTypeOfURL(dbURL) == model.SurfaceTypePostgres {
+		if dbFormat == "" && repoDatabaseKind(dump.SurfaceTypeOfURL(dbURL)) {
 			dbFormat = formatRepo
 		}
 		switch dbFormat {
 		case "", formatTar:
 		case formatRepo:
-			if dump.SurfaceTypeOfURL(dbURL) != model.SurfaceTypePostgres {
-				return nil, plan, stageErr(model.BackupReasonConfig, fmt.Errorf("surface %s: format: repo takes a PostgreSQL database; leave format out for this one", s.ID))
+			if !repoDatabaseKind(dump.SurfaceTypeOfURL(dbURL)) {
+				return nil, plan, stageErr(model.BackupReasonConfig, fmt.Errorf("surface %s: format: repo takes a PostgreSQL or SQLite database; leave format out for this one", s.ID))
 			}
 			if storageCfg.NodeID == "" {
 				storageCfg.NodeID = nodeID

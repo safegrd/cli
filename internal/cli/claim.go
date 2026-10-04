@@ -32,6 +32,9 @@ type claimSurface struct {
 		Port           int      `json:"port"`
 		Username       string   `json:"username"`
 		Folders        []string `json:"folders"`
+		// Format is "repo" (incremental) or "tar" (one full archive each
+		// backup), as chosen in the console; empty leaves the default.
+		Format string `json:"format"`
 	} `json:"config"`
 }
 
@@ -110,6 +113,10 @@ func surfaceConfigFor(s claimSurface) config.SurfaceConfig {
 	case "email":
 		sc.Host, sc.Port, sc.Username, sc.Folders = s.Config.Host, s.Config.Port, s.Config.Username, s.Config.Folders
 		sc.Credential = credential()
+	}
+	switch s.SurfaceType {
+	case "postgres", "sqlite", "files":
+		sc.Format = s.Config.Format
 	}
 	return sc
 }
