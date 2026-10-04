@@ -39,13 +39,24 @@ func (e *exitError) Error() string {
 
 func (e *exitError) Unwrap() error { return e.err }
 
+// guardOptions is what guard was told about the snapshot it needs.
+type guardOptions struct {
+	surfaceID     string
+	allowUnlocked bool
+	// maxAge, when set, lets a locked snapshot of the surface younger than
+	// this stand in for a new backup. Zero takes a backup every time.
+	maxAge time.Duration
+	// checkOnly, with maxAge, takes no backup at all: without a recent
+	// locked snapshot the command is refused.
+	checkOnly bool
+}
+
 func newGuardCmd() *cobra.Command {
 	var (
-		surfaceID     string
-		allowUnlocked bool
-		matches       string
-		list          bool
-		hook          string
+		opts    guardOptions
+		matches string
+		list    bool
+		hook    string
 	)
 	cmd := &cobra.Command{
 		Use:   "guard [--surface ID] [-- command [args...]]",
@@ -73,7 +84,18 @@ As an AI coding tool's pre-command hook, guard reads the tool's JSON on stdin,
 backs up first when the command matches the list, and blocks the command when
 no locked snapshot could be taken:
 
-  safegrd guard --hook claude-code --surface prod-db   (also: cursor, codex)`,
+  safegrd guard --hook claude-code --surface prod-db   (also: cursor, codex)
+
+A locked snapshot taken in the last while can stand in for a new one, so an
+agent running several destructive commands in a row does not take a backup
+for each:
+
+  safegrd guard --max-age 30m -- psql -c 'TRUNCATE sessions'
+  safegrd guard --max-age 30m --check-only -- terraform destroy
+
+--check-only takes no backup at all: without a locked snapshot younger than
+--max-age the command is refused (exit 3). Use it where the surface is backed
+up by its daemon or by the remote server, and this host should only check.`,
 		// A hook answers even when the config cannot be read: an exit 1 lets
 		// the agent's command through, so the refusal has to be the answer
 		// (runGuardHook blocks a destructive command with the reason).
@@ -97,12 +119,15 @@ no locked snapshot could be taken:
 				}
 				return &exitError{code: 1}
 			}
+			if opts.checkOnly && opts.maxAge <= 0 {
+				return errors.New("--check-only needs --max-age: how young a locked snapshot has to be")
+			}
 			if hook != "" {
 				ctx := cmd.Context()
 				if ctx == nil {
 					ctx = context.Background()
 				}
-				return runGuardHook(ctx, hook, surfaceID, allowUnlocked, os.Stdin, os.Stdout)
+				return runGuardHook(ctx, hook, opts, os.Stdin, os.Stdout)
 			}
 
 			var command []string
@@ -118,7 +143,7 @@ no locked snapshot could be taken:
 			if ctx == nil {
 				ctx = context.Background()
 			}
-			snap, err := guardSnapshot(ctx, surfaceID, allowUnlocked, describeCommand(command))
+			snap, err := guardSnapshot(ctx, opts, describeCommand(command))
 			if err != nil {
 				if len(command) > 0 {
 					fmt.Fprintf(os.Stderr, "Error: not running %s: %v\n", describeCommand(command), err)
@@ -134,10 +159,14 @@ no locked snapshot could be taken:
 			return runGuarded(command)
 		},
 	}
-	cmd.Flags().StringVar(&surfaceID, "surface", "", "The surface to back up, by its id in the config")
-	cmd.Flags().BoolVar(&allowUnlocked, "allow-unlocked", false,
+	cmd.Flags().StringVar(&opts.surfaceID, "surface", "", "The surface to back up, by its id in the config")
+	cmd.Flags().BoolVar(&opts.allowUnlocked, "allow-unlocked", false,
 		"Run the command after a backup that is not locked: local storage, or worm_mode NONE. "+
 			"Without it guard refuses, because anyone who can run the command can delete that backup")
+	cmd.Flags().DurationVar(&opts.maxAge, "max-age", 0,
+		"A locked snapshot of the surface younger than this stands in for a new backup (30m, 2h). 0 backs up every time")
+	cmd.Flags().BoolVar(&opts.checkOnly, "check-only", false,
+		"Take no backup: refuse the command unless a locked snapshot younger than --max-age exists")
 	cmd.Flags().StringVar(&matches, "matches", "", "Check a command against the destructive list and take no backup")
 	cmd.Flags().BoolVar(&list, "list", false, "Print the destructive command list and exit")
 	cmd.Flags().StringVar(&hook, "hook", "", "Answer an AI coding tool's pre-command hook on stdin: claude-code, cursor or codex")
@@ -145,16 +174,32 @@ no locked snapshot could be taken:
 }
 
 // guardSnapshot backs up the chosen surface and returns its metadata once the
-// snapshot is uploaded and locked. Everything it prints goes to stderr, so
-// the wrapped command's stdout is its own.
-func guardSnapshot(ctx context.Context, surfaceID string, allowUnlocked bool, what string) (*model.SnapshotMetadata, error) {
+// snapshot is uploaded and locked. With opts.maxAge, a locked snapshot of the
+// surface that young is returned instead and no backup is taken. Everything
+// it prints goes to stderr, so the wrapped command's stdout is its own.
+func guardSnapshot(ctx context.Context, opts guardOptions, what string) (*model.SnapshotMetadata, error) {
 	stdout := os.Stdout
 	os.Stdout = os.Stderr
 	defer func() { os.Stdout = stdout }()
 
-	surface, standalone, err := guardSurface(surfaceID)
+	surface, standalone, err := guardSurface(opts.surfaceID)
 	if err != nil {
 		return nil, err
+	}
+	if opts.maxAge > 0 {
+		recent, err := recentLockedSnapshot(ctx, surface, standalone, opts.maxAge, time.Now())
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not read the snapshots in storage: %v\n", err)
+		}
+		if recent != nil {
+			fmt.Printf("Snapshot %s of %s, taken %s ago, is locked until %s; not backing up again\n",
+				recent.SnapshotID, surface.ID, time.Since(recent.CreatedAt).Round(time.Minute), recent.WORMRetentionUntil.UTC().Format("2006-01-02 15:04 MST"))
+			return recent, nil
+		}
+		if opts.checkOnly {
+			return nil, fmt.Errorf("no locked snapshot of %s younger than %s, and --check-only takes none. "+
+				"Run 'safegrd backup' or wait for the next scheduled one", surface.ID, opts.maxAge)
+		}
 	}
 	if what != "" {
 		fmt.Printf("Backing up %s before running %s\n", surface.ID, what)
@@ -205,7 +250,7 @@ func guardSnapshot(ctx context.Context, surfaceID string, allowUnlocked bool, wh
 	}
 
 	locked, why := snapshotLocked(meta, time.Now())
-	if !locked && !allowUnlocked {
+	if !locked && !opts.allowUnlocked {
 		return nil, fmt.Errorf("snapshot %s was written but is not locked: %s. "+
 			"Point this host at a bucket with Object Lock, or pass --allow-unlocked", meta.SnapshotID, why)
 	}
@@ -215,6 +260,51 @@ func guardSnapshot(ctx context.Context, surfaceID string, allowUnlocked bool, wh
 		fmt.Printf("Warning: snapshot %s is not locked (%s). Running anyway because of --allow-unlocked\n", meta.SnapshotID, why)
 	}
 	return meta, nil
+}
+
+// recentLockedSnapshot is the newest locked snapshot of the surface taken
+// within maxAge, read from storage the way `list --json` reads it, or nil.
+// The surface's snapshots are the ones filed under its node (a surface a
+// daemon registered has its own) or, for an incremental repository, under
+// its surface id; a standalone database_url is filed under this host.
+func recentLockedSnapshot(ctx context.Context, surface *config.SurfaceConfig, standalone bool, maxAge time.Duration, now time.Time) (*model.SnapshotMetadata, error) {
+	entries, err := listedSnapshots(ctx)
+	if err != nil {
+		return nil, err
+	}
+	nodeID := cfg.NodeID
+	if !standalone {
+		state := loadDaemonState(filepath.Join(resolveStateDir("", cfg), "daemon_state.json"))
+		if st, ok := state.Surfaces[surface.ID]; ok && st.ServerNodeID != "" {
+			nodeID = st.ServerNodeID
+		}
+	}
+	return pickRecentLockedSnapshot(entries, nodeID, surface.ID, standalone, maxAge, now), nil
+}
+
+// pickRecentLockedSnapshot chooses among listed snapshots: completed, locked,
+// of this surface, created within maxAge of now; the newest wins.
+func pickRecentLockedSnapshot(entries []listedSnapshot, nodeID, surfaceID string, standalone bool, maxAge time.Duration, now time.Time) *model.SnapshotMetadata {
+	var best *model.SnapshotMetadata
+	for _, e := range entries {
+		if !e.Locked || e.MetadataError != "" || e.Status != string(model.SnapshotStatusCompleted) || e.CreatedAt == "" {
+			continue
+		}
+		mine := e.RepoSurface == surfaceID || (e.NodeID != "" && e.NodeID == nodeID && (standalone || e.RepoSurface == ""))
+		if !mine {
+			continue
+		}
+		created, err := time.Parse(time.RFC3339, e.CreatedAt)
+		if err != nil || created.After(now) || now.Sub(created) > maxAge {
+			continue
+		}
+		until, _ := time.Parse(time.RFC3339, e.LockedUntil)
+		if best == nil || created.After(best.CreatedAt) {
+			best = &model.SnapshotMetadata{SnapshotID: e.SnapshotID, NodeID: e.NodeID, SurfaceType: model.SurfaceType(e.Surface),
+				Status: model.SnapshotStatusCompleted, CreatedAt: created, WORMMode: e.WORMMode, WORMRetentionUntil: until, StorageURI: "s3://"}
+		}
+	}
+	return best
 }
 
 // guardSurface picks the surface guard backs up. standalone is true for the

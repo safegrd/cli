@@ -115,7 +115,7 @@ func TestGuardRefusesAnUnlockedSnapshotUnlessAllowed(t *testing.T) {
 
 	var err error
 	_, errOut, _ := captureStdoutErr(t, func() error {
-		_, err = guardSnapshot(ctx, "", false, "'rm -rf data'")
+		_, err = guardSnapshot(ctx, guardOptions{allowUnlocked: false}, "'rm -rf data'")
 		return nil
 	})
 	if err == nil || !strings.Contains(err.Error(), "not locked") {
@@ -127,7 +127,7 @@ func TestGuardRefusesAnUnlockedSnapshotUnlessAllowed(t *testing.T) {
 
 	var meta *model.SnapshotMetadata
 	out, _, _ := captureStdoutErr(t, func() error {
-		meta, err = guardSnapshot(ctx, "docs", true, "'rm -rf data'")
+		meta, err = guardSnapshot(ctx, guardOptions{surfaceID: "docs", allowUnlocked: true}, "'rm -rf data'")
 		return nil
 	})
 	if err != nil || meta == nil || meta.Status != model.SnapshotStatusCompleted {
@@ -144,7 +144,7 @@ func TestGuardRefusesWhenTheBackupFails(t *testing.T) {
 	cfg.Surfaces[0].Roots = []string{filepath.Join(dir, "missing")}
 	var err error
 	captureStdoutErr(t, func() error {
-		_, err = guardSnapshot(context.Background(), "", true, "")
+		_, err = guardSnapshot(context.Background(), guardOptions{allowUnlocked: true}, "")
 		return nil
 	})
 	if err == nil || !strings.Contains(err.Error(), "backup of docs failed") {
@@ -176,5 +176,53 @@ func TestGuardEchoHidesAPasswordInAURL(t *testing.T) {
 	}
 	if !strings.Contains(got, "postgres://app:xxxxx@db:5432/shop") {
 		t.Errorf("describeCommand = %s, want the URL with the password replaced", got)
+	}
+}
+
+
+// A locked snapshot taken recently stands in for a new backup (--max-age), and
+// only one of this surface, completed, locked and young enough counts.
+func TestARecentLockedSnapshotStandsInForANewBackup(t *testing.T) {
+	now := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
+	at := func(d time.Duration) string { return now.Add(-d).UTC().Format(time.RFC3339) }
+	until := now.Add(14 * 24 * time.Hour).UTC().Format(time.RFC3339)
+	entries := []listedSnapshot{
+		{SnapshotID: "old", NodeID: "node-db", Status: "completed", CreatedAt: at(2 * time.Hour), Locked: true, LockedUntil: until, WORMMode: "COMPLIANCE"},
+		{SnapshotID: "fresh", NodeID: "node-db", Status: "completed", CreatedAt: at(10 * time.Minute), Locked: true, LockedUntil: until, WORMMode: "COMPLIANCE"},
+		{SnapshotID: "fresher-unlocked", NodeID: "node-db", Status: "completed", CreatedAt: at(5 * time.Minute), Locked: false},
+		{SnapshotID: "fresher-other-surface", NodeID: "node-files", Status: "completed", CreatedAt: at(1 * time.Minute), Locked: true, LockedUntil: until},
+		{SnapshotID: "fresher-failed", NodeID: "node-db", Status: "failed", CreatedAt: at(1 * time.Minute), Locked: true, LockedUntil: until},
+		{SnapshotID: "repo-run", RepoSurface: "appdb", NodeID: "node-host", Status: "completed", CreatedAt: at(3 * time.Minute), Locked: true, LockedUntil: until, Format: "repo-v1"},
+	}
+	got := pickRecentLockedSnapshot(entries, "node-db", "appdb", false, 30*time.Minute, now)
+	if got == nil || got.SnapshotID != "repo-run" {
+		t.Fatalf("the newest locked, completed snapshot of the surface: %+v", got)
+	}
+	got = pickRecentLockedSnapshot(entries, "node-db", "other", false, 30*time.Minute, now)
+	if got == nil || got.SnapshotID != "fresh" || !got.WORMRetentionUntil.After(now) {
+		t.Fatalf("by node when no repository run matches: %+v", got)
+	}
+	if got := pickRecentLockedSnapshot(entries, "node-db", "other", false, 5*time.Minute, now); got != nil {
+		t.Fatalf("nothing young enough, yet %+v", got)
+	}
+	if got := pickRecentLockedSnapshot(entries, "node-nowhere", "nothing", false, time.Hour, now); got != nil {
+		t.Fatalf("another node's snapshot counted: %+v", got)
+	}
+}
+
+// --check-only never backs up: with no recent locked snapshot the command is
+// refused and storage is left as it was.
+func TestCheckOnlyRefusesWithoutARecentSnapshotAndTakesNoBackup(t *testing.T) {
+	dir := guardConfig(t)
+	var err error
+	captureStdoutErr(t, func() error {
+		_, err = guardSnapshot(context.Background(), guardOptions{maxAge: 30 * time.Minute, checkOnly: true}, "'terraform destroy'")
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "younger than 30m") {
+		t.Fatalf("check-only with nothing recent: %v", err)
+	}
+	if entries, _ := os.ReadDir(filepath.Join(dir, "store")); len(entries) != 0 {
+		t.Fatalf("check-only wrote to storage: %v", entries)
 	}
 }

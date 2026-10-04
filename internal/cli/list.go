@@ -231,12 +231,25 @@ func printRepoTable(rows []repoSnapshot, storageCfg config.StorageConfig) {
 
 // listJSON writes every snapshot as one JSON array to out.
 func listJSON(ctx context.Context, out io.Writer) error {
+	entries, err := listedSnapshots(ctx)
+	if err != nil {
+		return err
+	}
+	enc := json.NewEncoder(out)
+	enc.SetIndent("", "  ")
+	return enc.Encode(entries)
+}
+
+// listedSnapshots reads every snapshot this host's storage holds, as `list
+// --json` describes them. guard reads it too, to find a recent locked
+// snapshot instead of taking another.
+func listedSnapshots(ctx context.Context) ([]listedSnapshot, error) {
 	storageCfg, routeErr := resolveStorageRouting(ctx, cfg, "", "", "", "", false)
 	if routeErr != nil {
-		return routeErr
+		return nil, routeErr
 	}
 	if _, err := resolveHostedStorage(ctx, cfg, &storageCfg, false); err != nil {
-		return err
+		return nil, err
 	}
 	resolveRuntimeCredentials(ctx, cfg, &storageCfg, false)
 	if cfg.NodeID != "" && storageCfg.NodeID == "" {
@@ -244,11 +257,11 @@ func listJSON(ctx context.Context, out io.Writer) error {
 	}
 	storageProvider, err := openStorage(ctx, cfg, storageCfg)
 	if err != nil {
-		return fmt.Errorf("storage error: %w", err)
+		return nil, fmt.Errorf("storage error: %w", err)
 	}
 	snapshots, err := storageProvider.ListSnapshots(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to list snapshots: %w", err)
+		return nil, fmt.Errorf("failed to list snapshots: %w", err)
 	}
 	warnAboutShadowedSnapshots(ctx, storageProvider)
 
@@ -314,10 +327,7 @@ func listJSON(ctx context.Context, out io.Writer) error {
 		}
 		entries = append(entries, e)
 	}
-
-	enc := json.NewEncoder(out)
-	enc.SetIndent("", "  ")
-	return enc.Encode(entries)
+	return entries, nil
 }
 
 // describeContents says what is in a snapshot in the vocabulary of its own

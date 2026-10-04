@@ -225,6 +225,15 @@ safegrd guard --matches "npx prisma migrate reset"   # exit 0: it matches
 Storage on the host's own disk, or a bucket with `worm_mode: NONE`, cannot lock a snapshot,
 so guard refuses there unless you pass `--allow-unlocked`.
 
+A locked snapshot of the surface younger than `--max-age` stands in for a new backup, so an
+agent running several destructive commands in a row backs up once. `--check-only` takes no
+backup at all and refuses the command unless such a snapshot exists:
+
+```bash
+safegrd guard --max-age 30m -- psql "$APP_DATABASE_URL" -c 'TRUNCATE sessions'
+safegrd guard --max-age 1h --check-only -- terraform destroy
+```
+
 `safegrd list --json` prints every snapshot with its lock date, for scripts.
 
 ### Claude Code plugin

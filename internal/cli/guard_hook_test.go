@@ -26,7 +26,7 @@ func runGuardHookFor(t *testing.T, tool, input string, allowUnlocked bool) (stri
 	var out bytes.Buffer
 	var err error
 	captureStdoutErr(t, func() error {
-		err = runGuardHook(context.Background(), tool, "", allowUnlocked, strings.NewReader(input), &out)
+		err = runGuardHook(context.Background(), tool, guardOptions{allowUnlocked: allowUnlocked}, strings.NewReader(input), &out)
 		return nil
 	})
 	return out.String(), err

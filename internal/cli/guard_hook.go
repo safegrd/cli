@@ -53,7 +53,7 @@ type cursorOutput struct {
 // runGuardHook answers one pre-command hook: a command that matches the
 // destructive list is backed up first, and blocked when no locked snapshot
 // could be taken. Anything else passes with no backup.
-func runGuardHook(ctx context.Context, tool, surfaceID string, allowUnlocked bool, in io.Reader, out io.Writer) error {
+func runGuardHook(ctx context.Context, tool string, opts guardOptions, in io.Reader, out io.Writer) error {
 	switch tool {
 	case hookClaudeCode, hookCodex, hookCursor:
 	default:
@@ -80,11 +80,15 @@ func runGuardHook(ctx context.Context, tool, surfaceID string, allowUnlocked boo
 			"Blocked by safegrd guard: this command matches %q, and the SafeGrd config could not be read, "+
 				"so no snapshot could be taken first: %v", rule.Name, cfgLoadErr))
 	}
-	snap, err := guardSnapshot(ctx, surfaceID, allowUnlocked, describeCommand([]string{command}))
+	snap, err := guardSnapshot(ctx, opts, describeCommand([]string{command}))
 	if err != nil {
+		what := "no locked snapshot could be taken first"
+		if opts.checkOnly {
+			what = "no locked snapshot is recent enough"
+		}
 		return hookAnswer(tool, out, "", fmt.Sprintf(
-			"Blocked by safegrd guard: this command matches %q, and no locked snapshot could be taken first: %v. "+
-				"Fix the backup, then run the command again.", rule.Name, firstLine(err)))
+			"Blocked by safegrd guard: this command matches %q, and %s: %v. "+
+				"Fix the backup, then run the command again.", rule.Name, what, firstLine(err)))
 	}
 	return hookAnswer(tool, out, snap.SnapshotID, "")
 }
