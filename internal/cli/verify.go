@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -318,6 +319,7 @@ func newVerifyHistoryCmd() *cobra.Command {
 		keyFile   string
 		keysFile  string
 		localFile string
+		saveFile  string
 		jsonOut   bool
 	)
 
@@ -381,8 +383,21 @@ a file with --file:
 				if resp.StatusCode != http.StatusOK {
 					return fmt.Errorf("server returned status %d fetching verifications for node %s", resp.StatusCode, nodeID)
 				}
-				if err := json.NewDecoder(resp.Body).Decode(&reports); err != nil {
+				body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+				if err != nil {
+					return fmt.Errorf("failed to read verifications: %w", err)
+				}
+				if err := json.Unmarshal(body, &reports); err != nil {
 					return fmt.Errorf("failed to decode verifications: %w", err)
+				}
+				// The offline check takes a file of records, and nothing
+				// else wrote one: --json prints the summary, not the chain.
+				if saveFile != "" {
+					if err := os.WriteFile(saveFile, body, 0o644); err != nil {
+						return fmt.Errorf("could not save the records to %s: %w", saveFile, err)
+					}
+					fmt.Fprintf(os.Stderr, "Saved %d records to %s. Check them offline with: safegrd history --file %s --keys-file keys.json\n",
+						len(reports), saveFile, saveFile)
 				}
 			}
 
@@ -463,6 +478,7 @@ a file with --file:
 	cmd.Flags().StringVar(&keyFile, "key-file", "", "Path to file containing hex-encoded public key")
 	cmd.Flags().StringVar(&keysFile, "keys-file", "", "JSON saved from the server's /api/v1/attestations/public-key: the active key and the retired ones, for an offline audit of a chain that spans a key rotation")
 	cmd.Flags().StringVar(&localFile, "file", "", "JSON file of verification records to check offline")
+	cmd.Flags().StringVar(&saveFile, "save", "", "Also write the records fetched from the remote server to this file, for an offline check with --file")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print the result as JSON on stdout")
 
 	return cmd

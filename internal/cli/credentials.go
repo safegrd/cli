@@ -322,12 +322,14 @@ func withManagedIdentities(ctx context.Context, cfg *config.CLIConfig, local str
 	return local + "\n" + held
 }
 
-func fetchManagedKeys(ctx context.Context, cfg *config.CLIConfig, verbose, reportFailure bool) string {
+// noLocalKey is true when the caller has no key of its own, so a failed fetch
+// or a missing key for this host is what the operator needs to hear.
+func fetchManagedKeys(ctx context.Context, cfg *config.CLIConfig, verbose, noLocalKey bool) string {
 	if cfg.ServerURL == "" || cfg.NodeID == "" || cfg.ServerToken == "" {
 		return ""
 	}
 	res, err := fetchManagedIdentity(ctx, cfg.ServerURL, cfg.NodeID, cfg.ServerToken)
-	if err != nil && !errors.Is(err, errNoManagedKey) && reportFailure {
+	if err != nil && !errors.Is(err, errNoManagedKey) && noLocalKey {
 		// The caller goes on to report that no key was found, which is true
 		// but not why. Say why first.
 		fmt.Fprintf(os.Stderr, "Warning: could not fetch the key the remote server holds: %v\n", err)
@@ -350,6 +352,11 @@ func fetchManagedKeys(ctx context.Context, cfg *config.CLIConfig, verbose, repor
 		// The organization holds keys for its other hosts, but this host's
 		// key is the customer's. Those keys open only snapshots sealed to
 		// them, so the decrypt error that follows needs this said first.
+		// With the key on the host there is no error to explain: the
+		// warning used to print over a drill that then passed with it.
+		if !noLocalKey {
+			return strings.Join(keys, "\n")
+		}
 		fmt.Fprintf(os.Stderr, "Warning: you hold this host's key (%s), and it is not on this host.\n"+
 			"   Pass it with --private-key or SAFEGRD_PRIVATE_KEY. Trying the keys the remote server holds for other hosts.\n",
 			crypto.Fingerprint(cfg.Encryption.PublicKey))
