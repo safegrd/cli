@@ -328,7 +328,7 @@ func readPrivateKeyFile(path string) (string, error) {
 		return "", nil
 	}
 	if errors.Is(err, fs.ErrPermission) {
-		fmt.Fprintf(os.Stderr, "Warning: cannot reach the private key file %s (permission denied); continuing without it. Backups need only the public key; restore and drills need the private key.\n", path)
+		fmt.Fprintf(os.Stderr, "Warning: cannot reach the private key file %s (permission denied); continuing without it. A backup needs only the public key.\n", path)
 		return "", nil
 	}
 	if err != nil {
