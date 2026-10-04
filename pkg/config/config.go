@@ -2,7 +2,9 @@ package config
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -315,10 +317,18 @@ func DefaultConfigFile() (string, error) {
 //
 // A key file that does not exist is not an error: a host that only backs up
 // needs the public key alone, and keeping the private key off it is good
-// practice. Restore and verify say so when they need it.
+// practice. Restore and verify say so when they need it. Nor is a path this
+// process cannot reach: a config written on a laptop and copied to a CI
+// runner names the laptop's path, and on GitHub's runners /root is not
+// readable, so the backup failed over a key it never needed (CUJ P2b). That
+// one is said on stderr, since the key may be meant to be there.
 func readPrivateKeyFile(path string) (string, error) {
 	fi, err := os.Stat(path)
 	if os.IsNotExist(err) {
+		return "", nil
+	}
+	if errors.Is(err, fs.ErrPermission) {
+		fmt.Fprintf(os.Stderr, "Warning: cannot reach the private key file %s (permission denied); continuing without it. Backups need only the public key; restore and drills need the private key.\n", path)
 		return "", nil
 	}
 	if err != nil {

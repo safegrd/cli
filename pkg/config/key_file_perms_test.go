@@ -76,3 +76,34 @@ func TestAMissingOrOverriddenKeyFileIsNotAnError(t *testing.T) {
 		t.Fatalf("with SAFEGRD_PRIVATE_KEY set: %v, key %q", err, cfg.Encryption.PrivateKey)
 	}
 }
+
+// A config copied from a laptop to a CI runner names a key path the runner
+// cannot reach. Backing up needs only the public key, so the config loads
+// without the private key instead of failing (CUJ P2b: /root on GitHub's
+// runners).
+func TestAKeyFileBehindAnUnreadableDirectoryIsNotAnError(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("POSIX permissions, as a user root's bypass does not apply to")
+	}
+	t.Setenv("SAFEGRD_PRIVATE_KEY", "")
+	cfgPath, keyPath := writeConfigWithKey(t, 0600)
+	locked := filepath.Join(filepath.Dir(keyPath), "locked")
+	if err := os.Mkdir(locked, 0700); err != nil {
+		t.Fatal(err)
+	}
+	inside := filepath.Join(locked, "daemon.key")
+	if err := os.Rename(keyPath, inside); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath, []byte("encryption:\n  key_path: "+inside+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0700) })
+	cfg, err := LoadCLIConfig(cfgPath)
+	if err != nil || cfg.Encryption.PrivateKey != "" {
+		t.Fatalf("a key path behind a directory this user cannot enter: %v, key %q", err, cfg.Encryption.PrivateKey)
+	}
+}
