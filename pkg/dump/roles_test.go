@@ -104,15 +104,26 @@ func TestRolesDumpIsCutToTheRolesNamed(t *testing.T) {
 // replication role, whatever the source said; LOGIN and PASSWORD stay.
 func TestCreateStatementsTurnOffSuperuserAndReplication(t *testing.T) {
 	d := parseRolesSQL([]byte(rolesDumpFixture))
-	stmts := strings.Join(d.createStatements("postgres"), "\n")
+	stmts := strings.Join(d.createStatements("postgres", true), "\n")
 	if !strings.Contains(stmts, "NOSUPERUSER") || !strings.Contains(stmts, "NOREPLICATION") || strings.Contains(stmts, " SUPERUSER") || strings.Contains(stmts, " REPLICATION") {
 		t.Errorf("superuser survived: %s", stmts)
 	}
 	if !strings.Contains(stmts, " LOGIN ") || !strings.Contains(stmts, "PASSWORD 'SCRAM") {
 		t.Errorf("login or password lost: %s", stmts)
 	}
-	if got := strings.Join(d.createStatements("app_user"), "\n"); strings.Contains(got, "IN DATABASE") || !strings.Contains(got, "SET search_path") {
+	if got := strings.Join(d.createStatements("app_user", true), "\n"); strings.Contains(got, "IN DATABASE") || !strings.Contains(got, "SET search_path") {
 		t.Errorf("app_user statements: %s", got)
+	}
+	// A restorer that is not a superuser may not say SUPERUSER, REPLICATION
+	// or BYPASSRLS at all.
+	plain := strings.Join(d.createStatements("postgres", false), "\n")
+	for _, word := range []string{"SUPERUSER", "REPLICATION", "BYPASSRLS", "CREATEDB", "CREATEROLE"} {
+		if strings.Contains(plain, word) {
+			t.Errorf("%s survives for a non-superuser restorer: %s", word, plain)
+		}
+	}
+	if !strings.Contains(plain, "WITH INHERIT LOGIN PASSWORD") {
+		t.Errorf("the rest of the statement changed: %s", plain)
 	}
 }
 

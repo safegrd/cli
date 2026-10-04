@@ -707,7 +707,7 @@ func (r *NativeRestorer) createRoles(ctx context.Context, conn *pgx.Conn, d *rol
 		if have[name] {
 			continue
 		}
-		for _, stmt := range d.createStatements(name) {
+		for _, stmt := range d.createStatements(name, super) {
 			if _, err := pgConn.Exec(ctx, stmt).ReadAll(); err != nil {
 				return fmt.Errorf("creating role %s, which the snapshot's schema names and the target lacks: %w. "+
 					"Restore as a superuser or a role with CREATEROLE, or create the role on the target first", name, err)

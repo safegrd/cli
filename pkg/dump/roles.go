@@ -70,6 +70,11 @@ var (
 	commentRoleRe = regexp.MustCompile(`^COMMENT ON ROLE (` + roleIdent + `) IS `)
 	membershipRe  = regexp.MustCompile(`^GRANT (` + roleIdent + `) TO (` + roleIdent + `)(?: |;)`)
 	superuserRe   = regexp.MustCompile(` (SUPERUSER|REPLICATION)\b`)
+	// privilegedAttrRe matches the attributes a role may mention in ALTER
+	// ROLE only when it holds them itself, even to turn them off (PostgreSQL
+	// 16: "Only roles with the CREATEDB attribute may change the CREATEDB
+	// attribute"). A restorer that is not a superuser leaves them all out.
+	privilegedAttrRe = regexp.MustCompile(` (?:NO)?(?:SUPERUSER|REPLICATION|BYPASSRLS|CREATEDB|CREATEROLE)\b`)
 )
 
 // unquoteRole is the role's name as pg_roles has it.
@@ -207,12 +212,20 @@ func (d *roleDump) names() []string { return append([]string(nil), d.order...) }
 // createStatements are the statements that create one role on a target that
 // lacks it. SUPERUSER and REPLICATION are turned off: neither helps the
 // schema load, and a restore should not mint a superuser from a hash in a
-// backup. Everything else, LOGIN and PASSWORD included, is as dumped.
-func (d *roleDump) createStatements(name string) []string {
+// backup. A restorer that is not a superuser may mention SUPERUSER,
+// REPLICATION, BYPASSRLS, CREATEDB and CREATEROLE only if it holds them, not
+// even to turn them off, so for it those words are left out and the
+// target's defaults (all off) apply. Everything else, LOGIN and PASSWORD
+// included, is as dumped.
+func (d *roleDump) createStatements(name string, super bool) []string {
 	var out []string
 	for _, s := range d.stmts[name] {
 		if strings.HasPrefix(s, "ALTER ROLE ") && strings.Contains(s, " WITH ") {
-			s = superuserRe.ReplaceAllString(s, " NO$1")
+			if super {
+				s = superuserRe.ReplaceAllString(s, " NO$1")
+			} else {
+				s = privilegedAttrRe.ReplaceAllString(s, "")
+			}
 		}
 		out = append(out, s)
 	}
