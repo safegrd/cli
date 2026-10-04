@@ -80,6 +80,13 @@ and never leaves this host.`,
 				}
 				return backupNamedSurface(ctx, cfg, surfaceID, newEpoch, rescan)
 			}
+			// The database a configured surface names is backed up as that
+			// surface: a one-off --database-url started a second history and a
+			// second console row for one database (production CUJ P4).
+			if s := surfaceForDatabaseURL(cfg, dbURL); s != nil && !jsonOutput && !cmd.Flags().Changed("format") {
+				fmt.Printf("This database is surface %s in the config, so it is backed up as that surface.\n", s.ID)
+				return backupNamedSurface(ctx, cfg, s.ID, newEpoch, rescan)
+			}
 
 			// Resolve storage according to the routing precedence rule:
 			// CLI Flags > Remote Server Project Sink > Local Config Fallback
@@ -501,6 +508,12 @@ and never leaves this host.`,
 				fmt.Printf("   Snapshot ID:     %s\n", meta.SnapshotID)
 				fmt.Printf("   Schema:          %s\n", schemaSourceLabel(meta.SchemaSource))
 				warnIfThreatShieldFroze(meta)
+				if cfg.ServerToken != "" && cmd.Flags().Changed("database-url") {
+					// The docs lead with this command, and it schedules
+					// nothing: Kenji's host had two backups and no surface.
+					fmt.Printf("   This was one backup. To back it up on a schedule, with Fire Drills, name it under\n")
+					fmt.Printf("   surfaces: in the config and run the daemon: https://safegrd.dev/docs/surfaces/databases\n")
+				}
 				return nil
 			}
 			if rescan || newEpoch {

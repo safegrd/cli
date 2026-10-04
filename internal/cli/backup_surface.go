@@ -90,3 +90,24 @@ func backupNamedSurface(ctx context.Context, c *config.CLIConfig, surfaceID stri
 	}
 	return nil
 }
+
+// surfaceForDatabaseURL is the configured surface that backs up the database
+// url names, or nil. A surface whose URL comes from a credential block is not
+// matched: it is named with --surface.
+func surfaceForDatabaseURL(c *config.CLIConfig, url string) *config.SurfaceConfig {
+	want, err := resolveConfigSecret("database-url", strings.TrimSpace(url))
+	if err != nil || want == "" {
+		return nil
+	}
+	for i := range c.Surfaces {
+		s := c.Surfaces[i]
+		if s.DatabaseURL == "" {
+			continue
+		}
+		got, err := resolveConfigSecret("database_url", s.DatabaseURL)
+		if err == nil && got == want {
+			return &s
+		}
+	}
+	return nil
+}
