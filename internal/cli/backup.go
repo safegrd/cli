@@ -270,7 +270,7 @@ and never leaves this host.`,
 				meta.EncryptedSha256 = cryptoMetrics.EncryptedSha256
 				meta.CalculateTotals()
 
-				warnIfManifestFailed(storageProvider.UploadMetadata(ctx, snapshotID, meta), snapshotID)
+				uploadSidecars(ctx, storageProvider, storageCfg, snapshotID, meta, "")
 				if cfg.ServerURL != "" {
 					sendMetadataToServer(ctx, cfg.ServerURL, cfg.ServerToken, meta, !jsonOutput)
 				}
@@ -407,7 +407,7 @@ and never leaves this host.`,
 				meta.EncryptedSha256 = cryptoMetrics.EncryptedSha256
 				meta.CalculateTotals()
 
-				warnIfManifestFailed(storageProvider.UploadMetadata(ctx, snapshotID, meta), snapshotID)
+				uploadSidecars(ctx, storageProvider, storageCfg, snapshotID, meta, "")
 				if cfg.ServerURL != "" {
 					sendMetadataToServer(ctx, cfg.ServerURL, cfg.ServerToken, meta, !jsonOutput)
 				}
@@ -603,7 +603,7 @@ and never leaves this host.`,
 			dumpMeta.EncryptedSha256 = cryptoMetrics.EncryptedSha256
 			dumpMeta.CalculateTotals()
 
-			warnIfManifestFailed(storageProvider.UploadMetadata(ctx, snapshotID, dumpMeta), snapshotID)
+			uploadSidecars(ctx, storageProvider, storageCfg, snapshotID, dumpMeta, "")
 
 			if cfg.ServerURL != "" {
 				sendMetadataToServer(ctx, cfg.ServerURL, cfg.ServerToken, dumpMeta, !jsonOutput)

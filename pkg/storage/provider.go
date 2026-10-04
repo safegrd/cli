@@ -8,6 +8,15 @@ import (
 	"github.com/safegrd/cli/pkg/model"
 )
 
+// RecoveryDocSuffix is the recovery document's file name after the snapshot
+// id: plain text, or age ciphertext when the surface seals it.
+func RecoveryDocSuffix(sealed bool) string {
+	if sealed {
+		return ".RECOVERY.md.age"
+	}
+	return ".RECOVERY.md"
+}
+
 // StorageProvider abstracts immutable snapshot persistence.
 type StorageProvider interface {
 	// UploadSnapshot streams encrypted ciphertext to immutable WORM storage.
@@ -18,6 +27,11 @@ type StorageProvider interface {
 
 	// UploadMetadata persists the snapshot's non-sensitive inspection metadata.
 	UploadMetadata(ctx context.Context, snapshotID string, meta *model.SnapshotMetadata) error
+
+	// UploadRecoveryDoc writes the snapshot's recovery document beside its
+	// metadata, as <snapshot>.RECOVERY.md, or .RECOVERY.md.age when sealed,
+	// locked like the metadata. It holds no secret (dump.RenderRecoveryDoc).
+	UploadRecoveryDoc(ctx context.Context, snapshotID string, doc []byte, sealed bool, retainUntil time.Time) error
 
 	// DownloadMetadata retrieves the snapshot metadata manifest.
 	DownloadMetadata(ctx context.Context, snapshotID string) (*model.SnapshotMetadata, error)

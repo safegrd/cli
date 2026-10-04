@@ -284,6 +284,16 @@ func (p *hostedProvider) UploadMetadata(ctx context.Context, snapshotID string, 
 	return nil
 }
 
+// UploadRecoveryDoc writes the recovery document beside the snapshot in
+// hosted storage, locked like the manifest.
+func (p *hostedProvider) UploadRecoveryDoc(ctx context.Context, snapshotID string, doc []byte, sealed bool, retainUntil time.Time) error {
+	if retainUntil.IsZero() && p.retentionDays > 0 {
+		retainUntil = time.Now().UTC().AddDate(0, 0, p.retentionDays)
+	}
+	_, _, err := p.upload(ctx, snapshotID+storage.RecoveryDocSuffix(sealed), bytes.NewReader(doc), retainUntil)
+	return err
+}
+
 type hostedUpload struct {
 	UploadID    string    `json:"upload_id"`
 	PartSize    int64     `json:"part_size"`

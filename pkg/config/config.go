@@ -179,6 +179,10 @@ type SurfaceConfig struct {
 	// their password hashes, sealed like everything else, so a restored role
 	// logs in as it did.
 	RolesWithoutPasswords bool `yaml:"roles_without_passwords,omitempty" json:"roles_without_passwords,omitempty"`
+	// RecoveryDocSealed seals the recovery document written beside each
+	// snapshot with the surface's recipient. By default it is plain text,
+	// so it can be read after SafeGrd is gone; it holds no secret.
+	RecoveryDocSealed bool `yaml:"recovery_doc_sealed,omitempty" json:"recovery_doc_sealed,omitempty"`
 	// OneFilesystem keeps a repo surface's walk on each root's filesystem.
 	// Unset means yes when a root is "/", no otherwise.
 	OneFilesystem *bool `yaml:"one_filesystem,omitempty" json:"one_filesystem,omitempty"`

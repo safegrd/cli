@@ -281,6 +281,36 @@ func (s *S3StorageProvider) UploadMetadata(ctx context.Context, snapshotID strin
 	return nil
 }
 
+// UploadRecoveryDoc writes the recovery document beside the metadata, locked
+// the same way: a reader who has only the bucket finds it next to the archive.
+func (s *S3StorageProvider) UploadRecoveryDoc(ctx context.Context, snapshotID string, doc []byte, sealed bool, retainUntil time.Time) error {
+	if err := ValidateSnapshotID(snapshotID); err != nil {
+		return err
+	}
+	key := strings.TrimSuffix(s.metadataKey(snapshotID), ".meta.json") + RecoveryDocSuffix(sealed)
+	contentType := "text/markdown; charset=utf-8"
+	if sealed {
+		contentType = "application/octet-stream"
+	}
+	putInput := &s3.PutObjectInput{Bucket: &s.bucket, Key: &key, Body: bytes.NewReader(doc), ContentType: &contentType}
+	switch {
+	case s.lockDisabled:
+	case !retainUntil.IsZero():
+		putInput.ObjectLockMode = s.wormMode
+		putInput.ObjectLockRetainUntilDate = &retainUntil
+	case s.retentionDays > 0:
+		until := time.Now().Add(time.Duration(s.retentionDays) * 24 * time.Hour)
+		putInput.ObjectLockMode = s.wormMode
+		putInput.ObjectLockRetainUntilDate = &until
+	case s.wormMode != "":
+		return fmt.Errorf("WORM compliance mode enabled but retention period is not set for the recovery document: refusing silent WORM downgrade")
+	}
+	if _, err := s.client.PutObject(ctx, putInput); err != nil {
+		return fmt.Errorf("failed to upload the recovery document to s3://%s/%s: %w", s.bucket, key, err)
+	}
+	return nil
+}
+
 func (s *S3StorageProvider) DownloadMetadata(ctx context.Context, snapshotID string) (*model.SnapshotMetadata, error) {
 	if err := ValidateSnapshotID(snapshotID); err != nil {
 		return nil, err

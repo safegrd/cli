@@ -1067,7 +1067,7 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 		meta.EncryptedSha256 = metrics.EncryptedSha256
 		meta.CalculateTotals()
 
-		warnIfManifestFailed(storageProvider.UploadMetadata(ctx, snapshotID, meta), snapshotID)
+		uploadSidecars(ctx, storageProvider, storageCfg, snapshotID, meta, recoveryDocSealTo(s, pubKey))
 		if hostIsEnrolled(c) {
 			st.notRecorded = reportSnapshot(ctx, c, st, meta)
 		}
@@ -1148,7 +1148,7 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 		meta.EncryptedSha256 = metrics.EncryptedSha256
 		meta.CalculateTotals()
 
-		warnIfManifestFailed(storageProvider.UploadMetadata(ctx, snapshotID, meta), snapshotID)
+		uploadSidecars(ctx, storageProvider, storageCfg, snapshotID, meta, recoveryDocSealTo(s, pubKey))
 		if hostIsEnrolled(c) {
 			st.notRecorded = reportSnapshot(ctx, c, st, meta)
 		}
@@ -1267,7 +1267,7 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 		dumpMeta.EncryptedSha256 = metrics.EncryptedSha256
 		dumpMeta.CalculateTotals()
 
-		warnIfManifestFailed(storageProvider.UploadMetadata(ctx, snapshotID, dumpMeta), snapshotID)
+		uploadSidecars(ctx, storageProvider, storageCfg, snapshotID, dumpMeta, recoveryDocSealTo(s, pubKey))
 		if hostIsEnrolled(c) {
 			st.notRecorded = reportSnapshot(ctx, c, st, dumpMeta)
 		}

@@ -133,6 +133,22 @@ func (l *LocalStorageProvider) DownloadSnapshot(ctx context.Context, snapshotID 
 	return f, nil
 }
 
+// UploadRecoveryDoc writes the recovery document beside the metadata.
+func (l *LocalStorageProvider) UploadRecoveryDoc(ctx context.Context, snapshotID string, doc []byte, sealed bool, retainUntil time.Time) error {
+	if err := ValidateSnapshotID(snapshotID); err != nil {
+		return err
+	}
+	dstPath := strings.TrimSuffix(l.metadataPath(snapshotID), ".meta.json") + RecoveryDocSuffix(sealed)
+	if err := os.MkdirAll(filepath.Dir(dstPath), 0755); err != nil {
+		return fmt.Errorf("failed to create directory for the recovery document of %s: %w", snapshotID, err)
+	}
+	tempPath := dstPath + ".tmp"
+	if err := os.WriteFile(tempPath, doc, 0600); err != nil {
+		return fmt.Errorf("failed to write the recovery document: %w", err)
+	}
+	return os.Rename(tempPath, dstPath)
+}
+
 func (l *LocalStorageProvider) UploadMetadata(ctx context.Context, snapshotID string, meta *model.SnapshotMetadata) error {
 	if err := ValidateSnapshotID(snapshotID); err != nil {
 		return err
