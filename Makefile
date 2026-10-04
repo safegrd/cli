@@ -14,7 +14,7 @@ DIST_TARGETS ?= linux/amd64 linux/arm64 darwin/amd64 darwin/arm64
 DIST_DIR     ?= dist
 CLI_BIN := $(BIN_DIR)/safegrd
 
-.PHONY: help all hooks build dist test vet fmt tidy clean ci check-fmt check-tidy release-tag tag
+.PHONY: help all hooks build dist test vet fmt tidy clean ci check-fmt check-tidy check-go-version release-tag tag
 
 .DEFAULT_GOAL := help
 
@@ -60,15 +60,15 @@ dist: ## Cross-compile release archives and checksums into $(DIST_DIR)/
 	(cd "$${out}" && if command -v sha256sum >/dev/null; then sha256sum safegrd_*.tar.gz; else shasum -a 256 safegrd_*.tar.gz; fi > checksums.txt); \
 	echo "Checksums:"; cat "$${out}/checksums.txt"
 
+hooks: ## Install the pre-push hook (gofmt on the pushed commits)
+	git config core.hooksPath .githooks
+
 # CI runs these instead of `vet`, because `vet` depends on fmt and tidy, which
 # rewrite files: a formatting gate that formats for you always passes.
 #
 # `ci` depends on `build` because `go vet` and `go test` can succeed even if
 # the main command package is missing or misconfigured. Compiling ensures
 # cmd/safegrd builds successfully.
-hooks: ## Install the pre-push hook (gofmt on the pushed commits)
-	git config core.hooksPath .githooks
-
 check-fmt: ## Fail if any file needs gofmt
 	@out="$$(gofmt -l .)"; \
 	if [ -n "$$out" ]; then echo "These files need gofmt:"; echo "$$out"; exit 1; fi
@@ -77,7 +77,12 @@ check-tidy: ## Fail if go.mod or go.sum are not tidy
 	go mod tidy
 	git diff --exit-code go.mod go.sum
 
-ci: check-fmt check-tidy build ## Run every gate CI runs
+check-go-version: ## Fail if the Dockerfile builds with an older Go than go.mod asks for
+	@want="$$(awk '/^go /{print $$2}' go.mod | cut -d. -f1,2)"; \
+	have="$$(sed -n 's/^ARG GO_VERSION=//p' Dockerfile)"; \
+	if [ "$$want" != "$$have" ]; then echo "Dockerfile builds with Go $$have; go.mod needs $$want. Set ARG GO_VERSION=$$want."; exit 1; fi
+
+ci: check-fmt check-tidy check-go-version build ## Run every gate CI runs
 	go vet ./...
 	go test -race ./...
 	sh scripts/packaging-version.sh check
