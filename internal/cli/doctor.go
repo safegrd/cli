@@ -415,7 +415,7 @@ func runDoctorChecks(path string, c *config.CLIConfig) []CheckResult {
 					Message: "worm_mode is NONE: snapshots in this bucket can be deleted by anyone with delete permission"})
 			case err != nil:
 				results = append(results, CheckResult{Name: "Object Lock", Status: "FAIL",
-					Message: fmt.Sprintf("bucket %s cannot be confirmed to lock: %v", c.Storage.Bucket, err)})
+					Message: fmt.Sprintf("bucket %s cannot be confirmed to lock: %v. %s", c.Storage.Bucket, err, objectLockAdvice(err))})
 			default:
 				results = append(results, CheckResult{Name: "Object Lock", Status: "PASS",
 					Message: fmt.Sprintf("enabled on bucket %s", c.Storage.Bucket)})

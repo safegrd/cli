@@ -65,7 +65,9 @@ func NewS3Storage(ctx context.Context, cfg config.StorageConfig) (*S3StorageProv
 		awsCfg.Credentials = aws.NewCredentialsCache(stscreds.NewAssumeRoleProvider(stsClient, cfg.IAMRoleARN))
 	}
 
-	s3OptFns := []func(*s3.Options){}
+	// Providers that return no response checksum (DigitalOcean Spaces) made
+	// the SDK log a WARN line to stdout for every object read.
+	s3OptFns := []func(*s3.Options){func(o *s3.Options) { o.DisableLogOutputChecksumValidationSkipped = true }}
 	if cfg.Endpoint != "" {
 		s3OptFns = append(s3OptFns, func(o *s3.Options) {
 			o.BaseEndpoint = &cfg.Endpoint

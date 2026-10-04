@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/safegrd/cli/pkg/config"
 	"github.com/safegrd/cli/pkg/crypto"
 	"github.com/safegrd/cli/pkg/dump"
 	"github.com/safegrd/cli/pkg/model"
@@ -29,7 +31,16 @@ host is configured for, one line each. Exits 1 if any check fails.`,
 				fmt.Printf(format, args...)
 			}
 
-			// 1. Database connectivity
+			// 1. Database connectivity. `init --database-url env:VAR` writes a
+			// reference, which reached the driver as a literal here and failed
+			// a database that backs up fine.
+			if ref := cfg.DatabaseURL; strings.HasPrefix(ref, "env:") || strings.HasPrefix(ref, "file:") {
+				resolved, err := ResolveSecretRef("database-url", ref)
+				if err != nil {
+					return err
+				}
+				cfg.DatabaseURL = resolved
+			}
 			if cfg.DatabaseURL != "" {
 				label, ping := "PostgreSQL:       ", func() error { return pingSQL("pgx", cfg.DatabaseURL) }
 				switch {
@@ -110,7 +121,12 @@ host is configured for, one line each. Exits 1 if any check fails.`,
 				if storageProvider.Type() == "hosted" {
 					fmt.Printf("Object Lock:       compliance mode, set by the remote server on every hosted object\n")
 				}
-				if s3Prov, ok := storageProvider.(*storage.S3StorageProvider); ok {
+				// Under worm_mode NONE the lock check passes without asking the
+				// bucket, which printed "on" over a bucket that locks nothing.
+				mode, _ := storageCfg.ResolveWORMMode()
+				if s3Prov, ok := storageProvider.(*storage.S3StorageProvider); ok && mode == config.WORMModeNone {
+					fmt.Printf("Object Lock:       none (worm_mode: NONE), snapshots in bucket %s can be deleted\n", storageCfg.Bucket)
+				} else if ok {
 					if err := s3Prov.VerifyBucketObjectLock(ctx); err == nil {
 						fmt.Printf("Object Lock:       on for bucket %s\n", storageCfg.Bucket)
 					} else {

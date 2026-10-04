@@ -149,8 +149,8 @@ you if you have not already).`,
 				if err == nil {
 					fmt.Printf("Object Lock: compliance mode is on for bucket %s\n", cfg.Storage.Bucket)
 				} else {
-					fmt.Fprintf(os.Stderr, "Warning: could not confirm Object Lock on bucket %s: %v\n"+
-						"   Run 'safegrd doctor' once the bucket is reachable.\n", cfg.Storage.Bucket, err)
+					fmt.Fprintf(os.Stderr, "Warning: could not confirm Object Lock on bucket %s: %v\n   %s.\n",
+						cfg.Storage.Bucket, err, objectLockAdvice(err))
 				}
 			}
 

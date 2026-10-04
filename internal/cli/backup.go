@@ -128,7 +128,8 @@ and never leaves this host.`,
 							"Use a bucket created with Object Lock, or, for a provider that has none, set "+
 							"storage.worm_mode: NONE in the config to back up without a lock. Nothing was written", storageCfg.Bucket)
 					}
-					return fmt.Errorf("could not check Object Lock on bucket %s: %w. Nothing was written", storageCfg.Bucket, err)
+					return fmt.Errorf("could not check Object Lock on bucket %s: %w. Nothing was written. %s",
+						storageCfg.Bucket, err, objectLockAdvice(err))
 				}
 			}
 
@@ -884,4 +885,16 @@ func backupMilliseconds(started time.Time) int64 {
 		return 1
 	}
 	return int64((d + time.Millisecond - 1) / time.Millisecond)
+}
+
+// objectLockAdvice is the next step after a failed Object Lock check. A
+// provider with no Object Lock API at all (DigitalOcean Spaces) answers 403
+// AccessDenied rather than "not configured", which used to leave the operator
+// with an error that never named worm_mode: NONE.
+func objectLockAdvice(err error) string {
+	if err != nil && strings.Contains(err.Error(), "AccessDenied") {
+		return "The access key may lack permission to read the bucket's Object Lock settings. " +
+			"If this provider has no Object Lock (DigitalOcean Spaces), set storage.worm_mode: NONE in the config to back up without a lock"
+	}
+	return "Check the bucket name, region, endpoint and access key, then run 'safegrd doctor'"
 }
