@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS catalog (
 CREATE TABLE IF NOT EXISTS pending (
 	path BLOB PRIMARY KEY, type TEXT, value TEXT, size INTEGER, mtime_ns INTEGER, mode INTEGER);
 CREATE TABLE IF NOT EXISTS refs (id BLOB PRIMARY KEY);
+CREATE TABLE IF NOT EXISTS state (k TEXT PRIMARY KEY, v BLOB);
 `
 
 // Cache is one epoch's cache file. Statements share one connection and one
@@ -623,10 +624,23 @@ func dedupe(s []string) []string {
 	return out
 }
 
+// State returns what the last finished run left under k for the next, or
+// nil.
+func (c *Cache) State(k string) ([]byte, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var v []byte
+	err := c.tx.QueryRow(`SELECT v FROM state WHERE k = ?`, k).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	return v, err
+}
+
 // FinishRun records a run as complete in one transaction: its blobs are
-// indexed under it, the catalog becomes what it saw, and the opening class
-// ends if this was the opening run.
-func (c *Cache) FinishRun(runID string, rescanned bool) error {
+// indexed under it, the catalog becomes what it saw, the opening class ends
+// if this was the opening run, and state is what it leaves for the next.
+func (c *Cache) FinishRun(runID string, rescanned bool, state map[string][]byte) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	rescans := c.rescans + 1
@@ -646,6 +660,12 @@ func (c *Cache) FinishRun(runID string, rescanned bool) error {
 		{`UPDATE runs SET state = ? WHERE state IN (?, ?) AND id != ?`, []any{runAbandoned, runRunning, runPublishing, runID}},
 		{`UPDATE runs SET state = ? WHERE id = ?`, []any{runComplete, runID}},
 		{`UPDATE epoch SET opening_done = 1, runs_since_rescan = ? WHERE id = ?`, []any{rescans, c.epoch.EpochID}},
+	}
+	for k, v := range state {
+		stmts = append(stmts, struct {
+			q    string
+			args []any
+		}{`INSERT OR REPLACE INTO state (k, v) VALUES (?, ?)`, []any{k, v}})
 	}
 	for _, s := range stmts {
 		if _, err := c.tx.Exec(s.q, s.args...); err != nil {

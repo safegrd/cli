@@ -49,6 +49,14 @@ type NativeDumper struct {
 	// Warn is told what a backup could not do properly and carried on without.
 	// It prints to stderr unless replaced.
 	Warn func(string)
+	// Carry, when set, is asked once inside the backup's snapshot, after the
+	// tables are listed and described and before any is read, which tables
+	// to carry forward from an earlier backup instead of reading, keyed
+	// schema.table, with the row count that backup recorded. Their rows are
+	// not copied and they are marked Carried. filtered are the tables
+	// row-level security filters for this role. An error is warned about
+	// and every table is read.
+	Carry func(ctx context.Context, tx pgx.Tx, meta *model.SnapshotMetadata, filtered map[string]int64, serverVersionNum int) (map[string]int64, error)
 }
 
 // NewNativeDumper creates a dumper for databaseURL.
@@ -152,9 +160,42 @@ func (d *NativeDumper) Dump(ctx context.Context, databaseName string, dst io.Wri
 		return nil, fmt.Errorf("failed to list tables: %w", err)
 	}
 
+	// What a backup records beyond its rows, which a one-table restore checks
+	// against and two backups are ordered by. A server that will
+	// not describe its tables still gets its backup, and is told.
+	if _, err := tx.Exec(ctx, "SAVEPOINT safegrd_describe"); err == nil {
+		if err := describeTables(ctx, tx, serverVersionNum, meta.TableStats); err != nil {
+			_, _ = tx.Exec(ctx, "ROLLBACK TO SAVEPOINT safegrd_describe")
+			for i := range meta.TableStats {
+				t := &meta.TableStats[i]
+				t.SchemaHash, t.OwnedSequences, t.References = "", nil, nil
+			}
+			d.Warn(fmt.Sprintf("%v. The backup goes on without each table's schema hash, owned sequences and foreign key targets.", err))
+		} else {
+			_, _ = tx.Exec(ctx, "RELEASE SAVEPOINT safegrd_describe")
+		}
+	}
+	meta.SourceSnapshot, meta.SourceLSN = runIdentity(ctx, tx, serverVersionNum)
+	if meta.SourceSnapshot == "" {
+		d.Warn("The server did not report the snapshot this backup reads under, so the backup records none.")
+	}
+
 	filtered, err := rowSecurityTables(ctx, tx)
 	if err != nil {
 		return nil, err
+	}
+
+	var carry map[string]int64
+	if d.Carry != nil {
+		if _, err := tx.Exec(ctx, "SAVEPOINT safegrd_carry"); err == nil {
+			if carry, err = d.Carry(ctx, tx, meta, filtered, serverVersionNum); err != nil {
+				_, _ = tx.Exec(ctx, "ROLLBACK TO SAVEPOINT safegrd_carry")
+				carry = nil
+				d.Warn(fmt.Sprintf("The change log could not be read (%v). Every table is read.", err))
+			} else {
+				_, _ = tx.Exec(ctx, "RELEASE SAVEPOINT safegrd_carry")
+			}
+		}
 	}
 
 	tw := tar.NewWriter(dst)
@@ -204,6 +245,10 @@ func (d *NativeDumper) Dump(ctx context.Context, databaseName string, dst io.Wri
 	pgConn := conn.PgConn()
 	for i := range meta.TableStats {
 		t := &meta.TableStats[i]
+		if n, ok := carry[t.Schema+"."+t.TableName]; ok {
+			t.RowCount, t.Carried = n, true
+			continue
+		}
 		cw := newChunkWriter(tw, t.Schema, t.TableName)
 		tag, err := pgConn.CopyTo(ctx, cw, "COPY "+pgx.Identifier{t.Schema, t.TableName}.Sanitize()+" TO STDOUT (FORMAT binary)")
 		if err != nil {

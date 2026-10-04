@@ -339,9 +339,13 @@ func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, d pendingDrill
 	// A surface whose last snapshot is still an archive from before it was
 	// incremental takes the archive's drill.
 	var rs *repoSnapshot
-	if strings.EqualFold(s.Type, "files") && !strings.EqualFold(s.Format, formatTar) {
+	// A PostgreSQL surface is a run of its repository unless it says
+	// format: tar.
+	notTar := !strings.EqualFold(strings.TrimSpace(s.Format), formatTar)
+	if notTar && (strings.EqualFold(s.Type, "files") || surfaceIsPostgres(s) || strings.TrimSpace(s.Type) == "") {
 		rs = repoDrillTarget(ctx, c, storageCfg, snapshotID)
 	}
+	dbRun := rs != nil && runner.IsRepoDatabase(rs.Meta)
 	var local *runner.LocalPostgres
 	// shallow is why this drill is shallower than the plan's, said on the
 	// heartbeat as well as here: the report alone reads as a passing drill.
@@ -349,7 +353,11 @@ func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, d pendingDrill
 	var shallowWhy string
 	if sandboxErr == nil && sandbox == "" && d.sandboxIncluded && surfaceIsPostgres(s) {
 		var why error
-		if local, shallow, why = startLocalSandbox(ctx, provider, snapshotID, d.stateDir); why != nil {
+		var known *model.SnapshotMetadata
+		if dbRun {
+			known = rs.Meta
+		}
+		if local, shallow, why = startLocalSandbox(ctx, provider, snapshotID, known, d.stateDir); why != nil {
 			shallowWhy = why.Error()
 			fmt.Fprintf(os.Stderr, "Warning: Surface %s: drilling in memory, not in a local sandbox: %v\n", s.ID, why)
 		} else if local != nil {
@@ -364,11 +372,19 @@ func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, d pendingDrill
 		fmt.Printf("Surface %s: Fire Drill due: restoring snapshot %s into a throwaway PostgreSQL %s on this host.\n",
 			s.ID, snapshotID, local.Server.Version)
 		// The cluster is deleted after the drill, so it is not emptied.
-		report, err = verifier.RunFireDrill(ctx, snapshotID, key, local.URL)
+		if dbRun {
+			report, err = verifier.RunRepoDatabaseDrill(ctx, runner.RepoDrill{Backend: rs.Backend, Epoch: rs.Epoch, Meta: rs.Meta}, key, local.URL)
+		} else {
+			report, err = verifier.RunFireDrill(ctx, snapshotID, key, local.URL)
+		}
 	case sandbox != "":
 		how = "restore into the sandbox database"
 		fmt.Printf("Surface %s: Fire Drill due: restoring snapshot %s into its sandbox database.\n", s.ID, snapshotID)
-		report, err = verifier.RunSandboxDrill(ctx, snapshotID, key, sandbox)
+		if dbRun {
+			report, err = verifier.RunRepoSandboxDrill(ctx, runner.RepoDrill{Backend: rs.Backend, Epoch: rs.Epoch, Meta: rs.Meta}, key, sandbox)
+		} else {
+			report, err = verifier.RunSandboxDrill(ctx, snapshotID, key, sandbox)
+		}
 	case rs != nil:
 		// A repository snapshot is proven by restoring every file and
 		// recomputing its content root from what landed on disk.
@@ -456,10 +472,15 @@ func surfaceIsPostgres(s *config.SurfaceConfig) bool {
 // A drill that cannot have one replays the snapshot in memory instead: a
 // restore that failed for one of these reasons would report the backup as
 // broken when the host was the problem.
-func startLocalSandbox(ctx context.Context, provider storage.StorageProvider, snapshotID, stateDir string) (*runner.LocalPostgres, model.DrillReason, error) {
-	meta, err := provider.DownloadMetadata(ctx, snapshotID)
-	if err != nil {
-		return nil, model.DrillReasonManifestUnreadable, fmt.Errorf("cannot read the snapshot's manifest: %w", err)
+func startLocalSandbox(ctx context.Context, provider storage.StorageProvider, snapshotID string, known *model.SnapshotMetadata, stateDir string) (*runner.LocalPostgres, model.DrillReason, error) {
+	// A run's sidecar is in its repository, read already; an archive's is
+	// beside the archive.
+	meta := known
+	if meta == nil {
+		var err error
+		if meta, err = provider.DownloadMetadata(ctx, snapshotID); err != nil {
+			return nil, model.DrillReasonManifestUnreadable, fmt.Errorf("cannot read the snapshot's manifest: %w", err)
+		}
 	}
 	if meta.SurfaceType != "" && meta.SurfaceType != model.SurfaceTypePostgres {
 		return nil, "", nil

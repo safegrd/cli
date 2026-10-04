@@ -137,6 +137,13 @@ when this host is enrolled.`,
 				fmt.Fprintf(os.Stderr, "Warning: could not look among the incremental repositories: %v\n", err)
 			}
 			if rs != nil {
+				if runner.IsRepoDatabase(rs.Meta) {
+					sandbox := sandboxURL
+					if dryRun {
+						sandbox = ""
+					}
+					return verifyRepoDatabase(ctx, rs, resolvedKey, sandbox)
+				}
 				if sandboxURL != "" && !dryRun {
 					return fmt.Errorf("snapshot %s is a files snapshot; it is proven by restoring it, so leave out --sandbox-target", snapshotID)
 				}

@@ -1164,6 +1164,42 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 		if dbURL == "" {
 			return nil, plan, stageErr(model.BackupReasonConfig, fmt.Errorf("database URL unresolved for surface %s", s.ID))
 		}
+		// A PostgreSQL surface is a run of its repository unless it says
+		// format: tar; every other engine is one archive.
+		dbFormat := strings.ToLower(strings.TrimSpace(s.Format))
+		if dbFormat == "" && dump.SurfaceTypeOfURL(dbURL) == model.SurfaceTypePostgres {
+			dbFormat = formatRepo
+		}
+		switch dbFormat {
+		case "", formatTar:
+		case formatRepo:
+			if dump.SurfaceTypeOfURL(dbURL) != model.SurfaceTypePostgres {
+				return nil, plan, stageErr(model.BackupReasonConfig, fmt.Errorf("surface %s: format: repo takes a PostgreSQL database; leave format out for this one", s.ID))
+			}
+			if storageCfg.NodeID == "" {
+				storageCfg.NodeID = nodeID
+			}
+			meta, res, err := runRepoDatabaseBackup(ctx, repoDBParams{
+				SurfaceID: s.ID, DatabaseURL: dbURL, StorageCfg: storageCfg, NodeID: nodeID, Recipient: pubKey,
+				Retention: policy.Retention{Days: storageCfg.RetentionDays, KeepDaily: tiers.Days, KeepWeekly: tiers.Weeks, KeepMonthly: tiers.Months},
+				Tier:      plan.Tier, Planned: plan.Until, SnapshotID: snapshotID, StateDir: stateDir, Out: os.Stdout,
+				NewEpoch: st.newEpoch, ChangeLog: s.ChangeLog,
+			})
+			st.newEpoch, st.rescan = false, false
+			if err != nil {
+				return nil, plan, err
+			}
+			if res.Tier != plan.Tier {
+				plan.DayKey, plan.WeekKey, plan.MonthKey = "", "", ""
+				fmt.Printf("   Surface %s: kept at the epoch's %s tier. The %s slot stays open for the next backup.\n", s.ID, res.Tier, plan.Tier)
+			}
+			if hostIsEnrolled(c) {
+				st.notRecorded = reportSnapshot(ctx, c, st, meta)
+			}
+			return meta, plan, nil
+		default:
+			return nil, plan, stageErr(model.BackupReasonConfig, fmt.Errorf("surface %s: format %q is not tar or repo", s.ID, s.Format))
+		}
 
 		dumper := dump.NewDumper(dump.EngineTypeNative, dbURL)
 		dumpReader, dumpWriter := io.Pipe()

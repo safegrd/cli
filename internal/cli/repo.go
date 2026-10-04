@@ -95,6 +95,13 @@ func epochURI(b sink.Backend, e format.Epoch, surfaceID string) string {
 	if u, ok := b.(interface{ EpochURI(format.Epoch) string }); ok {
 		return u.EpochURI(e)
 	}
+	// A directory on this host is named as an archive in one is, file://,
+	// which is how guard tells that nothing locks it.
+	if d, ok := b.(*sink.Direct); ok {
+		if dir, ok := d.S.(*sink.Dir); ok {
+			return "file://" + filepath.Join(dir.Describe(), "repo", surfaceID, e.EpochID)
+		}
+	}
 	return b.Describe() + "/" + path.Join("repo", surfaceID, e.EpochID)
 }
 
@@ -169,16 +176,7 @@ func runRepoBackup(ctx context.Context, p repoParams) (*model.SnapshotMetadata, 
 		return nil, nil, err
 	}
 	label := "[" + p.SurfaceID + "]"
-	locked := true
-	if mode, err := p.StorageCfg.ResolveWORMMode(); err == nil && mode == config.WORMModeNone {
-		locked = false
-	}
-	if p.StorageCfg.Type == config.StorageTypeLocal || p.StorageCfg.Type == "" {
-		locked = false
-	}
-	if p.StorageCfg.Type == config.StorageTypeHosted {
-		locked = true
-	}
+	locked := repoLocked(p.StorageCfg)
 	var skip []string
 	if p.StorageCfg.Type == config.StorageTypeLocal || p.StorageCfg.Type == "" {
 		lp := p.StorageCfg.LocalPath
@@ -254,6 +252,28 @@ func runRepoBackup(ctx context.Context, p repoParams) (*model.SnapshotMetadata, 
 			formatNumber(res.ChangedFiles), formatBytes(res.ReadBytes), formatBytes(res.WrittenBytes), snap.Stats.NewPacks,
 			pluralWord(snap.Stats.NewPacks, "pack", "packs"), took)
 	}
+	printRepoKept(out, label, res, locked)
+	return meta, res, nil
+}
+
+// repoLocked reports whether a repository on this storage is under Object
+// Lock: hosted storage always is, a local directory never, and a bucket
+// unless worm_mode is NONE.
+func repoLocked(sc config.StorageConfig) bool {
+	switch sc.Type {
+	case config.StorageTypeHosted:
+		return true
+	case config.StorageTypeLocal, "":
+		return false
+	}
+	mode, err := sc.ResolveWORMMode()
+	return err != nil || mode != config.WORMModeNone
+}
+
+// printRepoKept prints the line that closes a run: how long its snapshot is
+// kept, and whether it is locked for that long.
+func printRepoKept(out io.Writer, label string, res *write.Result, locked bool) {
+	snap := res.Snapshot
 	switch {
 	case !locked:
 		fmt.Fprintf(out, "%s Snapshot %s complete. Not locked: this storage applies no Object Lock; it is kept until %s.\n",
@@ -267,7 +287,6 @@ func runRepoBackup(ctx context.Context, p repoParams) (*model.SnapshotMetadata, 
 		fmt.Fprintf(out, "%s Kept until %s, not %s: that is as long as this epoch's objects are locked.\n", label,
 			snap.RetainUntil.UTC().Format("2006-01-02"), res.Planned.UTC().Format("2006-01-02"))
 	}
-	return meta, res, nil
 }
 
 // repoSnapshot is a repository snapshot found in storage.

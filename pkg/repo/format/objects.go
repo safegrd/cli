@@ -51,6 +51,11 @@ const ChunkerAlgorithm = "rabin-restic"
 // DefaultChunker is 512 KiB minimum, about 1 MiB on average, 8 MiB maximum.
 var DefaultChunker = ChunkerParams{Algorithm: ChunkerAlgorithm, Min: 512 << 10, Avg: 1 << 20, Max: 8 << 20}
 
+// DatabaseChunker is 32 KiB minimum, about 64 KiB on average, 512 KiB
+// maximum: a database's tables change a few rows at a time all over, and a
+// smaller chunk re-uploads less of a table for each scattered change.
+var DatabaseChunker = ChunkerParams{Algorithm: ChunkerAlgorithm, Min: 32 << 10, Avg: 64 << 10, Max: 512 << 10}
+
 // DefaultPackTarget is the size at which a pack is closed.
 const DefaultPackTarget = 32 << 20
 

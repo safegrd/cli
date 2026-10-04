@@ -212,14 +212,18 @@ func listRepoSnapshots(ctx context.Context, storageCfg config.StorageConfig) []r
 func printRepoTable(rows []repoSnapshot, storageCfg config.StorageConfig) {
 	fmt.Println()
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, "INCREMENTAL SNAPSHOT\tSURFACE\tEPOCH\tCLASS\tCONTENTS\tLOGICAL\tNEW\tRETENTION\tSTATUS")
+	fmt.Fprintln(w, "INCREMENTAL SNAPSHOT\tNODE\tSURFACE\tEPOCH\tCLASS\tCONTENTS\tLOGICAL\tNEW\tRETENTION\tSTATUS")
 	for _, r := range rows {
 		m := r.Meta
 		status := string(m.Status)
 		if m.IsPoisonPillFrozen {
 			status = "ANOMALOUS"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", m.SnapshotID, r.SurfaceID, m.EpochID, m.ObjectClass,
+		node := m.NodeID
+		if node == "" {
+			node = "-"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", m.SnapshotID, node, r.SurfaceID, m.EpochID, m.ObjectClass,
 			describeContents(m), formatBytes(m.RawSizeBytes), formatBytes(m.EncryptedSizeBytes), describeRetention(m, storageCfg), status)
 	}
 	w.Flush()

@@ -99,6 +99,7 @@ func newFindCmd() *cobra.Command {
 		surface          string
 		deleted, jsonOut bool
 		keyPath, privKey string
+		tables           []string
 	)
 	cmd := &cobra.Command{
 		Use:   "find <pattern>...",
@@ -111,10 +112,22 @@ Patterns are paths relative to /, matched segment by segment: '*' and '?' within
 segment, '**' across any number of them. A directory selects everything below it.
 --deleted lists only files the newest snapshot no longer holds.
 
-Restore a version with: safegrd restore --path <path> --version <n> --target-dir <dir>`,
-		Args: cobra.MinimumNArgs(1),
+--table schema.table lists the versions of a table in incremental database backups.
+
+Restore a version with: safegrd restore --path <path> --version <n> --target-dir <dir>
+or, for a table: safegrd restore --table <schema.table> --version <n> --target <database URL>`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
+			for _, t := range tables {
+				p, err := tablePath(t)
+				if err != nil {
+					return err
+				}
+				args = append(args, p)
+			}
+			if len(args) == 0 {
+				return fmt.Errorf("give a pattern, or --table schema.table")
+			}
 			key, err := resolveIdentity(ctx, keyPath, privKey)
 			if err != nil {
 				return err
@@ -136,7 +149,7 @@ Restore a version with: safegrd restore --path <path> --version <n> --target-dir
 				return enc.Encode(res)
 			}
 			if len(res) == 0 {
-				fmt.Println("No kept version of a file matches.")
+				fmt.Println("No kept version matches.")
 				return nil
 			}
 			for i, r := range res {
@@ -176,6 +189,7 @@ Restore a version with: safegrd restore --path <path> --version <n> --target-dir
 		},
 	}
 	cmd.Flags().StringVar(&surface, "surface", "", "Search this surface only")
+	cmd.Flags().StringArrayVar(&tables, "table", nil, "List the versions of this table (schema.table) in incremental database backups (repeatable)")
 	cmd.Flags().BoolVar(&deleted, "deleted", false, "List only files the newest snapshot no longer holds")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print the histories as JSON")
 	cmd.Flags().StringVar(&keyPath, "key-path", "", "Path to the age identity file")

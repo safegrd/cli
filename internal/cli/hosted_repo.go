@@ -140,8 +140,10 @@ func (h *hostedRepo) prefix(epochID string) (string, error) {
 	return p, nil
 }
 
-// callRetry is call, retried while the remote server asks this host to
-// confirm what it uploaded before it signs more (HTTP 429).
+// callRetry is call, retried while the remote server answers HTTP 429: it
+// asks this host to confirm what it uploaded before it signs more, or to
+// slow down. Listings and signed reads go through it, so a restore started
+// in a burst waits instead of failing.
 func (h *hostedRepo) callRetry(ctx context.Context, method, sub string, in, out any) error {
 	for attempt := 0; ; attempt++ {
 		err := h.c.call(ctx, method, sub, in, out)
@@ -176,6 +178,9 @@ func (h *hostedRepo) OpenEpoch(ctx context.Context, req sink.OpenRequest) (sink.
 	}
 	if req.Current != nil {
 		body["current_epoch_id"] = req.Current.Epoch.EpochID
+	}
+	if req.Chunker != nil {
+		body["chunker"] = req.Chunker
 	}
 	var v hostedEpochView
 	if err := h.c.call(ctx, http.MethodPost, "/repo/epochs", body, &v); err != nil {
@@ -320,7 +325,7 @@ func (h *hostedRepo) listEpochs(ctx context.Context, surfaceID string) ([]hosted
 	var out struct {
 		Epochs []hostedEpochView `json:"epochs"`
 	}
-	if err := h.c.call(ctx, http.MethodGet, "/repo/epochs?"+q.Encode(), nil, &out); err != nil {
+	if err := h.callRetry(ctx, http.MethodGet, "/repo/epochs?"+q.Encode(), nil, &out); err != nil {
 		return nil, err
 	}
 	return out.Epochs, nil
@@ -372,7 +377,7 @@ func (h *hostedRepo) List(ctx context.Context, e sink.EpochInfo, sub string) ([]
 	if sub != "" {
 		q = "?sub=" + url.QueryEscape(sub)
 	}
-	if err := h.c.call(ctx, http.MethodGet, "/repo/epochs/"+url.PathEscape(e.Epoch.EpochID)+"/objects"+q, nil, &out); err != nil {
+	if err := h.callRetry(ctx, http.MethodGet, "/repo/epochs/"+url.PathEscape(e.Epoch.EpochID)+"/objects"+q, nil, &out); err != nil {
 		return nil, err
 	}
 	objs := make([]sink.ObjectInfo, len(out.Objects))

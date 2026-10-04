@@ -41,6 +41,9 @@ type RepoDrill struct {
 // looked at: a repository snapshot has no single ciphertext, so its empty
 // EncryptedSha256 means neither a legacy snapshot nor a tampered one.
 func (v *Verifier) RunRepoDrill(ctx context.Context, d RepoDrill, privateKey string) (*model.VerificationReport, error) {
+	if IsRepoDatabase(d.Meta) {
+		return v.RunRepoDatabaseDrill(ctx, d, privateKey, "")
+	}
 	started := time.Now()
 	meta := d.Meta
 	// The restore writes the whole tree to this host's disk before deleting

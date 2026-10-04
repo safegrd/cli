@@ -235,34 +235,42 @@ if [ -z "$ALREADY_INSTALLED" ]; then
     exit 1
   fi
 
-  # 8. Checksum Verification
-  if ! download_file "$CHECKSUMS_URL" "$TMP_DIR/checksums.txt" 2>/dev/null; then
-    log_warn "No checksums.txt next to the archive; the download was NOT verified."
+  # 8. Checksum verification. Nothing is installed that was not checked:
+  # a missing checksums.txt, an archive it does not list or a machine with
+  # no SHA-256 tool stops here. SAFEGRD_SKIP_VERIFY=1 is the explicit
+  # override, for a mirror that publishes no checksums.
+  if [ -n "${SAFEGRD_SKIP_VERIFY:-}" ]; then
+    log_warn "SAFEGRD_SKIP_VERIFY is set; the download was NOT verified."
   else
+    if ! download_file "$CHECKSUMS_URL" "$TMP_DIR/checksums.txt" 2>/dev/null; then
+      log_error "No checksums.txt next to the archive, so the download cannot be verified:"
+      log_error "  $CHECKSUMS_URL"
+      log_error "Not installing. Set SAFEGRD_SKIP_VERIFY=1 to install an unverified download."
+      exit 1
+    fi
     log_info "Verifying SHA256 checksum..."
     EXPECTED_HASH="$(grep "${ARCHIVE_NAME}" "$TMP_DIR/checksums.txt" | awk '{print $1}' | head -n 1 || true)"
-    if [ -n "$EXPECTED_HASH" ]; then
-      if command -v sha256sum >/dev/null 2>&1; then
-        ACTUAL_HASH="$(sha256sum "$TMP_DIR/$ARCHIVE_NAME" | awk '{print $1}')"
-      elif command -v shasum >/dev/null 2>&1; then
-        ACTUAL_HASH="$(shasum -a 256 "$TMP_DIR/$ARCHIVE_NAME" | awk '{print $1}')"
-      else
-        ACTUAL_HASH=""
-        log_warn "Neither 'sha256sum' nor 'shasum' found; skipping checksum verification."
-      fi
-
-      if [ -n "$ACTUAL_HASH" ]; then
-        if [ "$EXPECTED_HASH" != "$ACTUAL_HASH" ]; then
-          log_error "Checksum verification failed!"
-          log_error "  Expected: $EXPECTED_HASH"
-          log_error "  Actual:   $ACTUAL_HASH"
-          exit 1
-        fi
-        log_success "Checksum verified: ${ACTUAL_HASH}"
-      fi
-    else
-      log_warn "${ARCHIVE_NAME} is not listed in checksums.txt; the download was NOT verified."
+    if [ -z "$EXPECTED_HASH" ]; then
+      log_error "${ARCHIVE_NAME} is not listed in checksums.txt, so the download cannot be verified."
+      log_error "Not installing. Set SAFEGRD_SKIP_VERIFY=1 to install an unverified download."
+      exit 1
     fi
+    if command -v sha256sum >/dev/null 2>&1; then
+      ACTUAL_HASH="$(sha256sum "$TMP_DIR/$ARCHIVE_NAME" | awk '{print $1}')"
+    elif command -v shasum >/dev/null 2>&1; then
+      ACTUAL_HASH="$(shasum -a 256 "$TMP_DIR/$ARCHIVE_NAME" | awk '{print $1}')"
+    else
+      log_error "Neither 'sha256sum' nor 'shasum' is installed, so the download cannot be verified."
+      log_error "Not installing. Install one of them, or set SAFEGRD_SKIP_VERIFY=1 to install an unverified download."
+      exit 1
+    fi
+    if [ "$EXPECTED_HASH" != "$ACTUAL_HASH" ]; then
+      log_error "Checksum verification failed!"
+      log_error "  Expected: $EXPECTED_HASH"
+      log_error "  Actual:   $ACTUAL_HASH"
+      exit 1
+    fi
+    log_success "Checksum verified: ${ACTUAL_HASH}"
   fi
 
   # 9. Unpack Archive

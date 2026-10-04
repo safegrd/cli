@@ -183,6 +183,18 @@ func (v *Verifier) RunSandboxDrill(ctx context.Context, snapshotID, privateKey, 
 	return report, err
 }
 
+// RunRepoSandboxDrill is RunSandboxDrill for a database run of a repository.
+func (v *Verifier) RunRepoSandboxDrill(ctx context.Context, d RepoDrill, privateKey, sandboxURL string) (*model.VerificationReport, error) {
+	report, err := v.RunRepoDatabaseDrill(ctx, d, privateKey, sandboxURL)
+	if err != nil {
+		return report, err
+	}
+	if resetErr := ResetSandbox(ctx, sandboxURL); resetErr != nil {
+		err = fmt.Errorf("the drill ran, but the sandbox could not be emptied for the next one: %w", resetErr)
+	}
+	return report, err
+}
+
 // ownedHereQuery lists, in drop order, what the current role owns in this
 // database and no extension does: its extensions, then schemas other than
 // public, then the views, tables, sequences, routines and types it left in

@@ -59,8 +59,13 @@ func backupNamedSurface(ctx context.Context, c *config.CLIConfig, surfaceID stri
 	}
 	configured := *surface
 	applyConsoleSettings(surface, &configured, sState)
-	if f, _ := fileFormat(surface.Format); (newEpoch || rescan) && (!strings.EqualFold(surface.Type, "files") || f != formatRepo) {
+	files := strings.EqualFold(surface.Type, "files")
+	postgres := surface.Type == "" || strings.EqualFold(surface.Type, "postgres")
+	if f, _ := fileFormat(surface.Format); (newEpoch || rescan) && (!(files || postgres) || f != formatRepo) {
 		return fmt.Errorf("--new-epoch and --rescan apply to a surface with format: repo; %s is not one", surface.ID)
+	}
+	if rescan && !files {
+		return fmt.Errorf("--rescan applies to a files surface: a database run reads every table")
 	}
 	sState.newEpoch, sState.rescan = newEpoch, rescan
 

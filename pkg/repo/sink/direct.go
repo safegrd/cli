@@ -40,6 +40,12 @@ func (d *Direct) OpenEpoch(ctx context.Context, req OpenRequest) (Opened, error)
 	if req.PackTargetBytes > 0 {
 		e.PackTargetBytes = req.PackTargetBytes
 	}
+	if req.Chunker != nil {
+		e.Chunker = *req.Chunker
+		if err := e.Validate(); err != nil {
+			return Opened{}, err
+		}
+	}
 	body, err := format.Marshal(e)
 	if err != nil {
 		return Opened{}, err

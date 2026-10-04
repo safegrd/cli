@@ -61,9 +61,12 @@ type Options struct {
 	// PackTargetBytes is the pack size a new epoch closes packs at; zero
 	// means 32 MiB.
 	PackTargetBytes int
-	Host            string
-	SnapshotID      string
-	Now             func() time.Time
+	// Chunker is the chunk size bounds a new epoch is cut with; nil keeps
+	// format.DefaultChunker.
+	Chunker    *format.ChunkerParams
+	Host       string
+	SnapshotID string
+	Now        func() time.Time
 	// Logf receives progress lines a person reads while the run goes on.
 	Logf func(format string, args ...any)
 	// OnStart is called once the epoch is decided, before the walk: Opened,
@@ -72,7 +75,37 @@ type Options struct {
 	// Sidecar returns the plaintext metadata sidecar for the finished run,
 	// written last: the snapshot exists once it does.
 	Sidecar func(*Result) ([]byte, error)
+	// Source, when set, supplies the snapshot's files as streams in place of
+	// a walk of Roots, which must then be empty. Its files are the top of
+	// the snapshot's tree and its one root is "/".
+	Source Source
+	// State, when set, returns what this run leaves for the next one of the
+	// surface, kept in the cache with the run and handed to the next run as
+	// Result.PriorState. It is called once the run is published.
+	State func(*Result) ([]byte, error)
 }
+
+// Source supplies a snapshot's files as streams: a database dump, one entry
+// per section and per table, that never touches the host's disk. It calls
+// emit once per file, in any order, and emit reads the file to its end
+// before it returns.
+type Source func(ctx context.Context, emit func(Entry) error) error
+
+// Entry is one file of a Source.
+type Entry struct {
+	// Path is slash-separated and relative: "data/public/users.copy".
+	Path   string
+	Reader io.Reader
+	// Carry stores the file as this epoch last stored it, without reading
+	// it: the source knows it has not changed. Reader is ignored. emit
+	// returns ErrNotCarried when the epoch does not hold it, which
+	// Result.CanCarry said beforehand.
+	Carry bool
+}
+
+// ErrNotCarried is returned by emit for an Entry to carry that the epoch
+// cannot carry.
+var ErrNotCarried = errors.New("the repository cannot carry this file forward unread")
 
 // Result is what a finished run wrote.
 type Result struct {
@@ -102,6 +135,19 @@ type Result struct {
 	WrittenBytes int64
 	ChangedFiles int64
 	Rescanned    bool
+	// NewBytes is, for a run of a Source, the bytes of chunks each file added
+	// to the epoch, before compression: zero for a file that did not change.
+	NewBytes map[string]int64
+	// PriorState is what the surface's last finished run left through
+	// Options.State, or nil; set before OnStart.
+	PriorState []byte
+	// CanCarry reports whether the epoch holds every chunk of path as it
+	// was last stored, so a Source may emit it with Carry; set before
+	// OnStart.
+	CanCarry func(path string) bool
+	// StateSaved is set when the cache recorded this run with the state
+	// Options.State returned.
+	StateSaved bool
 	// Keys are the objects this run wrote, sidecar included.
 	Keys       []string
 	SidecarKey string
@@ -109,6 +155,9 @@ type Result struct {
 	// cache; the next run still works.
 	CacheWarning string
 }
+
+// sourceStateKey is where the cache keeps Options.State.
+const sourceStateKey = "source"
 
 // DefaultExcludesForSlash are left out when a root is "/": kernel and
 // runtime filesystems, scratch space and swap.
@@ -141,8 +190,14 @@ func Run(ctx context.Context, b sink.Backend, o Options) (*Result, error) {
 	if err := sink.ValidSnapshotName(o.SnapshotID); err != nil {
 		return nil, err
 	}
-	roots, err := CleanRoots(o.Roots)
-	if err != nil {
+	var roots []string
+	var err error
+	if o.Source != nil {
+		if len(o.Roots) > 0 {
+			return nil, fmt.Errorf("a run takes a source or roots, not both")
+		}
+		roots = []string{"/"}
+	} else if roots, err = CleanRoots(o.Roots); err != nil {
 		return nil, err
 	}
 	rec, err := seal.Recipient(o.Recipient)
@@ -179,6 +234,7 @@ func Run(ctx context.Context, b sink.Backend, o Options) (*Result, error) {
 	opened, err := b.OpenEpoch(ctx, sink.OpenRequest{
 		SurfaceID: o.SurfaceID, Current: current, Decision: decision, OpeningTier: tier,
 		Retention: o.Retention, Recipient: o.Recipient, Now: started, PackTargetBytes: o.PackTargetBytes,
+		Chunker: o.Chunker,
 	})
 	if err != nil {
 		if cur != nil {
@@ -187,6 +243,14 @@ func Run(ctx context.Context, b sink.Backend, o Options) (*Result, error) {
 		return nil, err
 	}
 	res := &Result{Epoch: opened.Epoch, Opened: opened.New, Reason: opened.Epoch.Reason}
+	if cur != nil {
+		// Kept across a new epoch: the source's state names who it is, not
+		// what this epoch holds.
+		if res.PriorState, err = cur.State(sourceStateKey); err != nil {
+			cur.Close()
+			return nil, fmt.Errorf("reading the local cache: %w", err)
+		}
+	}
 	if cur != nil && cur.Epoch().EpochID != opened.Epoch.EpochID {
 		cur.Close()
 		cur = nil
@@ -233,6 +297,18 @@ func Run(ctx context.Context, b sink.Backend, o Options) (*Result, error) {
 		for _, p := range adopted {
 			res.AdoptedBytes += p.Bytes
 		}
+	}
+	res.CanCarry = func(p string) bool {
+		row, err := cur.File(p)
+		if err != nil || row == nil {
+			return false
+		}
+		for _, id := range row.Blobs {
+			if known, err := cur.Known(id); err != nil || !known {
+				return false
+			}
+		}
+		return true
 	}
 	if o.OnStart != nil {
 		o.OnStart(res)
@@ -289,7 +365,13 @@ func Run(ctx context.Context, b sink.Backend, o Options) (*Result, error) {
 			}
 		}
 	}
-	rootTree, walkErr := w.walkRoots(roots)
+	var rootTree format.ID
+	var walkErr error
+	if o.Source != nil {
+		rootTree, walkErr = w.source(o.Source, started)
+	} else {
+		rootTree, walkErr = w.walkRoots(roots)
+	}
 	if walkErr == nil {
 		walkErr = w.flush()
 	}
@@ -305,6 +387,7 @@ func Run(ctx context.Context, b sink.Backend, o Options) (*Result, error) {
 	}
 	res.ReadBytes = w.readBytes
 	res.ChangedFiles = w.changed
+	res.NewBytes = w.newBytes
 
 	// 5–6. Index, catalog, snapshot, sidecar, in that order.
 	if err := cur.Commit(); err != nil {
@@ -416,9 +499,18 @@ func Run(ctx context.Context, b sink.Backend, o Options) (*Result, error) {
 	if err := b.Commit(ctx, e, sink.RunCommit{SnapshotID: o.SnapshotID, RunID: runID, Class: res.Class, Keys: res.Keys, RetainUntil: retain}); err != nil {
 		return nil, fmt.Errorf("recording the run: %w", err)
 	}
-	if err := cur.FinishRun(runID, res.Rescanned); err != nil {
+	var state map[string][]byte
+	if o.State != nil {
+		b, err := o.State(res)
+		if err != nil {
+			res.CacheWarning = fmt.Sprintf("this run's state for the next could not be built (%v); the next run reads everything", err)
+		} else {
+			state = map[string][]byte{sourceStateKey: b}
+		}
+	}
+	if err := cur.FinishRun(runID, res.Rescanned, state); err != nil {
 		res.CacheWarning = fmt.Sprintf("the local cache did not record this run (%v); the next run re-indexes what it uploaded", err)
-	} else if res.Class == format.ClassOpening {
+	} else if res.StateSaved = state != nil; res.Class == format.ClassOpening {
 		if err := cache.RemoveOthers(dir, e.EpochID); err != nil {
 			res.CacheWarning = fmt.Sprintf("could not delete the caches of earlier epochs in %s: %v", dir, err)
 		}
@@ -608,6 +700,7 @@ type walker struct {
 	changed      int64
 	skipped      []format.Skipped
 	inconsistent []format.RawPath
+	newBytes     map[string]int64
 }
 
 type rootNode struct {
@@ -832,31 +925,37 @@ func (w *walker) storeTree(t format.Tree) (format.ID, error) {
 // store adds a blob unless the epoch or this run already holds it, and
 // records that the snapshot references it.
 func (w *walker) store(p *packer, id format.ID, plain []byte) error {
+	_, err := w.storeNew(p, id, plain)
+	return err
+}
+
+// storeNew is store, saying whether the blob was new to the epoch.
+func (w *walker) storeNew(p *packer, id format.ID, plain []byte) (bool, error) {
 	if err := w.cache.Ref(id); err != nil {
-		return err
+		return false, err
 	}
 	if w.inRun[id] {
-		return nil
+		return false, nil
 	}
 	known, err := w.cache.Known(id)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if known {
-		return nil
+		return false, nil
 	}
 	w.inRun[id] = true
 	if err := p.add(id, plain); err != nil {
-		return err
+		return true, err
 	}
 	if p.full() {
 		sp, err := p.finish()
 		if err != nil {
-			return err
+			return true, err
 		}
-		return w.up.send(sp)
+		return true, w.up.send(sp)
 	}
-	return nil
+	return true, nil
 }
 
 func (w *walker) flush() error {

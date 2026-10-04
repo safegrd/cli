@@ -141,11 +141,32 @@ func (v *Verifier) RunFireDrill(ctx context.Context, snapshotID, privateKey, san
 		return report, nil
 	}
 
+	allPassed := sandboxAssertions(report, meta, restoredMeta)
+
+	report.CompletedAt = time.Now()
+	report.DurationMs = drillMilliseconds(report.CompletedAt.Sub(startTime))
+
+	if allPassed {
+		report.Status = model.VerificationStatusPassed
+		report.CertificateHash = computeCertificateHash(report)
+	} else {
+		report.Status = model.VerificationStatusFailed
+		report.ErrorMessage = "One or more integrity assertions failed during Fire Drill"
+	}
+
+	// 7. Submit certificate report to SafeGrd remote server
+	v.submitReport(ctx, report)
+
+	return report, nil
+}
+
+// sandboxAssertions holds what a sandbox now holds to what the backup
+// recorded: tables, rows, extensions and the schema's fidelity.
+func sandboxAssertions(report *model.VerificationReport, meta, restoredMeta *model.SnapshotMetadata) bool {
 	report.TablesRestored = restoredMeta.TotalTables
 	report.RowsRestored = restoredMeta.TotalRows
 	report.ExtensionsBooted = restoredMeta.Extensions
 
-	// 6. Run Fire Drill Assertions
 	allPassed := true
 
 	// Assertion A: Table count match
@@ -193,22 +214,7 @@ func (v *Verifier) RunFireDrill(ctx context.Context, snapshotID, privateKey, san
 		allPassed = false
 	}
 	report.Assertions = append(report.Assertions, fidelity)
-
-	report.CompletedAt = time.Now()
-	report.DurationMs = drillMilliseconds(report.CompletedAt.Sub(startTime))
-
-	if allPassed {
-		report.Status = model.VerificationStatusPassed
-		report.CertificateHash = computeCertificateHash(report)
-	} else {
-		report.Status = model.VerificationStatusFailed
-		report.ErrorMessage = "One or more integrity assertions failed during Fire Drill"
-	}
-
-	// 7. Submit certificate report to SafeGrd remote server
-	v.submitReport(ctx, report)
-
-	return report, nil
+	return allPassed
 }
 
 // RunDryRestore downloads the encrypted snapshot from storage (S3 or local),

@@ -162,10 +162,16 @@ type SurfaceConfig struct {
 	// Files fields
 	Roots    []string `yaml:"roots,omitempty" json:"roots,omitempty"`
 	Excludes []string `yaml:"excludes,omitempty" json:"excludes,omitempty"`
-	// Format is how a files surface is stored: "tar" (the default), one
+	// Format is how a files or PostgreSQL surface is stored: "tar", one
 	// archive per backup, or "repo", an incremental repository where each
-	// run uploads only what changed.
+	// run uploads only what changed. Unset is repo for files and a
+	// PostgreSQL database, and tar for every other database.
 	Format string `yaml:"format,omitempty" json:"format,omitempty"`
+	// ChangeLog lets a PostgreSQL repo surface skip reading tables nothing
+	// wrote since its last run. It installs a trigger on each table and a
+	// safegrd schema in the database, which `DROP SCHEMA safegrd CASCADE`
+	// removes.
+	ChangeLog bool `yaml:"change_log,omitempty" json:"change_log,omitempty"`
 	// OneFilesystem keeps a repo surface's walk on each root's filesystem.
 	// Unset means yes when a root is "/", no otherwise.
 	OneFilesystem *bool `yaml:"one_filesystem,omitempty" json:"one_filesystem,omitempty"`

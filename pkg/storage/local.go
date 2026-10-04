@@ -95,16 +95,19 @@ func (l *LocalStorageProvider) UploadSnapshot(ctx context.Context, snapshotID st
 	// Lock down file permissions to read-only (0400)
 	_ = os.Chmod(dstPath, 0400)
 
+	// The retention date is what `list` and prune read back; a snapshot
+	// written without it is kept with no date and nothing would say so, so
+	// a failure here fails the upload.
 	if !retentionUntil.IsZero() {
 		existing, _ := l.DownloadMetadata(ctx, snapshotID)
 		if existing == nil {
-			_ = l.UploadMetadata(ctx, snapshotID, &model.SnapshotMetadata{
-				SnapshotID:         snapshotID,
-				WORMRetentionUntil: retentionUntil,
-			})
-		} else if existing.WORMRetentionUntil.IsZero() {
+			existing = &model.SnapshotMetadata{SnapshotID: snapshotID}
+		}
+		if existing.WORMRetentionUntil.IsZero() {
 			existing.WORMRetentionUntil = retentionUntil
-			_ = l.UploadMetadata(ctx, snapshotID, existing)
+			if err := l.UploadMetadata(ctx, snapshotID, existing); err != nil {
+				return "", fmt.Errorf("snapshot written but its retention date could not be recorded: %w", err)
+			}
 		}
 	}
 

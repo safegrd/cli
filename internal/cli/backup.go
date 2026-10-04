@@ -38,8 +38,11 @@ func newBackupCmd() *cobra.Command {
 		excludes  []string
 		fileFmt   string
 		newEpoch  bool
-		rescan    bool
-		oneFS     bool
+		// serverCache: see repoDBParams.ServerCache.
+		serverCache bool
+		changeLog   bool
+		rescan      bool
+		oneFS       bool
 
 		// Email surface flags
 		emailMode    bool
@@ -446,6 +449,60 @@ and never leaves this host.`,
 			engine := dump.EngineType(engineStr)
 			dbSurface := dump.SurfaceTypeOfURL(cfg.DatabaseURL)
 
+			// A PostgreSQL database is a run of its repository unless --format
+			// tar asks for one archive; every other engine is one archive.
+			dbFormat := formatTar
+			if dbSurface == model.SurfaceTypePostgres {
+				dbFormat = formatRepo
+			}
+			if cmd.Flags().Changed("format") {
+				if dbFormat, err = fileFormat(fileFmt); err != nil {
+					return err
+				}
+			}
+			if changeLog && (dbFormat != formatRepo || dbSurface != model.SurfaceTypePostgres) {
+				return fmt.Errorf("--change-log applies to a PostgreSQL backup in repo format")
+			}
+			if dbFormat == formatRepo {
+				if rescan {
+					return fmt.Errorf("--rescan applies to --files: a database run reads every table")
+				}
+				out := io.Writer(os.Stdout)
+				if jsonOutput {
+					out = os.Stderr
+				}
+				if storageCfg.NodeID == "" {
+					storageCfg.NodeID = cfg.NodeID
+				}
+				meta, _, err := runRepoDatabaseBackup(ctx, repoDBParams{
+					SurfaceID: repoDatabaseSurfaceID(cfg.DatabaseURL), DatabaseURL: cfg.DatabaseURL,
+					StorageCfg: storageCfg, NodeID: cfg.NodeID, Recipient: cfg.Encryption.PublicKey,
+					Retention: policy.Retention{Days: storageCfg.RetentionDays}, Tier: format.TierBase, Planned: retentionUntil,
+					NewEpoch: newEpoch, SnapshotID: snapshotID, StateDir: resolveStateDir("", cfg), Out: out,
+					ServerCache: serverCache, ChangeLog: changeLog,
+				})
+				if err != nil {
+					retErr := fmt.Errorf("database backup failed: %w", err)
+					reportBackupFailure(ctx, cfg, snapshotID, dbSurface, string(dbSurface), retErr, !jsonOutput)
+					return retErr
+				}
+				if cfg.ServerURL != "" {
+					sendMetadataToServer(ctx, cfg.ServerURL, cfg.ServerToken, meta, !jsonOutput)
+				}
+				if jsonOutput {
+					enc := json.NewEncoder(os.Stdout)
+					enc.SetIndent("", "  ")
+					return enc.Encode(meta)
+				}
+				fmt.Printf("   Snapshot ID:     %s\n", meta.SnapshotID)
+				fmt.Printf("   Schema:          %s\n", schemaSourceLabel(meta.SchemaSource))
+				warnIfThreatShieldFroze(meta)
+				return nil
+			}
+			if rescan || newEpoch {
+				return fmt.Errorf("--new-epoch and --rescan apply to --format repo only")
+			}
+
 			if !jsonOutput {
 				fmt.Printf("Backing up %s as snapshot %s\n", dbSurface, snapshotID)
 				fmt.Printf("   Recipient Key:   %s\n", crypto.Fingerprint(cfg.Encryption.PublicKey))
@@ -549,11 +606,7 @@ and never leaves this host.`,
 			fmt.Printf("   SHA-256 Digest:  %s\n", dumpMeta.Sha256Checksum)
 			fmt.Printf("   Storage URI:     %s\n", dumpMeta.StorageURI)
 
-			if dumpMeta.IsPoisonPillFrozen {
-				fmt.Fprintln(os.Stderr, "\nWarning: Threat Shield marked this snapshot anomalous: the schema or row counts dropped sharply.")
-				fmt.Fprintln(os.Stderr, "   Restore from the snapshot before it. Prune keeps that one as the last known good snapshot.")
-			}
-
+			warnIfThreatShieldFroze(dumpMeta)
 			return nil
 		},
 	}
@@ -567,9 +620,12 @@ and never leaves this host.`,
 	cmd.Flags().StringVar(&surfaceID, "surface", "", "Back up this surface from the config's surfaces now, as the daemon would, whatever its schedule")
 	cmd.Flags().StringVar(&filesPath, "files", "", "Back up this directory tree")
 	cmd.Flags().StringSliceVar(&excludes, "exclude", nil, "Glob patterns to leave out of --files (e.g. '*.tmp,node_modules/*')")
-	cmd.Flags().StringVar(&fileFmt, "format", formatRepo, "How --files is stored: repo (incremental: each run uploads only what changed) or tar (one archive per backup)")
-	cmd.Flags().BoolVar(&newEpoch, "new-epoch", false, "With --format repo, or --surface of a repo surface: start a new epoch now, uploading every file once")
+	cmd.Flags().StringVar(&fileFmt, "format", formatRepo, "How the backup is stored: repo (incremental: each run uploads only what changed) or tar (one archive per backup). Repo is the default for --files and a PostgreSQL database; MySQL, MongoDB and SQLite are one archive")
+	cmd.Flags().BoolVar(&newEpoch, "new-epoch", false, "With --format repo, or --surface of a repo surface: start a new epoch now, uploading everything once")
 	cmd.Flags().BoolVar(&rescan, "rescan", false, "With --format repo, or --surface of a repo surface: read every file, not only those whose size or times changed")
+	cmd.Flags().BoolVar(&changeLog, "change-log", false, "With a PostgreSQL repo backup: skip reading tables nothing wrote since the last run. Installs a trigger on each table and a safegrd schema in the database (DROP SCHEMA safegrd CASCADE removes it)")
+	cmd.Flags().BoolVar(&serverCache, "server-cache", false, "Keep the repository cache on the remote server between runs, for a run on a machine that does not outlive it")
+	_ = cmd.Flags().MarkHidden("server-cache")
 	cmd.Flags().BoolVar(&oneFS, "one-filesystem", false, "With --format repo: stay on the root's filesystem (the default when the root is /)")
 
 	// Flags for Email
@@ -598,6 +654,15 @@ and never leaves this host.`,
 	cmd.Flags().StringVar(&s3SecretKey, "s3-secret-key", "", "S3 secret access key, as env:VAR or file:/path")
 
 	return cmd
+}
+
+// warnIfThreatShieldFroze says so when the remote server's Threat Shield
+// marked the snapshot just reported anomalous.
+func warnIfThreatShieldFroze(meta *model.SnapshotMetadata) {
+	if meta.IsPoisonPillFrozen {
+		fmt.Fprintln(os.Stderr, "\nWarning: Threat Shield marked this snapshot anomalous: the schema or row counts dropped sharply.")
+		fmt.Fprintln(os.Stderr, "   Restore from the snapshot before it. Prune keeps that one as the last known good snapshot.")
+	}
 }
 
 // sendMetadataToServer reports a finished backup to the remote server, and says
@@ -685,7 +750,12 @@ func deliverSnapshotRecord(ctx context.Context, serverURL, token string, meta *m
 
 	if resp.StatusCode == http.StatusCreated || resp.StatusCode == http.StatusOK {
 		var serverMeta model.SnapshotMetadata
-		_ = json.NewDecoder(resp.Body).Decode(&serverMeta)
+		if err := json.NewDecoder(resp.Body).Decode(&serverMeta); err != nil {
+			// Recorded, but the answer could not be read, so the two flags
+			// below are unknown and their warnings would not print.
+			warn("the remote server recorded this backup but its answer could not be read (%v); "+
+				"check the console for this snapshot's standing.", err)
+		}
 		meta.IsPoisonPillFrozen = serverMeta.IsPoisonPillFrozen
 		meta.OutsideProjectStorage = serverMeta.OutsideProjectStorage
 		if verbose {

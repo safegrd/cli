@@ -31,6 +31,7 @@ func newRestoreCmd() *cobra.Command {
 		paths      []string
 		version    int
 		surfaceSel string
+		tables     []string
 	)
 
 	cmd := &cobra.Command{
@@ -55,6 +56,21 @@ from storage is.`,
 					return err
 				}
 				fromDir, snapshotID = dir, id
+			}
+			if len(tables) > 0 {
+				if targetURL == "" || len(paths) > 0 {
+					return fmt.Errorf("--table restores tables of a database snapshot into --target; leave out --path, --target-dir and --to-sql")
+				}
+				if version > 0 {
+					if len(tables) != 1 {
+						return fmt.Errorf("--version restores one version of one table: give one --table")
+					}
+					p, err := tablePath(tables[0])
+					if err != nil {
+						return err
+					}
+					paths = []string{p}
+				}
 			}
 			if version > 0 {
 				if snapshotID != "" || len(paths) != 1 {
@@ -134,10 +150,7 @@ from storage is.`,
 					return fmt.Errorf("looking for %s in %s: %w", snapshotID, fromDir, err)
 				}
 				if rs != nil {
-					if targetDir == "" {
-						return fmt.Errorf("snapshot %s is a files snapshot; specify --target-dir to restore", snapshotID)
-					}
-					return restoreRepoSnapshot(ctx, rs, resolvedKey, targetDir, paths)
+					return restoreRepo(ctx, rs, resolvedKey, targetDir, targetURL, toSQL, paths, tables)
 				}
 			}
 			if fromDir != "" {
@@ -175,6 +188,9 @@ from storage is.`,
 						return err
 					}
 					snapshotID = id
+					if len(tables) > 0 {
+						paths = nil
+					}
 				}
 				rs, err := locateRepoSnapshot(ctx, storageCfg, snapshotID)
 				if err != nil {
@@ -183,11 +199,7 @@ from storage is.`,
 					fmt.Fprintf(os.Stderr, "Warning: could not look among the incremental repositories: %v\n", err)
 				}
 				if rs != nil {
-					if targetDir == "" {
-						return fmt.Errorf("snapshot %s is a files snapshot; specify --target-dir to restore", snapshotID)
-					}
-					fmt.Printf("Restoring %s (epoch %s, %s) into %s\n", snapshotID, rs.Epoch.Epoch.EpochID, rs.SurfaceID, targetDir)
-					return restoreRepoSnapshot(ctx, rs, resolvedKey, targetDir, paths)
+					return restoreRepo(ctx, rs, resolvedKey, targetDir, targetURL, toSQL, paths, tables)
 				}
 				opened, err := openStorage(ctx, cfg, storageCfg)
 				if err != nil {
@@ -197,6 +209,9 @@ from storage is.`,
 			}
 			if len(paths) > 0 {
 				return fmt.Errorf("--path restores part of an incremental (--format repo) snapshot; %s is one archive, so restore it whole", snapshotID)
+			}
+			if len(tables) > 0 {
+				return fmt.Errorf("--table restores tables from a run of an incremental database backup (--format repo); %s is one archive, so restore it whole", snapshotID)
 			}
 			// Not where this config looks: a recovery machine rebuilding a lost
 			// host does not know the node id its backups were filed under.
@@ -350,10 +365,7 @@ from storage is.`,
 			elapsed := time.Since(startTime)
 
 			if sqlRes != nil {
-				fmt.Printf("\nWrote %d tables, %d rows to %s (%s)\n", sqlRes.Tables, sqlRes.Rows, toSQL, elapsed.Round(time.Millisecond))
-				fmt.Println("   The files are unencrypted. Delete them when the database is loaded.")
-				fmt.Println("   Load into an empty database:")
-				fmt.Printf("   cd %s && psql \"postgres://user@host/empty_db\" -f load.sql\n", toSQL)
+				printSQLExport(sqlRes, toSQL, elapsed)
 				return nil
 			}
 
@@ -409,7 +421,8 @@ from storage is.`,
 	_ = cmd.Flags().MarkDeprecated("engine", "there is one Postgres restore path; the flag is ignored")
 	cmd.Flags().StringVar(&keyPath, "key-path", "", "Path to the age identity file")
 	cmd.Flags().StringVar(&privKey, "private-key", "", "Age identity (AGE-SECRET-KEY-1...), as env:VAR, file:/path or the key")
-	cmd.Flags().IntVar(&version, "version", 0, "With one --path: restore that version of the file, as 'safegrd find' numbers them")
+	cmd.Flags().IntVar(&version, "version", 0, "With one --path or --table: restore that version, as 'safegrd find' numbers them")
+	cmd.Flags().StringArrayVar(&tables, "table", nil, "Restore only this table (schema.table) of a database run, into a table of the same definition that is empty in --target (repeatable)")
 	cmd.Flags().StringVar(&surfaceSel, "surface", "", "With --version: the surface whose repository holds the file")
 	cmd.Flags().StringArrayVar(&paths, "path", nil, "Restore only this path of a repository snapshot, relative to / (repeatable; '*', '?' and '**' match)")
 	cmd.Flags().StringVar(&fromPath, "from", "", "Restore from an export: the directory 'safegrd export --to-dir' wrote, or one .safegrd file in it")
@@ -510,4 +523,12 @@ func resolveRestoreFrom(from, snapshotID string) (string, string, error) {
 		return "", "", fmt.Errorf("--snapshot %s does not match --from %s", snapshotID, base)
 	}
 	return filepath.Dir(from), id, nil
+}
+
+// printSQLExport says what restore --to-sql wrote and how to load it.
+func printSQLExport(res *dump.SQLExport, dir string, elapsed time.Duration) {
+	fmt.Printf("\nWrote %d tables, %d rows to %s (%s)\n", res.Tables, res.Rows, dir, elapsed.Round(time.Millisecond))
+	fmt.Println("   The files are unencrypted. Delete them when the database is loaded.")
+	fmt.Println("   Load into an empty database:")
+	fmt.Printf("   cd %s && psql \"postgres://user@host/empty_db\" -f load.sql\n", dir)
 }

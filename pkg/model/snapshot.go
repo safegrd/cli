@@ -82,6 +82,22 @@ type TableStat struct {
 	// took the backup, so RowCount is the rows that role could see, which
 	// may be fewer than the table holds.
 	RowSecurity bool `json:"row_security,omitempty" yaml:"row_security,omitempty"`
+	// SchemaHash is an MD5 of the table's columns, types, defaults and
+	// constraints as the catalog states them, so two runs can tell whether a
+	// table's definition changed. OwnedSequences are the sequences its
+	// columns own, and References the tables its foreign keys point at, each
+	// as schema.name: what a one-table restore names and does not load.
+	SchemaHash     string   `json:"schema_hash,omitempty" yaml:"schema_hash,omitempty"`
+	OwnedSequences []string `json:"owned_sequences,omitempty" yaml:"owned_sequences,omitempty"`
+	References     []string `json:"references,omitempty" yaml:"references,omitempty"`
+	// NewBytes is, for a run of an incremental database backup, the bytes
+	// of chunks this table added to the repository, before compression:
+	// zero when its rows did not move. Absent on an archive.
+	NewBytes *int64 `json:"new_bytes,omitempty" yaml:"new_bytes,omitempty"`
+	// Carried is set when a run of an incremental database backup did not
+	// read the table: the change log showed no write to it since the
+	// previous run, whose rows and row count this run holds.
+	Carried bool `json:"carried,omitempty" yaml:"carried,omitempty"`
 }
 
 // SnapshotMetadata represents client-side collected metadata sent to the remote server.
@@ -129,6 +145,12 @@ type SnapshotMetadata struct {
 	// types. Empty on snapshots taken before it existed, which
 	// were all native.
 	SchemaSource string `json:"schema_source,omitempty" yaml:"schema_source,omitempty"`
+	// SourceSnapshot is the PostgreSQL snapshot the backup read under
+	// (pg_current_snapshot, xmin:xmax:xip), and SourceLSN the WAL position
+	// read inside it, at or just after the moment it was taken. They order
+	// two backups of one database and say what each saw.
+	SourceSnapshot string `json:"source_snapshot,omitempty" yaml:"source_snapshot,omitempty"`
+	SourceLSN      string `json:"source_lsn,omitempty" yaml:"source_lsn,omitempty"`
 	// ServerVersion is a MySQL or MariaDB snapshot's server, as it reported
 	// itself ("8.4.3", "11.4.4-MariaDB"). PostgresVersion is Postgres's.
 	ServerVersion      string             `json:"server_version,omitempty" yaml:"server_version,omitempty"`

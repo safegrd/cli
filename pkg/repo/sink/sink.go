@@ -66,6 +66,9 @@ type OpenRequest struct {
 	// PackTargetBytes overrides the size a pack is closed at; zero keeps
 	// the default.
 	PackTargetBytes int
+	// Chunker is the chunk size bounds a new epoch is cut with; nil keeps
+	// format.DefaultChunker. A continuing epoch keeps its own.
+	Chunker *format.ChunkerParams
 }
 
 // Opened is the epoch a run writes into.

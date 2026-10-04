@@ -169,6 +169,19 @@ func (s *tableStreams) Run(tr *tar.Reader) error {
 	}
 }
 
+// ArchiveEntries reads a Postgres snapshot archive in order and hands fn
+// each entry as one stream, one at a time: a table's rows under
+// data/<schema>/<table>.copy however many parts the archive holds them in,
+// and every other entry as it is. fn must read its reader to the end or
+// return an error.
+func ArchiveEntries(r io.Reader, fn func(name string, r io.Reader) error) error {
+	s := &tableStreams{
+		consume: func(schema, table string, r io.Reader) error { return fn(copyEntryName(schema, table, 0), r) },
+		other:   func(hdr *tar.Header, r io.Reader) error { return fn(hdr.Name, r) },
+	}
+	return s.Run(tar.NewReader(r))
+}
+
 func (s *tableStreams) start(schema, table string) {
 	pr, pw := io.Pipe()
 	s.schema, s.table, s.part, s.pw = schema, table, 0, pw
