@@ -120,7 +120,15 @@ func (p *PgDump) Section(ctx context.Context, databaseURL, snapshot, section str
 			return nil, err
 		}
 		defer cleanup()
-		cmd.Env = append(cmd.Env, "PGPASSFILE="+passfile)
+		// libpq reads PGPASSWORD before PGPASSFILE, so one inherited from
+		// the operator's shell would win over the URL's password.
+		env := cmd.Env[:0]
+		for _, kv := range cmd.Env {
+			if !strings.HasPrefix(kv, "PGPASSWORD=") {
+				env = append(env, kv)
+			}
+		}
+		cmd.Env = append(env, "PGPASSFILE="+passfile)
 	}
 	// The same bound as the connection above (connectPostgres); a
 	// connect_timeout in the URL still wins over the environment.
