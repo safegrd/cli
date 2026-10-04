@@ -38,8 +38,10 @@ services:
       # A surface with `credential: {from: env, name: APP_DATABASE_URL}` reads it.
       APP_DATABASE_URL: postgres://postgres:example@db:5432/app?sslmode=disable
     volumes:
-      # Config, key and daemon state. Keep a copy of the key somewhere safe if
-      # you hold it yourself: it is what opens the backups.
+      # Config, key, daemon state and the throwaway Postgres cluster a sandbox
+      # drill restores into, so the volume needs room for the largest database
+      # backed up. Keep a copy of the key somewhere safe if you hold it
+      # yourself: it is what opens the backups.
       - safegrd-home:/home/safegrd/.safegrd
 
 volumes:

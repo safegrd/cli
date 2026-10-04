@@ -1,7 +1,12 @@
 # The SafeGrd CLI image: the safegrd binary with the database dump clients it
-# calls. pg_dump has to be at least as new as the Postgres server it reads, and
-# a newer pg_dump reads every older server, so the image carries the newest
-# client and its tag says which: ghcr.io/safegrd/cli:<version>-pg18.
+# calls, and a PostgreSQL server for sandbox drills. pg_dump has to be at least
+# as new as the Postgres server it reads, and a newer pg_dump reads every older
+# server, so the image carries the newest client and its tag says which:
+# ghcr.io/safegrd/cli:<version>-pg18. The server (initdb and postgres) is what
+# a drill loads the backup into on a plan that sells sandbox drills; without
+# it every drill a container runs is in memory. It restores into a throwaway
+# cluster under /home/safegrd/.safegrd, so the volume mounted there needs room
+# for the largest database the host backs up.
 #
 #   docker build --build-arg VERSION=0.4.0 -t safegrd/cli .
 
@@ -25,9 +30,11 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
 FROM alpine:${ALPINE_VERSION}
 ARG PG_MAJOR=18
 # pg_dump and psql for Postgres, mysqldump for MySQL and MariaDB, mongodump for
-# MongoDB. SQLite needs nothing: the CLI reads it directly.
+# MongoDB, and the Postgres server for sandbox drills (Alpine puts it under
+# /usr/libexec/postgresql<major>, which the CLI searches). SQLite needs
+# nothing: the CLI reads it directly.
 RUN apk add --no-cache ca-certificates tzdata \
-      postgresql${PG_MAJOR}-client mariadb-client mongodb-tools \
+      postgresql${PG_MAJOR}-client postgresql${PG_MAJOR} mariadb-client mongodb-tools \
  && addgroup -S -g 10001 safegrd \
  && adduser -S -u 10001 -G safegrd -h /home/safegrd safegrd \
  && install -d -o safegrd -g safegrd -m 0700 /home/safegrd/.safegrd

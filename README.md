@@ -87,8 +87,9 @@ go install github.com/safegrd/cli/cmd/safegrd@latest
 ### Container image
 
 `ghcr.io/safegrd/cli` runs on linux/amd64 and linux/arm64 and carries `pg_dump`, `mysqldump`
-and `mongodump`. The tag names the Postgres client: `<version>-pg18` reads Postgres 18 and
-every older server. Releases are signed with cosign (keyless, from this repository's release
+and `mongodump`, and a PostgreSQL 18 server so a drill can restore a database into a
+throwaway cluster on the volume. The tag names the Postgres client: `<version>-pg18` reads
+Postgres 18 and every older server. Releases are signed with cosign (keyless, from this repository's release
 workflow):
 
 ```bash

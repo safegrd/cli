@@ -22,11 +22,14 @@ env: []
 #    valueFrom:
 #      secretKeyRef: { name: app-database, key: url }
 
-# The daemon's state: last backup per surface and the long-term retention
-# slots. Kept on a volume so a restart does not take an extra backup.
+# The daemon's state: last backup per surface, the long-term retention slots,
+# and the throwaway Postgres cluster a sandbox drill restores into. Kept on a
+# volume so a restart does not take an extra backup. Size it for the largest
+# database the daemon backs up plus a quarter: a drill that would not leave 5%
+# of the volume free runs in memory instead, and the console says so.
 persistence:
   enabled: true
-  size: 64Mi
+  size: 2Gi
   storageClass: ""
 
 resources:

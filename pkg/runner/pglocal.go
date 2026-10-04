@@ -43,8 +43,9 @@ var pgServerVersionRe = regexp.MustCompile(`\(PostgreSQL\)\s+(\d+)(?:\.(\d+))?`)
 
 // pgServerDirs lists the directories that may hold initdb and postgres, the
 // override first. Debian and Ubuntu install the server under
-// /usr/lib/postgresql/<major>/bin and put neither on PATH; Homebrew's libpq
-// carries pg_dump but no server, so a host with pg_dump may still have none.
+// /usr/lib/postgresql/<major>/bin and Alpine under /usr/libexec/postgresql<major>,
+// and put neither on PATH; Homebrew's libpq carries pg_dump but no server, so a
+// host with pg_dump may still have none.
 func pgServerDirs() []string {
 	if d := os.Getenv("SAFEGRD_PG_BINDIR"); d != "" {
 		return []string{d}
@@ -53,7 +54,7 @@ func pgServerDirs() []string {
 	if p, err := exec.LookPath("initdb"); err == nil {
 		out = append(out, filepath.Dir(p))
 	}
-	globs := []string{"/usr/lib/postgresql/*/bin", "/usr/pgsql-*/bin", "/usr/local/pgsql/bin"}
+	globs := []string{"/usr/lib/postgresql/*/bin", "/usr/pgsql-*/bin", "/usr/local/pgsql/bin", "/usr/libexec/postgresql*"}
 	if runtime.GOOS == "darwin" {
 		globs = append(globs,
 			"/opt/homebrew/opt/postgresql@*/bin", "/opt/homebrew/opt/postgresql/bin",
