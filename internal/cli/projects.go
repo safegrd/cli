@@ -36,6 +36,10 @@ func newListProjectsCmd() *cobra.Command {
 
 			serverURL := resolveServerURL()
 
+			if err := refuseInsecurePersonalToken(serverURL); err != nil {
+				return err
+			}
+
 			// If orgID not provided, fetch user's first org
 			if orgID == "" {
 				firstOrgID, err := getFirstOrgID(serverURL, cfg.ServerToken)

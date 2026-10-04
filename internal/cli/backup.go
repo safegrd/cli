@@ -441,6 +441,7 @@ and never leaves this host.`,
 			var dropped []string
 			cfg.DatabaseURL, dropped = cleanPostgresURL(cfg.DatabaseURL)
 			sayDroppedURLParams("The database", dropped)
+			sayDatabaseTLS("The database", cfg.DatabaseURL)
 
 			if err := cfg.ValidateForBackup(); err != nil {
 				return err

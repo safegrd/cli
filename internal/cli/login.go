@@ -33,6 +33,10 @@ Tokens in the console: --token env:SAFEGRD_TOKEN (or file:/path, or the token it
 		RunE: func(cmd *cobra.Command, args []string) error {
 			serverURL := resolveServerURL()
 
+			if err := refuseInsecurePersonalToken(serverURL); err != nil {
+				return err
+			}
+
 			// An enrolled host authenticates as its node. Writing a personal
 			// token over that one would leave the daemon unable to fetch the
 			// credentials and key the remote server holds for it, which only a

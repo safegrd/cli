@@ -102,6 +102,19 @@ func fetchNodeCredentials(ctx context.Context, serverURL, nodeID, token string) 
 // carrying a node token and returning a database password over http:// is a
 // mistake worth failing loudly on, not a warning.
 func refuseInsecureServerURL(serverURL string) error {
+	return refuseInsecureServerURLFor(serverURL, "fetch credentials from", "this request carries a node "+
+		"token and returns database and storage secrets")
+}
+
+// refuseInsecurePersonalToken is the same rule for the commands that send a
+// personal access token or receive a session: login, enroll, whoami, org and
+// projects. A PAT reaches every project the person can see, and a typed
+// http:// URL would send it in the clear once before the server could object.
+func refuseInsecurePersonalToken(serverURL string) error {
+	return refuseInsecureServerURLFor(serverURL, "sign in to", "this request carries a personal access token")
+}
+
+func refuseInsecureServerURLFor(serverURL, verb, why string) error {
 	u, err := url.Parse(strings.TrimSpace(serverURL))
 	if err != nil {
 		return fmt.Errorf("server_url is not a URL: %w", err)
@@ -116,9 +129,8 @@ func refuseInsecureServerURL(serverURL string) error {
 	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
 		return nil
 	}
-	return fmt.Errorf("refusing to fetch credentials from %s over %s: this request carries a node "+
-		"token and returns database and storage secrets. Use https:// (or run the remote server on loopback)",
-		u.Host, u.Scheme)
+	return fmt.Errorf("refusing to %s %s over %s: %s. Use https:// (or run the remote server on loopback)",
+		verb, u.Host, u.Scheme, why)
 }
 
 // credentialSource records where each secret came from, so `--verbose` and a

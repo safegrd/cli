@@ -2,6 +2,8 @@ package dump
 
 import (
 	"bytes"
+	"os"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -56,5 +58,32 @@ func TestSplitPasswordKeepsThePasswordOutOfTheDSN(t *testing.T) {
 	}
 	if got := RedactURL("postgres://alice@db/app?sslmode=require"); got != "postgres://alice@db/app?sslmode=require" {
 		t.Errorf("RedactURL changed a URL with no password: %q", got)
+	}
+}
+
+func TestPgPassFileEscapesAndIsPrivate(t *testing.T) {
+	path, cleanup, err := pgPassFile(`p:a\ss`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(b), "*:*:*:*:p\\:a\\\\ss\n"; got != want {
+		t.Errorf("pgpass line %q, want %q", got, want)
+	}
+	if runtime.GOOS != "windows" {
+		if st, _ := os.Stat(path); st.Mode().Perm() != 0o600 {
+			t.Errorf("pgpass mode %v, want 0600 (libpq ignores a wider file)", st.Mode().Perm())
+		}
+	}
+	if _, _, err := pgPassFile("line\nbreak"); err == nil {
+		t.Error("a password with a line break was written to a pgpass file, which cannot carry it")
+	}
+	cleanup()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Error("cleanup left the pgpass file behind")
 	}
 }

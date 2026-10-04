@@ -1,12 +1,16 @@
 package cli
 
 import (
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/safegrd/cli/pkg/config"
+	"github.com/safegrd/cli/pkg/model"
 )
 
 func TestValidationChecks(t *testing.T) {
@@ -95,5 +99,36 @@ func TestDoctorStopsAtARefusedConfig(t *testing.T) {
 	}
 	if last := results[len(results)-1]; last.Name != "Configuration Load" || last.Status != "FAIL" {
 		t.Errorf("last check = %s %s, want Configuration Load FAIL", last.Name, last.Status)
+	}
+}
+
+// On an enrolled host doctor posts its results to the remote server under
+// the host's token, so the console shows the host as checked; a host that is
+// not enrolled has nowhere to report to.
+func TestDoctorReportsItsChecksToTheRemoteServer(t *testing.T) {
+	var got model.HostCheckReport
+	var path, auth string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path, auth = r.URL.Path, r.Header.Get("Authorization")
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer ts.Close()
+
+	results := []CheckResult{{Name: "A", Status: "PASS", Message: "ok"}, {Name: "B", Status: "FAIL", Message: "no"}}
+	c := config.NewDefaultCLIConfig()
+	reportDoctorChecks(c, results, true)
+	if path != "" {
+		t.Fatalf("a host that is not enrolled reported to %s", path)
+	}
+
+	c.ServerURL, c.ServerToken, c.NodeID = ts.URL, "sg_tok_test", "node-7"
+	reportDoctorChecks(c, results, true)
+	if path != "/api/v1/nodes/node-7/checks" || auth != "Bearer sg_tok_test" {
+		t.Fatalf("reported to %s as %q, want the node's checks route under its token", path, auth)
+	}
+	if len(got.Results) != 2 || got.Results[1].Status != "FAIL" || got.Results[1].Message != "no" {
+		t.Fatalf("reported %+v, want both results as run", got.Results)
 	}
 }

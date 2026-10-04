@@ -21,6 +21,10 @@ func newWhoamiCmd() *cobra.Command {
 
 			serverURL := resolveServerURL()
 
+			if err := refuseInsecurePersonalToken(serverURL); err != nil {
+				return err
+			}
+
 			req, err := http.NewRequestWithContext(cmd.Context(), http.MethodGet, serverURL+"/api/v1/auth/me", nil)
 			if err != nil {
 				return err

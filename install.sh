@@ -387,7 +387,9 @@ print_next_steps() {
     printf "      ${CYAN}safegrd login${RESET}\n\n"
     printf "   2. Enroll this host with the surfaces named in the console:\n"
     printf "      ${CYAN}%s${RESET}\n\n" "$(claim_enroll_line)"
-    printf "   3. Take the first backups, then keep the daemon running:\n"
+    printf "   3. Check every surface opens from this host. The console shows the result:\n"
+    printf "      ${CYAN}safegrd doctor${RESET}\n\n"
+    printf "   4. Take the first backups, then keep the daemon running:\n"
     printf "      ${CYAN}safegrd daemon run --once${RESET}\n"
     printf "      ${CYAN}safegrd daemon install${RESET}\n\n"
     printf "   With no terminal, set SAFEGRD_TOKEN to a token from Tokens in the console and run the\n"
@@ -407,6 +409,9 @@ print_next_steps() {
     printf "      (%s predates enrolling through a browser login; the latest release has it.)\n\n" "$TAG"
   fi
   if [ -n "$ENROLL_USES_LOGIN" ]; then step=3; else step=2; fi
+  printf "   %s. Check the host. The console shows the result:\n" "$step"
+  printf "      ${CYAN}safegrd doctor${RESET}\n\n"
+  step=$((step + 1))
   printf "   %s. Take the first encrypted, immutable backup:\n" "$step"
   printf "      ${CYAN}safegrd backup --database-url \"\$DATABASE_URL\"${RESET}\n\n"
   printf "   No account? ${CYAN}safegrd init${RESET} sets up a standalone host that contacts no server.\n"

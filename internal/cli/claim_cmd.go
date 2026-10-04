@@ -96,6 +96,7 @@ A new host enrolls with a claim code instead: safegrd enroll --claim <code>.`,
 				return err
 			}
 			fmt.Printf("\nAdded %d surface%s to %s (the previous config is at %s).\n", len(add), plural(len(add)), path, backup)
+			fmt.Println("   Check the new surfaces open from this host (the console shows the result): safegrd doctor")
 			fmt.Println("   The daemon reads its config when it starts. Restart it: safegrd daemon restart")
 			fmt.Println("   or take the first backups now: safegrd daemon run --once")
 			return nil

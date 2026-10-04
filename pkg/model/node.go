@@ -127,6 +127,16 @@ type Node struct {
 	BackupWords string `json:"backup_words,omitempty" yaml:"-"`
 	DrillWords  string `json:"drill_words,omitempty" yaml:"-"`
 
+	// What `safegrd doctor` last reported from this host (HostCheckReport):
+	// when, how many checks passed, warned and failed, and the lines that did
+	// not pass. Zero for a host that has never run it. On the host's node,
+	// never on a surface's.
+	LastCheckAt     *time.Time `json:"last_check_at,omitempty" yaml:"last_check_at,omitempty"`
+	LastCheckPassed int        `json:"last_check_passed,omitempty" yaml:"last_check_passed,omitempty"`
+	LastCheckWarned int        `json:"last_check_warned,omitempty" yaml:"last_check_warned,omitempty"`
+	LastCheckFailed int        `json:"last_check_failed,omitempty" yaml:"last_check_failed,omitempty"`
+	LastCheckDetail string     `json:"last_check_detail,omitempty" yaml:"last_check_detail,omitempty"`
+
 	// Platform telemetry (OS / Arch) and update notification.
 	OS               string `json:"os,omitempty" yaml:"os,omitempty"`
 	Arch             string `json:"arch,omitempty" yaml:"arch,omitempty"`
@@ -372,3 +382,24 @@ func parseSemver(v string) []int {
 	}
 	return nums
 }
+
+// HostCheckReport is what `safegrd doctor` posts to POST /api/v1/nodes/{id}/checks
+// once it has run on an enrolled host: each check's name, status and message,
+// so the console can say the host was checked, when, and what did not pass,
+// before its first backup. Sent under the host's own node token.
+type HostCheckReport struct {
+	CLIVersion string            `json:"cli_version,omitempty"`
+	Results    []HostCheckResult `json:"results"`
+}
+
+// HostCheckResult is one line of a doctor run.
+type HostCheckResult struct {
+	Name   string `json:"name"`
+	Status string `json:"status"` // PASS, WARN or FAIL
+	// Message is what the check found, in the host's words. It names hosts
+	// and files and never a secret.
+	Message string `json:"message,omitempty"`
+}
+
+// HostCheckStatuses are the statuses a check may report.
+var HostCheckStatuses = map[string]bool{"PASS": true, "WARN": true, "FAIL": true}

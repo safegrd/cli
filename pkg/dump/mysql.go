@@ -97,6 +97,15 @@ var registerTLSOnce sync.Map
 
 // open connects with the Go driver, for catalogue queries and counts.
 func (t *mysqlTarget) open() (*sql.DB, error) {
+	cfg, err := t.driverConfig()
+	if err != nil {
+		return nil, err
+	}
+	return sql.Open("mysql", cfg.FormatDSN())
+}
+
+// driverConfig is the Go driver's view of the target, TLS included.
+func (t *mysqlTarget) driverConfig() (*mysql.Config, error) {
 	cfg := mysql.NewConfig()
 	cfg.User, cfg.Passwd, cfg.Net = t.User, t.Password, "tcp"
 	cfg.Addr = fmt.Sprintf("%s:%d", t.Host, t.Port)
@@ -121,7 +130,7 @@ func (t *mysqlTarget) open() (*sql.DB, error) {
 	case t.TLS != "" && t.TLS != "false":
 		cfg.TLSConfig = t.TLS
 	}
-	return sql.Open("mysql", cfg.FormatDSN())
+	return cfg, nil
 }
 
 // defaultsFile writes the client's connection options, the password among

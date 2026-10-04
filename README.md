@@ -149,6 +149,7 @@ safegrd enroll --token "sg_pat_..."
 # Or with the claim code the console's setup shows: the project, where backups go and
 # the surfaces are written into ~/.safegrd/config.yaml, and the key stays on this machine
 safegrd enroll --claim <code>
+safegrd doctor                # every surface opens from this host; the console shows the result
 safegrd daemon run --once
 
 # Later, on an enrolled host: add the surfaces named for it in the console

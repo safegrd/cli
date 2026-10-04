@@ -220,6 +220,7 @@ func resolveSurfaceDatabaseURL(ctx context.Context, c *config.CLIConfig, s *conf
 	}
 	u, dropped := cleanPostgresURL(u)
 	sayDroppedURLParams("Surface "+s.ID, dropped)
+	sayDatabaseTLS("Surface "+s.ID, u)
 	return u, nil
 }
 

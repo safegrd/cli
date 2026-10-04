@@ -42,6 +42,10 @@ file:/path, which keeps the token out of 'ps' and shell history.`,
 		RunE: func(cmd *cobra.Command, args []string) (runErr error) {
 			serverURL := resolveServerURL()
 
+			if err := refuseInsecurePersonalToken(serverURL); err != nil {
+				return err
+			}
+
 			var err error
 			if token, err = ResolveSecretRef("token", token); err != nil {
 				return err
@@ -419,8 +423,10 @@ file:/path, which keeps the token out of 'ps' and shell history.`,
 				}
 				if claim != nil {
 					addClaimSurfaces(cfg, claim.Surfaces)
-					// The same two steps the console's host step shows.
-					fmt.Printf("\n   Next: take the first backups now, and watch them land in the console:\n")
+					// The same three steps the console's host step shows.
+					fmt.Printf("\n   Next: check every surface opens from this host. The console shows the result:\n")
+					fmt.Printf("     safegrd doctor\n")
+					fmt.Printf("   Take the first backups now, and watch them land in the console:\n")
 					fmt.Printf("     safegrd daemon run --once\n")
 					fmt.Printf("   Then keep it running as a service that starts at boot:\n")
 					fmt.Printf("     sudo safegrd daemon install\n")

@@ -40,6 +40,10 @@ func showCurrentOrg() error {
 
 	serverURL := resolveServerURL()
 
+	if err := refuseInsecurePersonalToken(serverURL); err != nil {
+		return err
+	}
+
 	org, err := fetchUserOrg(serverURL, cfg.ServerToken)
 	if err != nil {
 		return err
@@ -111,6 +115,10 @@ func newListOrgsCmd() *cobra.Command {
 
 			serverURL := resolveServerURL()
 
+			if err := refuseInsecurePersonalToken(serverURL); err != nil {
+				return err
+			}
+
 			req, err := http.NewRequest("GET", serverURL+"/api/v1/orgs", nil)
 			if err != nil {
 				return err
@@ -160,6 +168,10 @@ func newOrgMembersCmd() *cobra.Command {
 			}
 
 			serverURL := resolveServerURL()
+
+			if err := refuseInsecurePersonalToken(serverURL); err != nil {
+				return err
+			}
 
 			org, err := fetchUserOrg(serverURL, cfg.ServerToken)
 			if err != nil {

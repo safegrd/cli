@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -66,7 +67,11 @@ func newDoctorCmd() *cobra.Command {
 - the age keypair
 - the storage, and S3 Object Lock in compliance mode
 - the remote server, and this host's clock against it
-- every surface: its database, directory or mailbox can be reached
+- every surface: its database, directory or mailbox opens with the credential
+  the backup will use, a credential the remote server holds included
+
+On an enrolled host the results are reported to the remote server, so the
+console shows the host as checked before its first backup.
 
 Exits 1 if any critical check fails.
 
@@ -79,7 +84,11 @@ days, and an agent is given a personal access token. Each failure names its fix.
 				return printAndEvaluateResults("Agent-proof check", runAgentProofChecks(cfg), jsonOut)
 			}
 			results := runDoctorChecks(cfgFile, cfg)
-			return printAndEvaluateResults("Doctor", results, jsonOut)
+			err := printAndEvaluateResults("Doctor", results, jsonOut)
+			// Reported whatever the verdict: a failing host is what the
+			// console most needs to know about.
+			reportDoctorChecks(cfg, results, jsonOut)
+			return err
 		},
 	}
 
@@ -307,6 +316,7 @@ func runDoctorChecks(path string, c *config.CLIConfig) []CheckResult {
 	}
 	results = append(results, credentialProvenanceCheck(c)...)
 	results = append(results, surfaceCredentialChecks(c)...)
+	results = append(results, surfaceConnectionChecks(c)...)
 	results = append(results, pgDumpChecks(c)...)
 
 	// 1. Private Key Decryption check
@@ -618,22 +628,41 @@ func unusedAlertBlock(c *config.CLIConfig) string {
 func surfaceCredentialChecks(c *config.CLIConfig) []CheckResult {
 	var results []CheckResult
 	// A credential the remote server holds is fetched for the surface's own
-	// node, which the daemon learned when it registered the surface.
+	// node. The daemon registers the surface on its first pass; on a host
+	// that has not run it yet doctor registers it the same way, so the
+	// credential can be fetched and checked before the first backup, and
+	// the daemon reuses the id.
 	var daemonState *DaemonState
+	statePath := filepath.Join(resolveStateDir("", c), "daemon_state.json")
+	registered := map[string]bool{}
+	stateChanged := false
 	for i := range c.Surfaces {
 		s := &c.Surfaces[i]
 		name := fmt.Sprintf("Surface %s credentials", s.ID)
 		if s.FromSafeGrd() {
 			if daemonState == nil {
-				daemonState = loadDaemonState(filepath.Join(resolveStateDir("", c), "daemon_state.json"))
+				daemonState = loadDaemonState(statePath)
 			}
-			var nodeID string
-			if st, ok := daemonState.Surfaces[s.ID]; ok && st != nil {
-				nodeID = st.ServerNodeID
+			st := daemonState.Surfaces[s.ID]
+			if st == nil {
+				st = &SurfaceState{SurfaceID: s.ID, SurfaceType: strings.ToLower(s.Type)}
 			}
-			if nodeID == "" {
-				results = append(results, CheckResult{Name: name, Status: "WARN",
-					Message: "held by the remote server; the daemon fetches it once the surface is registered (run 'safegrd daemon run --once')"})
+			nodeID := st.ServerNodeID
+			if nodeID == "" && canReport(c) && c.NodeID != "" {
+				rctx, rcancel := context.WithTimeout(context.Background(), 15*time.Second)
+				nodeID = surfaceNodeID(rctx, c, s, st, registered)
+				rcancel()
+				if st.ServerNodeID != "" {
+					daemonState.Surfaces[s.ID] = st
+					stateChanged = true
+				}
+			}
+			if nodeID == "" || nodeID == s.ID {
+				msg := "held by the remote server, and this host is not enrolled: enroll it, then run doctor again"
+				if canReport(c) && c.NodeID != "" {
+					msg = "held by the remote server, and the surface could not be registered with it (see the warning above)"
+				}
+				results = append(results, CheckResult{Name: name, Status: "WARN", Message: msg})
 				continue
 			}
 			fctx, fcancel := context.WithTimeout(context.Background(), credentialCommandTimeout)
@@ -673,7 +702,107 @@ func surfaceCredentialChecks(c *config.CLIConfig) []CheckResult {
 			results = append(results, CheckResult{Name: name, Status: "PASS", Message: "resolve (from " + source + ")"})
 		}
 	}
+	if stateChanged {
+		if err := saveDaemonState(statePath, daemonState); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not save the daemon state at %s: %v\n", statePath, err)
+		}
+	}
 	return results
+}
+
+// surfaceConnectionChecks opens every surface the way its backup will: a
+// database with the connection string that resolves for it, a mailbox with
+// its password over TLS, a files surface by its roots (checked with the
+// config). The server's own words are the message when it refuses.
+func surfaceConnectionChecks(c *config.CLIConfig) []CheckResult {
+	var results []CheckResult
+	for i := range c.Surfaces {
+		s := &c.Surfaces[i]
+		name := fmt.Sprintf("Surface %s connection", s.ID)
+		ctx, cancel := context.WithTimeout(context.Background(), credentialCommandTimeout)
+		switch strings.ToLower(s.Type) {
+		case "postgres", "mysql", "mongodb", "sqlite":
+			u, err := resolveSurfaceDatabaseURL(ctx, c, s)
+			if err != nil || u == "" {
+				// The credentials check above has said why.
+				cancel()
+				continue
+			}
+			if err := dump.PingDatabase(ctx, u, nil); err != nil {
+				results = append(results, CheckResult{Name: name, Status: "FAIL", Message: err.Error()})
+			} else {
+				results = append(results, CheckResult{Name: name, Status: "PASS", Message: "opened " + databaseTargetWords(u)})
+			}
+		case "email":
+			host, port := s.Host, s.Port
+			if host == "" {
+				host = "imap.gmail.com"
+			}
+			if port == 0 {
+				port = 993
+			}
+			pass, err := surfaceEmailPassword(ctx, s)
+			if err != nil || pass == "" || s.Username == "" {
+				cancel()
+				continue
+			}
+			tlsCfg, err := emailTLSConfig(host, emailCAFileFor(s))
+			if err != nil {
+				results = append(results, CheckResult{Name: name, Status: "FAIL", Message: err.Error()})
+				cancel()
+				continue
+			}
+			client := dump.NewStandardIMAPClient(dump.EmailCollectorConfig{Host: host, Port: port, Username: s.Username, Password: pass, TLSConfig: tlsCfg})
+			if err := client.Connect(ctx); err != nil {
+				results = append(results, CheckResult{Name: name, Status: "FAIL", Message: err.Error()})
+			} else {
+				_ = client.Close()
+				results = append(results, CheckResult{Name: name, Status: "PASS", Message: fmt.Sprintf("logged in to %s:%d as %s", host, port, s.Username)})
+			}
+		}
+		cancel()
+	}
+	return results
+}
+
+// databaseTargetWords is the host and database a connection string names,
+// for a message; never its user or password.
+func databaseTargetWords(raw string) string {
+	if dump.IsSQLiteURL(raw) {
+		return "the SQLite database"
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return "the database"
+	}
+	if db := strings.TrimPrefix(u.Path, "/"); db != "" {
+		return db + " on " + u.Host
+	}
+	return u.Host
+}
+
+// reportDoctorChecks sends the results to the remote server under this
+// host's token, so the console shows the host as checked. A host that is not
+// enrolled has nothing to report to. A report that fails does not change the
+// exit code, but it is said: the console will not show the host as checked.
+func reportDoctorChecks(c *config.CLIConfig, results []CheckResult, jsonOut bool) {
+	if !canReport(c) || c.NodeID == "" || len(results) == 0 {
+		return
+	}
+	rep := model.HostCheckReport{CLIVersion: Version, Results: make([]model.HostCheckResult, 0, len(results))}
+	for _, r := range results {
+		rep.Results = append(rep.Results, model.HostCheckResult{Name: r.Name, Status: r.Status, Message: r.Message})
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if _, err := postJSON(ctx, c, "/api/v1/nodes/"+url.PathEscape(c.NodeID)+"/checks", rep, nil); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not report these checks to %s: %v\n"+
+			"   The console will not show this host as checked.\n", c.ServerURL, err)
+		return
+	}
+	if !jsonOut {
+		fmt.Printf("Reported to %s: the console shows this host as checked.\n", c.ServerURL)
+	}
 }
 
 // ignoredConfigKeys names each key this config sets that the daemon accepts and
@@ -718,6 +847,9 @@ func pgDumpChecks(c *config.CLIConfig) []CheckResult {
 	for name, u := range urls {
 		if r, err := resolveConfigSecret("database_url", u); err == nil && r != "" && (strings.HasPrefix(u, "env:") || strings.HasPrefix(u, "file:")) {
 			u = r
+		}
+		if w := databaseTLSWarning(u); w != "" {
+			results = append(results, CheckResult{Name: "TLS to " + name, Status: "WARN", Message: strings.TrimPrefix(w, "its connection URL ")})
 		}
 		if dump.IsSQLiteURL(u) {
 			results = append(results, sqliteCheck(name, u))

@@ -108,11 +108,19 @@ func (p *PgDump) Section(ctx context.Context, databaseURL, snapshot, section str
 		args = append(args, "--snapshot="+snapshot)
 	}
 	cmd := exec.CommandContext(ctx, p.Path, args...)
-	// The password travels in the environment, never in argv, where every
-	// user on the host can read it from the process table.
+	// The password travels in a 0600 file named by PGPASSFILE: never in argv,
+	// which every user on the host reads from the process table, and not in
+	// the environment, which the same user's other processes and a core dump
+	// read from /proc/<pid>/environ. MySQL and MongoDB take theirs the same
+	// way (defaultsFile, mongoPasswordFile).
 	cmd.Env = os.Environ()
 	if password != "" {
-		cmd.Env = append(cmd.Env, "PGPASSWORD="+password)
+		passfile, cleanup, err := pgPassFile(password)
+		if err != nil {
+			return nil, err
+		}
+		defer cleanup()
+		cmd.Env = append(cmd.Env, "PGPASSFILE="+passfile)
 	}
 	// The same bound as the connection above (connectPostgres); a
 	// connect_timeout in the URL still wins over the environment.
@@ -129,6 +137,28 @@ func (p *PgDump) Section(ctx context.Context, databaseURL, snapshot, section str
 		return nil, fmt.Errorf("pg_dump %s (--section=%s) failed: %v: %s", p.Version, section, err, msg)
 	}
 	return stripPsqlMetaCommands(stdout.Bytes()), nil
+}
+
+// pgPassFile writes password as one .pgpass line matching every host, port,
+// database and user, in a 0600 file inside a private directory. libpq ignores
+// a wider file. The format escapes backslash and colon; a line break has no
+// escape, so a password holding one is refused.
+func pgPassFile(password string) (path string, cleanup func(), err error) {
+	if strings.ContainsAny(password, "\n\r") {
+		return "", nil, fmt.Errorf("a PostgreSQL password containing a line break cannot be passed to pg_dump")
+	}
+	dir, err := privateWorkDir(".safegrd-pg-")
+	if err != nil {
+		return "", nil, err
+	}
+	cleanup = func() { _ = os.RemoveAll(dir) }
+	escaped := strings.NewReplacer(`\`, `\\`, `:`, `\:`).Replace(password)
+	path = filepath.Join(dir, "pgpass")
+	if err := os.WriteFile(path, []byte("*:*:*:*:"+escaped+"\n"), 0o600); err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	return path, cleanup, nil
 }
 
 // stripPsqlMetaCommands removes the backslash commands pg_dump writes for
