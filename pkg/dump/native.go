@@ -396,9 +396,17 @@ func queryStrings(ctx context.Context, tx pgx.Tx, q string) ([]string, error) {
 	return out, rows.Err()
 }
 
-// NativeRestorer loads a snapshot archive into an empty database.
+// NativeRestorer loads a snapshot archive into an empty database, or chosen
+// schemas of it into a database that already has others.
 type NativeRestorer struct {
 	targetURL string
+	// Schemas, when set, restores only these schemas: their objects and
+	// their rows. DataOnlySchemas restores only the rows of these schemas,
+	// into tables that already exist. With either set the target may hold
+	// other tables: a managed database such as a Supabase project is never
+	// empty, and its schemas are not the customer's to recreate.
+	Schemas         map[string]bool
+	DataOnlySchemas map[string]bool
 	// Warn is told what the restore could not bring back. Stderr by default.
 	Warn func(string)
 	// BeforeCommit, if set, runs after everything is loaded and before the
@@ -425,9 +433,15 @@ func (r *NativeRestorer) Restore(ctx context.Context, src io.Reader) (*model.Sna
 		return nil, fmt.Errorf("could not connect to the restore target: %w", err)
 	}
 	defer conn.Close(context.Background())
-	if err := checkTargetEmpty(ctx, conn); err != nil {
-		return nil, err
+	filtered := len(r.Schemas) > 0 || len(r.DataOnlySchemas) > 0
+	if !filtered {
+		if err := checkTargetEmpty(ctx, conn); err != nil {
+			return nil, err
+		}
 	}
+	// wantRows and wantSQL say what of a schema the restore loads.
+	wantRows := func(schema string) bool { return !filtered || r.Schemas[schema] || r.DataOnlySchemas[schema] }
+	wantSQL := func(schema string) bool { return !filtered || r.Schemas[schema] }
 
 	known, err := serverSettings(ctx, conn)
 	if err != nil {
@@ -457,8 +471,15 @@ func (r *NativeRestorer) Restore(ctx context.Context, src io.Reader) (*model.Sna
 
 	streams := &tableStreams{
 		consume: func(schema, table string, rd io.Reader) error {
+			if !wantRows(schema) {
+				_, err := io.Copy(io.Discard, rd)
+				return err
+			}
 			tag, err := pgConn.CopyFrom(ctx, rd, "COPY "+pgx.Identifier{schema, table}.Sanitize()+" FROM STDIN (FORMAT binary)")
 			if err != nil {
+				if filtered && r.DataOnlySchemas[schema] {
+					return fmt.Errorf("loading rows into %s.%s, which has to exist already with the backup's columns: %w", schema, table, err)
+				}
 				return fmt.Errorf("loading %s.%s: %w", schema, table, err)
 			}
 			loaded[schema+"."+table] += tag.RowsAffected()
@@ -481,7 +502,18 @@ func (r *NativeRestorer) Restore(ctx context.Context, src io.Reader) (*model.Sna
 				if err != nil {
 					return err
 				}
-				if err := exec("running "+hdr.Name, dropUnknownSettings(string(data), known)); err != nil {
+				sqlText := dropUnknownSettings(string(data), known)
+				if filtered {
+					if hdr.Name == entrySequences {
+						sqlText = filterSequenceSQL(sqlText, wantSQL)
+					} else {
+						sqlText = filterSchemaSQL(sqlText, wantSQL)
+					}
+				}
+				if err := exec("running "+hdr.Name, sqlText); err != nil {
+					if filtered && hdr.Name != entrySequences {
+						return fmt.Errorf("%w. The chosen schemas' objects have to be absent from the target: drop them first, or restore their rows only with --data-only-schema", err)
+					}
 					return err
 				}
 				switch hdr.Name {
@@ -509,6 +541,9 @@ func (r *NativeRestorer) Restore(ctx context.Context, src io.Reader) (*model.Sna
 	// rows was Postgres's estimate and cannot be held to.
 	if manifest.SchemaSource != "" {
 		for _, t := range manifest.TableStats {
+			if !wantRows(t.Schema) {
+				continue
+			}
 			if got := loaded[t.Schema+"."+t.TableName]; got != t.RowCount {
 				return nil, fmt.Errorf("%s.%s loaded %d rows; the snapshot recorded %d", t.Schema, t.TableName, got, t.RowCount)
 			}
@@ -537,6 +572,77 @@ func (r *NativeRestorer) Restore(ctx context.Context, src io.Reader) (*model.Sna
 }
 
 var sessionSetRe = regexp.MustCompile(`(?m)^SET ([a-z_]+) = [^;\n]*;\n`)
+
+// tocHeaderRe matches the header pg_dump writes before each object in a
+// plain-text dump:
+//
+//	--
+//	-- Name: users; Type: TABLE; Schema: public; Owner: -
+//	--
+//
+// Schema is "-" for an object outside any schema: a schema itself, an
+// extension, an event trigger.
+var tocHeaderRe = regexp.MustCompile(`(?m)^--\n-- Name: (.*?); Type: ([A-Z ]+); Schema: ([^;\n]*); Owner: [^\n]*\n--\n`)
+
+// filterSchemaSQL keeps, of a pg_dump section, the preamble before the first
+// object (session settings) and the objects of the schemas keep allows. Of
+// the objects in no schema it keeps a schema's own CREATE when keep allows
+// that schema, and extensions, which pg_dump writes as IF NOT EXISTS; it
+// drops the rest, which belong to the whole database.
+func filterSchemaSQL(sqlText string, keep func(schema string) bool) string {
+	matches := tocHeaderRe.FindAllStringSubmatchIndex(sqlText, -1)
+	if len(matches) == 0 {
+		return sqlText
+	}
+	var b strings.Builder
+	b.WriteString(sqlText[:matches[0][0]])
+	for i, m := range matches {
+		end := len(sqlText)
+		if i+1 < len(matches) {
+			end = matches[i+1][0]
+		}
+		name, typ, schema := sqlText[m[2]:m[3]], sqlText[m[4]:m[5]], sqlText[m[6]:m[7]]
+		switch {
+		case schema != "-":
+			if !keep(schema) {
+				continue
+			}
+		case typ == "SCHEMA":
+			if !keep(name) {
+				continue
+			}
+		case typ == "EXTENSION":
+		default:
+			continue
+		}
+		b.WriteString(sqlText[m[0]:end])
+	}
+	return b.String()
+}
+
+// setvalRe matches one line of sequences.sql and captures the sequence's
+// schema, quoted or bare.
+var setvalRe = regexp.MustCompile(`^SELECT pg_catalog\.setval\('(?:"((?:[^"]|"")+)"|([^".]+))\.`)
+
+// filterSequenceSQL keeps the setval lines of the schemas keep allows.
+func filterSequenceSQL(sqlText string, keep func(schema string) bool) string {
+	var b strings.Builder
+	for _, line := range strings.SplitAfter(sqlText, "\n") {
+		m := setvalRe.FindStringSubmatch(line)
+		if m == nil {
+			b.WriteString(line)
+			continue
+		}
+		schema := m[2]
+		if m[1] != "" {
+			schema = strings.ReplaceAll(m[1], `""`, `"`)
+		}
+		if keep(schema) {
+			b.WriteString(line)
+		}
+	}
+	return b.String()
+}
 
 // extensionCommentRe matches pg_dump's COMMENT ON EXTENSION lines. Only an
 // extension's owner may comment on it, and on a managed database the provider

@@ -32,6 +32,8 @@ func newRestoreCmd() *cobra.Command {
 		version    int
 		surfaceSel string
 		tables     []string
+		schemas    []string
+		dataOnly   []string
 	)
 
 	cmd := &cobra.Command{
@@ -47,7 +49,15 @@ in order. The files hold the data unencrypted; the directory is 0700.
 --from reads a copy made by 'safegrd export --to-dir' instead: the export
 directory with --snapshot, or one .safegrd file, whose name gives the snapshot ID.
 The copy is checked against the digest recorded at backup time, as a restore
-from storage is.`,
+from storage is.
+
+--schema and --data-only-schema restore part of a PostgreSQL snapshot into a
+database that already has other schemas, such as a Supabase project after an
+incident: --schema public restores that schema's objects and rows, and
+--data-only-schema auth --data-only-schema storage loads only those schemas'
+rows into the tables the project already has. The chosen schemas' objects have
+to be absent from the target for --schema; everything else in the target is
+left alone, and the whole restore is still one transaction.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			fromDir := ""
 			if fromPath != "" {
@@ -56,6 +66,14 @@ from storage is.`,
 					return err
 				}
 				fromDir, snapshotID = dir, id
+			}
+			if len(schemas) > 0 || len(dataOnly) > 0 {
+				if targetURL == "" || toSQL != "" || len(paths) > 0 || len(tables) > 0 || version > 0 {
+					return fmt.Errorf("--schema and --data-only-schema restore part of a PostgreSQL archive into --target; leave out --to-sql, --path, --table and --version")
+				}
+				if dump.SurfaceTypeOfURL(targetURL) != model.SurfaceTypePostgres {
+					return fmt.Errorf("--schema and --data-only-schema restore into a PostgreSQL database")
+				}
 			}
 			if len(tables) > 0 {
 				if targetURL == "" || len(paths) > 0 {
@@ -334,6 +352,16 @@ from storage is.`,
 				// digest before committing: a snapshot that fails the check is
 				// rolled back and never becomes a database anyone uses.
 				if native, ok := restorer.(*dump.NativeRestorer); ok {
+					if len(schemas) > 0 || len(dataOnly) > 0 {
+						native.Schemas, native.DataOnlySchemas = map[string]bool{}, map[string]bool{}
+						for _, sc := range schemas {
+							native.Schemas[sc] = true
+						}
+						for _, sc := range dataOnly {
+							native.DataOnlySchemas[sc] = true
+						}
+						fmt.Printf("   Schemas:        %s\n", describeSchemaChoice(schemas, dataOnly))
+					}
 					native.BeforeCommit = func() error {
 						_, _ = io.Copy(io.Discard, plainReader)
 						if err := <-decryptErrChan; err != nil {
@@ -422,6 +450,8 @@ from storage is.`,
 	cmd.Flags().StringVar(&keyPath, "key-path", "", "Path to the age identity file")
 	cmd.Flags().StringVar(&privKey, "private-key", "", "Age identity (AGE-SECRET-KEY-1...), as env:VAR, file:/path or the key")
 	cmd.Flags().IntVar(&version, "version", 0, "With one --path or --table: restore that version, as 'safegrd find' numbers them")
+	cmd.Flags().StringArrayVar(&schemas, "schema", nil, "Restore only this schema of a PostgreSQL snapshot, objects and rows, into a database that has other schemas (repeatable)")
+	cmd.Flags().StringArrayVar(&dataOnly, "data-only-schema", nil, "Load only this schema's rows into tables the target already has (repeatable)")
 	cmd.Flags().StringArrayVar(&tables, "table", nil, "Restore only this table (schema.table) of a database run, into a table of the same definition that is empty in --target (repeatable)")
 	cmd.Flags().StringVar(&surfaceSel, "surface", "", "With --version: the surface whose repository holds the file")
 	cmd.Flags().StringArrayVar(&paths, "path", nil, "Restore only this path of a repository snapshot, relative to / (repeatable; '*', '?' and '**' match)")
@@ -448,6 +478,19 @@ func printFileRestoreLimits(res *dump.FileExtractionResult) {
 			fmt.Fprintf(os.Stderr, "    %s\n", s)
 		}
 	}
+}
+
+// describeSchemaChoice is the --schema and --data-only-schema choice, for the
+// restore's summary.
+func describeSchemaChoice(schemas, dataOnly []string) string {
+	var parts []string
+	if len(schemas) > 0 {
+		parts = append(parts, strings.Join(schemas, ", ")+" (objects and rows)")
+	}
+	if len(dataOnly) > 0 {
+		parts = append(parts, strings.Join(dataOnly, ", ")+" (rows only)")
+	}
+	return strings.Join(parts, "; ")
 }
 
 // schemaSourceLabel says how a Postgres snapshot's schema was captured.
