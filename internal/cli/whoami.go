@@ -56,8 +56,14 @@ func newWhoamiCmd() *cobra.Command {
 			if name, ok := data["name"]; ok && name != "" {
 				fmt.Printf("   Name:   %v\n", name)
 			}
-			if role, ok := data["role"]; ok {
-				fmt.Printf("   Role:   %v\n", role)
+			// "role" is the account's role on the server, not in an
+			// organization: every customer is "member", owners included, so
+			// it is printed only where it says something.
+			switch data["role"] {
+			case "admin":
+				fmt.Println("   Role:   server administrator")
+			case "node_daemon":
+				fmt.Println("   Role:   this host's node token")
 			}
 			if id, ok := data["id"]; ok {
 				fmt.Printf("   ID:     %v\n", id)

@@ -450,6 +450,13 @@ file:/path, which keeps the token out of 'ps' and shell history.`,
 					fmt.Printf("     safegrd daemon run --once\n")
 					fmt.Printf("   Then keep it running as a service that starts at boot:\n")
 					fmt.Printf("     sudo safegrd daemon install\n")
+				} else if len(cfg.Surfaces) == 0 && cfg.DatabaseURL == "" && os.Getenv("SAFEGRD_DATABASE_URL") == "" {
+					fmt.Printf("\n   Next: name what this host protects. Either add a surface to this host in the\n")
+					fmt.Printf("   console (Nodes, Add surface on its row) and run:\n")
+					fmt.Printf("     safegrd claim\n")
+					fmt.Printf("   or give it one database, from the environment so the password stays out of the config:\n")
+					fmt.Printf("     export SAFEGRD_DATABASE_URL=\"$DATABASE_URL\"\n")
+					fmt.Printf("   Then check it: safegrd doctor\n")
 				}
 			}
 

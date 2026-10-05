@@ -401,7 +401,10 @@ func openRun(ctx context.Context, rs *repoSnapshot, privateKey string) (*read.Re
 }
 
 // restoreRepoTables loads chosen tables of one run into tables of the same
-// definition that are empty in the target, in one transaction. They are
+// definition that are empty in the target, in one transaction. A table the
+// target does not have (dropped, the case guard is for) is first created from
+// the run's own schema sections, with its sequences, constraints and indexes,
+// and its sequences are set to where the backup left them. They are
 // consistent with each other, as of the run; the target's other tables are
 // as the target has them, and it says which ones these point at.
 func restoreRepoTables(ctx context.Context, rs *repoSnapshot, privateKey, targetURL string, tables []string) error {
@@ -470,6 +473,8 @@ func restoreRepoTables(ctx context.Context, rs *repoSnapshot, privateKey, target
 	defer func() { _ = tx.Rollback(context.Background()) }()
 	started := time.Now()
 	var rows int64
+	var sections map[string]string
+	created := map[string]dump.TableDDL{}
 	for _, p := range picks {
 		ident := pgx.Identifier{p.stat.Schema, p.stat.TableName}.Sanitize()
 		hash, ok, err := dump.TableSchemaHash(ctx, tx, p.stat.Schema, p.stat.TableName)
@@ -477,7 +482,23 @@ func restoreRepoTables(ctx context.Context, rs *repoSnapshot, privateKey, target
 			return fmt.Errorf("reading the definition of %s in the target: %w", p.name, err)
 		}
 		if !ok {
-			return fmt.Errorf("the target has no table %s. Create it with the definition it had in the backup, or restore the whole snapshot into an empty database", p.name)
+			if sections == nil {
+				if sections, err = readRunSections(ctx, r, idx, byPath); err != nil {
+					return err
+				}
+			}
+			ddl, found := dump.TableDefinition(sections[dbrun.PreData], sections[dbrun.PostData], sections[dbrun.Sequences],
+				p.stat.Schema, p.stat.TableName, p.stat.OwnedSequences)
+			if !found {
+				return fmt.Errorf("the target has no table %s, and %s holds no definition of it to create it from. Restore the whole snapshot into an empty database", p.name, id)
+			}
+			if _, err := tx.Exec(ctx, ddl.Create); err != nil {
+				return fmt.Errorf("creating %s as %s defines it: %w; nothing was restored", p.name, id, err)
+			}
+			created[p.name] = ddl
+			if hash, ok, err = dump.TableSchemaHash(ctx, tx, p.stat.Schema, p.stat.TableName); err != nil || !ok {
+				return fmt.Errorf("reading the definition of %s after creating it: %v; nothing was restored", p.name, err)
+			}
 		}
 		if p.stat.SchemaHash == "" {
 			return fmt.Errorf("snapshot %s records no definition of %s to compare the target's with; restore the whole snapshot into an empty database instead", id, p.name)
@@ -512,6 +533,11 @@ func restoreRepoTables(ctx context.Context, rs *repoSnapshot, privateKey, target
 			return fmt.Errorf("%s loaded %d rows, the backup recorded %d; nothing was restored", p.name, tag.RowsAffected(), p.stat.RowCount)
 		}
 		rows += p.stat.RowCount
+		if ddl, ok := created[p.name]; ok && ddl.Setvals != "" {
+			if _, err := tx.Exec(ctx, ddl.Setvals); err != nil {
+				return fmt.Errorf("setting the sequences of %s: %w; nothing was restored", p.name, err)
+			}
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("committing the restore: %w", err)
@@ -520,6 +546,10 @@ func restoreRepoTables(ctx context.Context, rs *repoSnapshot, privateKey, target
 		pluralWord(int64(len(picks)), "table", "tables"), formatNumber(rows), id, shortDuration(time.Since(started)))
 	fmt.Printf("   As of %s. The target's other tables are as they were, and are not consistent with it.\n", rs.Meta.CreatedAt.UTC().Format("2006-01-02 15:04:05 UTC"))
 	for _, p := range picks {
+		if ddl, ok := created[p.name]; ok {
+			fmt.Printf("   Created %s as it was defined in %s (%d %s: the table, its sequences, constraints and indexes).\n",
+				p.name, id, ddl.Objects, pluralWord(int64(ddl.Objects), "object", "objects"))
+		}
 		var notLoaded []string
 		for _, ref := range p.stat.References {
 			if !chosen["data/"+strings.Replace(ref, ".", "/", 1)+".copy"] {
@@ -530,10 +560,31 @@ func restoreRepoTables(ctx context.Context, rs *repoSnapshot, privateKey, target
 			fmt.Printf("   %s points at %s, which this restore did not load.\n", p.name, strings.Join(notLoaded, ", "))
 		}
 		if len(p.stat.OwnedSequences) > 0 {
-			fmt.Printf("   %s owns %s, which this restore did not move.\n", p.name, strings.Join(p.stat.OwnedSequences, ", "))
+			if ddl, ok := created[p.name]; ok && ddl.Setvals != "" {
+				fmt.Printf("   %s set to where the backup left %s.\n", strings.Join(p.stat.OwnedSequences, ", "), pluralWord(int64(len(p.stat.OwnedSequences)), "it", "them"))
+			} else {
+				fmt.Printf("   %s owns %s, which this restore did not move.\n", p.name, strings.Join(p.stat.OwnedSequences, ", "))
+			}
 		}
 	}
 	return nil
+}
+
+// readRunSections reads a run's schema and sequence sections, the ones it has.
+func readRunSections(ctx context.Context, r *read.Repo, idx read.Index, byPath map[string]read.Item) (map[string]string, error) {
+	out := map[string]string{}
+	for _, name := range []string{dbrun.PreData, dbrun.PostData, dbrun.Sequences} {
+		f, ok := byPath[name]
+		if !ok {
+			continue
+		}
+		var b strings.Builder
+		if err := r.Cat(ctx, idx, f.Node, &b); err != nil {
+			return nil, fmt.Errorf("reading %s from the snapshot: %w", name, err)
+		}
+		out[name] = b.String()
+	}
+	return out, nil
 }
 
 // restoreRepoSQL writes a database run as the files psql loads without

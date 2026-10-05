@@ -490,7 +490,7 @@ left alone, and the whole restore is still one transaction.`,
 	cmd.Flags().StringArrayVar(&schemas, "schema", nil, "Restore only this schema of a PostgreSQL snapshot, objects and rows, into a database that has other schemas (repeatable)")
 	cmd.Flags().StringArrayVar(&dataOnly, "data-only-schema", nil, "Load only this schema's rows into tables the target already has (repeatable)")
 	cmd.Flags().BoolVar(&noOwner, "no-owner", false, "PostgreSQL: restore without ownership and privileges, so every object belongs to the restoring role. The roles the schema names are still created")
-	cmd.Flags().StringArrayVar(&tables, "table", nil, "Restore only this table (schema.table) of a database run, into a table of the same definition that is empty in --target (repeatable)")
+	cmd.Flags().StringArrayVar(&tables, "table", nil, "Restore only this table (schema.table) of a database run into --target: into an empty table of the same definition, or created as the run defined it when the target has none (repeatable)")
 	cmd.Flags().StringVar(&surfaceSel, "surface", "", "With --path or --table and no --snapshot: the surface whose repository holds it")
 	cmd.Flags().StringArrayVar(&paths, "path", nil, "Restore only this path of a repository snapshot, relative to / (repeatable; '*', '?' and '**' match)")
 	cmd.Flags().StringVar(&fromPath, "from", "", "Restore from an export: the directory 'safegrd export --to-dir' wrote, or one .safegrd file in it")

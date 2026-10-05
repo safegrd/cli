@@ -200,13 +200,29 @@ func runSelf(ctx context.Context, self string, argv []string) (string, error) {
 	if cfgFile != "" {
 		argv = append([]string{"--config", cfgFile}, argv...)
 	}
+	argv, env := targetToEnv(argv)
 	ctx, cancel := context.WithTimeout(ctx, 6*time.Hour)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, self, argv...)
+	cmd.Env = append(os.Environ(), env...)
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
 	err := cmd.Run()
 	return strings.TrimSpace(out.String()), err
+}
+
+// targetToEnv moves a --target URL out of the command line, where every
+// process on the host can read it in ps, into the child's environment.
+func targetToEnv(argv []string) ([]string, []string) {
+	out := append([]string(nil), argv...)
+	for i := 0; i+1 < len(out); i++ {
+		if out[i] == "--target" {
+			env := []string{"SAFEGRD_MCP_TARGET=" + out[i+1]}
+			out[i+1] = "env:SAFEGRD_MCP_TARGET"
+			return out, env
+		}
+	}
+	return out, nil
 }
 
 func toolResult(text string, isErr bool) *mcp.CallToolResult {

@@ -156,6 +156,9 @@ up by its daemon or by the remote server, and this host should only check.`,
 				return nil
 			}
 			fmt.Fprintf(os.Stderr, "Running %s (snapshot %s)\n", describeCommand(command), snap.SnapshotID)
+			if snap.SurfaceType == model.SurfaceTypePostgres || snap.SurfaceType == "" {
+				fmt.Fprintf(os.Stderr, "To undo it for one table: safegrd restore --snapshot %s --table <schema.table> --target <database URL>\n", snap.SnapshotID)
+			}
 			return runGuarded(command)
 		},
 	}
