@@ -82,6 +82,15 @@ type TableStat struct {
 	// took the backup, so RowCount is the rows that role could see, which
 	// may be fewer than the table holds.
 	RowSecurity bool `json:"row_security,omitempty" yaml:"row_security,omitempty"`
+	// FreshnessColumn is the first of updated_at, modified_at and created_at
+	// the table has as a timestamp, and FreshnessMax its newest value at the
+	// backup, in UTC (RFC 3339). Empty when the table has none, or when the
+	// column has no index and the table is too large to read twice.
+	FreshnessColumn string `json:"freshness_column,omitempty" yaml:"freshness_column,omitempty"`
+	FreshnessMax    string `json:"freshness_max,omitempty" yaml:"freshness_max,omitempty"`
+	// SampleHash is a SHA-256 of the table's first 100 rows by primary key,
+	// as COPY text. Empty for a table with no primary key.
+	SampleHash string `json:"sample_hash,omitempty" yaml:"sample_hash,omitempty"`
 	// SchemaHash is an MD5 of the table's columns, types, defaults and
 	// constraints as the catalog states them, so two runs can tell whether a
 	// table's definition changed. OwnedSequences are the sequences its

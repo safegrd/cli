@@ -182,6 +182,21 @@ func (d *NativeDumper) Dump(ctx context.Context, databaseName string, dst io.Wri
 			_, _ = tx.Exec(ctx, "RELEASE SAVEPOINT safegrd_describe")
 		}
 	}
+	// Each table's newest row and a hash of its first rows, which Threat
+	// Shield compares between backups. A backup that cannot read them still
+	// runs, and says so.
+	if _, err := tx.Exec(ctx, "SAVEPOINT safegrd_freshness"); err == nil {
+		if err := describeFreshness(ctx, tx, meta.TableStats); err != nil {
+			_, _ = tx.Exec(ctx, "ROLLBACK TO SAVEPOINT safegrd_freshness")
+			for i := range meta.TableStats {
+				t := &meta.TableStats[i]
+				t.FreshnessColumn, t.FreshnessMax, t.SampleHash = "", "", ""
+			}
+			d.Warn(fmt.Sprintf("%v. The backup goes on without each table's newest row and sample hash.", err))
+		} else {
+			_, _ = tx.Exec(ctx, "RELEASE SAVEPOINT safegrd_freshness")
+		}
+	}
 	meta.SourceSnapshot, meta.SourceLSN = runIdentity(ctx, tx, serverVersionNum)
 	if meta.SourceSnapshot == "" {
 		d.Warn("The server did not report the snapshot this backup reads under, so the backup records none.")
