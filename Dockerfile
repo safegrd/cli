@@ -52,4 +52,5 @@ CMD ["daemon", "run"]
 
 LABEL org.opencontainers.image.source="https://github.com/safegrd/cli" \
       org.opencontainers.image.description="SafeGrd CLI: encrypted, locked backups of PostgreSQL, MySQL, MongoDB, SQLite, files and mailboxes, and the drills that prove they restore" \
-      org.opencontainers.image.licenses="BUSL-1.1"
+      org.opencontainers.image.licenses="BUSL-1.1" \
+      io.modelcontextprotocol.server.name="dev.safegrd/safegrd"
