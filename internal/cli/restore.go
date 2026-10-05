@@ -222,11 +222,14 @@ left alone, and the whole restore is still one transaction.`,
 				// A snapshot of an incremental repository has no single
 				// object to download; it is restored from its packs.
 				if version > 0 || newest {
-					id, err := resolveVersion(ctx, storageCfg, resolvedKey, surfaceSel, paths[0], version)
+					id, fetched, err := resolveVersion(ctx, storageCfg, resolvedKey, surfaceSel, paths[0], version)
 					if err != nil {
 						return err
 					}
 					snapshotID = id
+					if fetched != "" {
+						resolvedKey = strings.TrimSpace(resolvedKey + "\n" + fetched)
+					}
 					// The key was resolved before the snapshot was known: ask
 					// for the one this snapshot needs, which may be another
 					// host's (a lost host's file, restored on its replacement).

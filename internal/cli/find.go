@@ -25,18 +25,19 @@ type findResult struct {
 }
 
 // searchRepos runs a catalog search over every repository surface in this
-// storage, or the one named.
-func searchRepos(ctx context.Context, storageCfg config.StorageConfig, key, surface string, patterns []string, deleted bool) ([]findResult, error) {
+// storage, or the one named. fetched is the keys it asked the remote server
+// for along the way, so a restore that follows uses them and asks again for
+// none.
+func searchRepos(ctx context.Context, storageCfg config.StorageConfig, key, surface string, patterns []string, deleted bool) (out []findResult, fetched string, err error) {
 	ids, err := unseal.Identities(key)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	bs, err := repoBackendsAll(ctx, storageCfg)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	held := heldRecipients(ids)
-	var out []findResult
 	var skipped []string
 	found := false
 	for _, b := range bs {
@@ -46,7 +47,7 @@ func searchRepos(ctx context.Context, storageCfg config.StorageConfig, key, surf
 		}
 		surfaces, err := l.Surfaces(ctx)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		for _, s := range surfaces {
 			if surface != "" && s != surface {
@@ -55,7 +56,7 @@ func searchRepos(ctx context.Context, storageCfg config.StorageConfig, key, surf
 			found = true
 			es, err := b.Epochs(ctx, s)
 			if err != nil {
-				return nil, err
+				return nil, "", err
 			}
 			// A storage shared by an organization holds other hosts'
 			// surfaces, sealed to keys this host may not hold. Searching
@@ -74,6 +75,7 @@ func searchRepos(ctx context.Context, storageCfg config.StorageConfig, key, surf
 					if more, err := unseal.Identities(k); err == nil {
 						ids = append(ids, more...)
 						held[r] = true
+						fetched = strings.TrimSpace(fetched + "\n" + k)
 					}
 				}
 			}
@@ -81,7 +83,7 @@ func searchRepos(ctx context.Context, storageCfg config.StorageConfig, key, surf
 				CacheDir: filepath.Join(resolveStateDir("", cfg), "cache", "catalog", s)}
 			hs, _, err := src.Find(ctx, patterns, deleted)
 			if err != nil {
-				return nil, fmt.Errorf("surface %s: %w", s, err)
+				return nil, "", fmt.Errorf("surface %s: %w", s, err)
 			}
 			for _, h := range hs {
 				out = append(out, findResult{Surface: s, History: h})
@@ -89,13 +91,13 @@ func searchRepos(ctx context.Context, storageCfg config.StorageConfig, key, surf
 		}
 	}
 	if surface != "" && !found {
-		return nil, fmt.Errorf("no incremental repository for surface %s in this storage", surface)
+		return nil, "", fmt.Errorf("no incremental repository for surface %s in this storage", surface)
 	}
 	if len(skipped) > 0 {
 		fmt.Fprintf(os.Stderr, "Warning: skipped %d %s this host holds no key for: %s. Search one with --surface <id>.\n",
 			len(skipped), pluralWord(int64(len(skipped)), "surface", "surfaces"), strings.Join(skipped, ", "))
 	}
-	return out, nil
+	return out, fetched, nil
 }
 
 // heldRecipients is the public key of every identity in ids.
@@ -197,7 +199,7 @@ or, for a table: safegrd restore --table <schema.table> --version <n> --target <
 			if err != nil {
 				return err
 			}
-			res, err := searchRepos(ctx, storageCfg, key, surface, cleanPatterns(args), deleted)
+			res, _, err := searchRepos(ctx, storageCfg, key, surface, cleanPatterns(args), deleted)
 			if err != nil {
 				return err
 			}
@@ -259,11 +261,12 @@ or, for a table: safegrd restore --table <schema.table> --version <n> --target <
 }
 
 // resolveVersion turns --path and --version into the newest snapshot that
-// holds that version of that path; n 0 is the newest version.
-func resolveVersion(ctx context.Context, storageCfg config.StorageConfig, key, surface, p string, n int) (snapshotID string, err error) {
-	res, err := searchRepos(ctx, storageCfg, key, surface, cleanPatterns([]string{p}), false)
+// holds that version of that path; n 0 is the newest version. fetched is the
+// keys the search asked the remote server for.
+func resolveVersion(ctx context.Context, storageCfg config.StorageConfig, key, surface, p string, n int) (snapshotID, fetched string, err error) {
+	res, fetched, err := searchRepos(ctx, storageCfg, key, surface, cleanPatterns([]string{p}), false)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	want := strings.Trim(strings.TrimPrefix(p, "/"), "/")
 	var hits []findResult
@@ -274,18 +277,18 @@ func resolveVersion(ctx context.Context, storageCfg config.StorageConfig, key, s
 	}
 	switch len(hits) {
 	case 0:
-		return "", fmt.Errorf("no kept snapshot holds %s; run 'safegrd find %s'", want, want)
+		return "", "", fmt.Errorf("no kept snapshot holds %s; run 'safegrd find %s'", want, want)
 	case 1:
 	default:
-		return "", fmt.Errorf("%s is in %d surfaces; name one with --surface", want, len(hits))
+		return "", "", fmt.Errorf("%s is in %d surfaces; name one with --surface", want, len(hits))
 	}
 	if vs := hits[0].Versions; n == 0 && len(vs) > 0 {
-		return vs[len(vs)-1].Last.SnapshotID, nil
+		return vs[len(vs)-1].Last.SnapshotID, fetched, nil
 	}
 	for _, v := range hits[0].Versions {
 		if v.N == n {
-			return v.Last.SnapshotID, nil
+			return v.Last.SnapshotID, fetched, nil
 		}
 	}
-	return "", fmt.Errorf("%s has %d kept versions, not %d; run 'safegrd find %s'", want, len(hits[0].Versions), n, want)
+	return "", "", fmt.Errorf("%s has %d kept versions, not %d; run 'safegrd find %s'", want, len(hits[0].Versions), n, want)
 }
