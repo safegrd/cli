@@ -292,7 +292,7 @@ func (p *PgDump) run(ctx context.Context, bin, databaseURL string, args []string
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err = cmd.Run()
-	msg := strings.TrimSpace(stderr.String())
+	msg := toolMessage(stderr.String())
 	if len(msg) > 500 {
 		msg = msg[:500] + "..."
 	}

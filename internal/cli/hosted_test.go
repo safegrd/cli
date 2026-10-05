@@ -265,3 +265,24 @@ func TestAHostedBackupReportsTheLockTheServerKept(t *testing.T) {
 		t.Errorf("the manifest asked for a lock other than the one its ciphertext has: %v", f.asked)
 	}
 }
+
+// A part the bucket refused was reported with the raw body, so the console
+// showed the reason as the XML declaration and nothing else.
+func TestBucketErrorReadsS3sXML(t *testing.T) {
+	body := []byte(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Error>
+    <Code>InternalError</Code>
+    <Message>An internal error occurred.  Please retry your upload.</Message>
+</Error>`)
+	got := bucketError("500 Internal Server Error", body).Error()
+	want := "the bucket answered 500 Internal Server Error: InternalError: An internal error occurred.  Please retry your upload."
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	if got := bucketError("503 Service Unavailable", []byte("slow down\nmore")).Error(); got != "the bucket answered 503 Service Unavailable: slow down" {
+		t.Errorf("a plain body gave %q", got)
+	}
+	if got := bucketError("500 Internal Server Error", nil).Error(); got != "the bucket answered 500 Internal Server Error" {
+		t.Errorf("an empty body gave %q", got)
+	}
+}

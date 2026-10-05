@@ -329,7 +329,10 @@ func (d *MongoDumper) Dump(ctx context.Context, databaseName string, dst io.Writ
 	}
 	defer cleanup()
 
-	cmd := exec.CommandContext(ctx, tool.Path, "--config="+cfgPath, "--archive", "--quiet")
+	// No --quiet: with it, mongodump exits 1 having written nothing on
+	// stderr, so a refused password reached the console as "exit status 1:"
+	// and no reason. Its progress lines are dropped on success below.
+	cmd := exec.CommandContext(ctx, tool.Path, "--config="+cfgPath, "--archive")
 	tw := tar.NewWriter(dst)
 	cw := &chunkWriter{tw: tw, name: mongoChunkName}
 	pr, pw := io.Pipe()
@@ -353,7 +356,7 @@ func (d *MongoDumper) Dump(ctx context.Context, databaseName string, dst io.Writ
 	if missing := st.missingEnds(); len(missing) > 0 {
 		return nil, fmt.Errorf("%s exited cleanly but the archive never finished %s: the dump is incomplete", tool, strings.Join(missing, ", "))
 	}
-	if msg := stderr; msg != "" {
+	if msg := mongoNotable(stderr); msg != "" {
 		d.Warn(fmt.Sprintf("%s said, while succeeding: %s", tool, msg))
 	}
 	if err := cw.Close(); err != nil {
@@ -559,7 +562,7 @@ func (r *MongoRestorer) Restore(ctx context.Context, src io.Reader) (*model.Snap
 			_, _ = io.Copy(io.Discard, pr)
 			statsCh <- s
 		}()
-		cmd := exec.CommandContext(ctx, tool.Path, "--config="+cfgPath, "--archive", "--stopOnError", "--quiet",
+		cmd := exec.CommandContext(ctx, tool.Path, "--config="+cfgPath, "--archive", "--stopOnError",
 			"--nsFrom="+sourceDB+".*", "--nsTo="+targetDB+".*")
 		cmd.Stdin = io.TeeReader(br, pw)
 		cmd.Stderr = &stderr
@@ -568,7 +571,7 @@ func (r *MongoRestorer) Restore(ctx context.Context, src io.Reader) (*model.Snap
 		_ = pw.Close()
 		st = <-statsCh
 		if runErr != nil {
-			msg := strings.TrimSpace(stderr.String())
+			msg := toolMessage(stderr.String())
 			if len(msg) > 500 {
 				msg = msg[:500] + "..."
 			}
@@ -709,4 +712,18 @@ func withoutDatabase(raw string) string {
 	}
 	u.Path = "/"
 	return u.String()
+}
+
+// mongoNotable is what in a successful mongodump's stderr is worth passing
+// on: the lines that warn or report an error, not its progress ("writing
+// app.users to archive", "done dumping app.users").
+func mongoNotable(stderr string) string {
+	var keep []string
+	for _, line := range strings.Split(stderr, "; ") {
+		l := strings.ToLower(line)
+		if strings.Contains(l, "warn") || strings.Contains(l, "error") || strings.Contains(l, "fail") {
+			keep = append(keep, line)
+		}
+	}
+	return strings.Join(keep, "; ")
 }

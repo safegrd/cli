@@ -83,7 +83,7 @@ func pingMySQL(ctx context.Context, databaseURL string, dial Dialer) error {
 	}
 	db := sql.OpenDB(connector)
 	defer db.Close()
-	return db.PingContext(ctx)
+	return mysqlTLSAdvice(db.PingContext(ctx))
 }
 
 // contextDialer adapts a Dialer to the MongoDB driver's interface.

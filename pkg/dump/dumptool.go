@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 
@@ -29,7 +30,7 @@ func runDumpTool(cmd *exec.Cmd, tool fmt.Stringer, w io.Writer) (string, error) 
 	}
 	_, copyErr := io.Copy(w, stdout)
 	waitErr := cmd.Wait()
-	msg := strings.TrimSpace(stderr.String())
+	msg := toolMessage(stderr.String())
 	if waitErr != nil {
 		if len(msg) > 500 {
 			msg = msg[:500] + "..."
@@ -40,6 +41,34 @@ func runDumpTool(cmd *exec.Cmd, tool fmt.Stringer, w io.Writer) (string, error) 
 		return "", fmt.Errorf("writing the dump to the archive: %w", copyErr)
 	}
 	return msg, nil
+}
+
+var (
+	// toolURLPasswordRe finds the password in any URL a tool echoes back:
+	// mongodump's connection error repeats the whole connection string.
+	toolURLPasswordRe = regexp.MustCompile(`([A-Za-z][A-Za-z0-9+.-]*://[^\s:/@]*:)[^\s@]*@`)
+	// toolLogStampRe is the timestamp mongodump and mongorestore put at the
+	// start of every line they log.
+	toolLogStampRe = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T[0-9:.]+(Z|[+-]\d{2}:?\d{2})\s+`)
+)
+
+// toolMessage is what a dump tool wrote on stderr, made fit to print and to
+// store: passwords in any URL replaced, log timestamps dropped and the lines
+// joined, so the one line a console shows holds the reason. mongodump's
+// "Failed: …" came on the line after the CLI's own, so the console showed
+// "exit status 1:" and nothing else, and the line it did write carried the
+// connection string's password.
+func toolMessage(stderr string) string {
+	var lines []string
+	for _, line := range strings.Split(stderr, "\n") {
+		line = strings.TrimSpace(toolLogStampRe.ReplaceAllString(strings.TrimSpace(line), ""))
+		if line != "" {
+			lines = append(lines, line)
+		}
+	}
+	msg := strings.Join(lines, "; ")
+	msg = toolURLPasswordRe.ReplaceAllString(msg, "${1}xxxxx@")
+	return urlQueryPasswordRe.ReplaceAllString(msg, "${1}xxxxx")
 }
 
 // finishArchive totals meta, stamps its duration from start, writes it as the

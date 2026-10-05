@@ -464,14 +464,21 @@ left alone, and the whole restore is still one transaction.`,
 				}
 				fmt.Printf("   Destination:    %s\n", targetDir)
 			default:
+				// MongoDB has collections and documents, and the summary
+				// said tables and rows for them.
+				tables, rows := "Tables:        ", "Rows:          "
+				what := "tables and rows"
+				if pgMeta != nil && pgMeta.SurfaceType == model.SurfaceTypeMongoDB {
+					tables, rows, what = "Collections:   ", "Documents:     ", "collections and documents"
+				}
 				if pgMeta != nil {
-					fmt.Printf("   Tables:         %d\n", pgMeta.TotalTables)
-					fmt.Printf("   Rows:           %d\n", pgMeta.TotalRows)
+					fmt.Printf("   %s %d\n", tables, pgMeta.TotalTables)
+					fmt.Printf("   %s %d\n", rows, pgMeta.TotalRows)
 				}
 				if native != nil {
 					printCreatedRoles(native.CreatedRoles)
 				}
-				fmt.Println("   Check the tables and rows above against what you expect before you point an application at it.")
+				fmt.Printf("   Check the %s above against what you expect before you point an application at it.\n", what)
 			}
 
 			return nil

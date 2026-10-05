@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -307,7 +308,7 @@ func (d *MySQLDumper) Dump(ctx context.Context, databaseName string, dst io.Writ
 	defer db.Close()
 	version, mariaDB, err := mysqlServer(ctx, db)
 	if err != nil {
-		return nil, fmt.Errorf("could not connect to the database: %w", err)
+		return nil, fmt.Errorf("could not connect to the database: %w", mysqlTLSAdvice(err))
 	}
 	sizes := map[string]int64{}
 	if rows, err := db.QueryContext(ctx, `SELECT table_name, COALESCE(data_length, 0) + COALESCE(index_length, 0)
@@ -722,7 +723,7 @@ func (r *MySQLRestorer) Restore(ctx context.Context, src io.Reader) (*model.Snap
 		cmd.Stdin = definers
 		cmd.Stderr = &stderr
 		if err := cmd.Run(); err != nil {
-			msg := strings.TrimSpace(stderr.String())
+			msg := toolMessage(stderr.String())
 			if len(msg) > 500 {
 				msg = msg[:500] + "..."
 			}
@@ -924,4 +925,23 @@ func MySQLToolsFor(ctx context.Context, databaseURL string) (dumpTool, client *M
 		return nil, nil, server, err
 	}
 	return dumpTool, client, server, nil
+}
+
+// mysqlTLSAdvice adds what to do to a connection refused because the server's
+// certificate did not verify. tls=true checks it, and MySQL's own certificate
+// is self-signed unless someone replaced it, so a stock server fails here with
+// only the x509 error to go on.
+func mysqlTLSAdvice(err error) error {
+	if err == nil {
+		return nil
+	}
+	var verify *tls.CertificateVerificationError
+	var unknown x509.UnknownAuthorityError
+	var host x509.HostnameError
+	var invalid x509.CertificateInvalidError
+	if errors.As(err, &verify) || errors.As(err, &unknown) || errors.As(err, &host) || errors.As(err, &invalid) ||
+		strings.Contains(err.Error(), "failed to verify certificate") {
+		return fmt.Errorf("%w. The server's certificate did not verify: add ssl-ca=/path/ca.pem to the URL to check it against your own CA, or tls=skip-verify to encrypt without checking it", err)
+	}
+	return err
 }

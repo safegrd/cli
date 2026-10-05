@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
@@ -408,11 +409,39 @@ func (p *hostedProvider) abort(uploadID string) {
 	}
 }
 
+// bucketError says what the bucket answered, in one line: the S3 error's
+// code and message when the body is S3's XML, else the body's first line.
+// The raw body was printed as is, so the console showed the reason as
+// `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` and nothing else.
+func bucketError(status string, body []byte) error {
+	var e struct {
+		Code    string `xml:"Code"`
+		Message string `xml:"Message"`
+	}
+	if xml.Unmarshal(body, &e) == nil && (e.Code != "" || e.Message != "") {
+		parts := []string{}
+		for _, p := range []string{strings.TrimSpace(e.Code), strings.TrimSpace(e.Message)} {
+			if p != "" {
+				parts = append(parts, p)
+			}
+		}
+		return fmt.Errorf("the bucket answered %s: %s", status, strings.Join(parts, ": "))
+	}
+	line, _, _ := strings.Cut(strings.TrimSpace(string(body)), "\n")
+	if len(line) > 200 {
+		line = line[:200] + "..."
+	}
+	if line == "" {
+		return fmt.Errorf("the bucket answered %s", status)
+	}
+	return fmt.Errorf("the bucket answered %s: %s", status, line)
+}
+
 // putPart asks for a URL signed for exactly this part and uploads it, retrying
 // a transient failure with a fresh URL.
 func (p *hostedProvider) putPart(ctx context.Context, uploadID string, part int32, data []byte) error {
 	var last error
-	for attempt := 0; attempt < 4; attempt++ {
+	for attempt := 0; attempt < 6; attempt++ {
 		if attempt > 0 {
 			select {
 			case <-time.After(time.Duration(attempt*attempt) * time.Second):
@@ -452,7 +481,7 @@ func (p *hostedProvider) putPart(ctx context.Context, uploadID string, part int3
 		if resp.StatusCode/100 == 2 {
 			return nil
 		}
-		last = fmt.Errorf("the bucket answered %s: %s", resp.Status, strings.TrimSpace(string(msg)))
+		last = bucketError(resp.Status, msg)
 		if resp.StatusCode/100 == 4 && resp.StatusCode != http.StatusForbidden && resp.StatusCode != http.StatusRequestTimeout {
 			return last // a 403 may be an expired URL, worth a fresh one; other 4xx will not change
 		}
@@ -478,7 +507,7 @@ func (p *hostedProvider) download(ctx context.Context, path string) (io.ReadClos
 	if resp.StatusCode != http.StatusOK {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
 		resp.Body.Close()
-		return nil, fmt.Errorf("hosted storage: downloading %s: the bucket answered %s: %s", path, resp.Status, strings.TrimSpace(string(msg)))
+		return nil, fmt.Errorf("hosted storage: downloading %s: %w", path, bucketError(resp.Status, msg))
 	}
 	return resp.Body, nil
 }
