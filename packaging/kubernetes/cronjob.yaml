@@ -50,7 +50,7 @@ spec:
             fsGroupChangePolicy: OnRootMismatch
           initContainers:
             - name: install-config
-              image: ghcr.io/safegrd/cli:0.0.26
+              image: ghcr.io/safegrd/cli:0.0.27
               command: ["sh", "-c"]
               args:
                 - >-
@@ -62,7 +62,7 @@ spec:
                 - { name: home, mountPath: /home/safegrd/.safegrd }
           containers:
             - name: safegrd
-              image: ghcr.io/safegrd/cli:0.0.26
+              image: ghcr.io/safegrd/cli:0.0.27
               args: ["daemon", "run", "--once", "--state-dir", "/var/lib/safegrd"]
               # A surface with `credential: {from: env, name: APP_DATABASE_URL}`
               # reads its connection string from here.
