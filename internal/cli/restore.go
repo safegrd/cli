@@ -97,12 +97,26 @@ left alone, and the whole restore is still one transaction.`,
 					paths = []string{p}
 				}
 			}
+			// One file or one table with no snapshot named comes back as its
+			// newest kept version, the one 'safegrd find' marks (current).
+			newest := false
+			if version == 0 && snapshotID == "" {
+				if len(tables) == 1 && len(paths) == 0 {
+					p, err := tablePath(tables[0])
+					if err != nil {
+						return err
+					}
+					paths, newest = []string{p}, true
+				} else if len(paths) == 1 && len(tables) == 0 && !strings.ContainsAny(paths[0], "*?[") {
+					newest = true
+				}
+			}
 			if version > 0 {
 				if snapshotID != "" || len(paths) != 1 {
 					return fmt.Errorf("--version restores one version of one file: give one --path, and leave out --snapshot")
 				}
-			} else if snapshotID == "" {
-				return fmt.Errorf("--snapshot flag is required")
+			} else if snapshotID == "" && !newest {
+				return fmt.Errorf("give --snapshot <id> (from 'safegrd list'), or one --path or --table to restore its newest version; --version <n> restores an older one ('safegrd find' numbers them)")
 			}
 			given := 0
 			for _, v := range []string{targetURL, targetDir, toSQL} {
@@ -207,12 +221,16 @@ left alone, and the whole restore is still one transaction.`,
 				}
 				// A snapshot of an incremental repository has no single
 				// object to download; it is restored from its packs.
-				if version > 0 {
+				if version > 0 || newest {
 					id, err := resolveVersion(ctx, storageCfg, resolvedKey, surfaceSel, paths[0], version)
 					if err != nil {
 						return err
 					}
 					snapshotID = id
+					// The key was resolved before the snapshot was known: ask
+					// for the one this snapshot needs, which may be another
+					// host's (a lost host's file, restored on its replacement).
+					resolvedKey = withManagedIdentity(ctx, cfg, resolvedKey, heldKeyQuery{snapshotID: snapshotID}, true)
 					if len(tables) > 0 {
 						paths = nil
 					}
@@ -457,7 +475,7 @@ left alone, and the whole restore is still one transaction.`,
 		},
 	}
 
-	cmd.Flags().StringVar(&snapshotID, "snapshot", "", "Snapshot ID to restore (required)")
+	cmd.Flags().StringVar(&snapshotID, "snapshot", "", "Snapshot ID to restore. Leave it out with one --path or --table to restore its newest version")
 	cmd.Flags().StringVar(&targetURL, "target", "", "Target database URL: postgres://… or mysql://… (an empty database), or sqlite:///path/to/new.db (a file that does not exist yet)")
 	cmd.Flags().StringVar(&targetDir, "target-dir", "", "Directory to restore a files or email snapshot into")
 	cmd.Flags().StringVar(&toSQL, "to-sql", "", "Write a PostgreSQL snapshot into this new directory as SQL and COPY files that psql loads (load.sql)")
@@ -470,7 +488,7 @@ left alone, and the whole restore is still one transaction.`,
 	cmd.Flags().StringArrayVar(&dataOnly, "data-only-schema", nil, "Load only this schema's rows into tables the target already has (repeatable)")
 	cmd.Flags().BoolVar(&noOwner, "no-owner", false, "PostgreSQL: restore without ownership and privileges, so every object belongs to the restoring role. The roles the schema names are still created")
 	cmd.Flags().StringArrayVar(&tables, "table", nil, "Restore only this table (schema.table) of a database run, into a table of the same definition that is empty in --target (repeatable)")
-	cmd.Flags().StringVar(&surfaceSel, "surface", "", "With --version: the surface whose repository holds the file")
+	cmd.Flags().StringVar(&surfaceSel, "surface", "", "With --path or --table and no --snapshot: the surface whose repository holds it")
 	cmd.Flags().StringArrayVar(&paths, "path", nil, "Restore only this path of a repository snapshot, relative to / (repeatable; '*', '?' and '**' match)")
 	cmd.Flags().StringVar(&fromPath, "from", "", "Restore from an export: the directory 'safegrd export --to-dir' wrote, or one .safegrd file in it")
 

@@ -203,7 +203,19 @@ func listRepoSnapshots(ctx context.Context, storageCfg config.StorageConfig) []r
 		}
 		out = append(out, rows...)
 	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].Meta.CreatedAt.Before(out[j].Meta.CreatedAt) })
+	// This host's own surfaces first, then the rest of the organization's,
+	// each oldest first: on a host in a shared organization its own rows
+	// were the last of many.
+	own := func(r repoSnapshot) bool {
+		n := r.Meta.NodeID
+		return cfg != nil && cfg.NodeID != "" && (n == cfg.NodeID || strings.HasPrefix(n, cfg.NodeID+"--"))
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if oi, oj := own(out[i]), own(out[j]); oi != oj {
+			return oi
+		}
+		return out[i].Meta.CreatedAt.Before(out[j].Meta.CreatedAt)
+	})
 	return out
 }
 

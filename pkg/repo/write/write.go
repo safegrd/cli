@@ -139,7 +139,10 @@ type Result struct {
 	ReadBytes    int64
 	WrittenBytes int64
 	ChangedFiles int64
-	Rescanned    bool
+	// Excluded counts the entries the exclude patterns left out, each
+	// directory once with everything in it.
+	Excluded  int64
+	Rescanned bool
 	// NewBytes is, for a run of a Source, the bytes of chunks each file added
 	// to the epoch, before compression: zero for a file that did not change.
 	NewBytes map[string]int64
@@ -395,6 +398,7 @@ func Run(ctx context.Context, b sink.Backend, o Options) (*Result, error) {
 	}
 	res.ReadBytes = w.readBytes
 	res.ChangedFiles = w.changed
+	res.Excluded = w.excludedN
 	res.NewBytes = w.newBytes
 
 	// 5–6. Index, catalog, snapshot, sidecar, in that order.
@@ -703,6 +707,8 @@ func (u *uploader) putOne(ctx context.Context, kind sink.Kind, name string, body
 // walker walks the roots depth first in byte order, emitting each
 // directory's tree blob when the directory is finished.
 type walker struct {
+	// excludedN counts the entries the exclude patterns left out.
+	excludedN    int64
 	ctx          context.Context
 	cache        *cache.Cache
 	ch           *chunk.Chunker
@@ -780,6 +786,9 @@ func (w *walker) synth(abs, rel string, n *rootNode, fi os.FileInfo) (format.ID,
 			return format.ID{}, err
 		}
 		t.Entries = append(t.Entries, w.dirNode(name, cfi, sub))
+		// The roots and the directories above them are not counted: the
+		// count is what lies below the roots, as a restore reports it.
+		w.dirs--
 		if err := w.entry(childRel, format.ContentDir, "-", cfi, 0); err != nil {
 			return format.ID{}, err
 		}
@@ -874,6 +883,9 @@ func (w *walker) dir(abs, rel string, dev uint64) (format.ID, error) {
 		childAbs := path.Join(abs, name)
 		childRel := joinRel(rel, name)
 		if w.excluded(childAbs) {
+			if !w.skip[childAbs] {
+				w.excludedN++
+			}
 			continue
 		}
 		fi, err := os.Lstat(childAbs)

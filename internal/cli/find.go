@@ -9,8 +9,10 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"filippo.io/age"
 	"github.com/safegrd/cli/pkg/config"
 	"github.com/safegrd/cli/pkg/repo/catalog"
+	"github.com/safegrd/cli/pkg/repo/sink"
 	"github.com/safegrd/cli/pkg/repo/unseal"
 	"github.com/spf13/cobra"
 )
@@ -33,7 +35,9 @@ func searchRepos(ctx context.Context, storageCfg config.StorageConfig, key, surf
 	if err != nil {
 		return nil, err
 	}
+	held := heldRecipients(ids)
 	var out []findResult
+	var skipped []string
 	found := false
 	for _, b := range bs {
 		l, ok := b.(lister)
@@ -53,6 +57,26 @@ func searchRepos(ctx context.Context, storageCfg config.StorageConfig, key, surf
 			if err != nil {
 				return nil, err
 			}
+			// A storage shared by an organization holds other hosts'
+			// surfaces, sealed to keys this host may not hold. Searching
+			// everything skips those; naming one fetches its keys.
+			missing, any := epochRecipients(es, held)
+			if len(missing) > 0 {
+				if surface == "" && !any {
+					skipped = append(skipped, s)
+					continue
+				}
+				for _, r := range missing {
+					k := withManagedIdentity(ctx, cfg, "", heldKeyQuery{recipient: r}, surface != "")
+					if k == "" {
+						continue
+					}
+					if more, err := unseal.Identities(k); err == nil {
+						ids = append(ids, more...)
+						held[r] = true
+					}
+				}
+			}
 			src := catalog.Source{Backend: b, Epochs: es, IDs: ids,
 				CacheDir: filepath.Join(resolveStateDir("", cfg), "cache", "catalog", s)}
 			hs, _, err := src.Find(ctx, patterns, deleted)
@@ -67,7 +91,40 @@ func searchRepos(ctx context.Context, storageCfg config.StorageConfig, key, surf
 	if surface != "" && !found {
 		return nil, fmt.Errorf("no incremental repository for surface %s in this storage", surface)
 	}
+	if len(skipped) > 0 {
+		fmt.Fprintf(os.Stderr, "Warning: skipped %d %s this host holds no key for: %s. Search one with --surface <id>.\n",
+			len(skipped), pluralWord(int64(len(skipped)), "surface", "surfaces"), strings.Join(skipped, ", "))
+	}
 	return out, nil
+}
+
+// heldRecipients is the public key of every identity in ids.
+func heldRecipients(ids []age.Identity) map[string]bool {
+	held := map[string]bool{}
+	for _, id := range ids {
+		if x, ok := id.(*age.X25519Identity); ok {
+			held[x.Recipient().String()] = true
+		}
+	}
+	return held
+}
+
+// epochRecipients is the recipients of es that held lacks, and whether any
+// epoch is sealed to a key held already.
+func epochRecipients(es []sink.EpochInfo, held map[string]bool) (missing []string, any bool) {
+	seen := map[string]bool{}
+	for _, e := range es {
+		r := e.Epoch.Recipient
+		switch {
+		case r == "":
+		case held[r]:
+			any = true
+		case !seen[r]:
+			seen[r] = true
+			missing = append(missing, r)
+		}
+	}
+	return missing, any
 }
 
 func cleanPatterns(in []string) []string {
@@ -111,6 +168,10 @@ and SHA-256, and how many snapshots hold it.
 Patterns are paths relative to /, matched segment by segment: '*' and '?' within a
 segment, '**' across any number of them. A directory selects everything below it.
 --deleted lists only files the newest snapshot no longer holds.
+
+Without --surface, a host searches the surfaces it holds the key for and names the
+ones it skipped. --surface names one, and fetches its key when the remote server
+holds it.
 
 --table schema.table lists the versions of a table in incremental database backups.
 
@@ -198,7 +259,7 @@ or, for a table: safegrd restore --table <schema.table> --version <n> --target <
 }
 
 // resolveVersion turns --path and --version into the newest snapshot that
-// holds that version of that path.
+// holds that version of that path; n 0 is the newest version.
 func resolveVersion(ctx context.Context, storageCfg config.StorageConfig, key, surface, p string, n int) (snapshotID string, err error) {
 	res, err := searchRepos(ctx, storageCfg, key, surface, cleanPatterns([]string{p}), false)
 	if err != nil {
@@ -217,6 +278,9 @@ func resolveVersion(ctx context.Context, storageCfg config.StorageConfig, key, s
 	case 1:
 	default:
 		return "", fmt.Errorf("%s is in %d surfaces; name one with --surface", want, len(hits))
+	}
+	if vs := hits[0].Versions; n == 0 && len(vs) > 0 {
+		return vs[len(vs)-1].Last.SnapshotID, nil
 	}
 	for _, v := range hits[0].Versions {
 		if v.N == n {

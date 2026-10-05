@@ -615,6 +615,7 @@ func sayNotDue(s *config.SurfaceConfig, state *SurfaceState, now time.Time) {
 	if state.ConsecutiveFailures > 0 && state.LastError != "" {
 		fmt.Printf("   The last attempt failed: %s\n", state.LastError)
 	}
+	fmt.Printf("   To back up now: safegrd backup --surface %s\n", s.ID)
 }
 
 // clockWentBackwards reports whether a surface's recorded times are ahead of

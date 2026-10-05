@@ -84,9 +84,16 @@ func (r *Repo) Restore(ctx context.Context, s format.Snapshot, idx Index, o Rest
 	if err != nil {
 		return nil, err
 	}
+	// The root of a one-directory snapshot becomes the target itself: its
+	// mode, owner and time go onto the target when this restore creates it.
+	var baseNode *format.Node
 	if base := strings.Trim(o.Base, "/"); base != "" {
 		kept := items[:0]
 		for _, it := range items {
+			if it.Path == base && it.Node.Type == format.NodeDir {
+				n := it.Node
+				baseNode = &n
+			}
 			if rel, ok := strings.CutPrefix(it.Path, base+"/"); ok {
 				it.Path = rel
 				kept = append(kept, it)
@@ -260,6 +267,11 @@ func (r *Repo) Restore(ctx context.Context, s format.Snapshot, idx Index, o Rest
 					return res, fmt.Errorf("restoring the owner of %s: %w", it.Path, err)
 				}
 			}
+			if !it.Node.ModTime.IsZero() {
+				if err := lchtimes(dst, it.Node.ModTime); err != nil {
+					return res, fmt.Errorf("setting the time of %s: %w", it.Path, err)
+				}
+			}
 		}
 	}
 	sort.SliceStable(dirs, func(i, j int) bool { return depth(dirs[i].Path) > depth(dirs[j].Path) })
@@ -268,6 +280,11 @@ func (r *Repo) Restore(ctx context.Context, s format.Snapshot, idx Index, o Rest
 			return res, err
 		}
 		res.Dirs++
+	}
+	if baseNode != nil && created && len(o.Paths) == 0 {
+		if err := applyMeta(target, *baseNode, chown, true); err != nil {
+			return res, err
+		}
 	}
 	switch {
 	case !owners:

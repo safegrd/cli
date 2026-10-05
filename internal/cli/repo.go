@@ -253,6 +253,10 @@ func runRepoBackup(ctx context.Context, p repoParams) (*model.SnapshotMetadata, 
 	if res.RecoveryWarning != "" {
 		fmt.Fprintf(os.Stderr, "Warning: %s %s\n", label, res.RecoveryWarning)
 	}
+	if res.Excluded > 0 && len(p.Excludes) > 0 {
+		fmt.Fprintf(out, "%s Left out %s %s matching the surface's exclusions (%s).\n", label, formatNumber(res.Excluded),
+			pluralWord(res.Excluded, "entry", "entries"), strings.Join(p.Excludes, ", "))
+	}
 	took := shortDuration(time.Since(started))
 	if res.Class == format.ClassOpening {
 		fmt.Fprintf(out, "%s %s files, %s read, %s stored in %d %s, %s.\n", label, formatNumber(snap.Stats.Files),
@@ -289,7 +293,8 @@ func printRepoKept(out io.Writer, label string, res *write.Result, locked bool) 
 		fmt.Fprintf(out, "%s Snapshot %s complete. Not locked: this storage applies no Object Lock; it is kept until %s.\n",
 			label, snap.SnapshotID, snap.RetainUntil.UTC().Format("2006-01-02"))
 	case res.Class == format.ClassOpening && res.Epoch.OpeningTier == format.TierMonthly:
-		fmt.Fprintf(out, "%s Snapshot %s complete. Immutable until %s (monthly copy).\n", label, snap.SnapshotID, snap.RetainUntil.UTC().Format("2006-01-02"))
+		fmt.Fprintf(out, "%s Snapshot %s complete. Immutable until %s: the month's first backup is kept as its monthly copy. Later backups follow the surface's retention.\n",
+			label, snap.SnapshotID, snap.RetainUntil.UTC().Format("2006-01-02"))
 	default:
 		fmt.Fprintf(out, "%s Snapshot %s complete. Immutable until %s.\n", label, snap.SnapshotID, snap.RetainUntil.UTC().Format("2006-01-02"))
 	}
@@ -429,7 +434,10 @@ func restoreRepoSnapshot(ctx context.Context, rs *repoSnapshot, privateKey, targ
 	if err != nil {
 		return fmt.Errorf("restore failed, and %s is as it was: %w", targetDir, err)
 	}
-	if base != "" {
+	switch {
+	case len(paths) > 0:
+		fmt.Printf("   Restored %s, from the backup of %s, into %s.\n", strings.Join(paths, ", "), snap.Roots[0], targetDir)
+	case base != "":
 		fmt.Printf("   Restored the contents of %s into %s.\n", snap.Roots[0], targetDir)
 	}
 	fmt.Printf("Restored %s %s (%s) from %s in %s. Every file matched its SHA-256.\n", formatNumber(res.Files),

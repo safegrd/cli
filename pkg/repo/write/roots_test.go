@@ -120,6 +120,11 @@ func TestExcludesLeaveFilesOut(t *testing.T) {
 	if res.Snapshot.Stats.Files != 2 {
 		t.Errorf("the snapshot counts %d files, want 2", res.Snapshot.Stats.Files)
 	}
+	// app.log, deep/trace.log, node_modules and cache: the run says what it
+	// left out, so an exclusion nobody chose on purpose is seen.
+	if res.Excluded != 4 {
+		t.Errorf("the run counts %d excluded entries, want 4", res.Excluded)
+	}
 	if rep := h.check(res.Epoch.EpochID, res.Snapshot.SnapshotID, false); !rep.OK() {
 		t.Fatalf("check: %v", rep.Problems)
 	}

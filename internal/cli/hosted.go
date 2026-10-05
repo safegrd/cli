@@ -74,7 +74,7 @@ func resolveHostedStorage(ctx context.Context, cfg *config.CLIConfig, storageCfg
 		return nil, err
 	}
 	if info.WORMMode == "" || info.PartSize <= 0 {
-		return nil, fmt.Errorf("hosted storage: the remote server's answer is incomplete")
+		return nil, fmt.Errorf("hosted storage: the remote server's answer is missing fields this CLI (%s) needs; upgrade safegrd: curl -fsSL https://safegrd.dev/install.sh | sh", Version)
 	}
 	// Hosted storage is always locked: the mode is the bucket's, not the host's
 	// to choose, and the remote server clamps the date to the plan.
