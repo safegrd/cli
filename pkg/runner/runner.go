@@ -108,7 +108,7 @@ func (v *Verifier) RunFireDrill(ctx context.Context, snapshotID, privateKey, san
 		Status:         model.VerificationStatusRunning,
 	}
 	if kind != model.SurfaceTypePostgres {
-		report.SurfaceType, report.SandboxEngine = kind, "ephemeral-"+string(kind)+"-sandbox"
+		report.SurfaceType, report.SandboxEngine = kind, sandboxEngineName(kind, meta)
 	}
 
 	// 2. Download encrypted snapshot ciphertext
@@ -695,4 +695,15 @@ func explainDecryptError(err error) (why, expected, actual string) {
 			"the snapshot as it was written at backup time", "a file whose encryption does not check out"
 	}
 	return "decryption failed: " + clean, "a snapshot that decrypts with this host's key", clean
+}
+
+// sandboxEngineName is the sandbox a drill restored into, as its record says
+// it: a MariaDB snapshot restores into MariaDB, though its surface type is
+// mysql, and the record said "ephemeral-mysql-sandbox" for it.
+func sandboxEngineName(kind model.SurfaceType, meta *model.SnapshotMetadata) string {
+	engine := string(kind)
+	if kind == model.SurfaceTypeMySQL && meta != nil && strings.Contains(strings.ToLower(meta.ServerVersion), "mariadb") {
+		engine = "mariadb"
+	}
+	return "ephemeral-" + engine + "-sandbox"
 }

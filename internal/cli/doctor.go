@@ -225,7 +225,7 @@ func runValidationChecks(path string, c *config.CLIConfig) []CheckResult {
 	}
 	for _, s := range c.Surfaces {
 		if strings.TrimSpace(s.Schedule) != "" {
-			results = append(results, scheduleCheck(fmt.Sprintf("Surface %s schedule", s.ID), s.Schedule))
+			results = append(results, scheduleCheck(fmt.Sprintf("Surface %s schedule", surfaceLabel(s)), s.Schedule))
 		}
 	}
 
@@ -246,13 +246,13 @@ func runValidationChecks(path string, c *config.CLIConfig) []CheckResult {
 						msg = "missing database_url: give the file as database_url: sqlite:///path/to/app.db"
 					}
 					results = append(results, CheckResult{
-						Name:    fmt.Sprintf("Surface %s (%s)", s.ID, strings.ToLower(s.Type)),
+						Name:    fmt.Sprintf("Surface %s (%s)", surfaceLabel(s), strings.ToLower(s.Type)),
 						Status:  "FAIL",
 						Message: msg,
 					})
 				} else {
 					results = append(results, CheckResult{
-						Name:    fmt.Sprintf("Surface %s (%s)", s.ID, strings.ToLower(s.Type)),
+						Name:    fmt.Sprintf("Surface %s (%s)", surfaceLabel(s), strings.ToLower(s.Type)),
 						Status:  "PASS",
 						Message: "configured",
 					})
@@ -260,13 +260,13 @@ func runValidationChecks(path string, c *config.CLIConfig) []CheckResult {
 			case "files":
 				if len(s.Roots) == 0 {
 					results = append(results, CheckResult{
-						Name:    fmt.Sprintf("Surface %s (files)", s.ID),
+						Name:    fmt.Sprintf("Surface %s (files)", surfaceLabel(s)),
 						Status:  "FAIL",
 						Message: "missing roots directory list",
 					})
 				} else {
 					results = append(results, CheckResult{
-						Name:    fmt.Sprintf("Surface %s (files)", s.ID),
+						Name:    fmt.Sprintf("Surface %s (files)", surfaceLabel(s)),
 						Status:  "PASS",
 						Message: fmt.Sprintf("%d root path(s) specified", len(s.Roots)),
 					})
@@ -274,20 +274,20 @@ func runValidationChecks(path string, c *config.CLIConfig) []CheckResult {
 			case "email":
 				if s.Username == "" {
 					results = append(results, CheckResult{
-						Name:    fmt.Sprintf("Surface %s (email)", s.ID),
+						Name:    fmt.Sprintf("Surface %s (email)", surfaceLabel(s)),
 						Status:  "FAIL",
 						Message: "missing username/mailbox address",
 					})
 				} else {
 					results = append(results, CheckResult{
-						Name:    fmt.Sprintf("Surface %s (email)", s.ID),
+						Name:    fmt.Sprintf("Surface %s (email)", surfaceLabel(s)),
 						Status:  "PASS",
 						Message: fmt.Sprintf("configured for %s", s.Username),
 					})
 				}
 			default:
 				results = append(results, CheckResult{
-					Name:    fmt.Sprintf("Surface %s", s.ID),
+					Name:    fmt.Sprintf("Surface %s", surfaceLabel(s)),
 					Status:  "FAIL",
 					Message: fmt.Sprintf("unknown surface type: %s", s.Type),
 				})
@@ -639,7 +639,7 @@ func surfaceCredentialChecks(c *config.CLIConfig) []CheckResult {
 	stateChanged := false
 	for i := range c.Surfaces {
 		s := &c.Surfaces[i]
-		name := fmt.Sprintf("Surface %s credentials", s.ID)
+		name := fmt.Sprintf("Surface %s credentials", surfaceLabel(*s))
 		if s.FromSafeGrd() {
 			if daemonState == nil {
 				daemonState = loadDaemonState(statePath)
@@ -719,7 +719,7 @@ func surfaceConnectionChecks(c *config.CLIConfig) []CheckResult {
 	var results []CheckResult
 	for i := range c.Surfaces {
 		s := &c.Surfaces[i]
-		name := fmt.Sprintf("Surface %s connection", s.ID)
+		name := fmt.Sprintf("Surface %s connection", surfaceLabel(*s))
 		ctx, cancel := context.WithTimeout(context.Background(), credentialCommandTimeout)
 		switch strings.ToLower(s.Type) {
 		case "postgres", "mysql", "mongodb", "sqlite":
@@ -938,4 +938,18 @@ func sqliteCheck(name, databaseURL string) CheckResult {
 		check.Status, check.Message = "PASS", "readable, WAL mode: backups copy it without blocking writers"
 	}
 	return check
+}
+
+// surfaceLabel is how a surface is named to a person: its name, and its id
+// beside it when the two differ. A host's own database surface was called by
+// its node id here, by its repository id in backup and "The database" in the
+// warnings; its name is the one thing all three can say.
+func surfaceLabel(s config.SurfaceConfig) string {
+	switch {
+	case s.Name == "" || s.Name == s.ID:
+		return s.ID
+	case s.ID == "":
+		return s.Name
+	}
+	return s.Name + " (" + s.ID + ")"
 }

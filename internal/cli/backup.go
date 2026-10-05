@@ -449,8 +449,13 @@ and never leaves this host.`,
 			// In memory only, like the resolved secret above.
 			var dropped []string
 			cfg.DatabaseURL, dropped = cleanPostgresURL(cfg.DatabaseURL)
-			sayDroppedURLParams("The database", dropped)
-			sayDatabaseTLS("The database", cfg.DatabaseURL)
+			dbName := implicitSurfaceName(cfg)
+			who := "The database"
+			if dbName != "" {
+				who = "Surface " + dbName
+			}
+			sayDroppedURLParams(who, dropped)
+			sayDatabaseTLS(who, cfg.DatabaseURL)
 
 			if err := cfg.ValidateForBackup(); err != nil {
 				return err
@@ -521,7 +526,11 @@ and never leaves this host.`,
 			}
 
 			if !jsonOutput {
-				fmt.Printf("Backing up %s as snapshot %s\n", dbSurface, snapshotID)
+				if dbName != "" {
+					fmt.Printf("Backing up %s (%s) as snapshot %s\n", dbName, dbSurface, snapshotID)
+				} else {
+					fmt.Printf("Backing up %s as snapshot %s\n", dbSurface, snapshotID)
+				}
 				fmt.Printf("   Recipient Key:   %s\n", crypto.Fingerprint(cfg.Encryption.PublicKey))
 				fmt.Printf("   Target Storage:  %s (%s)\n", storageCfg.Type, wormLabel(storageCfg))
 			}
@@ -915,4 +924,18 @@ func objectLockAdvice(err error) string {
 			"If this provider has no Object Lock (DigitalOcean Spaces), set storage.worm_mode: NONE in the config to back up without a lock"
 	}
 	return "Check the bucket name, region, endpoint and access key, then run 'safegrd doctor'"
+}
+
+// implicitSurfaceName is the name of the one database surface a config
+// makes from its database_url, which is what this backup runs as; "" when
+// there is none to name. doctor calls it by the same name (surfaceLabel).
+func implicitSurfaceName(cfg *config.CLIConfig) string {
+	if len(cfg.Surfaces) != 1 || cfg.Surfaces[0].Name == "" {
+		return ""
+	}
+	switch strings.ToLower(cfg.Surfaces[0].Type) {
+	case string(model.SurfaceTypeFiles), string(model.SurfaceTypeEmail):
+		return ""
+	}
+	return surfaceLabel(cfg.Surfaces[0])
 }

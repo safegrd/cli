@@ -419,3 +419,18 @@ func TestTheCertificateDigestIsAWholeSHA256(t *testing.T) {
 		t.Fatal("row count is covered by the certificate but did not change the digest")
 	}
 }
+
+// A MariaDB snapshot is restored into MariaDB, and its drill record says so;
+// it read "ephemeral-mysql-sandbox" because its surface type is mysql.
+func TestAMariaDBDrillNamesItsEngine(t *testing.T) {
+	maria := &model.SnapshotMetadata{ServerVersion: "11.4.13-MariaDB-ubu2404"}
+	if got := sandboxEngineName(model.SurfaceTypeMySQL, maria); got != "ephemeral-mariadb-sandbox" {
+		t.Errorf("MariaDB: %s", got)
+	}
+	if got := sandboxEngineName(model.SurfaceTypeMySQL, &model.SnapshotMetadata{ServerVersion: "8.4.11"}); got != "ephemeral-mysql-sandbox" {
+		t.Errorf("MySQL: %s", got)
+	}
+	if got := sandboxEngineName(model.SurfaceTypeMongoDB, nil); got != "ephemeral-mongodb-sandbox" {
+		t.Errorf("MongoDB: %s", got)
+	}
+}

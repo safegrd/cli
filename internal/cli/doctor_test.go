@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/safegrd/cli/pkg/config"
@@ -130,5 +131,45 @@ func TestDoctorReportsItsChecksToTheRemoteServer(t *testing.T) {
 	}
 	if len(got.Results) != 2 || got.Results[1].Status != "FAIL" || got.Results[1].Message != "no" {
 		t.Fatalf("reported %+v, want both results as run", got.Results)
+	}
+}
+
+// A host's own database surface was called by its node id in doctor, its
+// repository id in backup and "The database" in the warnings. It has one
+// name now, and the id beside it.
+func TestTheImplicitSurfaceHasOneName(t *testing.T) {
+	s := config.SurfaceConfig{ID: "node-90c34b36", Name: "marco-db", Type: "postgres"}
+	if got := surfaceLabel(s); got != "marco-db (node-90c34b36)" {
+		t.Errorf("label: %q", got)
+	}
+	if got := surfaceLabel(config.SurfaceConfig{ID: "app"}); got != "app" {
+		t.Errorf("unnamed: %q", got)
+	}
+	cfg := &config.CLIConfig{Surfaces: []config.SurfaceConfig{s}}
+	if got := implicitSurfaceName(cfg); got != "marco-db (node-90c34b36)" {
+		t.Errorf("backup name: %q", got)
+	}
+	cfg.Surfaces[0].Type = "files"
+	if got := implicitSurfaceName(cfg); got != "" {
+		t.Errorf("a files surface named a database backup: %q", got)
+	}
+}
+
+// A host enrolled only to restore has no surface. Doctor failed it twice for
+// the credential of a database it does not have (a node id alone made an
+// implicit surface); it may not fail any surface check on such a host.
+func TestDoctorOnABareHostFailsNoSurface(t *testing.T) {
+	c := config.NewDefaultCLIConfig()
+	c.NodeID, c.NodeName = "node-bare", "bare"
+	c.Encryption.PublicKey = "age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p"
+	c.Storage.Type = config.StorageTypeLocal
+	c.Storage.LocalPath = t.TempDir()
+	if len(c.Surfaces) != 0 {
+		t.Fatalf("fixture has %d surfaces", len(c.Surfaces))
+	}
+	for _, r := range runDoctorChecks("", c) {
+		if strings.HasPrefix(r.Name, "Surface") && r.Status == "FAIL" {
+			t.Errorf("a bare host failed %q: %s", r.Name, r.Message)
+		}
 	}
 }

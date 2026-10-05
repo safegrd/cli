@@ -119,6 +119,11 @@ other line to stderr, so the output can be piped to jq.`,
 				if surface == "" {
 					surface = "unknown"
 				}
+				// Two MySQL surfaces read "mysql" and "mysql" and differed
+				// only by node id: the database names which is which.
+				if meta.DatabaseName != "" {
+					surface += " " + meta.DatabaseName
+				}
 
 				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%.2f MB\t%s\t%s\n",
 					meta.SnapshotID,

@@ -457,6 +457,9 @@ file:/path, which keeps the token out of 'ps' and shell history.`,
 					fmt.Printf("   or give it one database, from the environment so the password stays out of the config:\n")
 					fmt.Printf("     export SAFEGRD_DATABASE_URL=\"$DATABASE_URL\"\n")
 					fmt.Printf("   Then check it: safegrd doctor\n")
+					fmt.Printf("   To restore the organization's backups on this host instead, it needs nothing more:\n")
+					fmt.Printf("     safegrd list\n")
+					fmt.Printf("     safegrd restore --snapshot <id> --target env:TARGET_URL\n")
 				}
 			}
 
