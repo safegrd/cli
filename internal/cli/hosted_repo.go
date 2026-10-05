@@ -29,8 +29,7 @@ type hostedRepo struct {
 	c *hostedClient
 	// node is the node the repository is filed under: the host's own, or
 	// the surface's when the daemon registered one for it.
-	node   string
-	bucket string
+	node string
 	// allNodes lists every node's repositories in the organization, for
 	// list, find and export: the daemon files a surface under its own node
 	// (host--surface), and a host restoring after a lost one has another id
@@ -40,6 +39,7 @@ type hostedRepo struct {
 
 	mu       sync.Mutex
 	prefixes map[string]string // epoch id -> key prefix
+	uris     map[string]string // epoch id -> the location a snapshot record carries
 	gets     map[string]signedGet
 	// signing serialises the signing of one key, so concurrent reads of
 	// one pack ask the remote server once; every signed download counts
@@ -95,26 +95,23 @@ func newHostedRepo(c *config.CLIConfig, storageCfg config.StorageConfig) (sink.B
 	if node == "" {
 		node = c.NodeID
 	}
-	return &hostedRepo{c: hc, node: node, bucket: storageCfg.Bucket, prefixes: map[string]string{}, gets: map[string]signedGet{}}, nil
+	return &hostedRepo{c: hc, node: node, prefixes: map[string]string{}, uris: map[string]string{}, gets: map[string]signedGet{}}, nil
 }
 
 func (h *hostedRepo) Describe() string { return "SafeGrd hosted storage" }
 
 // EpochURI names an epoch the way the remote server records a snapshot's
-// location.
+// location: the name it gave the epoch, which carries no bucket.
 func (h *hostedRepo) EpochURI(e format.Epoch) string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	p := h.prefixes[e.EpochID]
-	if h.bucket == "" {
-		return "hosted://" + p
-	}
-	return "s3://" + h.bucket + "/" + p
+	return h.uris[e.EpochID]
 }
 
 type hostedEpochView struct {
 	Epoch       json.RawMessage `json:"epoch"`
 	Prefix      string          `json:"prefix"`
+	StorageURI  string          `json:"storage_uri"`
 	NodeID      string          `json:"node_id"`
 	SurfaceID   string          `json:"surface_id"`
 	State       string          `json:"state"`
@@ -132,6 +129,7 @@ func (h *hostedRepo) remember(v hostedEpochView) (format.Epoch, error) {
 	}
 	h.mu.Lock()
 	h.prefixes[e.EpochID] = v.Prefix
+	h.uris[e.EpochID] = v.StorageURI
 	h.mu.Unlock()
 	return e, nil
 }

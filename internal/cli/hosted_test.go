@@ -129,7 +129,7 @@ func (f *fakeHosted) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		f.objects["node-1/snap-1.safegrd"] = all
 		f.mu.Unlock()
-		_ = json.NewEncoder(w).Encode(map[string]any{"storage_uri": "s3://hosted/orgs/o/safegrd/snapshots/node-1/snap-1.safegrd", "bytes": len(all)})
+		_ = json.NewEncoder(w).Encode(map[string]any{"storage_uri": "hosted://snapshots/node-1/snap-1.safegrd", "bytes": len(all)})
 	case r.URL.Path == api+"/uploads/hup_1/abort":
 		f.mu.Lock()
 		f.aborted++

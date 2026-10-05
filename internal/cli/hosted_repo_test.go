@@ -124,6 +124,7 @@ func (f *fakeRepoHosted) repo() *hostedRepo {
 		c:        &hostedClient{base: f.srv.URL + "/api/v1/nodes/node-1/hosted", token: "t", api: f.srv.Client(), bucket: f.srv.Client()},
 		node:     "node-1",
 		prefixes: map[string]string{},
+		uris:     map[string]string{},
 		gets:     map[string]signedGet{},
 	}
 }

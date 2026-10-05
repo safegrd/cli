@@ -383,8 +383,8 @@ func runDoctorChecks(path string, c *config.CLIConfig) []CheckResult {
 				status = "WARN"
 			}
 			results = append(results, CheckResult{Name: "Hosted Storage", Status: status,
-				Message: fmt.Sprintf("%s of %s locked in s3://%s/%s (compliance mode)",
-					formatBytes(l.UsedBytes), formatBytes(l.QuotaBytes), l.Bucket, l.Prefix)})
+				Message: fmt.Sprintf("%s of %s locked in SafeGrd hosted storage (compliance mode)",
+					formatBytes(l.UsedBytes), formatBytes(l.QuotaBytes))})
 		}
 	}
 

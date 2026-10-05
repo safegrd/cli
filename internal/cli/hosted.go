@@ -29,8 +29,6 @@ import (
 // hosted storage stand": the retention to use when the config sets none, the
 // quota, and the part size to upload in. It carries no secret.
 type hostedInfo struct {
-	Bucket         string    `json:"bucket"`
-	Prefix         string    `json:"prefix"`
 	WORMMode       string    `json:"worm_mode"`
 	RetentionDays  int       `json:"retention_days"`
 	KeepDaily      int       `json:"keep_daily"`
@@ -75,14 +73,12 @@ func resolveHostedStorage(ctx context.Context, cfg *config.CLIConfig, storageCfg
 	if err := c.call(ctx, http.MethodGet, "", nil, &info); err != nil {
 		return nil, err
 	}
-	if info.Prefix == "" || info.PartSize <= 0 {
+	if info.WORMMode == "" || info.PartSize <= 0 {
 		return nil, fmt.Errorf("hosted storage: the remote server's answer is incomplete")
 	}
 	// Hosted storage is always locked: the mode is the bucket's, not the host's
 	// to choose, and the remote server clamps the date to the plan.
 	storageCfg.WORMMode = config.WORMMode(info.WORMMode)
-	storageCfg.Prefix = info.Prefix
-	storageCfg.Bucket = info.Bucket
 	if storageCfg.RetentionDays == 0 {
 		storageCfg.RetentionDays = info.RetentionDays
 	}
