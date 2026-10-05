@@ -2,8 +2,8 @@ apiVersion: v2
 name: safegrd
 description: The SafeGrd daemon, backing up databases, files and mailboxes to locked storage and running the drills that prove they restore
 type: application
-version: 0.0.28
-appVersion: "0.0.28"
+version: 0.0.29
+appVersion: "0.0.29"
 home: https://safegrd.dev
 sources:
   - https://github.com/safegrd/cli
