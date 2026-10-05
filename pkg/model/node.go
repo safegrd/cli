@@ -61,6 +61,10 @@ type Node struct {
 	LastBackupTotalItems      int64          `json:"last_backup_total_items,omitempty" yaml:"last_backup_total_items,omitempty"`
 	LastBackupTotalContainers int            `json:"last_backup_total_containers,omitempty" yaml:"last_backup_total_containers,omitempty"`
 	LastBackupSnapshotID      string         `json:"last_backup_snapshot_id,omitempty" yaml:"last_backup_snapshot_id,omitempty"`
+	// FirstStoredAt is when this node first recorded a backup that stored
+	// something. From then on it counts against the plan; a host that only
+	// restores never does.
+	FirstStoredAt *time.Time `json:"first_stored_at,omitempty" yaml:"first_stored_at,omitempty"`
 
 	// ParentNodeID is set on a surface a daemon registered under its host's
 	// node. The host's token acts for its children and no other node, so one
