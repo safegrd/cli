@@ -237,20 +237,6 @@ safegrd guard --max-age 1h --check-only -- terraform destroy
 
 `safegrd list --json` prints every snapshot with its lock date, for scripts.
 
-### Claude Code plugin
-
-The plugin in [safegrd/agent-plugins](https://github.com/safegrd/agent-plugins) connects
-Claude Code to the remote server's MCP tools, with skills that take a backup and prove it
-restores before a risky change:
-
-```text
-/plugin marketplace add safegrd/agent-plugins
-/plugin install safegrd@safegrd
-```
-
-On a host with the CLI, `claude mcp add safegrd-local -- safegrd mcp` adds the local server,
-which backs up, verifies and restores with this host's config and key.
-
 ### 8. Back up a directory tree, and get one file back
 
 File backups are incremental: the first run of each month uploads every file, and every
@@ -273,6 +259,47 @@ safegrd check --all
 
 `--format tar` keeps one archive per backup instead. What is locked, for how long, and
 what a restore brings back: [safegrd.dev/docs/surfaces/files](https://safegrd.dev/docs/surfaces/files).
+
+---
+
+## AI agents (MCP)
+
+`safegrd` has two MCP servers. Neither has a tool that deletes a backup, changes where
+backups go, or takes a private key.
+
+**The local server**, `safegrd mcp`, runs on a host over stdio and uses that host's config
+and key. Its tools are `status`, `list`, `doctor`, `backup`, `verify`, `restore` and
+`export`, each running the command of the same name. `restore` writes only into a new or
+empty directory or an empty database.
+
+```bash
+claude mcp add safegrd-local -- safegrd mcp
+
+# a host that runs the container image: mount the volume it enrolled with
+claude mcp add safegrd-local -- docker run -i --rm \
+  -v safegrd:/home/safegrd/.safegrd ghcr.io/safegrd/cli mcp
+```
+
+**The remote server**, `https://safegrd.dev/mcp`, reads every host's backups and Fire Drills
+and asks for a backup or a drill now. It takes a personal access token from the console's
+*Tokens* page as `Authorization: Bearer sg_pat_...`, and is included on the paid plans.
+
+```bash
+claude mcp add --transport http safegrd https://safegrd.dev/mcp \
+  --header "Authorization: Bearer sg_pat_..."
+```
+
+The Claude Code plugin in [safegrd/agent-plugins](https://github.com/safegrd/agent-plugins)
+adds the remote server with skills that back up and run a Fire Drill before a risky change:
+
+```text
+/plugin marketplace add safegrd/agent-plugins
+/plugin install safegrd@safegrd
+```
+
+Both servers are listed in the [MCP Registry](https://registry.modelcontextprotocol.io/v0/servers?search=dev.safegrd)
+as `dev.safegrd/safegrd`, and the remote one on [Smithery](https://smithery.ai/servers/safegrd/safegrd).
+Cursor and VS Code configs, and every tool's arguments: [safegrd.dev/docs/mcp](https://safegrd.dev/docs/mcp).
 
 ---
 
