@@ -36,7 +36,20 @@ type Verifier struct {
 	// set by the drills that restore into a database.
 	KeepFailedSandbox bool
 	sandboxDrill      bool
+	// storageFailed is set when the last drill failed because the storage
+	// would not give the snapshot back, as opposed to a restore that failed.
+	storageFailed bool
 }
+
+// StorageError is a drill that could not read its snapshot from storage.
+type StorageError struct{ Err error }
+
+func (e *StorageError) Error() string { return e.Err.Error() }
+func (e *StorageError) Unwrap() error { return e.Err }
+
+// StorageFailed reports whether the last drill's report failed because the
+// snapshot could not be read from storage.
+func (v *Verifier) StorageFailed() bool { return v.storageFailed }
 
 // CreatedRoles are the roles the last sandbox restore created on the
 // sandbox's cluster, which a kept sandbox's later reset drops.
@@ -64,7 +77,7 @@ func (v *Verifier) RunFireDrill(ctx context.Context, snapshotID, privateKey, san
 	// 1. Download metadata manifest
 	meta, err := v.storage.DownloadMetadata(ctx, snapshotID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch snapshot metadata: %w", err)
+		return nil, &StorageError{fmt.Errorf("failed to fetch snapshot metadata: %w", err)}
 	}
 	rec := v.fetchRecord(ctx, snapshotID)
 
@@ -101,6 +114,7 @@ func (v *Verifier) RunFireDrill(ctx context.Context, snapshotID, privateKey, san
 	// 2. Download encrypted snapshot ciphertext
 	cipherStream, err := v.storage.DownloadSnapshot(ctx, snapshotID)
 	if err != nil {
+		v.storageFailed = true
 		v.failEarly(ctx, report, startTime, fmt.Sprintf("failed downloading snapshot: %v", err))
 		return report, nil
 	}
@@ -243,7 +257,7 @@ func (v *Verifier) RunDryRestore(ctx context.Context, snapshotID, privateKey str
 	// 1. Download metadata manifest from storage
 	meta, err := v.storage.DownloadMetadata(ctx, snapshotID)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to fetch snapshot metadata: %w", err)
+		return nil, nil, &StorageError{fmt.Errorf("failed to fetch snapshot metadata: %w", err)}
 	}
 	rec := v.fetchRecord(ctx, snapshotID)
 
@@ -274,6 +288,7 @@ func (v *Verifier) RunDryRestore(ctx context.Context, snapshotID, privateKey str
 	// 2. Download encrypted snapshot ciphertext from storage
 	cipherStream, err := v.storage.DownloadSnapshot(ctx, snapshotID)
 	if err != nil {
+		v.storageFailed = true
 		v.failEarly(ctx, report, startTime, fmt.Sprintf("failed downloading snapshot from storage: %v", err))
 		return report, nil, nil
 	}

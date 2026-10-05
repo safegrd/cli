@@ -154,7 +154,7 @@ when this host is enrolled.`,
 			}
 			storageProvider, err := openStorage(ctx, cfg, storageCfg)
 			if err != nil {
-				return fmt.Errorf("storage error: %w", err)
+				return storageFailure(fmt.Errorf("storage error: %w", err))
 			}
 			// Not where this config looks: a recovery machine rebuilding a lost
 			// host does not know the node id its backups were filed under.
@@ -261,7 +261,7 @@ when this host is enrolled.`,
 					}
 					fmt.Printf("   [%s] %s: %s (Expected: %s, Actual: %s)\n", status, a.Name, a.Message, a.Expected, a.Actual)
 				}
-				return fmt.Errorf("dry restore of %s failed: %s", snapshotID, report.ErrorMessage)
+				return drillFailure(verifier, fmt.Errorf("dry restore of %s failed: %s", snapshotID, report.ErrorMessage))
 			}
 
 			// Active Sandbox Fire Drill
@@ -303,7 +303,7 @@ when this host is enrolled.`,
 				} else {
 					fmt.Fprintf(os.Stderr, "Warning: the sandbox at %s holds what the drill restored. Empty it before the next drill into it.\n", shown)
 				}
-				return fmt.Errorf("fire drill of %s failed: %s", snapshotID, report.ErrorMessage)
+				return drillFailure(verifier, fmt.Errorf("fire drill of %s failed: %s", snapshotID, report.ErrorMessage))
 			}
 
 			return nil
@@ -503,6 +503,15 @@ a file with --file:
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print the result as JSON on stdout")
 
 	return cmd
+}
+
+// drillFailure is a drill that did not pass: exitStorage when the snapshot
+// could not be read, unclassified when it did not restore.
+func drillFailure(v *runner.Verifier, err error) error {
+	if v.StorageFailed() {
+		return storageFailure(err)
+	}
+	return err
 }
 
 func formatNumber(n int64) string {

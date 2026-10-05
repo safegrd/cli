@@ -59,14 +59,17 @@ func fetchNodeSink(ctx context.Context, serverURL, nodeID, token string) (*nodeS
 	client := &http.Client{Timeout: 3 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
+		noteServerUnreachable()
 		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		noteServerStatus(resp.StatusCode)
 		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 	var res nodeSinkResponse
 	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		noteServerUnreachable()
 		return nil, err
 	}
 	return &res, nil

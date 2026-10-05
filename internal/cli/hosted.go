@@ -75,7 +75,7 @@ func resolveHostedStorage(ctx context.Context, cfg *config.CLIConfig, storageCfg
 		return nil, err
 	}
 	if info.WORMMode == "" || info.PartSize <= 0 {
-		return nil, fmt.Errorf("hosted storage: the remote server's answer is missing fields this CLI (%s) needs; upgrade safegrd: curl -fsSL https://safegrd.dev/install.sh | sh", Version)
+		return nil, serverFailure(fmt.Errorf("hosted storage: the remote server's answer is missing fields this CLI (%s) needs; upgrade safegrd: curl -fsSL https://safegrd.dev/install.sh | sh", Version))
 	}
 	// Hosted storage is always locked: the mode is the bucket's, not the host's
 	// to choose, and the remote server clamps the date to the plan.
@@ -169,9 +169,9 @@ func (c *hostedClient) call(ctx context.Context, method, sub string, in, out any
 		// hosted bucket behind it: that outage was reported as the server
 		// being unreachable while the server answered everything else.
 		if errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "Client.Timeout") {
-			return fmt.Errorf("hosted storage did not answer in time (the remote server accepted the request; its storage may be unavailable). Nothing was stored; the next run tries again: %w", err)
+			return storageFailure(fmt.Errorf("hosted storage did not answer in time (the remote server accepted the request; its storage may be unavailable). Nothing was stored; the next run tries again: %w", err))
 		}
-		return fmt.Errorf("hosted storage: the remote server could not be reached: %w\nHosted storage is reached through the remote server. To restore while it is down, use a copy made earlier with 'safegrd export': safegrd restore --from <export dir>", err)
+		return serverFailure(fmt.Errorf("hosted storage: the remote server could not be reached: %w\nHosted storage is reached through the remote server. To restore while it is down, use a copy made earlier with 'safegrd export': safegrd restore --from <export dir>", err))
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
@@ -188,7 +188,7 @@ func (c *hostedClient) call(ctx context.Context, method, sub string, in, out any
 		return nil
 	}
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
-		return fmt.Errorf("hosted storage: unreadable answer from the remote server: %w", err)
+		return serverFailure(fmt.Errorf("hosted storage: unreadable answer from the remote server: %w", err))
 	}
 	return nil
 }

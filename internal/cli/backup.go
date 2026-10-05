@@ -123,7 +123,7 @@ and never leaves this host.`,
 			// Initialize storage provider
 			storageProvider, err := openStorage(ctx, cfg, storageCfg)
 			if err != nil {
-				return fmt.Errorf("storage initialization failed: %w", err)
+				return storageFailure(fmt.Errorf("storage initialization failed: %w", err))
 			}
 
 			// Preflight check Object Lock on S3 storage to fail early with clear guidance
@@ -132,12 +132,12 @@ and never leaves this host.`,
 			}); ok {
 				if err := locker.VerifyBucketObjectLock(ctx); err != nil {
 					if strings.Contains(err.Error(), "ObjectLockConfigurationNotFound") {
-						return fmt.Errorf("bucket %s has no Object Lock, so a backup there could be deleted. "+
+						return storageFailure(fmt.Errorf("bucket %s has no Object Lock, so a backup there could be deleted. "+
 							"Use a bucket created with Object Lock, or, for a provider that has none, set "+
-							"storage.worm_mode: NONE in the config to back up without a lock. Nothing was written", storageCfg.Bucket)
+							"storage.worm_mode: NONE in the config to back up without a lock. Nothing was written", storageCfg.Bucket))
 					}
-					return fmt.Errorf("could not check Object Lock on bucket %s: %w. Nothing was written. %s",
-						storageCfg.Bucket, err, objectLockAdvice(err))
+					return storageFailure(fmt.Errorf("could not check Object Lock on bucket %s: %w. Nothing was written. %s",
+						storageCfg.Bucket, err, objectLockAdvice(err)))
 				}
 			}
 

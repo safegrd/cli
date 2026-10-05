@@ -113,7 +113,7 @@ func Execute() {
 		if interrupted {
 			os.Exit(130)
 		}
-		os.Exit(1)
+		os.Exit(exitCodeOf(err))
 	}
 }
 

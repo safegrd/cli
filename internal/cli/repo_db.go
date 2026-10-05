@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/safegrd/cli/pkg/config"
+	"github.com/safegrd/cli/pkg/diskspace"
 	"github.com/safegrd/cli/pkg/dump"
 	"github.com/safegrd/cli/pkg/model"
 	"github.com/safegrd/cli/pkg/repo/dbrun"
@@ -108,7 +110,7 @@ func runRepoDatabaseBackup(ctx context.Context, p repoDBParams) (*model.Snapshot
 	}
 	b, err := repoBackend(ctx, cfg, p.StorageCfg)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, storageFailure(err)
 	}
 	label := "[" + p.SurfaceID + "]"
 	started := time.Now()
@@ -196,6 +198,23 @@ func runRepoDatabaseBackup(ctx context.Context, p repoDBParams) (*model.Snapshot
 			return inner(ctx, emit)
 		}
 	}
+	// What the database refused is the source's failure; what the upload
+	// refused reaches the source as emit's error, and stays the storage's.
+	dumpSource := source
+	source = func(ctx context.Context, emit func(write.Entry) error) error {
+		var emitErr error
+		err := dumpSource(ctx, func(e write.Entry) error {
+			if err := emit(e); err != nil {
+				emitErr = err
+				return err
+			}
+			return nil
+		})
+		if err != nil && emitErr == nil && ctx.Err() == nil && !isClassed(err) {
+			return stageErr(model.BackupReasonSource, err)
+		}
+		return err
+	}
 	host, _ := os.Hostname()
 	res, err := write.Run(ctx, b, write.Options{
 		SurfaceID: p.SurfaceID, StateDir: p.StateDir, Recipient: p.Recipient, Retention: p.Retention,
@@ -256,6 +275,9 @@ func runRepoDatabaseBackup(ctx context.Context, p repoDBParams) (*model.Snapshot
 		},
 	})
 	if err != nil {
+		if !isClassed(err) && !errors.Is(err, context.Canceled) && !errors.Is(err, diskspace.ErrNotEnoughDisk) {
+			err = storageFailure(err)
+		}
 		return nil, nil, err
 	}
 	if res.CacheWarning != "" {

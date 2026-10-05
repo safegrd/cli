@@ -73,10 +73,12 @@ func fetchNodeCredentials(ctx context.Context, serverURL, nodeID, token string) 
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
+		noteServerUnreachable()
 		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		noteServerStatus(resp.StatusCode)
 		var body struct {
 			Error string `json:"error"`
 		}
@@ -88,6 +90,7 @@ func fetchNodeCredentials(ctx context.Context, serverURL, nodeID, token string) 
 	}
 	var res nodeCredentialsResponse
 	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		noteServerUnreachable()
 		return nil, err
 	}
 	return &res, nil
@@ -296,6 +299,7 @@ func fetchManagedIdentity(ctx context.Context, serverURL, nodeID, token string, 
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
+		noteServerUnreachable()
 		return nil, err
 	}
 	defer resp.Body.Close()
@@ -303,6 +307,7 @@ func fetchManagedIdentity(ctx context.Context, serverURL, nodeID, token string, 
 		return nil, errHeldLocally
 	}
 	if resp.StatusCode != http.StatusOK {
+		noteServerStatus(resp.StatusCode)
 		var e struct {
 			Error string `json:"error"`
 		}
@@ -320,6 +325,7 @@ func fetchManagedIdentity(ctx context.Context, serverURL, nodeID, token string, 
 	}
 	var res managedIdentityFetchResponse
 	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		noteServerUnreachable()
 		return nil, err
 	}
 	return &res, nil
