@@ -317,6 +317,7 @@ func runDoctorChecks(path string, c *config.CLIConfig) []CheckResult {
 	results = append(results, credentialProvenanceCheck(c)...)
 	results = append(results, surfaceCredentialChecks(c)...)
 	results = append(results, surfaceConnectionChecks(c)...)
+	results = append(results, surfaceRoleChecks(c, nil)...)
 	results = append(results, pgDumpChecks(c)...)
 
 	// 1. Private Key Decryption check

@@ -96,11 +96,38 @@ A new host enrolls with a claim code instead: safegrd enroll --claim <code>.`,
 				return err
 			}
 			fmt.Printf("\nAdded %d surface%s to %s (the previous config is at %s).\n", len(add), plural(len(add)), path, backup)
+			sayClaimedRoles(path, add)
 			fmt.Println("   Check the new surfaces open from this host (the console shows the result): safegrd doctor")
 			fmt.Println("   The daemon reads its config when it starts. Restart it: safegrd daemon restart")
 			fmt.Println("   or take the first backups now: safegrd daemon run --once")
 			return nil
 		},
+	}
+}
+
+// sayClaimedRoles runs the role check on the PostgreSQL surfaces just added
+// that this host holds the credential for, so the first enrolment says when
+// the role can write.
+func sayClaimedRoles(path string, add []claimSurface) {
+	only := map[string]bool{}
+	for _, s := range add {
+		if !s.Config.CredentialHeld {
+			only[s.Key] = true
+		}
+	}
+	if len(only) == 0 {
+		return
+	}
+	c, err := config.LoadCLIConfig(path)
+	if err != nil {
+		return
+	}
+	for _, r := range surfaceRoleChecks(c, only) {
+		if r.Status == "PASS" {
+			fmt.Printf("   %s: %s\n", r.Name, r.Message)
+			continue
+		}
+		fmt.Fprintf(os.Stderr, "Warning: %s: %s.\n   Fix: %s\n", r.Name, r.Message, r.Fix)
 	}
 }
 
