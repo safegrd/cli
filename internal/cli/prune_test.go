@@ -142,3 +142,36 @@ func TestPruneUnderWORMModeNoneReadsTheRecordedDate(t *testing.T) {
 		t.Errorf("under NONE, deleted %v; want only the snapshot whose kept-until date has passed", b.deleted)
 	}
 }
+
+// A short retention never empties a surface: with every lock long over, the
+// newest --min-keep snapshots of each surface stay and only the older go.
+func TestPruneKeepsTheNewestFewWhateverTheLocksSay(t *testing.T) {
+	now := time.Date(2027, 3, 1, 12, 0, 0, 0, time.UTC)
+	b := &fakePruneBucket{now: now, locks: map[string]time.Time{}, holds: map[string]bool{}}
+	for i, id := range []string{"d1", "d2", "d3", "d4", "d5"} {
+		b.put("db", id, now.AddDate(0, 0, -10*(i+1)), now.AddDate(0, 0, -9*(i+1)))
+	}
+	b.put("web", "w1", now.AddDate(0, 0, -30), now.AddDate(0, 0, -20))
+	var out bytes.Buffer
+	r, err := runPruneWithGrace(context.Background(), b, func(string) (map[string]bool, error) { return nil, nil },
+		nil, pruneGrace, 3, false, &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"d1", "d2", "d3"} {
+		if b.gone("db", id) {
+			t.Errorf("%s is one of the three newest and was deleted", id)
+		}
+	}
+	for _, id := range []string{"d4", "d5"} {
+		if !b.gone("db", id) {
+			t.Errorf("%s is past its lock and older than the three newest, and was kept", id)
+		}
+	}
+	if b.gone("web", "w1") {
+		t.Error("a surface's only snapshot was deleted")
+	}
+	if r.Deleted != 2 || r.Kept != 4 {
+		t.Errorf("report: %s", r)
+	}
+}

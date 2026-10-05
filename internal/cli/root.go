@@ -174,6 +174,7 @@ func init() {
 	RootCmd.AddCommand(newExportCmd())
 	RootCmd.AddCommand(newPruneCmd())
 	RootCmd.AddCommand(newEstimateCmd())
+	RootCmd.AddCommand(newKeepCmd())
 	RootCmd.AddCommand(newMCPCmd())
 	RootCmd.AddCommand(newGuardCmd())
 }

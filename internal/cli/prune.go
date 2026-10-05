@@ -34,6 +34,10 @@ import (
 // pruneGrace is how long after a lock ends a snapshot is kept anyway.
 const pruneGrace = 24 * time.Hour
 
+// pruneMinKeep is how many of a surface's newest snapshots prune leaves
+// whatever their locks say, so a short retention never empties a surface.
+const pruneMinKeep = 3
+
 // pruneEvery is how often the daemon prunes when expire_after_lock is on.
 const pruneEvery = 24 * time.Hour
 
@@ -82,11 +86,13 @@ type pruneSnapshot struct {
 // under worm_mode NONE.
 func runPrune(ctx context.Context, b pruneBucket, keepFor func(node string) (map[string]bool, error),
 	retainUntil func(metaKey string) (time.Time, error), dryRun bool, out io.Writer) (pruneReport, error) {
-	return runPruneWithGrace(ctx, b, keepFor, retainUntil, pruneGrace, dryRun, out)
+	return runPruneWithGrace(ctx, b, keepFor, retainUntil, pruneGrace, 1, dryRun, out)
 }
 
+// runPruneWithGrace is runPrune with the grace and the number of each
+// surface's newest snapshots that are never deleted (at least one).
 func runPruneWithGrace(ctx context.Context, b pruneBucket, keepFor func(node string) (map[string]bool, error),
-	retainUntil func(metaKey string) (time.Time, error), grace time.Duration, dryRun bool, out io.Writer) (pruneReport, error) {
+	retainUntil func(metaKey string) (time.Time, error), grace time.Duration, minKeep int, dryRun bool, out io.Writer) (pruneReport, error) {
 	var r pruneReport
 	now, err := b.BucketNow(ctx)
 	if err != nil {
@@ -164,7 +170,7 @@ func runPruneWithGrace(ctx context.Context, b pruneBucket, keepFor func(node str
 			continue
 		}
 		for i, s := range list {
-			if (i == 0 && !s.newest.IsZero()) || keep[s.id] {
+			if (i < max(minKeep, 1) && !s.newest.IsZero()) || keep[s.id] {
 				r.Kept++
 				continue
 			}
@@ -323,7 +329,7 @@ func serverKeepList(ctx context.Context, c *config.CLIConfig, node string) (map[
 }
 
 // pruneOwnBucket prunes the configured S3 bucket.
-func pruneOwnBucket(ctx context.Context, c *config.CLIConfig, grace time.Duration, dryRun bool, out io.Writer) (pruneReport, error) {
+func pruneOwnBucket(ctx context.Context, c *config.CLIConfig, grace time.Duration, minKeep int, dryRun bool, out io.Writer) (pruneReport, error) {
 	storageCfg, err := resolveStorageRouting(ctx, c, "", "", "", "", false)
 	if err != nil {
 		return pruneReport{}, err
@@ -343,7 +349,7 @@ func pruneOwnBucket(ctx context.Context, c *config.CLIConfig, grace time.Duratio
 	}
 	retainUntil := func(metaKey string) (time.Time, error) { return b.RecordedRetainUntil(ctx, metaKey) }
 	keepFor := func(node string) (map[string]bool, error) { return serverKeepList(ctx, c, node) }
-	r, err := runPruneWithGrace(ctx, b, keepFor, retainUntil, grace, dryRun, out)
+	r, err := runPruneWithGrace(ctx, b, keepFor, retainUntil, grace, minKeep, dryRun, out)
 	if err != nil {
 		return r, err
 	}
@@ -359,19 +365,21 @@ func pruneOwnBucket(ctx context.Context, c *config.CLIConfig, grace time.Duratio
 	if err != nil {
 		return r, err
 	}
-	err = pruneRepos(ctx, &sink.S3{Client: client, Bucket: bucket, Prefix: basePrefix, Mode: mode}, keepFor, now, grace, dryRun, out, &r)
+	err = pruneRepos(ctx, &sink.S3{Client: client, Bucket: bucket, Prefix: basePrefix, Mode: mode}, keepFor, now, grace, minKeep, dryRun, out, &r)
 	return r, err
 }
 
 func newPruneCmd() *cobra.Command {
 	var dryRun bool
 	var grace time.Duration
+	var minKeep int
 	cmd := &cobra.Command{
 		Use:   "prune",
 		Short: "Delete snapshots from your own bucket once their Object Lock has ended",
 		Long: `Delete snapshots from your own S3 bucket whose Object Lock ended more than a day ago,
-by the bucket's clock. Never the newest snapshot of a surface, and never the last known
-good one the remote server keeps while Threat Shield has an open anomaly on it.
+by the bucket's clock. Never a surface's newest --min-keep snapshots (3 by default), and
+never the last known good one the remote server keeps while Threat Shield has an open
+anomaly on it.
 
 Needs s3:DeleteObjectVersion and s3:GetObjectRetention on this host's key, which the
 recommended bucket policy denies. Set storage.expire_after_lock: true for the daemon to
@@ -380,7 +388,10 @@ prune once a day.`,
 			if grace < 0 {
 				return errors.New("--grace cannot be negative")
 			}
-			r, err := pruneOwnBucket(cmd.Context(), cfg, grace, dryRun, os.Stdout)
+			if minKeep < 1 {
+				return errors.New("--min-keep is at least 1: a surface's newest snapshot is never deleted")
+			}
+			r, err := pruneOwnBucket(cmd.Context(), cfg, grace, minKeep, dryRun, os.Stdout)
 			if err != nil {
 				return err
 			}
@@ -392,6 +403,7 @@ prune once a day.`,
 		},
 	}
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "List what would be deleted, and delete nothing")
+	cmd.Flags().IntVar(&minKeep, "min-keep", pruneMinKeep, "How many of each surface's newest snapshots are kept whatever their locks say")
 	cmd.Flags().DurationVar(&grace, "grace", pruneGrace, "How long after a lock ends a snapshot is kept anyway (the bucket refuses a locked one regardless)")
 	return cmd
 }

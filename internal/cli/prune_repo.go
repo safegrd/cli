@@ -47,7 +47,7 @@ type repoPruneStore interface {
 // catalogs and snapshot objects go first, sidecars after them, epoch.json
 // last, and each key's delete markers after its versions.
 func pruneRepos(ctx context.Context, st repoPruneStore, keepFor func(node string) (map[string]bool, error),
-	now time.Time, grace time.Duration, dryRun bool, out io.Writer, r *pruneReport) error {
+	now time.Time, grace time.Duration, minKeep int, dryRun bool, out io.Writer, r *pruneReport) error {
 	root := strings.Trim(st.Root(), "/")
 	nodes, err := st.Children(ctx, root)
 	if err != nil {
@@ -79,7 +79,7 @@ func pruneRepos(ctx context.Context, st repoPruneStore, keepFor func(node string
 			return err
 		}
 		for _, sf := range surfaces {
-			if err := pruneSurfaceRepo(ctx, st, d, sf, keep, now, grace, dryRun, out, r); err != nil {
+			if err := pruneSurfaceRepo(ctx, st, d, sf, keep, now, grace, minKeep, dryRun, out, r); err != nil {
 				fmt.Fprintf(out, "Error: Surface %s: %v\n", sf, err)
 				r.Failed++
 			}
@@ -105,7 +105,7 @@ type sidecarInfo struct {
 }
 
 func pruneSurfaceRepo(ctx context.Context, st repoPruneStore, d *sink.Direct, surface string, keep map[string]bool,
-	now time.Time, grace time.Duration, dryRun bool, out io.Writer, r *pruneReport) error {
+	now time.Time, grace time.Duration, minKeep int, dryRun bool, out io.Writer, r *pruneReport) error {
 	epochs, err := d.Epochs(ctx, surface)
 	if err != nil {
 		return err
@@ -136,13 +136,24 @@ func pruneSurfaceRepo(ctx context.Context, st repoPruneStore, d *sink.Direct, su
 			}
 		}
 	}
+	// The surface's newest minKeep snapshots hold their epochs, whatever
+	// their locks say.
+	var all []sidecarInfo
+	for _, sc := range sidecars {
+		all = append(all, sc...)
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].created.After(all[j].created) })
+	newestFew := map[string]bool{}
+	for i := 0; i < len(all) && i < max(minKeep, 1); i++ {
+		newestFew[all[i].id] = true
+	}
 	for _, e := range epochs {
 		ep := e.Epoch
 		sc := sidecars[ep.EpochID]
 		held := false
 		laterDone, allDone := true, true
 		for _, s := range sc {
-			if s.id == newest.id || keep[s.id] {
+			if s.id == newest.id || keep[s.id] || newestFew[s.id] {
 				held = true
 			}
 			expired := !s.until.IsZero() && s.until.Add(grace).Before(now)
