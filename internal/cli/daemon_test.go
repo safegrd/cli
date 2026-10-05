@@ -74,15 +74,25 @@ func TestIsSurfaceDue(t *testing.T) {
 		t.Errorf("expected surface backed up 2h ago to be due for @hourly")
 	}
 
-	// 4. Consecutive failure backoff
+	// 4. A failure is retried 5 minutes after the attempt, whatever the
+	// schedule, up to three tries in all
 	st4 := &SurfaceState{
 		SurfaceID:           surf.ID,
+		LastSuccess:         now.Add(-10 * time.Minute),
 		LastAttempt:         now.Add(-2 * time.Minute),
-		ConsecutiveFailures: 1, // 5m backoff
+		ConsecutiveFailures: 1,
 	}
-	due, _ = isSurfaceDue(surf, st4, now)
-	if due {
-		t.Errorf("expected surface in backoff window to NOT be due")
+	if due, next := isSurfaceDue(surf, st4, now); due || !next.Equal(st4.LastAttempt.Add(5*time.Minute)) {
+		t.Errorf("a failure 2 minutes ago: due %v, next %s; want not due, retry 5 minutes after the attempt", due, next)
+	}
+	st4.LastAttempt = now.Add(-6 * time.Minute)
+	if due, _ := isSurfaceDue(surf, st4, now); !due {
+		t.Errorf("a surface that failed 6 minutes ago is not retried; its schedule is %s and it backed up 10 minutes before", surf.Schedule)
+	}
+	// 5. After the third failed try it waits for the next scheduled run.
+	st4.ConsecutiveFailures = 3
+	if due, next := isSurfaceDue(surf, st4, now); due || !next.Equal(st4.LastAttempt.Add(time.Hour)) {
+		t.Errorf("after three tries: due %v, next %s; want the next hourly run after the last attempt", due, next)
 	}
 }
 

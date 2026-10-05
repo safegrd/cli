@@ -60,10 +60,10 @@ type StorageConfig struct {
 	// never the newest of a surface and never one the remote server keeps as
 	// last known good. Off by default: it needs s3:DeleteObjectVersion, which
 	// the recommended policy denies. `safegrd prune` does the same by hand.
-	ExpireAfterLock bool   `yaml:"expire_after_lock,omitempty" json:"expire_after_lock,omitempty"`
+	ExpireAfterLock bool `yaml:"expire_after_lock,omitempty" json:"expire_after_lock,omitempty"`
 	// MinKeep is how many of each surface's newest snapshots that pruning
 	// never deletes, whatever their locks say. Zero means 3.
-	MinKeep int `yaml:"min_keep,omitempty" json:"min_keep,omitempty"`
+	MinKeep         int    `yaml:"min_keep,omitempty" json:"min_keep,omitempty"`
 	LocalPath       string `yaml:"local_path,omitempty" json:"local_path,omitempty"` // For local filesystem WORM
 	AccessKeyID     string `yaml:"access_key_id,omitempty" json:"access_key_id,omitempty"`
 	SecretAccessKey string `yaml:"secret_access_key,omitempty" json:"secret_access_key,omitempty"`

@@ -14,4 +14,5 @@ func sandboxCredential(string) (*runAs, error) {
 }
 
 func (r *runAs) own(string) error { return nil }
+func (r *runAs) dir() string      { return "" }
 func (r *runAs) apply(*exec.Cmd)  {}

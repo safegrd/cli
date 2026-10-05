@@ -205,18 +205,26 @@ var sandboxSettings = []string{
 // cluster left behind by a daemon that was killed can be found and removed.
 const localSandboxPrefix = "pg-"
 
+// rootSandboxBase holds the clusters of a daemon that runs as root with a
+// state directory root owns: they run as nobody, which cannot enter /root.
+const rootSandboxBase = "/var/tmp/safegrd-drill"
+
 // StartLocalPostgres starts a throwaway cluster from srv under stateDir/drill,
 // after checking the disk has room for need bytes. The caller must Stop it.
 func StartLocalPostgres(ctx context.Context, srv *PgServer, stateDir string, need int64) (*LocalPostgres, error) {
-	base := filepath.Join(stateDir, "drill")
-	if err := os.MkdirAll(base, 0o700); err != nil {
-		return nil, fmt.Errorf("cannot create %s for a local sandbox: %w", base, err)
-	}
 	// PostgreSQL refuses to run as root, and a system service runs the daemon
-	// as root: the cluster runs as whoever owns the state directory.
+	// as root: the cluster runs as whoever owns the state directory, or as
+	// nobody under rootSandboxBase when that is root.
 	cred, err := sandboxCredential(stateDir)
 	if err != nil {
 		return nil, err
+	}
+	base := filepath.Join(stateDir, "drill")
+	if d := cred.dir(); d != "" {
+		base = d
+	}
+	if err := os.MkdirAll(base, 0o700); err != nil {
+		return nil, fmt.Errorf("cannot create %s for a local sandbox: %w", base, err)
 	}
 	if err := cred.own(base); err != nil {
 		return nil, err
@@ -399,6 +407,10 @@ func (lp *LocalPostgres) DataDir() string { return lp.dataDir }
 // sandbox a failed drill was kept in stays until its time is up.
 func SweepLocalSandboxes(stateDir string) {
 	dirs, _ := filepath.Glob(filepath.Join(stateDir, "drill", localSandboxPrefix+"*"))
+	if os.Geteuid() == 0 {
+		more, _ := filepath.Glob(filepath.Join(rootSandboxBase, localSandboxPrefix+"*"))
+		dirs = append(dirs, more...)
+	}
 	for _, d := range dirs {
 		var kept keptSandbox
 		if b, err := os.ReadFile(filepath.Join(d, keptMarker)); err == nil && json.Unmarshal(b, &kept) == nil {

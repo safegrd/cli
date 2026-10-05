@@ -581,6 +581,13 @@ func warnIfStateUnsaved(err error, path string) {
 		"   The next tick will not know this run happened and will back up again.\n", path, err)
 }
 
+// backupAttempts is how many times a backup is tried before the daemon waits
+// for the next scheduled run, retryDelay the wait between tries.
+const (
+	backupAttempts = 3
+	retryDelay     = 5 * time.Minute
+)
+
 func isSurfaceDue(s *config.SurfaceConfig, state *SurfaceState, now time.Time) (bool, time.Time) {
 	// The problem, if any, is reported once at daemon start by
 	// warnAboutSchedules rather than on every tick.
@@ -594,17 +601,22 @@ func isSurfaceDue(s *config.SurfaceConfig, state *SurfaceState, now time.Time) (
 		return true, now
 	}
 
-	// Exponential backoff if consecutive failures exist: 5m, 10m, 20m, 40m, max 1h
+	// A failed backup is tried again 5 minutes after the attempt, up to
+	// backupAttempts tries in all; after that it waits one whole interval
+	// from the last attempt, the next scheduled run. The backoff this
+	// replaced only delayed: a daily surface that failed was not due again
+	// until a day after its last success, while the alert promised a retry in
+	// 5 minutes (CUJ P6).
 	if state.ConsecutiveFailures > 0 && !state.LastAttempt.IsZero() {
-		backoffMult := 1 << min(state.ConsecutiveFailures-1, 4) // up to 16 * 5m = 80m clamped to 1h
-		backoff := time.Duration(backoffMult) * 5 * time.Minute
-		if backoff > time.Hour {
-			backoff = time.Hour
+		next := state.LastAttempt.Add(retryDelay)
+		if state.ConsecutiveFailures >= backupAttempts {
+			every := interval
+			if every <= 0 {
+				every = 24 * time.Hour
+			}
+			next = state.LastAttempt.Add(every)
 		}
-		retryAt := state.LastAttempt.Add(backoff)
-		if now.Before(retryAt) {
-			return false, retryAt
-		}
+		return !now.Before(next), next
 	}
 
 	// Never backed up -> due immediately

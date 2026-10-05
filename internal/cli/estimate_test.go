@@ -1,6 +1,10 @@
 package cli
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/safegrd/cli/pkg/egress"
+)
 
 // The provider is read from the connection string's host, and nothing else.
 func TestEstimateReadsTheProviderFromTheHost(t *testing.T) {
@@ -12,7 +16,11 @@ func TestEstimateReadsTheProviderFromTheHost(t *testing.T) {
 		"postgres://u:p@db.internal:5432/app":                                  "",
 		"postgres://u:p@supabase.co.attacker.example/app":                      "",
 	} {
-		if got := providerOfURL(raw); got != want {
+		got := ""
+		if p, ok := egress.ProviderOf(raw); ok {
+			got = p.Key
+		}
+		if got != want {
 			t.Errorf("%s: %q, want %q", raw, got, want)
 		}
 	}
