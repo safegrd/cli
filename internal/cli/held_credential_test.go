@@ -177,7 +177,7 @@ func TestAHostWithACustomerHeldKeyIsToldToPassIt(t *testing.T) {
 	if got != "" {
 		t.Error("a customer-held host was given the organization's other keys")
 	}
-	if strings.Contains(stdout, "held by SafeGrd") || strings.Contains(stdout, "sealed") {
+	if strings.Contains(stdout, "SafeGrd-managed") || strings.Contains(stdout, "sealed") {
 		t.Errorf("a customer-held host was told SafeGrd holds its key:\n%s", stdout)
 	}
 
@@ -188,7 +188,7 @@ func TestAHostWithACustomerHeldKeyIsToldToPassIt(t *testing.T) {
 			t.Errorf("a managed host was warned:\n%s", stderr)
 		}
 	})
-	if got != other.PrivateKey || !strings.Contains(stdout, crypto.Fingerprint(other.PublicKey)+", held by SafeGrd for org org-1") {
+	if got != other.PrivateKey || !strings.Contains(stdout, crypto.Fingerprint(other.PublicKey)+", SafeGrd-managed key of org org-1") {
 		t.Errorf("a managed host was not given its key and told where it came from:\n%s", stdout)
 	}
 }

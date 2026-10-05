@@ -417,18 +417,21 @@ file:/path, which keeps the token out of 'ps' and shell history.`,
 				// Report key custody mode.
 				switch {
 				case regResp.KeyEscrowed:
-					fmt.Printf("   Custody:     SafeGrd keeps this key sealed and releases it only to your enrolled hosts,\n")
+					fmt.Printf("   Custody:     SafeGrd-managed key\n")
+					fmt.Printf("                SafeGrd keeps this key sealed and releases it only to your enrolled hosts,\n")
 					fmt.Printf("                so you can restore these backups even after losing this host.\n")
-					fmt.Printf("                To hold the next key yourself, enrol with --key-custody=local.\n")
+					fmt.Printf("                For a customer-managed key next time, enrol with --key-custody=local.\n")
 				case keyExistedBeforeEnroll:
-					fmt.Printf("   Custody:     you hold this key, and only you can decrypt these backups. SafeGrd has the public half.\n")
+					fmt.Printf("   Custody:     customer-managed key\n")
+					fmt.Printf("                Only you can decrypt these backups. SafeGrd has the public half.\n")
 					if adopted {
 						fmt.Printf("                It was already at %s, so it was not sent: a key we find on a host\n", cfg.Encryption.KeyPath)
-						fmt.Printf("                is yours. To have SafeGrd hold one instead, move that file aside and\n")
+						fmt.Printf("                is yours. For a SafeGrd-managed key instead, move that file aside and\n")
 						fmt.Printf("                re-run with --key-custody=safegrd.\n")
 					}
 				default:
-					fmt.Printf("   Custody:     you hold this key (--key-custody=local). Only you can decrypt these backups.\n")
+					fmt.Printf("   Custody:     customer-managed key (--key-custody=local)\n")
+					fmt.Printf("                Only you can decrypt these backups.\n")
 					fmt.Printf("                Keep a copy of %s somewhere safe: it is the key that opens them.\n", cfg.Encryption.KeyPath)
 				}
 				if cfg.ProjectID != "" {
@@ -480,11 +483,11 @@ file:/path, which keeps the token out of 'ps' and shell history.`,
 		"Enroll even though neither this host's config nor its project says where backups go. "+
 			"Without it enrollment is refused, because the host would back up nothing until storage is set")
 	cmd.Flags().StringVar(&keyCustody, "key-custody", "",
-		"Who holds the encryption key when this command generates one: "+
-			"'safegrd' (default) keeps it sealed on the remote server and releases it only to your enrolled hosts, "+
-			"so losing this host never loses the backups; "+
-			"'local' writes it to key_path and sends only the public half, so only you can decrypt the backups "+
-			"and you keep a copy of the key safe. "+
+		"Who manages the encryption key when this command generates one. "+
+			"'safegrd' (default): a SafeGrd-managed key, sealed on the remote server and released only to your enrolled hosts, "+
+			"so losing this host never loses the backups. "+
+			"'local': a customer-managed key, written to key_path with only the public half sent, so only you can decrypt "+
+			"the backups. Keep a copy of the key file somewhere safe. "+
 			"Ignored when you supplied your own key (an existing key is never sent).")
 
 	return cmd

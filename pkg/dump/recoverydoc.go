@@ -81,8 +81,9 @@ func RenderRecoveryDoc(meta *model.SnapshotMetadata, loc Location) []byte {
 	w("")
 	w("What a restore needs")
 	w("--------------------")
-	w("- The Age private key this snapshot was sealed to. If SafeGrd keeps your key, an")
-	w("  enrolled host fetches it; if you keep it, it is the key file from `safegrd init`.")
+	w("- The Age private key this snapshot was sealed to. With a SafeGrd-managed key, an")
+	w("  enrolled host fetches it. With a customer-managed key, it is the key file from")
+	w("  `safegrd init`.")
 	w("- The safegrd CLI: https://github.com/safegrd/cli (Go: go build ./cmd/safegrd).")
 	switch surface {
 	case model.SurfaceTypePostgres:

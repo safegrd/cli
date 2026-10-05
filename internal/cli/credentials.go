@@ -211,7 +211,7 @@ func resolveCredentials(ctx context.Context, cfg *config.CLIConfig, storageCfg *
 	}
 	if surface && cfg.Encryption.PublicKey == "" && creds.PublicKey != "" {
 		cfg.Encryption.PublicKey = creds.PublicKey
-		src.PublicKey = "remote server (managed custody)"
+		src.PublicKey = "remote server (SafeGrd-managed key)"
 	}
 
 	if verbose {
@@ -389,7 +389,7 @@ func withManagedIdentity(ctx context.Context, cfg *config.CLIConfig, local strin
 		// The fingerprint, never the key. An operator needs to know which key
 		// opened the archive and where it came from; printing the identity
 		// itself would put it in a terminal scrollback and a CI log.
-		fmt.Printf("   Decryption key:  %s, held by SafeGrd for org %s (fetched, not stored)\n",
+		fmt.Printf("   Decryption key:  %s, SafeGrd-managed key of org %s (fetched, not stored)\n",
 			crypto.Fingerprint(res.Identities[0].PublicKey), res.OrgID)
 		if res.Notice != "" {
 			fmt.Printf("   Notice:          %s\n", res.Notice)
