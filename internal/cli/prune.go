@@ -38,6 +38,14 @@ const pruneGrace = 24 * time.Hour
 // whatever their locks say, so a short retention never empties a surface.
 const pruneMinKeep = 3
 
+// minKeepOf is the storage config's min_keep, or pruneMinKeep.
+func minKeepOf(st config.StorageConfig) int {
+	if st.MinKeep > 0 {
+		return st.MinKeep
+	}
+	return pruneMinKeep
+}
+
 // pruneEvery is how often the daemon prunes when expire_after_lock is on.
 const pruneEvery = 24 * time.Hour
 
