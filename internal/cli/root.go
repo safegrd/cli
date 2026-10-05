@@ -173,6 +173,7 @@ func init() {
 	RootCmd.AddCommand(newVerifyHistoryCmd())
 	RootCmd.AddCommand(newExportCmd())
 	RootCmd.AddCommand(newPruneCmd())
+	RootCmd.AddCommand(newEstimateCmd())
 	RootCmd.AddCommand(newMCPCmd())
 	RootCmd.AddCommand(newGuardCmd())
 }
