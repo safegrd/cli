@@ -51,6 +51,8 @@ type SurfaceState struct {
 	// recorded is still reported as an error, because the console shows no
 	// backup for it.
 	notRecorded string
+	// probe is this tick's probe, sent on the heartbeat. Memory only.
+	probe probeResult
 	// newEpoch and rescan are `backup --surface --new-epoch/--rescan` for a
 	// repository surface's next run. Memory only, like notRecorded.
 	newEpoch, rescan bool
@@ -675,6 +677,13 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 		// says, which takes effect on this same tick.
 		configured := surface
 		applyConsoleSettings(&surface, &configured, sState)
+		// Only a resident daemon probes: a single pass backs up or says why
+		// it did not, which is the same check.
+		sState.probe = probeResult{}
+		if tick > 0 {
+			sState.probe = probeSurface(ctx, c, &surface)
+			sayProbe(sState, sState.probe)
+		}
 		hb := sendHeartbeat(ctx, c, nodeID, sState, tick, &surface)
 		if hb != nil {
 			// The remote server answers, so what it missed while it did not

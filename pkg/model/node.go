@@ -148,7 +148,20 @@ type Node struct {
 	// persisted across restarts.
 	AlertState      string     `json:"alert_state,omitempty" yaml:"alert_state,omitempty"`
 	AlertStateSince *time.Time `json:"alert_state_since,omitempty" yaml:"alert_state_since,omitempty"`
+
+	// What the daemon's probe between backups found (HeartbeatRequest.Probed):
+	// how many heartbeats in a row could not reach the database or the sink,
+	// since when, and the host's words for it. At ProbeUnreachableAfter the
+	// surface is unreachable, an episode of its own beside AlertState, so
+	// a surface can be overdue and unreachable at once.
+	ProbeFailures     int        `json:"probe_failures,omitempty" yaml:"probe_failures,omitempty"`
+	ProbeError        string     `json:"probe_error,omitempty" yaml:"probe_error,omitempty"`
+	ProbeFailingSince *time.Time `json:"probe_failing_since,omitempty" yaml:"probe_failing_since,omitempty"`
 }
+
+// Unreachable reports whether the probe has failed often enough in a row
+// for the surface to be called unreachable.
+func (n *Node) Unreachable() bool { return n.ProbeFailures >= ProbeUnreachableAfter }
 
 // Alert episodes a node can be in. Empty means none.
 const (
@@ -156,7 +169,16 @@ const (
 	AlertStateSilent = "silent"
 	// AlertStateOverdue: no backup for twice the schedule's interval.
 	AlertStateOverdue = "overdue"
+	// AlertStateUnreachable: the daemon's probe could not reach the
+	// surface's database or sink on ProbeUnreachableAfter heartbeats in a
+	// row. Kept in Node.ProbeFailures rather than AlertState, which holds
+	// one episode at a time.
+	AlertStateUnreachable = "unreachable"
 )
+
+// ProbeUnreachableAfter is how many failed probes in a row open an
+// unreachable episode: three ticks, so one dropped connection is not an alert.
+const ProbeUnreachableAfter = 3
 
 // NodeRegisterRequest is sent by CLI `safegrd init` to register with the remote server.
 type NodeRegisterRequest struct {
@@ -294,6 +316,12 @@ type HeartbeatRequest struct {
 	// "overdue" against the schedule actually in force.
 	Schedule      string `json:"schedule,omitempty"`
 	RetentionDays int    `json:"retention_days,omitempty"`
+	// Probed says the daemon checked the surface's database or sink this
+	// tick, between backups. PostgresUp and StorageUp are then the probe's
+	// answer, and ProbeError is its words when one failed. A heartbeat
+	// without it leaves the probe's count where it was.
+	Probed     bool   `json:"probed,omitempty"`
+	ProbeError string `json:"probe_error,omitempty"`
 }
 
 // HeartbeatResponse instructs the node on next actions.

@@ -158,13 +158,21 @@ func sendHeartbeat(ctx context.Context, c *config.CLIConfig, nodeID string, st *
 	}
 	var resp model.HeartbeatResponse
 	failing := st.ConsecutiveFailures > 0
+	// Without a probe this tick, the two flags are what the last backup
+	// said; with one, they are what the probe found just now.
+	pgUp, storeUp := !(failing && st.BackupReason == model.BackupReasonSource), !(failing && storageReason(st.BackupReason))
+	if st.probe.probed {
+		pgUp, storeUp = st.probe.dbUp, st.probe.storageUp
+	}
 	status, err := postJSON(ctx, c, "/api/v1/nodes/heartbeat", model.HeartbeatRequest{
 		NodeID:              nodeID,
 		CLI_Version:         Version,
 		OS:                  runtime.GOOS,
 		Arch:                runtime.GOARCH,
-		PostgresUp:          !(failing && st.BackupReason == model.BackupReasonSource),
-		StorageUp:           !(failing && storageReason(st.BackupReason)),
+		PostgresUp:          pgUp,
+		StorageUp:           storeUp,
+		Probed:              st.probe.probed,
+		ProbeError:          st.probe.words(),
 		LastSnapshot:        st.LastSnapshotID,
 		TickSeconds:         int(tick / time.Second),
 		ConsecutiveFailures: st.ConsecutiveFailures,
