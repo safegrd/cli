@@ -35,6 +35,7 @@ func IsRepoDatabase(meta *model.SnapshotMetadata) bool {
 //     the SQLite engine either way, as an archive's drill does.
 func (v *Verifier) RunRepoDatabaseDrill(ctx context.Context, d RepoDrill, privateKey, sandboxURL string) (*model.VerificationReport, error) {
 	started := time.Now()
+	v.sandboxDrill = sandboxURL != ""
 	meta := d.Meta
 	kind := meta.SurfaceType
 	if kind != model.SurfaceTypeSQLite {

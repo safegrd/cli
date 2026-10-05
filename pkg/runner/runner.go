@@ -31,7 +31,16 @@ type Verifier struct {
 	// createdRoles are the roles the last sandbox restore created, for the
 	// sandbox's cleanup to drop with everything else the drill made.
 	createdRoles []string
+	// KeepFailedSandbox leaves a failed drill's sandbox as it was, for a
+	// person to look at; the report says so (SandboxKept). sandboxDrill is
+	// set by the drills that restore into a database.
+	KeepFailedSandbox bool
+	sandboxDrill      bool
 }
+
+// CreatedRoles are the roles the last sandbox restore created on the
+// sandbox's cluster, which a kept sandbox's later reset drops.
+func (v *Verifier) CreatedRoles() []string { return v.createdRoles }
 
 // NewVerifier creates a Fire Drill restore verifier.
 func NewVerifier(storage storage.StorageProvider, serverURL string) *Verifier {
@@ -50,6 +59,7 @@ func (v *Verifier) SetServerToken(token string) {
 // verifying table counts, row counts, extensions, and schema integrity.
 func (v *Verifier) RunFireDrill(ctx context.Context, snapshotID, privateKey, sandboxTargetURL string) (*model.VerificationReport, error) {
 	startTime := time.Now()
+	v.sandboxDrill = true
 
 	// 1. Download metadata manifest
 	meta, err := v.storage.DownloadMetadata(ctx, snapshotID)
@@ -443,6 +453,11 @@ func (v *Verifier) failEarly(ctx context.Context, report *model.VerificationRepo
 }
 
 func (v *Verifier) submitReport(ctx context.Context, report *model.VerificationReport) {
+	// Not part of the certificate hash, so it is set here, where every
+	// drill's report passes.
+	if v.sandboxDrill && v.KeepFailedSandbox && report.Status != model.VerificationStatusPassed {
+		report.SandboxKept = true
+	}
 	if v.serverURL == "" {
 		fmt.Fprintf(os.Stderr, "\nWarning: Not recorded: no remote server configured for this run.\n"+
 			"    The verification above is real; nothing outside this machine knows it happened.\n")

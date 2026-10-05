@@ -26,6 +26,7 @@ import (
 	"github.com/safegrd/cli/pkg/config"
 	"github.com/safegrd/cli/pkg/crypto"
 	"github.com/safegrd/cli/pkg/diskspace"
+	"github.com/safegrd/cli/pkg/dump"
 	"github.com/safegrd/cli/pkg/model"
 	"github.com/safegrd/cli/pkg/runner"
 	"github.com/safegrd/cli/pkg/storage"
@@ -313,6 +314,22 @@ func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, d pendingDrill
 		save()
 	}()
 	sandbox, sandboxErr := surfaceSandboxURL(ctx, c, s)
+	keep := s.Drill != nil && s.Drill.KeepFailedSandbox
+	if sandboxErr == nil && sandbox != "" && !st.SandboxKeptUntil.IsZero() {
+		if now.Before(st.SandboxKeptUntil) {
+			fmt.Fprintf(os.Stderr, "Warning: Surface %s: Fire Drill not run: its sandbox is kept after a failed drill until %s. "+
+				"The first drill after that empties it.\n", s.ID, st.SandboxKeptUntil.Format(time.RFC3339))
+			return
+		}
+		if err := runner.ResetKeptSandbox(ctx, sandbox, st.SandboxKeptRoles); err != nil {
+			st.DrillFailures++
+			st.setDrill(model.DrillStatusFailed, model.DrillReasonSandboxRefused, err.Error())
+			fmt.Fprintf(os.Stderr, "Error: Surface %s: could not empty the sandbox kept after a failed drill: %v\n", s.ID, err)
+			return
+		}
+		fmt.Printf("Surface %s: emptied the sandbox kept after the last failed drill.\n", s.ID)
+		st.SandboxKeptUntil, st.SandboxKeptRoles = time.Time{}, nil
+	}
 
 	// The same storage the surface backs up to (runSurfaceBackup), or the
 	// drill restores from somewhere its backups never went.
@@ -342,6 +359,7 @@ func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, d pendingDrill
 	}
 	verifier := runner.NewVerifier(provider, c.ServerURL)
 	verifier.SetServerToken(c.ServerToken)
+	verifier.KeepFailedSandbox = keep
 	var report *model.VerificationReport
 	how := "in-memory restore"
 	// A surface whose last snapshot is still an archive from before it was
@@ -369,7 +387,11 @@ func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, d pendingDrill
 			shallowWhy = why.Error()
 			fmt.Fprintf(os.Stderr, "Warning: Surface %s: drilling in memory, not in a local sandbox: %v\n", s.ID, why)
 		} else if local != nil {
-			defer local.Stop()
+			defer func() {
+				if report == nil || !report.SandboxKept {
+					local.Stop()
+				}
+			}()
 		}
 	}
 	switch {
@@ -417,6 +439,9 @@ func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, d pendingDrill
 		fmt.Printf("Surface %s: Fire Drill due: restoring snapshot %s in memory.\n", s.ID, snapshotID)
 		report, _, err = verifier.RunDryRestore(ctx, snapshotID, key)
 	}
+	if report != nil && report.SandboxKept {
+		sayKeptSandbox(s, st, local, sandbox, verifier.CreatedRoles())
+	}
 	var blocked *runner.DrillBlockedError
 	switch {
 	case errors.As(err, &blocked):
@@ -449,6 +474,29 @@ func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, d pendingDrill
 		}
 		st.LastDrillSnapshotID = snapshotID
 		fmt.Printf("Surface %s: Fire Drill passed (%s of %s, certificate %s).\n", s.ID, how, snapshotID, report.CertificateHash)
+	}
+}
+
+// keptSandboxFor is how long a failed drill's sandbox is kept.
+const keptSandboxFor = 24 * time.Hour
+
+// sayKeptSandbox records and says where a failed drill's sandbox was kept.
+// A local cluster keeps running until the sweep removes it; a sandbox_url
+// database is emptied by the first drill after the day is up.
+func sayKeptSandbox(s *config.SurfaceConfig, st *SurfaceState, local *runner.LocalPostgres, sandbox string, roles []string) {
+	until := time.Now().UTC().Add(keptSandboxFor)
+	switch {
+	case local != nil:
+		if err := local.Keep(until); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: Surface %s: could not keep the failed drill's sandbox: %v\n", s.ID, err)
+			return
+		}
+		fmt.Fprintf(os.Stderr, "Warning: Surface %s: sandbox kept at %q (data in %s) until %s, then removed.\n"+
+			"   Look at it with: psql %q\n", s.ID, local.URL, local.DataDir(), until.Format(time.RFC3339), local.URL)
+	case sandbox != "":
+		st.SandboxKeptUntil, st.SandboxKeptRoles = until, roles
+		fmt.Fprintf(os.Stderr, "Warning: Surface %s: sandbox kept at %s until %s; the first drill after that empties it.\n",
+			s.ID, dump.RedactURL(sandbox), until.Format(time.RFC3339))
 	}
 }
 

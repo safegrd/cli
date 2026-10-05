@@ -220,6 +220,10 @@ type SurfaceConfig struct {
 type DrillConfig struct {
 	SandboxURL    string `yaml:"sandbox_url,omitempty" json:"sandbox_url,omitempty"`
 	SandboxURLEnv string `yaml:"sandbox_url_env,omitempty" json:"sandbox_url_env,omitempty"`
+	// KeepFailedSandbox leaves the sandbox of a drill that failed as the
+	// drill left it, for a day, and says where it is: the database at
+	// sandbox_url, or the throwaway local cluster when there is none.
+	KeepFailedSandbox bool `yaml:"keep_failed_sandbox,omitempty" json:"keep_failed_sandbox,omitempty"`
 }
 
 // CLIConfig is the complete configuration for the `safegrd` CLI.

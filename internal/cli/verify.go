@@ -28,6 +28,7 @@ func newVerifyCmd() *cobra.Command {
 		snapshotID  string
 		sandboxURL  string
 		dryRun      bool
+		showURL     bool
 		keyPath     string
 		privKey     string
 		s3Bucket    string
@@ -166,6 +167,9 @@ when this host is enrolled.`,
 			warnAboutShadowedSnapshots(ctx, storageProvider)
 
 			verifier := runner.NewVerifier(storageProvider, cfg.ServerURL)
+			// verify never empties the target it restored into, so a failed
+			// drill's sandbox is always there to look at, and the report says so.
+			verifier.KeepFailedSandbox = true
 			if cfg.ServerToken != "" {
 				verifier.SetServerToken(cfg.ServerToken)
 			}
@@ -288,6 +292,11 @@ when this host is enrolled.`,
 					}
 					fmt.Printf("   [%s] %s: %s (Expected: %s, Actual: %s)\n", status, a.Name, a.Message, a.Expected, a.Actual)
 				}
+				shown := dump.RedactURL(sandboxURL)
+				if showURL {
+					shown = sandboxURL
+				}
+				fmt.Fprintf(os.Stderr, "Warning: sandbox kept at %s, as the drill left it. Empty it before the next drill into it.\n", shown)
 				return fmt.Errorf("fire drill of %s failed: %s", snapshotID, report.ErrorMessage)
 			}
 
@@ -296,6 +305,7 @@ when this host is enrolled.`,
 	}
 
 	cmd.Flags().StringVar(&snapshotID, "snapshot", "", "Snapshot ID to verify (required)")
+	cmd.Flags().BoolVar(&showURL, "show-url", false, "When a sandbox drill fails, print the sandbox's URL with its password")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Restore in memory only, even with --sandbox-target (the default without it)")
 	cmd.Flags().StringVar(&sandboxURL, "sandbox-target", "", "An empty database to restore the snapshot into for a full Fire Drill: postgres://…, mysql://…, or sqlite:///path/to/absent.db")
 	cmd.Flags().StringVar(&keyPath, "key-path", "", "Path to the age identity file")

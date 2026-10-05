@@ -85,6 +85,12 @@ func ResetSandbox(ctx context.Context, sandboxURL string) error {
 	return resetSandbox(ctx, sandboxURL, nil)
 }
 
+// ResetKeptSandbox empties a sandbox a failed drill was kept in, dropping
+// the roles that drill created as well.
+func ResetKeptSandbox(ctx context.Context, sandboxURL string, createdRoles []string) error {
+	return resetSandbox(ctx, sandboxURL, createdRoles)
+}
+
 // resetSandbox is ResetSandbox for a drill that created roles on the
 // sandbox's cluster because the snapshot's schema named them: the objects
 // they own are dropped with the rest, and then the roles themselves, so the
@@ -226,6 +232,9 @@ func (v *Verifier) RunSandboxDrill(ctx context.Context, snapshotID, privateKey, 
 		return nil, err
 	}
 	report, err := v.RunFireDrill(ctx, snapshotID, privateKey, sandboxURL)
+	if report != nil && report.SandboxKept {
+		return report, err
+	}
 	if resetErr := resetSandbox(ctx, sandboxURL, v.createdRoles); resetErr != nil && err == nil {
 		err = fmt.Errorf("the drill ran, but the sandbox could not be emptied for the next one: %w", resetErr)
 	}
@@ -235,7 +244,7 @@ func (v *Verifier) RunSandboxDrill(ctx context.Context, snapshotID, privateKey, 
 // RunRepoSandboxDrill is RunSandboxDrill for a database run of a repository.
 func (v *Verifier) RunRepoSandboxDrill(ctx context.Context, d RepoDrill, privateKey, sandboxURL string) (*model.VerificationReport, error) {
 	report, err := v.RunRepoDatabaseDrill(ctx, d, privateKey, sandboxURL)
-	if err != nil {
+	if err != nil || (report != nil && report.SandboxKept) {
 		return report, err
 	}
 	if resetErr := resetSandbox(ctx, sandboxURL, v.createdRoles); resetErr != nil {

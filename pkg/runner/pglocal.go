@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -370,14 +371,50 @@ func (lp *LocalPostgres) Stop() {
 	}
 }
 
+// keptMarker is the file a kept sandbox's data directory holds: until when
+// it is kept, and its socket directory, which lives outside it.
+const keptMarker = "safegrd-kept.json"
+
+type keptSandbox struct {
+	Until   time.Time `json:"until"`
+	SockDir string    `json:"sock_dir"`
+}
+
+// Keep leaves the cluster running for a person to look at after a failed
+// drill, until until; SweepLocalSandboxes removes it after that. The caller
+// does not Stop it.
+func (lp *LocalPostgres) Keep(until time.Time) error {
+	b, err := json.Marshal(keptSandbox{Until: until.UTC(), SockDir: lp.sockDir})
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(lp.dataDir, keptMarker), b, 0o600)
+}
+
+// DataDir is where the cluster's files are.
+func (lp *LocalPostgres) DataDir() string { return lp.dataDir }
+
 // SweepLocalSandboxes removes clusters a killed daemon left under
-// stateDir/drill, stopping any postgres still running in one first.
+// stateDir/drill, stopping any postgres still running in one first. A
+// sandbox a failed drill was kept in stays until its time is up.
 func SweepLocalSandboxes(stateDir string) {
 	dirs, _ := filepath.Glob(filepath.Join(stateDir, "drill", localSandboxPrefix+"*"))
 	for _, d := range dirs {
+		var kept keptSandbox
+		if b, err := os.ReadFile(filepath.Join(d, keptMarker)); err == nil && json.Unmarshal(b, &kept) == nil {
+			if time.Now().Before(kept.Until) {
+				continue
+			}
+			fmt.Printf("Removing the sandbox kept after a failed drill at %s: its day is up.\n", d)
+		}
 		stopLeftoverPostmaster(d)
 		if err := os.RemoveAll(d); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: could not delete a local sandbox left by an earlier drill at %s: %v\n", d, err)
+		}
+		// A socket directory is under /tmp and is only ever a safegrd-pg-
+		// one this package made.
+		if kept.SockDir != "" && strings.HasPrefix(filepath.Base(kept.SockDir), "safegrd-pg-") {
+			_ = os.RemoveAll(kept.SockDir)
 		}
 	}
 }

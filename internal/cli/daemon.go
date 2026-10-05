@@ -27,6 +27,7 @@ import (
 	"github.com/safegrd/cli/pkg/dump"
 	"github.com/safegrd/cli/pkg/model"
 	"github.com/safegrd/cli/pkg/repo/policy"
+	"github.com/safegrd/cli/pkg/runner"
 	"github.com/spf13/cobra"
 )
 
@@ -84,6 +85,12 @@ type SurfaceState struct {
 	// supervisor restart would start the same drill straight away, forever,
 	// and the surfaces after it would never reach their backups.
 	DrillInFlight bool `json:"drill_in_flight,omitempty"`
+	// SandboxKeptUntil is when the drill.sandbox_url database a failed drill
+	// was kept in (drill.keep_failed_sandbox) is emptied again, by the next
+	// drill after it; SandboxKeptRoles are the roles that drill created
+	// there, dropped with it.
+	SandboxKeptUntil time.Time `json:"sandbox_kept_until,omitempty"`
+	SandboxKeptRoles []string  `json:"sandbox_kept_roles,omitempty"`
 	// LastDailySlot, LastWeeklySlot and LastMonthlySlot are the UTC day
 	// ("2026-09-24"), ISO week ("2026-W39") and month ("2026-09") whose
 	// longer-lived backup has been taken (gfs.go).
@@ -634,6 +641,9 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 
 	var hasErrors bool
 	var drills []pendingDrill
+
+	// A sandbox kept after a failed drill is removed once its day is up.
+	runner.SweepLocalSandboxes(stateDir)
 
 	// A drill still marked in flight took the last process down with it.
 	for _, st := range daemonState.Surfaces {

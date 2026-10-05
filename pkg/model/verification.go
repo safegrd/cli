@@ -52,6 +52,10 @@ type VerificationReport struct {
 	PrevHash     string `json:"prev_hash,omitempty" yaml:"prev_hash,omitempty"`
 	Signature    string `json:"signature,omitempty" yaml:"signature,omitempty"`
 	SigningKeyID string `json:"signing_key_id,omitempty" yaml:"signing_key_id,omitempty"`
+	// SandboxKept says a failed drill left its sandbox in place for a person
+	// to look at, as the surface's drill.keep_failed_sandbox asks, and that
+	// the host removes it a day later.
+	SandboxKept bool `json:"sandbox_kept,omitempty" yaml:"sandbox_kept,omitempty"`
 }
 
 // CanonicalBytes returns the deterministic serialization for cryptographic signing and chaining.
