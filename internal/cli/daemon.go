@@ -998,7 +998,7 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 				NodeID: nodeID, Recipient: pubKey,
 				Retention: policy.Retention{Days: storageCfg.RetentionDays, KeepDaily: tiers.Days, KeepWeekly: tiers.Weeks, KeepMonthly: tiers.Months},
 				Tier:      plan.Tier, Planned: plan.Until, SnapshotID: snapshotID, StateDir: stateDir, Out: os.Stdout,
-				NewEpoch: st.newEpoch, Rescan: st.rescan,
+				NewEpoch: st.newEpoch, Rescan: st.rescan, RecoverySealTo: recoveryDocSealTo(s, pubKey),
 			})
 			st.newEpoch, st.rescan = false, false
 			if err != nil {
@@ -1182,6 +1182,7 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 				Retention: policy.Retention{Days: storageCfg.RetentionDays, KeepDaily: tiers.Days, KeepWeekly: tiers.Weeks, KeepMonthly: tiers.Months},
 				Tier:      plan.Tier, Planned: plan.Until, SnapshotID: snapshotID, StateDir: stateDir, Out: os.Stdout,
 				NewEpoch: st.newEpoch, ChangeLog: s.ChangeLog, RolesWithoutPasswords: s.RolesWithoutPasswords,
+				RecoverySealTo: recoveryDocSealTo(s, pubKey),
 			})
 			st.newEpoch, st.rescan = false, false
 			if err != nil {

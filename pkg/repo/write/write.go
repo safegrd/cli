@@ -75,6 +75,11 @@ type Options struct {
 	// Sidecar returns the plaintext metadata sidecar for the finished run,
 	// written last: the snapshot exists once it does.
 	Sidecar func(*Result) ([]byte, error)
+	// RecoveryDoc, when set, returns the recovery document written beside
+	// the sidecar, and whether it is sealed. It is written after the
+	// sidecar and before the commit; a failure is Result.RecoveryWarning,
+	// never the run's: the snapshot already exists.
+	RecoveryDoc func(*Result) (body []byte, sealed bool, err error)
 	// Source, when set, supplies the snapshot's files as streams in place of
 	// a walk of Roots, which must then be empty. Its files are the top of
 	// the snapshot's tree and its one root is "/".
@@ -154,6 +159,9 @@ type Result struct {
 	// CacheWarning is set when the run succeeded but could not tidy the
 	// cache; the next run still works.
 	CacheWarning string
+	// RecoveryWarning is set when the run succeeded but its recovery
+	// document was not written.
+	RecoveryWarning string
 }
 
 // sourceStateKey is where the cache keeps Options.State.
@@ -496,6 +504,20 @@ func Run(ctx context.Context, b sink.Backend, o Options) (*Result, error) {
 	}
 	res.Keys = up.keys
 	res.SidecarKey = up.keys[len(up.keys)-1]
+	if o.RecoveryDoc != nil {
+		doc, sealed, err := o.RecoveryDoc(res)
+		kind := sink.KindRecovery
+		if sealed {
+			kind = sink.KindRecoverySealed
+		}
+		if err == nil {
+			err = up.putOne(ctx, kind, o.SnapshotID, doc)
+		}
+		if err != nil {
+			res.RecoveryWarning = fmt.Sprintf("the recovery document for %s was not written: %v", o.SnapshotID, err)
+		}
+		res.Keys = up.keys
+	}
 	if err := b.Commit(ctx, e, sink.RunCommit{SnapshotID: o.SnapshotID, RunID: runID, Class: res.Class, Keys: res.Keys, RetainUntil: retain}); err != nil {
 		return nil, fmt.Errorf("recording the run: %w", err)
 	}

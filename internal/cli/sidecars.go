@@ -12,6 +12,7 @@ import (
 	"github.com/safegrd/cli/pkg/crypto"
 	"github.com/safegrd/cli/pkg/dump"
 	"github.com/safegrd/cli/pkg/model"
+	"github.com/safegrd/cli/pkg/repo/write"
 	"github.com/safegrd/cli/pkg/storage"
 )
 
@@ -23,19 +24,44 @@ import (
 // recipient the recovery document is sealed to, or "" to write it as text.
 func uploadSidecars(ctx context.Context, provider storage.StorageProvider, storageCfg config.StorageConfig, snapshotID string, meta *model.SnapshotMetadata, sealTo string) {
 	warnIfManifestFailed(provider.UploadMetadata(ctx, snapshotID, meta), snapshotID)
-	doc := dump.RenderRecoveryDoc(meta, recoveryLocation(storageCfg, meta.NodeID))
-	sealed := false
-	if sealTo != "" {
-		var out bytes.Buffer
-		if _, err := crypto.EncryptStream(bytes.NewReader(doc), &out, sealTo); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: the recovery document for %s was not sealed (%v) and was not written.\n", snapshotID, err)
-			return
-		}
-		doc, sealed = out.Bytes(), true
+	doc, sealed, err := renderRecoveryDoc(meta, recoveryLocation(storageCfg, meta.NodeID), sealTo)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: the recovery document for %s was not sealed (%v) and was not written.\n", snapshotID, err)
+		return
 	}
 	if err := provider.UploadRecoveryDoc(ctx, snapshotID, doc, sealed, meta.WORMRetentionUntil); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: the recovery document for %s was not written: %v\n"+
 			"   The backup and its manifest are in storage; RECOVERY.md beside them is not.\n", snapshotID, err)
+	}
+}
+
+// renderRecoveryDoc renders meta's recovery document at loc, sealed to
+// sealTo when it is set.
+func renderRecoveryDoc(meta *model.SnapshotMetadata, loc dump.Location, sealTo string) ([]byte, bool, error) {
+	doc := dump.RenderRecoveryDoc(meta, loc)
+	if sealTo == "" {
+		return doc, false, nil
+	}
+	var out bytes.Buffer
+	if _, err := crypto.EncryptStream(bytes.NewReader(doc), &out, sealTo); err != nil {
+		return nil, false, fmt.Errorf("sealing it: %w", err)
+	}
+	return out.Bytes(), true, nil
+}
+
+// repoRecoveryDoc is a repository writer's RecoveryDoc: the document for the
+// run's sidecar, at the run's epoch folder.
+func repoRecoveryDoc(storageCfg config.StorageConfig, nodeID, surfaceID, sealTo string, meta func() *model.SnapshotMetadata) func(*write.Result) ([]byte, bool, error) {
+	return func(r *write.Result) ([]byte, bool, error) {
+		m := meta()
+		if m == nil {
+			return nil, false, fmt.Errorf("the run recorded no metadata")
+		}
+		loc := recoveryLocation(storageCfg, nodeID)
+		if loc.Kind != "hosted" {
+			loc.Prefix = path.Join(loc.Prefix, "repo", surfaceID, r.Epoch.EpochID)
+		}
+		return renderRecoveryDoc(m, loc, sealTo)
 	}
 }
 
@@ -56,11 +82,15 @@ func recoveryLocation(c config.StorageConfig, nodeID string) dump.Location {
 		}
 		return dump.Location{Kind: "local", Prefix: p}
 	}
-	prefix := strings.Trim(c.Prefix, "/")
+	configPrefix := strings.Trim(c.Prefix, "/")
+	prefix := configPrefix
+	if prefix == "" {
+		prefix = "safegrd/snapshots"
+	}
 	if nodeID != "" && !strings.Contains(prefix, nodeID) {
 		prefix = path.Join(prefix, nodeID)
 	}
-	return dump.Location{Kind: "s3", Bucket: c.Bucket, Endpoint: c.Endpoint, Region: c.Region, Prefix: prefix}
+	return dump.Location{Kind: "s3", Bucket: c.Bucket, Endpoint: c.Endpoint, Region: c.Region, Prefix: prefix, ConfigPrefix: configPrefix}
 }
 
 // recoveryDocSealTo is the recipient a surface's recovery document is sealed

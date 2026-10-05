@@ -27,6 +27,11 @@ const (
 	KindCatalog  Kind = "catalog"
 	KindSnapshot Kind = "snapshot"
 	KindMeta     Kind = "meta"
+	// KindRecovery is the recovery document beside a snapshot's sidecar,
+	// plain text; KindRecoverySealed is the same page encrypted to the
+	// epoch's recipient.
+	KindRecovery       Kind = "recovery"
+	KindRecoverySealed Kind = "recovery-sealed"
 )
 
 // ObjectSpec is one object a run is about to write.
@@ -180,6 +185,7 @@ type Store interface {
 //	  catalog/<run-id>.age
 //	  snapshots/<snapshot-id>.age
 //	  snapshots/<snapshot-id>.meta.json
+//	  snapshots/<snapshot-id>.RECOVERY.md (or .RECOVERY.md.age)
 
 // EpochPrefix is the key prefix of one epoch, below the store's root.
 func EpochPrefix(root, surfaceID, epochID string) string {
@@ -206,12 +212,17 @@ func ObjectKey(epochPrefix string, kind Kind, name string) (string, error) {
 			return "", fmt.Errorf("run id %q is malformed", name)
 		}
 		return path.Join(epochPrefix, "catalog", name+".age"), nil
-	case KindSnapshot, KindMeta:
+	case KindSnapshot, KindMeta, KindRecovery, KindRecoverySealed:
 		if err := ValidSnapshotName(name); err != nil {
 			return "", err
 		}
-		if kind == KindMeta {
+		switch kind {
+		case KindMeta:
 			return path.Join(epochPrefix, "snapshots", name+".meta.json"), nil
+		case KindRecovery:
+			return path.Join(epochPrefix, "snapshots", name+".RECOVERY.md"), nil
+		case KindRecoverySealed:
+			return path.Join(epochPrefix, "snapshots", name+".RECOVERY.md.age"), nil
 		}
 		return path.Join(epochPrefix, "snapshots", name+".age"), nil
 	}

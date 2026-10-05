@@ -123,6 +123,9 @@ type repoParams struct {
 	StateDir   string
 	// Out receives the progress lines; stderr gets warnings either way.
 	Out io.Writer
+	// RecoverySealTo seals the recovery document to this recipient; ""
+	// writes it as text.
+	RecoverySealTo string
 }
 
 func reasonText(reason string) string {
@@ -205,6 +208,7 @@ func runRepoBackup(ctx context.Context, p repoParams) (*model.SnapshotMetadata, 
 				fmt.Fprintf(out, "%s Incremental, in epoch %s: only what changed since the last run is uploaded.\n", label, r.Epoch.EpochID)
 			}
 		},
+		RecoveryDoc: repoRecoveryDoc(p.StorageCfg, p.NodeID, p.SurfaceID, p.RecoverySealTo, func() *model.SnapshotMetadata { return meta }),
 		Sidecar: func(r *write.Result) ([]byte, error) {
 			now := time.Now().UTC()
 			meta = &model.SnapshotMetadata{
@@ -245,6 +249,9 @@ func runRepoBackup(ctx context.Context, p repoParams) (*model.SnapshotMetadata, 
 	}
 	if res.CacheWarning != "" {
 		fmt.Fprintf(os.Stderr, "Warning: %s %s\n", label, res.CacheWarning)
+	}
+	if res.RecoveryWarning != "" {
+		fmt.Fprintf(os.Stderr, "Warning: %s %s\n", label, res.RecoveryWarning)
 	}
 	took := shortDuration(time.Since(started))
 	if res.Class == format.ClassOpening {

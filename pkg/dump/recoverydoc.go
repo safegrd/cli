@@ -10,9 +10,10 @@ import (
 // A recovery document sits beside every snapshot: plain text that says what
 // the snapshot is, where it is, what a restore needs and the commands that
 // restore it, for a reader who has the bucket and the key and nothing else.
-// Its purpose is to be readable after the control plane is gone, so it is
-// written unsealed unless the surface asks otherwise, and its renderer takes
-// no credential type, so no secret can reach it.
+// It is written unsealed unless the surface asks otherwise, so it can be read
+// without SafeGrd, and its renderer takes no credential type, so no secret
+// can reach it. Lines stay under 100 columns, except a bucket or folder name
+// that is longer by itself.
 
 // Location is where a snapshot is, with nothing that opens it.
 type Location struct {
@@ -21,123 +22,129 @@ type Location struct {
 	Bucket   string
 	Endpoint string
 	Region   string
-	// Prefix is the key prefix the snapshot's objects sit under, the node
-	// segment included; for a directory, the directory.
+	// Prefix is the folder the snapshot's objects sit in: for an archive,
+	// the storage prefix and the node segment; for an incremental run, its
+	// epoch's folder. For a directory, the directory.
 	Prefix string
+	// ConfigPrefix is the storage prefix as a config names it, without the
+	// node segment the CLI adds.
+	ConfigPrefix string
 }
 
-// RenderRecoveryDoc writes the recovery document for meta at loc: 80
-// columns, no secrets.
+// RenderRecoveryDoc writes the recovery document for meta at loc.
 func RenderRecoveryDoc(meta *model.SnapshotMetadata, loc Location) []byte {
 	var b strings.Builder
 	w := func(format string, args ...any) { fmt.Fprintf(&b, format+"\n", args...) }
+	heading := func(h string) { w(""); w("%s", h); w("%s", strings.Repeat("-", len(h))) }
 	surface := meta.SurfaceType
 	if surface == "" {
 		surface = model.SurfaceTypePostgres
 	}
 	what := surfaceWords(surface)
 	if meta.DatabaseName != "" && surface.IsDatabase() {
-		what = surfaceWords(surface) + " database " + meta.DatabaseName
+		what += " database " + meta.DatabaseName
 	}
-	w("SafeGrd recovery document for snapshot %s", meta.SnapshotID)
-	w("%s", strings.Repeat("=", len("SafeGrd recovery document for snapshot "+meta.SnapshotID)))
+	repo := meta.IsRepo()
+	title := "SafeGrd recovery document: " + meta.SnapshotID
+	w("%s", title)
+	w("%s", strings.Repeat("=", len(title)))
 	w("")
-	w("A backup of the %s, taken %s.", what, meta.CreatedAt.UTC().Format("2006-01-02 15:04 UTC"))
-	w("This file says how to restore it with the bucket and the key alone. It holds")
-	w("no secret: no credential, no key, no connection string.")
-	w("")
-	w("Where it is")
-	w("-----------")
+	w("Backup of the %s, taken %s.", what, meta.CreatedAt.UTC().Format("2006-01-02 15:04 UTC"))
+	w("This file lists where the backup is, what a restore needs and the commands")
+	w("that restore it. It contains no credentials, keys or connection strings.")
+
+	heading("Location")
 	switch loc.Kind {
 	case "hosted":
-		w("SafeGrd hosted storage, under compliance-mode Object Lock. Download it from the")
-		w("console (the snapshot's row, Download) or with the CLI on an enrolled host; the")
-		w("console serves it while your account exists, and the Age key opens it anywhere.")
-	case "local":
-		w("A directory on the host that took the backup: %s", loc.Prefix)
-	default:
-		if loc.Endpoint != "" {
-			w("Bucket %s at %s (region %s), under %s/", loc.Bucket, loc.Endpoint, orDash(loc.Region), loc.Prefix)
+		w("SafeGrd hosted storage.")
+		if repo {
+			w("Restore it with the safegrd CLI on one of your enrolled hosts. The console")
+			w("offers this file and the manifest for download from the snapshot's details.")
 		} else {
-			w("Bucket %s (region %s), under %s/", loc.Bucket, orDash(loc.Region), loc.Prefix)
+			w("Download the backup and its manifest from the snapshot's details in the")
+			w("console, or restore it with the safegrd CLI on one of your enrolled hosts.")
 		}
+	case "local":
+		w("Directory: %s", loc.Prefix)
+		w("on the host that took the backup.")
+	default:
+		w("Bucket:   %s", loc.Bucket)
+		if loc.Endpoint != "" {
+			w("Endpoint: %s", loc.Endpoint)
+		}
+		if loc.Region != "" {
+			w("Region:   %s", loc.Region)
+		}
+		w("Folder:   %s/", strings.TrimSuffix(loc.Prefix, "/"))
 	}
-	if meta.IsRepo() {
-		w("Format: a run of an incremental repository (%s), epoch %s. The CLI reads it", meta.Format, orDash(meta.EpochID))
-		w("back as one archive; its content root is %s.", orDash(meta.Sha256Checksum))
-	} else {
-		w("Archive: %s.safegrd, %s encrypted (zstd, then age X25519).", meta.SnapshotID, byteCount(meta.EncryptedSizeBytes))
-		w("Sidecar: %s.meta.json, the manifest with every table's row count.", meta.SnapshotID)
+	if repo {
+		w("Backup:   incremental. It is stored as chunks in its folder, shared with")
+		w("          the other backups taken this month, so there is no single file.")
+		w("Manifest: snapshots/%s.meta.json in that folder.", meta.SnapshotID)
 		if meta.Sha256Checksum != "" {
-			w("SHA-256 of the plaintext: %s", meta.Sha256Checksum)
+			w("Checksum: %s (content root, over every file's SHA-256)", meta.Sha256Checksum)
+		}
+	} else {
+		w("Backup:   %s.safegrd (%s, zstd, encrypted with age)", meta.SnapshotID, byteCount(meta.EncryptedSizeBytes))
+		w("Manifest: %s.meta.json (every table or file, with its count)", meta.SnapshotID)
+		if meta.Sha256Checksum != "" {
+			w("Checksum: %s (SHA-256 of the unencrypted backup)", meta.Sha256Checksum)
 		}
 	}
 	switch {
 	case meta.WORMMode == "NONE":
-		w("Not locked: this storage applies no Object Lock.")
+		w("Not locked: this storage has no Object Lock.")
 	case !meta.WORMRetentionUntil.IsZero():
-		w("Locked until %s (%s): it cannot be deleted before then.", meta.WORMRetentionUntil.UTC().Format("2006-01-02"), orDash(meta.WORMMode))
+		w("Locked until %s (Object Lock, %s mode). It cannot be deleted before then.",
+			meta.WORMRetentionUntil.UTC().Format("2006-01-02"), strings.ToLower(orDash(meta.WORMMode)))
 	}
-	w("")
-	w("What a restore needs")
-	w("--------------------")
-	w("- The Age private key this snapshot was sealed to. With a SafeGrd-managed key, an")
-	w("  enrolled host fetches it. With a customer-managed key, it is the key file from")
-	w("  `safegrd init`.")
-	w("- The safegrd CLI: https://github.com/safegrd/cli (Go: go build ./cmd/safegrd).")
+
+	heading("What a restore needs")
+	w("- The age private key this backup was encrypted to.")
+	w("  SafeGrd-managed key: SafeGrd keeps your key sealed and releases it only to")
+	w("  your enrolled hosts, so you can restore even after losing a host. Run the")
+	w("  restore on an enrolled host.")
+	w("  Customer-managed key: the key file `safegrd init` wrote (key_path in")
+	w("  ~/.safegrd/config.yaml), or the key in SAFEGRD_PRIVATE_KEY.")
+	w("- The safegrd CLI:")
+	w("    curl -fsSL https://safegrd.dev/install.sh | sh")
+	w("  or a binary from https://github.com/safegrd/cli/releases")
 	switch surface {
 	case model.SurfaceTypePostgres:
-		w("- An empty PostgreSQL database on %s.", serverNeed("PostgreSQL", meta.PostgresVersion))
+		w("- An empty database on %s.", serverNeed("PostgreSQL", meta.PostgresVersion))
 		if len(meta.Extensions) > 0 {
-			w("- These extensions available on that server: %s.", strings.Join(meta.Extensions, ", "))
+			w("- These extensions installed on that server: %s.", strings.Join(meta.Extensions, ", "))
 		}
 		if len(meta.RolesNamed) > 0 {
-			w("- Roles the schema names: %s. The restore creates the ones the", strings.Join(meta.RolesNamed, ", "))
-			if strings.Contains(meta.RolesSource, "no passwords") {
-				w("  server lacks, without passwords; set them afterwards.")
-			} else if meta.RolesSource != "" {
-				w("  server lacks, with their passwords.")
-			} else {
-				w("  server lacks only if roles.sql is in the snapshot; this one has none, so")
-				w("  create them first.")
+			w("- Roles the schema uses: %s.", strings.Join(meta.RolesNamed, ", "))
+			switch {
+			case strings.Contains(meta.RolesSource, "no passwords"):
+				w("  The restore creates the missing ones without passwords. Set their")
+				w("  passwords afterwards.")
+			case meta.RolesSource != "":
+				w("  The restore creates the missing ones, with their passwords.")
+			default:
+				w("  This backup has no roles.sql. Create these roles before the restore.")
 			}
 		}
 	case model.SurfaceTypeMySQL:
-		w("- An empty MySQL or MariaDB database on %s, and the mysql client.", serverNeed("the server version", meta.ServerVersion))
+		w("- An empty database on %s, and the mysql client.", serverNeed("MySQL or MariaDB", meta.ServerVersion))
 	case model.SurfaceTypeMongoDB:
-		w("- An empty MongoDB database and the MongoDB Database Tools (mongorestore).")
+		w("- An empty MongoDB database, and mongorestore (MongoDB Database Tools).")
 	case model.SurfaceTypeSQLite:
-		w("- A path for the new database file. Nothing else.")
+		w("- A path for the new database file.")
 	case model.SurfaceTypeFiles:
-		w("- A directory to restore into. Run as root to restore ownership.")
+		w("- An empty directory to restore into. Run as root to restore file owners.")
 	case model.SurfaceTypeEmail:
-		w("- A directory to restore into; messages come back as .eml files.")
+		w("- An empty directory to restore into. Messages come back as .eml files.")
 	}
-	w("")
-	w("Restore")
-	w("-------")
-	w("With a config that names this storage (safegrd init, or the host's config):")
-	switch {
-	case surface == model.SurfaceTypeFiles || surface == model.SurfaceTypeEmail:
-		w("  safegrd restore --snapshot %s --target-dir ./recovered", meta.SnapshotID)
-	case surface == model.SurfaceTypeSQLite:
-		w("  safegrd restore --snapshot %s --target sqlite:///path/to/new.db", meta.SnapshotID)
-	case surface == model.SurfaceTypeMongoDB:
-		w("  # TARGET_URL is mongodb://.../empty_db")
-		w("  safegrd restore --snapshot %s --target env:TARGET_URL", meta.SnapshotID)
-	case surface == model.SurfaceTypeMySQL:
-		w("  # TARGET_URL is mysql://.../empty_db")
-		w("  safegrd restore --snapshot %s --target env:TARGET_URL", meta.SnapshotID)
-	default:
-		w("  createdb recovered")
-		w("  # TARGET_URL is postgres://.../recovered")
-		w("  safegrd restore --snapshot %s --target env:TARGET_URL", meta.SnapshotID)
-		w("Without SafeGrd's restore code, as files psql loads:")
-		w("  safegrd restore --snapshot %s --to-sql ./out", meta.SnapshotID)
-		w("  cd out && psql \"$TARGET_URL\" -f load.sql")
-	}
-	if loc.Kind == "s3" {
-		w("A config for this storage, with the bucket's read credentials in the environment:")
+
+	heading("Restore")
+	switch loc.Kind {
+	case "s3":
+		w("On the host that took the backup, its config already names this storage.")
+		w("Elsewhere, put this in ~/.safegrd/config.yaml, with the bucket's read")
+		w("credentials in AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY:")
 		w("  storage:")
 		w("    type: s3")
 		w("    bucket: %s", loc.Bucket)
@@ -148,33 +155,59 @@ func RenderRecoveryDoc(meta *model.SnapshotMetadata, loc Location) []byte {
 		if loc.Region != "" {
 			w("    region: %s", loc.Region)
 		}
-		w("    prefix: %s", strings.TrimSuffix(strings.TrimSuffix(loc.Prefix, "/"+meta.NodeID), "/"))
+		if loc.ConfigPrefix != "" {
+			w("    prefix: %s", loc.ConfigPrefix)
+		}
 		if meta.NodeID != "" {
 			w("  node_id: %s", meta.NodeID)
 		}
+		w("Then run:")
+	case "local":
+		w("On the host that took the backup, run:")
+	default:
+		w("On an enrolled host, run:")
 	}
-	w("The restore checks the digest above before it reports success, and refuses a target")
-	w("that already holds data.")
-	w("")
-	w("What this snapshot does not contain")
-	w("-----------------------------------")
+	switch surface {
+	case model.SurfaceTypeFiles, model.SurfaceTypeEmail:
+		w("  safegrd restore --snapshot %s --target-dir ./recovered", meta.SnapshotID)
+	case model.SurfaceTypeSQLite:
+		w("  safegrd restore --snapshot %s --target sqlite:///path/to/new.db", meta.SnapshotID)
+	case model.SurfaceTypeMongoDB:
+		w("  export TARGET_URL=mongodb://.../empty_db")
+		w("  safegrd restore --snapshot %s --target env:TARGET_URL", meta.SnapshotID)
+	case model.SurfaceTypeMySQL:
+		w("  export TARGET_URL=mysql://.../empty_db")
+		w("  safegrd restore --snapshot %s --target env:TARGET_URL", meta.SnapshotID)
+	default:
+		w("  createdb recovered")
+		w("  export TARGET_URL=postgres://.../recovered")
+		w("  safegrd restore --snapshot %s --target env:TARGET_URL", meta.SnapshotID)
+		w("To get plain SQL files instead and load them with psql:")
+		w("  safegrd restore --snapshot %s --to-sql ./out", meta.SnapshotID)
+		w("  cd out && psql \"$TARGET_URL\" -f load.sql")
+	}
+	w("The restore checks the checksum above before it reports success. It refuses")
+	w("a target that already holds data.")
+
+	heading("Not in this backup")
 	var gaps []string
 	for _, t := range meta.TableStats {
 		if t.RowSecurity {
-			gaps = append(gaps, fmt.Sprintf("- %s.%s: only the rows row-level security showed the backup role (%d copied).", t.Schema, t.TableName, t.RowCount))
+			gaps = append(gaps, fmt.Sprintf("- %s.%s: only the %d rows row-level security showed the backup role.", t.Schema, t.TableName, t.RowCount))
 		}
 	}
-	if surface == model.SurfaceTypePostgres && strings.Contains(meta.RolesSource, "no passwords") {
-		gaps = append(gaps, "- Role passwords: the roles come back without them.")
-	}
-	if surface == model.SurfaceTypePostgres {
-		gaps = append(gaps, "- Anything outside this database: other databases, server settings, replication.")
-	}
-	if surface == model.SurfaceTypeFiles {
-		gaps = append(gaps, "- Hard links (each comes back as its own copy), extended attributes and ACLs, setuid bits.")
-	}
-	if surface == model.SurfaceTypeMongoDB {
-		gaps = append(gaps, "- Users and roles, which are server-wide; and the oplog, so collections are each consistent, not together.")
+	switch surface {
+	case model.SurfaceTypePostgres:
+		if strings.Contains(meta.RolesSource, "no passwords") {
+			gaps = append(gaps, "- Role passwords.")
+		}
+		gaps = append(gaps, "- Other databases on the server, server settings and replication setup.")
+	case model.SurfaceTypeFiles:
+		gaps = append(gaps, "- Hard links (each comes back as a separate copy), extended attributes,",
+			"  ACLs and setuid bits.")
+	case model.SurfaceTypeMongoDB:
+		gaps = append(gaps, "- Users and roles, which are server-wide.",
+			"- The oplog: each collection is consistent by itself, not with the others.")
 	}
 	if len(gaps) == 0 {
 		gaps = append(gaps, "- Nothing known. The manifest lists every table or file and its count.")

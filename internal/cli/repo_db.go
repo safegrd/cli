@@ -80,6 +80,9 @@ type repoDBParams struct {
 	ChangeLog bool
 	// RolesWithoutPasswords leaves role passwords out of roles.sql.
 	RolesWithoutPasswords bool
+	// RecoverySealTo seals the recovery document to this recipient; ""
+	// writes it as text.
+	RecoverySealTo string
 }
 
 // runRepoDatabaseBackup dumps a database into its repository as one
@@ -222,6 +225,7 @@ func runRepoDatabaseBackup(ctx context.Context, p repoDBParams) (*model.Snapshot
 			}
 			return json.Marshal(plan.State(dumpMeta, prior, started))
 		},
+		RecoveryDoc: repoRecoveryDoc(p.StorageCfg, p.NodeID, p.SurfaceID, p.RecoverySealTo, func() *model.SnapshotMetadata { return meta }),
 		Sidecar: func(r *write.Result) ([]byte, error) {
 			if dumpMeta == nil {
 				return nil, fmt.Errorf("the dump returned no metadata")
@@ -256,6 +260,9 @@ func runRepoDatabaseBackup(ctx context.Context, p repoDBParams) (*model.Snapshot
 	}
 	if res.CacheWarning != "" {
 		fmt.Fprintf(os.Stderr, "Warning: %s %s\n", label, res.CacheWarning)
+	}
+	if res.RecoveryWarning != "" {
+		fmt.Fprintf(os.Stderr, "Warning: %s %s\n", label, res.RecoveryWarning)
 	}
 	fmt.Fprintf(out, "%s %d %s, %s rows, %s read, %s stored in %d %s, %s.\n", label, meta.TotalTables,
 		pluralWord(int64(meta.TotalTables), "table", "tables"), formatNumber(meta.TotalRows), formatBytes(res.ReadBytes),

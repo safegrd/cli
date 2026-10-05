@@ -148,3 +148,41 @@ func TestAChangedRecipientOpensANewEpoch(t *testing.T) {
 		t.Fatal("the old epoch does not restore with the old identity")
 	}
 }
+
+// The recovery document goes beside the sidecar and into the commit's keys.
+// One that cannot be built or written is a warning on a run that succeeded:
+// the snapshot already exists.
+func TestTheRecoveryDocumentSitsBesideTheSidecar(t *testing.T) {
+	h := newHarness(t)
+	if err := os.WriteFile(filepath.Join(h.src, "a.txt"), []byte("a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, sealed := range []bool{false, true} {
+		res := h.backup(func(o *write.Options) {
+			o.RecoveryDoc = func(r *write.Result) ([]byte, bool, error) {
+				return []byte("restore " + o.SnapshotID), sealed, nil
+			}
+		})
+		kind := sink.KindRecovery
+		if sealed {
+			kind = sink.KindRecoverySealed
+		}
+		key, _ := sink.ObjectKey(h.epoch(res.Epoch.EpochID).Prefix, kind, res.Snapshot.SnapshotID)
+		body, err := h.b.Get(context.Background(), key)
+		if err != nil || string(body) != "restore "+res.Snapshot.SnapshotID {
+			t.Fatalf("sealed=%v: the recovery document at %s: %q %v", sealed, key, body, err)
+		}
+		if res.Keys[len(res.Keys)-1] != key || res.RecoveryWarning != "" {
+			t.Errorf("sealed=%v: keys end %s, warning %q", sealed, res.Keys[len(res.Keys)-1], res.RecoveryWarning)
+		}
+	}
+	res := h.backup(func(o *write.Options) {
+		o.RecoveryDoc = func(*write.Result) ([]byte, bool, error) { return nil, false, errors.New("no metadata") }
+	})
+	if !strings.Contains(res.RecoveryWarning, "no metadata") {
+		t.Errorf("a recovery document that failed left no warning: %q", res.RecoveryWarning)
+	}
+	if ids, err := check.Snapshots(context.Background(), h.b, h.epoch(res.Epoch.EpochID)); err != nil || len(ids) != 3 {
+		t.Errorf("the snapshots listed beside recovery documents: %v %v", ids, err)
+	}
+}
