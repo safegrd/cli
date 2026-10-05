@@ -336,7 +336,7 @@ func DefaultConfigFile() (string, error) {
 // practice. Restore and verify say so when they need it. Nor is a path this
 // process cannot reach: a config written on a laptop and copied to a CI
 // runner names the laptop's path, and on GitHub's runners /root is not
-// readable, so the backup failed over a key it never needed (CUJ P2b). That
+// readable, so the backup failed over a key it never needed. That
 // one is said on stderr, since the key may be meant to be there.
 func readPrivateKeyFile(path string) (string, error) {
 	fi, err := os.Stat(path)
@@ -542,7 +542,7 @@ func SaveCLIConfig(cfg *CLIConfig, path string) error {
 	// A key kept beside the config is written relative to it, so the file
 	// names no laptop path when it is copied elsewhere: into a CI secret, the
 	// config lands in a temporary folder with no key beside it, which reads as
-	// a host without the private key (CUJ P2b).
+	// a host without the private key.
 	out := *cfg
 	if rel, ok := keyPathBeside(cfg.Encryption.KeyPath, path); ok {
 		out.Encryption.KeyPath = rel

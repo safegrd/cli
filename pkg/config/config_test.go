@@ -372,7 +372,7 @@ func TestSaveCLIConfigNeverWritesThePrivateKey(t *testing.T) {
 
 // A key kept beside the config is written relative to it, so a config copied
 // into a CI secret names no laptop path, and it still resolves from any
-// working directory where it was written (CUJ P2b: the copied config named
+// working directory where it was written (the copied config named
 // /root/..., which a GitHub runner cannot enter).
 func TestAKeyBesideTheConfigIsWrittenRelativeToIt(t *testing.T) {
 	t.Setenv("SAFEGRD_PRIVATE_KEY", "")

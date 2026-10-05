@@ -79,7 +79,7 @@ func TestAMissingOrOverriddenKeyFileIsNotAnError(t *testing.T) {
 
 // A config copied from a laptop to a CI runner names a key path the runner
 // cannot reach. Backing up needs only the public key, so the config loads
-// without the private key instead of failing (CUJ P2b: /root on GitHub's
+// without the private key instead of failing (/root on GitHub's
 // runners).
 func TestAKeyFileBehindAnUnreadableDirectoryIsNotAnError(t *testing.T) {
 	if runtime.GOOS == "windows" || os.Geteuid() == 0 {

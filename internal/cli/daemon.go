@@ -606,7 +606,7 @@ func isSurfaceDue(s *config.SurfaceConfig, state *SurfaceState, now time.Time) (
 	// from the last attempt, the next scheduled run. The backoff this
 	// replaced only delayed: a daily surface that failed was not due again
 	// until a day after its last success, while the alert promised a retry in
-	// 5 minutes (CUJ P6).
+	// 5 minutes.
 	if state.ConsecutiveFailures > 0 && !state.LastAttempt.IsZero() {
 		next := state.LastAttempt.Add(retryDelay)
 		if state.ConsecutiveFailures >= backupAttempts {

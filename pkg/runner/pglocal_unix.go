@@ -32,7 +32,7 @@ func (r *runAs) dir() string {
 // owner. A state directory root owns (the install as root that the console's
 // command gives) runs it as nobody, in rootSandboxBase: nobody cannot enter
 // /root. It used to fall back to a drill in memory, below the depth the paid
-// plans sell (CUJ P6).
+// plans sell.
 func sandboxCredential(stateDir string) (*runAs, error) {
 	if os.Geteuid() != 0 {
 		return nil, nil

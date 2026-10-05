@@ -244,3 +244,38 @@ func TestARepoDrillThatCannotFitIsBlockedNotFailed(t *testing.T) {
 		t.Errorf("the scratch directory was left behind (%v)", err)
 	}
 }
+
+// A daemon that runs as root with a state directory root owns (the install
+// the console's command gives) drills in a local sandbox run as nobody, under
+// rootSandboxBase. It used to refuse and drill in memory, below the depth the
+// paid plans sell. Runs only as root, on a host with a PostgreSQL server.
+func TestARootDaemonsSandboxRunsAsNobody(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("needs root")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	srv, err := FindPgServer(ctx, 0)
+	if err != nil {
+		t.Skipf("this host cannot start a local PostgreSQL: %v", err)
+	}
+	stateDir := filepath.Join(t.TempDir(), "state")
+	if err := os.Mkdir(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	lp, err := StartLocalPostgres(ctx, srv, stateDir, 1<<20)
+	if err != nil {
+		t.Fatalf("a root daemon with a root-owned state directory cannot start a sandbox: %v", err)
+	}
+	dataDir := lp.dataDir
+	if !strings.HasPrefix(dataDir, rootSandboxBase+string(filepath.Separator)) {
+		t.Errorf("the cluster is at %s, want under %s", dataDir, rootSandboxBase)
+	}
+	if fi, err := os.Stat(dataDir); err != nil || fileOwner(fi) == 0 {
+		t.Errorf("the cluster's directory %s is root's (%v): postgres would refuse it", dataDir, err)
+	}
+	lp.Stop()
+	if _, err := os.Stat(dataDir); !os.IsNotExist(err) {
+		t.Errorf("Stop left %s behind (%v)", dataDir, err)
+	}
+}

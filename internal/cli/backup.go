@@ -82,7 +82,7 @@ and never leaves this host.`,
 			}
 			// The database a configured surface names is backed up as that
 			// surface: a one-off --database-url started a second history and a
-			// second console row for one database (production CUJ P4).
+			// second console row for one database.
 			if s := surfaceForDatabaseURL(cfg, dbURL); s != nil && !jsonOutput && !cmd.Flags().Changed("format") {
 				fmt.Printf("This database is surface %s in the config, so it is backed up as that surface.\n", s.ID)
 				return backupNamedSurface(ctx, cfg, s.ID, newEpoch, rescan)

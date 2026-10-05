@@ -93,9 +93,12 @@ func searchRepos(ctx context.Context, storageCfg config.StorageConfig, key, surf
 	if surface != "" && !found {
 		return nil, "", fmt.Errorf("no incremental repository for surface %s in this storage", surface)
 	}
+	// Counted, not named: in an organization of several teams the names
+	// are other projects' surfaces.
 	if len(skipped) > 0 {
-		fmt.Fprintf(os.Stderr, "Warning: skipped %d %s this host holds no key for: %s. Search one with --surface <id>.\n",
-			len(skipped), pluralWord(int64(len(skipped)), "surface", "surfaces"), strings.Join(skipped, ", "))
+		fmt.Fprintf(os.Stderr, "Note: searched this host's own surfaces; %d %s of other hosts in the organization not searched. "+
+			"To search one, pass --surface <id> ('safegrd list' shows them).\n",
+			len(skipped), pluralWord(int64(len(skipped)), "surface", "surfaces"))
 	}
 	return out, fetched, nil
 }
@@ -171,8 +174,8 @@ Patterns are paths relative to /, matched segment by segment: '*' and '?' within
 segment, '**' across any number of them. A directory selects everything below it.
 --deleted lists only files the newest snapshot no longer holds.
 
-Without --surface, a host searches the surfaces it holds the key for and names the
-ones it skipped. --surface names one, and fetches its key when the remote server
+Without --surface, a host searches the surfaces it holds the key for and says how
+many others it did not search. --surface names one, and fetches its key when the remote server
 holds it.
 
 --table schema.table lists the versions of a table in incremental database backups.

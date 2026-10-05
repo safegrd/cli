@@ -63,7 +63,7 @@ func TestResolveSecretRef(t *testing.T) {
 
 // A SQLite URL names a file, not a secret. The SQLite docs' own command,
 // `backup --database-url sqlite:///…`, warned that it was visible in `ps`
-// on every run (production CUJ P4). A postgres URL still warns.
+// on every run. A postgres URL still warns.
 func TestASQLitePathOnTheCommandLineIsNotASecret(t *testing.T) {
 	stderr := captureStderr(t, func() { _, _ = ResolveSecretRef("database-url", "sqlite:///srv/app/app.db") })
 	if strings.Contains(stderr, "visible in") {
