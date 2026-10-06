@@ -483,8 +483,12 @@ func verifyRepoSnapshot(ctx context.Context, rs *repoSnapshot, privateKey string
 	if cfg.ServerToken != "" {
 		verifier.SetServerToken(cfg.ServerToken)
 	}
-	fmt.Printf("Verifying %s (epoch %s, %s): checking the packs, restoring every file, recomputing the content root.\n",
-		rs.Meta.SnapshotID, rs.Epoch.Epoch.EpochID, rs.SurfaceID)
+	how := "restoring every file"
+	if runner.IsRepoWordPress(rs.Meta) {
+		how = "reading the site back in memory"
+	}
+	fmt.Printf("Verifying %s (epoch %s, %s): checking the packs, %s, recomputing the content root.\n",
+		rs.Meta.SnapshotID, rs.Epoch.Epoch.EpochID, rs.SurfaceID, how)
 	report, err := verifier.RunRepoDrill(ctx, runner.RepoDrill{Backend: rs.Backend, Epoch: rs.Epoch, Meta: rs.Meta,
 		Scratch: drillScratch()}, privateKey)
 	if err != nil {
@@ -500,8 +504,13 @@ func verifyRepoSnapshot(ctx context.Context, rs *repoSnapshot, privateKey string
 	if report.Status != model.VerificationStatusPassed {
 		return fmt.Errorf("verification of %s failed: %s", rs.Meta.SnapshotID, report.ErrorMessage)
 	}
-	fmt.Printf("Restore verified: %s files, %d directories, in %s\n", formatNumber(report.RowsRestored), report.TablesRestored,
-		time.Duration(report.DurationMs*int64(time.Millisecond)).Round(time.Millisecond))
+	if runner.IsRepoWordPress(rs.Meta) {
+		fmt.Printf("Dry restore verified: %d tables, %s rows, every file and attachment, in %s\n", report.TablesRestored, formatNumber(report.RowsRestored),
+			time.Duration(report.DurationMs*int64(time.Millisecond)).Round(time.Millisecond))
+	} else {
+		fmt.Printf("Restore verified: %s files, %d directories, in %s\n", formatNumber(report.RowsRestored), report.TablesRestored,
+			time.Duration(report.DurationMs*int64(time.Millisecond)).Round(time.Millisecond))
+	}
 	fmt.Printf("   Verification ID: %s\n", report.VerificationID)
 	fmt.Printf("   Certificate:     %s\n", report.CertificateHash)
 	return nil

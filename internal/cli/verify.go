@@ -148,7 +148,7 @@ when this host is enrolled.`,
 					return verifyRepoDatabase(ctx, rs, resolvedKey, sandbox)
 				}
 				if sandboxURL != "" && !dryRun {
-					return fmt.Errorf("snapshot %s is a files snapshot; it is proven by restoring it, so leave out --sandbox-target", snapshotID)
+					return fmt.Errorf("snapshot %s is a %s snapshot; it is proven by restoring it, so leave out --sandbox-target", snapshotID, rs.Meta.SurfaceType)
 				}
 				return verifyRepoSnapshot(ctx, rs, resolvedKey)
 			}

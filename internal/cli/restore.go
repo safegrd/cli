@@ -473,23 +473,7 @@ left alone, and the whole restore is still one transaction.`,
 					printFileRestoreLimits(fileRes)
 				}
 			case model.SurfaceTypeWordPress:
-				if wpRes != nil && wpRes.Manifest != nil {
-					fmt.Printf("   Tables:         %d\n", wpRes.Manifest.TotalTables)
-					fmt.Printf("   Rows:           %d\n", wpRes.Manifest.TotalRows)
-					fmt.Printf("   Files:          %d\n", wpRes.FilesWritten)
-					fmt.Printf("   Bytes written:  %d\n", wpRes.BytesWritten)
-					fmt.Printf("   Destination:    %s\n", targetDir)
-					if wp := wpRes.Manifest.WordPress; wp != nil {
-						if wp.WordPressVersion != "" {
-							fmt.Printf("   WordPress:      %s (core is not in the snapshot: install this version, then copy the restored files over it)\n", wp.WordPressVersion)
-						}
-						if wp.SiteURL != "" {
-							fmt.Printf("   Site URL:       %s\n", wp.SiteURL)
-							fmt.Printf("   On another domain, run: wp search-replace '%s' 'https://new.example' --all-tables\n", wp.SiteURL)
-						}
-					}
-					fmt.Printf("   wp-config.php still names the old database; point DB_NAME, DB_USER, DB_PASSWORD and DB_HOST at the restored one.\n")
-				}
+				printWordPressRestore(wpRes, targetDir)
 			case model.SurfaceTypeEmail:
 				if emailRes != nil {
 					fmt.Printf("   Emails:         %d\n", emailRes.EmailsExtracted)

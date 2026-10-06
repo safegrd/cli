@@ -195,15 +195,15 @@ type SnapshotMetadata struct {
 	SourceLSN      string `json:"source_lsn,omitempty" yaml:"source_lsn,omitempty"`
 	// ServerVersion is a MySQL or MariaDB snapshot's server, as it reported
 	// itself ("8.4.3", "11.4.4-MariaDB"). PostgresVersion is Postgres's.
-	ServerVersion      string             `json:"server_version,omitempty" yaml:"server_version,omitempty"`
-	FileStats          *FileStatsSummary  `json:"file_stats,omitempty" yaml:"file_stats,omitempty"`
-	EmailStats         *EmailStatsSummary `json:"email_stats,omitempty" yaml:"email_stats,omitempty"`
+	ServerVersion string             `json:"server_version,omitempty" yaml:"server_version,omitempty"`
+	FileStats     *FileStatsSummary  `json:"file_stats,omitempty" yaml:"file_stats,omitempty"`
+	EmailStats    *EmailStatsSummary `json:"email_stats,omitempty" yaml:"email_stats,omitempty"`
 	// WordPress describes a WordPress site's snapshot; nil for every other
 	// surface.
-	WordPress *WordPressStats `json:"wordpress,omitempty" yaml:"wordpress,omitempty"`
-	DurationMs         int64              `json:"duration_ms" yaml:"duration_ms"`
-	IsPoisonPillFrozen bool               `json:"is_poison_pill_frozen" yaml:"is_poison_pill_frozen"`
-	ErrorMessage       string             `json:"error_message,omitempty" yaml:"error_message,omitempty"`
+	WordPress          *WordPressStats `json:"wordpress,omitempty" yaml:"wordpress,omitempty"`
+	DurationMs         int64           `json:"duration_ms" yaml:"duration_ms"`
+	IsPoisonPillFrozen bool            `json:"is_poison_pill_frozen" yaml:"is_poison_pill_frozen"`
+	ErrorMessage       string          `json:"error_message,omitempty" yaml:"error_message,omitempty"`
 	// FailureReason is why a failed backup failed, as a code; ErrorMessage
 	// is the same in the host's words.
 	FailureReason BackupReason `json:"failure_reason,omitempty" yaml:"failure_reason,omitempty"`

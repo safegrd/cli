@@ -1,8 +1,6 @@
 package crypto
 
 import (
-	"bufio"
-	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -152,17 +150,18 @@ func DecryptStream(src io.Reader, dst io.Writer, privateKey string) (*StreamMetr
 		return nil, fmt.Errorf("failed to initialize age decryptor (bad key or corrupt stream): %w", err)
 	}
 
-	plain, closeDecompressor, err := decompressor(ageReader)
+	// zstd decompression reader
+	zstdReader, err := zstd.NewReader(ageReader)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to initialize zstd decompressor: %w", err)
 	}
-	defer closeDecompressor()
+	defer zstdReader.Close()
 
 	// Count raw bytes and hash plaintext
 	rawCountingWriter := newCountingWriter(dst)
 
 	buf := make([]byte, 64*1024)
-	if _, err := io.CopyBuffer(rawCountingWriter, plain, buf); err != nil {
+	if _, err := io.CopyBuffer(rawCountingWriter, zstdReader, buf); err != nil {
 		return nil, fmt.Errorf("streaming decryption pipeline error: %w", err)
 	}
 
@@ -178,28 +177,4 @@ func DecryptStream(src io.Reader, dst io.Writer, privateKey string) (*StreamMetr
 		EncryptedSha256:  cipherCountingReader.SumHex(),
 		CompressionRatio: ratio,
 	}, nil
-}
-
-// decompressor reads what is inside the age envelope. EncryptStream writes
-// zstd. The WordPress plugin writes gzip, because PHP has zlib everywhere and
-// zstd almost nowhere; its members may be concatenated. The first bytes say
-// which.
-func decompressor(r io.Reader) (io.Reader, func(), error) {
-	br := bufio.NewReaderSize(r, 64*1024)
-	magic, err := br.Peek(2)
-	if err != nil && err != io.EOF {
-		return nil, nil, fmt.Errorf("failed to read the decrypted stream: %w", err)
-	}
-	if len(magic) == 2 && magic[0] == 0x1f && magic[1] == 0x8b {
-		gz, err := gzip.NewReader(br)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to initialize gzip decompressor: %w", err)
-		}
-		return gz, func() { gz.Close() }, nil
-	}
-	zr, err := zstd.NewReader(br)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to initialize zstd decompressor: %w", err)
-	}
-	return zr, zr.Close, nil
 }

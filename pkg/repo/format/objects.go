@@ -48,6 +48,12 @@ type ChunkerParams struct {
 // ChunkerAlgorithm names the content-defined chunker.
 const ChunkerAlgorithm = "rabin-restic"
 
+// FixedChunker is the chunker of a writer that cuts files into chunks of one
+// size, the last one shorter: the WordPress plugin, written in a language
+// where a content-defined chunker is too slow. Readers never re-cut a file,
+// so the algorithm only tells a writer whether it may continue the epoch.
+var FixedChunker = ChunkerParams{Algorithm: "fixed", Min: 1, Avg: 4 << 20, Max: 4 << 20}
+
 // DefaultChunker is 512 KiB minimum, about 1 MiB on average, 8 MiB maximum.
 var DefaultChunker = ChunkerParams{Algorithm: ChunkerAlgorithm, Min: 512 << 10, Avg: 1 << 20, Max: 8 << 20}
 
@@ -114,7 +120,7 @@ func (e Epoch) Validate() error {
 		return fmt.Errorf("epoch %s: no recipient", e.EpochID)
 	}
 	c := e.Chunker
-	if c.Algorithm != ChunkerAlgorithm || c.Min <= 0 || c.Min > c.Avg || c.Avg > c.Max {
+	if (c.Algorithm != ChunkerAlgorithm && c != FixedChunker) || c.Min <= 0 || c.Min > c.Avg || c.Avg > c.Max {
 		return fmt.Errorf("epoch %s: chunker %+v is not one this release knows", e.EpochID, c)
 	}
 	return nil
