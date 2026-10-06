@@ -1,6 +1,10 @@
 package dump
 
 import (
+	"context"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -111,5 +115,45 @@ func TestDefinerRewriter(t *testing.T) {
 	}
 	if len(got) != len(in)-len("`app`@`%`")-len("`o``dd`@`10.0.0.%`")-len("`big`@`h`")+3*len("CURRENT_USER") {
 		t.Errorf("output length %d does not account for exactly three rewrites", len(got))
+	}
+}
+
+// A mysqldump that dumps masking policies is told to skip them only where the
+// server has none, so a dump of MySQL 8.4 or MariaDB by an account without
+// SELECT on mysql.column_masking_policy prints no error, and a dump of a
+// server that may have policies still includes them.
+func TestSkipMaskingPoliciesOnlyWhereTheServerHasNone(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake tools are shell scripts")
+	}
+	fake := func(name, help string) *MySQLTool {
+		p := filepath.Join(t.TempDir(), name)
+		if err := os.WriteFile(p, []byte("#!/bin/sh\necho '"+help+"'\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return &MySQLTool{Path: p}
+	}
+	newer := fake("mysqldump", "  --masking-policies  Dump masking policies")
+	older := fake("mysqldump", "  --no-tablespaces")
+	mariaTool := fake("mariadb-dump", "  --masking-policies")
+	mariaTool.MariaDB = true
+	ctx := context.Background()
+	for _, c := range []struct {
+		name    string
+		tool    *MySQLTool
+		version string
+		mariaDB bool
+		want    bool
+	}{
+		{"MySQL 8.4, new client", newer, "8.4.11", false, true},
+		{"MariaDB 11.4, new client", newer, "11.4.3-MariaDB", true, true},
+		{"MySQL 9, new client", newer, "9.1.0", false, false},
+		{"unreadable version", newer, "unknown", false, false},
+		{"MySQL 8.4, client without the option", older, "8.4.11", false, false},
+		{"MariaDB's own client", mariaTool, "11.4.3-MariaDB", true, false},
+	} {
+		if got := skipMaskingPolicies(ctx, c.tool, c.version, c.mariaDB); got != c.want {
+			t.Errorf("%s: skip = %v, want %v", c.name, got, c.want)
+		}
 	}
 }

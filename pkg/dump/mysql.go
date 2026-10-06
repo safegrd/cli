@@ -270,6 +270,33 @@ func findMySQLTool(ctx context.Context, kind string, serverIsMariaDB bool) (*MyS
 	return found[0], nil
 }
 
+// skipMaskingPolicies reports whether to pass --skip-masking-policies. A
+// mysqldump new enough to dump masking policies does so by default, and on a
+// server that has none it still reads mysql.column_masking_policy: an account
+// without SELECT there gets an error on stderr for a dump that is complete.
+// MariaDB and MySQL before 9 have no masking policies, so nothing is lost.
+func skipMaskingPolicies(ctx context.Context, tool *MySQLTool, serverVersion string, serverIsMariaDB bool) bool {
+	if tool.MariaDB || (!serverIsMariaDB && mysqlMajor(serverVersion) >= 9) {
+		return false
+	}
+	out, err := exec.CommandContext(ctx, tool.Path, "--help").Output()
+	return err == nil && strings.Contains(string(out), "--masking-policies")
+}
+
+// mysqlMajor is the major version of a server's VERSION(), or 99 when it
+// cannot be read, so an unknown server is treated as one that may have
+// anything.
+func mysqlMajor(v string) int {
+	n, i := 0, 0
+	for ; i < len(v) && v[i] >= '0' && v[i] <= '9'; i++ {
+		n = n*10 + int(v[i]-'0')
+	}
+	if i == 0 {
+		return 99
+	}
+	return n
+}
+
 // mysqlServer asks the server what it is.
 func mysqlServer(ctx context.Context, db *sql.DB) (version string, mariaDB bool, err error) {
 	if err = db.QueryRowContext(ctx, "SELECT VERSION()").Scan(&version); err != nil {
@@ -360,10 +387,13 @@ func (d *MySQLDumper) Dump(ctx context.Context, databaseName string, dst io.Writ
 	defer cleanup()
 
 	// --defaults-extra-file must come first, or the client ignores it.
-	cmd := exec.CommandContext(ctx, tool.Path, "--defaults-extra-file="+cnf,
+	args := []string{"--defaults-extra-file=" + cnf,
 		"--single-transaction", "--quick", "--routines", "--triggers", "--events",
-		"--hex-blob", "--no-tablespaces", "--default-character-set=utf8mb4",
-		target.Database)
+		"--hex-blob", "--no-tablespaces", "--default-character-set=utf8mb4"}
+	if skipMaskingPolicies(ctx, tool, version, mariaDB) {
+		args = append(args, "--skip-masking-policies")
+	}
+	cmd := exec.CommandContext(ctx, tool.Path, append(args, target.Database)...)
 	tw := tar.NewWriter(dst)
 	cw := &chunkWriter{tw: tw, name: mysqlChunkName}
 	counter := newMySQLDumpCounter()
@@ -371,9 +401,11 @@ func (d *MySQLDumper) Dump(ctx context.Context, databaseName string, dst io.Writ
 	if err != nil {
 		return nil, err
 	}
-	// mysqldump reports some failures on stderr and still exits 0 (MySQL 9
-	// does, for masking policies a non-admin cannot read). Pass them on.
-	if msg := stderr; msg != "" {
+	// mysqldump reports some failures on stderr and still exits 0. Pass them on.
+	if msg := stderr; strings.Contains(msg, "when trying to dump masking policies") {
+		d.Warn(fmt.Sprintf("%s could not read the server's masking policies as this account, so the snapshot has the tables "+
+			"and data but not the policies. Grant it SELECT on mysql.column_masking_policy to back them up. It said: %s", tool, msg))
+	} else if msg != "" {
 		d.Warn(fmt.Sprintf("%s said, while succeeding: %s", tool, msg))
 	}
 	if !counter.Completed {
