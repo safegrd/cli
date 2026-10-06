@@ -328,6 +328,8 @@ func (v *Verifier) RunDryRestore(ctx context.Context, snapshotID, privateKey str
 		emailResult, dryErr = emailInspector.InspectEmailArchive(ctx, plainReader, meta)
 	case model.SurfaceTypeMySQL:
 		dryResult, dryErr = dump.InspectMySQLArchive(ctx, plainReader)
+	case model.SurfaceTypeWordPress:
+		dryResult, dryErr = dump.InspectWordPressArchive(ctx, plainReader)
 	case model.SurfaceTypeMongoDB:
 		dryResult, dryErr = dump.InspectMongoArchive(ctx, plainReader)
 	case model.SurfaceTypeSQLite:

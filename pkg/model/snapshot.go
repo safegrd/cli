@@ -30,6 +30,9 @@ const (
 	SurfaceTypeMongoDB SurfaceType = "mongodb"
 	// SurfaceTypeSQLite is a SQLite database file.
 	SurfaceTypeSQLite SurfaceType = "sqlite"
+	// SurfaceTypeWordPress is a WordPress site: its MySQL database and the
+	// files under its root, in one archive.
+	SurfaceTypeWordPress SurfaceType = "wordpress"
 )
 
 // IsDatabase reports whether a surface is a database, counted in tables and
@@ -109,6 +112,28 @@ type TableStat struct {
 	Carried bool `json:"carried,omitempty" yaml:"carried,omitempty"`
 }
 
+// WordPressStats is what a WordPress snapshot records about the site beside
+// the database's table counts. Post content and file names stay sealed inside
+// the archive; these are counts and settings.
+type WordPressStats struct {
+	SiteURL          string `json:"site_url,omitempty" yaml:"site_url,omitempty"`
+	WordPressVersion string `json:"wordpress_version,omitempty" yaml:"wordpress_version,omitempty"`
+	PHPVersion       string `json:"php_version,omitempty" yaml:"php_version,omitempty"`
+	PluginVersion    string `json:"plugin_version,omitempty" yaml:"plugin_version,omitempty"`
+	// TablePrefix is $table_prefix from wp-config.php. Only tables that
+	// start with it are in the dump.
+	TablePrefix string `json:"table_prefix" yaml:"table_prefix"`
+	// UploadsPath is the uploads directory relative to the site root,
+	// normally wp-content/uploads. Attachments are checked under it.
+	UploadsPath string `json:"uploads_path" yaml:"uploads_path"`
+	TotalFiles  int64  `json:"total_files" yaml:"total_files"`
+	FileBytes   int64  `json:"file_bytes" yaml:"file_bytes"`
+	Attachments int64  `json:"attachments" yaml:"attachments"`
+	// Skipped lists what the backup left out on purpose (caches, other
+	// backup plugins' archives) or could not read, as "path (why)".
+	Skipped []string `json:"skipped,omitempty" yaml:"skipped,omitempty"`
+}
+
 // SnapshotMetadata represents client-side collected metadata sent to the remote server.
 // Crucially: Plaintext database contents and credentials are NEVER in this metadata.
 type SnapshotMetadata struct {
@@ -173,6 +198,9 @@ type SnapshotMetadata struct {
 	ServerVersion      string             `json:"server_version,omitempty" yaml:"server_version,omitempty"`
 	FileStats          *FileStatsSummary  `json:"file_stats,omitempty" yaml:"file_stats,omitempty"`
 	EmailStats         *EmailStatsSummary `json:"email_stats,omitempty" yaml:"email_stats,omitempty"`
+	// WordPress describes a WordPress site's snapshot; nil for every other
+	// surface.
+	WordPress *WordPressStats `json:"wordpress,omitempty" yaml:"wordpress,omitempty"`
 	DurationMs         int64              `json:"duration_ms" yaml:"duration_ms"`
 	IsPoisonPillFrozen bool               `json:"is_poison_pill_frozen" yaml:"is_poison_pill_frozen"`
 	ErrorMessage       string             `json:"error_message,omitempty" yaml:"error_message,omitempty"`
@@ -207,6 +235,17 @@ func (m *SnapshotMetadata) CalculateTotals() {
 		if m.SurfaceType == "" {
 			m.SurfaceType = SurfaceTypePostgres
 		}
+		m.TotalTables = len(m.TableStats)
+		var rows int64
+		for _, t := range m.TableStats {
+			rows += t.RowCount
+		}
+		m.TotalRows = rows
+		m.TotalItems = rows
+		m.TotalContainers = m.TotalTables
+	} else if m.SurfaceType == SurfaceTypeWordPress {
+		// Counted as the database it holds, so a drill's row and table
+		// counts compare with the manifest's; the files are in WordPress.
 		m.TotalTables = len(m.TableStats)
 		var rows int64
 		for _, t := range m.TableStats {

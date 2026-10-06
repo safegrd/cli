@@ -124,8 +124,10 @@ left alone, and the whole restore is still one transaction.`,
 					given++
 				}
 			}
-			if given != 1 {
-				return fmt.Errorf("give one of --target (a database), --target-dir (files or email) or --to-sql (a PostgreSQL snapshot as files psql loads)")
+			// A WordPress site takes both a database and a directory; the
+			// surface is checked once the snapshot's metadata is read.
+			if given != 1 && !(given == 2 && toSQL == "") {
+				return fmt.Errorf("give one of --target (a database), --target-dir (files or email) or --to-sql (a PostgreSQL snapshot as files psql loads); a WordPress site takes --target and --target-dir together")
 			}
 			// Checked before anything is written: a failed export removes the
 			// directory, which is only safe when it held nothing of the user's.
@@ -294,6 +296,13 @@ left alone, and the whole restore is still one transaction.`,
 			if (surface == model.SurfaceTypeFiles || surface == model.SurfaceTypeEmail) && targetDir == "" {
 				return fmt.Errorf("snapshot %s is a %s snapshot; specify --target-dir to restore", snapshotID, surface)
 			}
+			if surface != model.SurfaceTypeWordPress && targetURL != "" && targetDir != "" {
+				return fmt.Errorf("snapshot %s is a %s snapshot; give --target or --target-dir, not both", snapshotID, surface)
+			}
+			if surface == model.SurfaceTypeWordPress && (targetDir == "" || targetURL == "" || dump.SurfaceTypeOfURL(targetURL) != model.SurfaceTypeMySQL) {
+				return fmt.Errorf("snapshot %s is a WordPress site; pass --target with an empty MySQL or MariaDB database (mysql://...) "+
+					"for its database and --target-dir with an empty directory for its files", snapshotID)
+			}
 			if surface.IsDatabase() && targetURL == "" && toSQL == "" {
 				return fmt.Errorf("snapshot %s is a %s snapshot; pass --target with a database URL, or --to-sql", snapshotID, surface)
 			}
@@ -305,6 +314,9 @@ left alone, and the whole restore is still one transaction.`,
 			}
 			if toSQL != "" {
 				fmt.Printf("   Target dir:     %s (SQL and COPY files)\n", toSQL)
+			} else if surface == model.SurfaceTypeWordPress {
+				fmt.Printf("   Target:         %s\n", dump.RedactURL(targetURL))
+				fmt.Printf("   Target dir:     %s\n", targetDir)
 			} else if surface.IsDatabase() {
 				fmt.Printf("   Target:         %s\n", dump.RedactURL(targetURL))
 				if meta != nil {
@@ -350,6 +362,7 @@ left alone, and the whole restore is still one transaction.`,
 				native   *dump.NativeRestorer
 				sqlRes   *dump.SQLExport
 				fileRes  *dump.FileExtractionResult
+				wpRes    *dump.WordPressRestoreResult
 				emailRes *dump.EmailExtractionResult
 			)
 
@@ -369,6 +382,12 @@ left alone, and the whole restore is still one transaction.`,
 				if err != nil {
 					return fmt.Errorf("file extraction failed: %w", err)
 				}
+			case surface == model.SurfaceTypeWordPress:
+				wpRes, err = dump.RestoreWordPress(ctx, plainReader, targetURL, targetDir)
+				if err != nil {
+					return fmt.Errorf("WordPress restore failed: %w", err)
+				}
+				_, _ = io.Copy(io.Discard, plainReader) // the rest of the stream, for the digest
 			case surface == model.SurfaceTypeEmail:
 				emailRestorer := dump.NewEmailRestorer()
 				emailRes, err = emailRestorer.ExtractEmailArchive(ctx, plainReader, targetDir)
@@ -453,6 +472,24 @@ left alone, and the whole restore is still one transaction.`,
 				if fileRes != nil {
 					printFileRestoreLimits(fileRes)
 				}
+			case model.SurfaceTypeWordPress:
+				if wpRes != nil && wpRes.Manifest != nil {
+					fmt.Printf("   Tables:         %d\n", wpRes.Manifest.TotalTables)
+					fmt.Printf("   Rows:           %d\n", wpRes.Manifest.TotalRows)
+					fmt.Printf("   Files:          %d\n", wpRes.FilesWritten)
+					fmt.Printf("   Bytes written:  %d\n", wpRes.BytesWritten)
+					fmt.Printf("   Destination:    %s\n", targetDir)
+					if wp := wpRes.Manifest.WordPress; wp != nil {
+						if wp.WordPressVersion != "" {
+							fmt.Printf("   WordPress:      %s (core is not in the snapshot: install this version, then copy the restored files over it)\n", wp.WordPressVersion)
+						}
+						if wp.SiteURL != "" {
+							fmt.Printf("   Site URL:       %s\n", wp.SiteURL)
+							fmt.Printf("   On another domain, run: wp search-replace '%s' 'https://new.example' --all-tables\n", wp.SiteURL)
+						}
+					}
+					fmt.Printf("   wp-config.php still names the old database; point DB_NAME, DB_USER, DB_PASSWORD and DB_HOST at the restored one.\n")
+				}
 			case model.SurfaceTypeEmail:
 				if emailRes != nil {
 					fmt.Printf("   Emails:         %d\n", emailRes.EmailsExtracted)
@@ -487,7 +524,7 @@ left alone, and the whole restore is still one transaction.`,
 
 	cmd.Flags().StringVar(&snapshotID, "snapshot", "", "Snapshot ID to restore. Leave it out with one --path or --table to restore its newest version")
 	cmd.Flags().StringVar(&targetURL, "target", "", "Target database URL: postgres://… or mysql://… (an empty database), or sqlite:///path/to/new.db (a file that does not exist yet)")
-	cmd.Flags().StringVar(&targetDir, "target-dir", "", "Directory to restore a files or email snapshot into")
+	cmd.Flags().StringVar(&targetDir, "target-dir", "", "Directory to restore a files, email or WordPress snapshot into")
 	cmd.Flags().StringVar(&toSQL, "to-sql", "", "Write a PostgreSQL snapshot into this new directory as SQL and COPY files that psql loads (load.sql)")
 	cmd.Flags().StringVar(&engineStr, "engine", "native", "Accepted for old scripts and ignored: there is one Postgres restore path")
 	_ = cmd.Flags().MarkDeprecated("engine", "there is one Postgres restore path; the flag is ignored")

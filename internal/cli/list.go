@@ -362,6 +362,11 @@ func describeContents(meta *model.SnapshotMetadata) string {
 		return fmt.Sprintf("%d documents, %d collections", meta.TotalItems, meta.TotalContainers)
 	case model.SurfaceTypePostgres, model.SurfaceTypeMySQL, model.SurfaceTypeSQLite:
 		return fmt.Sprintf("%d rows, %d tables", meta.TotalItems, meta.TotalContainers)
+	case model.SurfaceTypeWordPress:
+		if meta.WordPress != nil {
+			return fmt.Sprintf("%d rows, %d tables, %d files", meta.TotalItems, meta.TotalContainers, meta.WordPress.TotalFiles)
+		}
+		return fmt.Sprintf("%d rows, %d tables", meta.TotalItems, meta.TotalContainers)
 	default:
 		return fmt.Sprintf("%d items, %d containers", meta.TotalItems, meta.TotalContainers)
 	}

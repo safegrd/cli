@@ -541,6 +541,10 @@ func SchemaFidelity(m *model.SnapshotMetadata) model.AssertionResult {
 		return model.AssertionResult{Name: "Copied By The SQLite Engine", Expected: "sqlite VACUUM INTO or sqlite online backup",
 			Actual: m.SchemaSource, Passed: strings.HasPrefix(m.SchemaSource, "sqlite VACUUM INTO") || strings.HasPrefix(m.SchemaSource, "sqlite online backup")}
 	}
+	if m != nil && m.SurfaceType == model.SurfaceTypeWordPress {
+		return model.AssertionResult{Name: "Written By The WordPress Plugin", Expected: WordPressSchemaSource,
+			Actual: m.SchemaSource, Passed: strings.HasPrefix(m.SchemaSource, WordPressSchemaSource)}
+	}
 	if m != nil && m.SurfaceType == model.SurfaceTypeMongoDB {
 		return model.AssertionResult{Name: "Captured By mongodump", Expected: "mongodump",
 			Actual: m.SchemaSource, Passed: strings.HasPrefix(m.SchemaSource, "mongodump")}
