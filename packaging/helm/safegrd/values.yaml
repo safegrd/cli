@@ -12,7 +12,8 @@ image:
 #     --from-file=config.yaml=$HOME/.safegrd/config.yaml \
 #     --from-file=daemon.key=$HOME/.safegrd/keys/daemon.key
 #
-# with encryption.key_path set to /home/safegrd/.safegrd/keys/daemon.key.
+# The config names its key as keys/daemon.key, beside itself, which is where
+# the pod puts it.
 existingSecret: safegrd
 
 # Extra environment, such as the variable a surface's

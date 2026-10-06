@@ -8,8 +8,9 @@
 #     --from-file=config.yaml=$HOME/.safegrd/config.yaml \
 #     --from-file=daemon.key=$HOME/.safegrd/keys/daemon.key
 #
-# and set `encryption.key_path: /home/safegrd/.safegrd/keys/daemon.key` in that
-# config. Leave daemon.key out when the remote server holds the key for you.
+# The config names its key as keys/daemon.key, beside itself, which is where
+# the init container below puts it. Leave daemon.key out when the remote server
+# holds the key for you.
 #
 # The CLI refuses a config or key that group or others can read, and a Secret
 # volume cannot be both 0600 and owned by the container's user. So an init
