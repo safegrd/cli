@@ -344,6 +344,9 @@ func restoreRepo(ctx context.Context, rs *repoSnapshot, privateKey, targetDir, t
 		fmt.Printf("Writing %s (epoch %s, %s) to %s as SQL and COPY files\n", id, rs.Epoch.Epoch.EpochID, rs.SurfaceID, toSQL)
 		return restoreRepoSQL(ctx, rs, privateKey, toSQL)
 	}
+	if !runner.IsRepoWordPress(rs.Meta) && targetDir != "" && targetURL != "" {
+		return fmt.Errorf("snapshot %s is a %s snapshot; give --target or --target-dir, not both", id, rs.Meta.SurfaceType)
+	}
 	if runner.IsRepoWordPress(rs.Meta) {
 		if targetDir == "" || targetURL == "" || dump.SurfaceTypeOfURL(targetURL) != model.SurfaceTypeMySQL {
 			return fmt.Errorf("snapshot %s is a WordPress site; pass --target with an empty MySQL or MariaDB database (mysql://...) "+
