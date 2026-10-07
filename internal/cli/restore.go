@@ -649,4 +649,7 @@ func printSQLExport(res *dump.SQLExport, dir string, elapsed time.Duration) {
 	fmt.Println("   The files are unencrypted. Delete them when the database is loaded.")
 	fmt.Println("   Load into an empty database:")
 	fmt.Printf("   cd %s && psql \"postgres://user@host/empty_db\" -f load.sql\n", dir)
+	if w := res.Warning(); w != "" {
+		fmt.Fprintf(os.Stderr, "Warning: %s\n", w)
+	}
 }

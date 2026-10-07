@@ -91,6 +91,9 @@ func Source(d dump.Dumper, database string, meta **model.SnapshotMetadata) write
 
 // Sections a run holds, in the order the archive restorers read them.
 const (
+	// LeftOut names the tables the backup's role could not read; restore
+	// reads it before post-data, which may point at them.
+	LeftOut   = "left-out.json"
 	Roles     = "roles.sql"
 	PreData   = "pre-data.sql"
 	Schema    = "schema.sql"
@@ -103,7 +106,8 @@ const (
 	sqliteDir      = "sqlite"
 )
 
-// Files lists the files of a database run in archive order: the schema,
+// Files lists the files of a database run in archive order: the tables left
+// out, the schema,
 // every table's rows, the post-data section, the sequences and the manifest;
 // or, for SQLite, the database file and the manifest. It refuses a snapshot
 // holding anything else, or both shapes at once, which is not a database run.
@@ -127,7 +131,7 @@ func Files(ctx context.Context, r *read.Repo, idx read.Index, s format.Snapshot)
 			return fmt.Errorf("snapshot %s holds %s, which is not part of a database dump", s.SnapshotID, it.Path)
 		case strings.HasPrefix(it.Path, dataDir) && strings.HasSuffix(it.Path, ".copy"):
 			tables = append(tables, it)
-		case it.Path == Roles || it.Path == PreData || it.Path == Schema || it.Path == PostData || it.Path == Sequences || it.Path == Manifest:
+		case it.Path == LeftOut || it.Path == Roles || it.Path == PreData || it.Path == Schema || it.Path == PostData || it.Path == Sequences || it.Path == Manifest:
 			sections[it.Path] = it
 		default:
 			return fmt.Errorf("snapshot %s holds %s, which is not part of a database dump", s.SnapshotID, it.Path)
@@ -154,7 +158,7 @@ func Files(ctx context.Context, r *read.Repo, idx read.Index, s format.Snapshot)
 	}
 	sort.Slice(tables, func(i, j int) bool { return tables[i].Path < tables[j].Path })
 	var out []read.Item
-	for _, name := range []string{Roles, PreData, Schema} {
+	for _, name := range []string{LeftOut, Roles, PreData, Schema} {
 		if it, ok := sections[name]; ok {
 			out = append(out, it)
 		}

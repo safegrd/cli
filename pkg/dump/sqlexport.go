@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -23,6 +24,23 @@ type SQLExport struct {
 	Dir      string
 	Tables   int
 	Rows     int64
+	// LeftOut are the tables the backup's role could not read, which the
+	// snapshot does not hold, and DroppedKeys the foreign keys into them that
+	// load.sql leaves out.
+	LeftOut     []string
+	DroppedKeys []string
+}
+
+// Warning says what the export does not hold, or "".
+func (e *SQLExport) Warning() string {
+	if len(e.LeftOut) == 0 {
+		return ""
+	}
+	msg := fmt.Sprintf("This snapshot does not hold %d tables its backup's role could not read: %s.", len(e.LeftOut), strings.Join(e.LeftOut, ", "))
+	if len(e.DroppedKeys) > 0 {
+		msg += fmt.Sprintf("\n   load.sql leaves out %d foreign keys that point at them: %s.", len(e.DroppedKeys), strings.Join(e.DroppedKeys, ", "))
+	}
+	return msg
 }
 
 // ExportSQL writes a PostgreSQL snapshot archive into dir as files that psql
@@ -51,9 +69,11 @@ func ExportSQL(src io.Reader, dir string) (*SQLExport, error) {
 		rows                int64
 	}
 	var (
-		tables   []tableFile
-		manifest *model.SnapshotMetadata
-		sqlFiles = map[string]bool{}
+		tables      []tableFile
+		manifest    *model.SnapshotMetadata
+		sqlFiles    = map[string]bool{}
+		leftOut     map[string]bool
+		droppedKeys []string
 	)
 	write := func(name string, r io.Reader) error {
 		f, err := os.OpenFile(filepath.Join(dir, name), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
@@ -82,6 +102,15 @@ func ExportSQL(src io.Reader, dir string) (*SQLExport, error) {
 		},
 		other: func(hdr *tar.Header, rd io.Reader) error {
 			switch hdr.Name {
+			case entryLeftOut:
+				var tables []LeftOutTable
+				if err := json.NewDecoder(rd).Decode(&tables); err != nil {
+					return fmt.Errorf("the archive's list of left-out tables is unreadable: %w", err)
+				}
+				leftOut = map[string]bool{}
+				for _, t := range tables {
+					leftOut[t.String()] = true
+				}
 			case entryManifest:
 				data, err := io.ReadAll(rd)
 				if err != nil {
@@ -102,7 +131,15 @@ func ExportSQL(src io.Reader, dir string) (*SQLExport, error) {
 					return err
 				}
 				sqlFiles[hdr.Name] = true
-				return write(hdr.Name, strings.NewReader(portableSQL(string(data))))
+				sqlText := string(data)
+				if hdr.Name == entryPostData && len(leftOut) > 0 {
+					// Foreign keys into tables the snapshot does not hold
+					// would stop load.sql.
+					var dropped []string
+					sqlText, dropped = dropKeysReferencing(sqlText, leftOut)
+					droppedKeys = append(droppedKeys, dropped...)
+				}
+				return write(hdr.Name, strings.NewReader(portableSQL(sqlText)))
 			}
 			return nil
 		},
@@ -157,7 +194,12 @@ func ExportSQL(src io.Reader, dir string) (*SQLExport, error) {
 	if err := write("load.sql", strings.NewReader(b.String())); err != nil {
 		return nil, err
 	}
-	return &SQLExport{Manifest: manifest, Dir: dir, Tables: len(tables), Rows: total}, nil
+	res := &SQLExport{Manifest: manifest, Dir: dir, Tables: len(tables), Rows: total, DroppedKeys: droppedKeys}
+	for name := range leftOut {
+		res.LeftOut = append(res.LeftOut, name)
+	}
+	sort.Strings(res.LeftOut)
+	return res, nil
 }
 
 // countBinaryCopyRows counts the tuples in a file of PostgreSQL's binary COPY
