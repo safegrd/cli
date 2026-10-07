@@ -102,12 +102,13 @@ func FindPgDump(ctx context.Context, serverMajor int) (*PgDump, error) {
 // Section runs pg_dump for one section of the schema under an exported
 // snapshot, as plain SQL a single Exec can run. Ownership and privileges are
 // dumped: a restore recreates them, and the roles they name travel in
-// roles.sql (roles.go).
-func (p *PgDump) Section(ctx context.Context, databaseURL, snapshot, section string) ([]byte, error) {
+// roles.sql (roles.go). extra are further pg_dump flags.
+func (p *PgDump) Section(ctx context.Context, databaseURL, snapshot, section string, extra ...string) ([]byte, error) {
 	args := []string{"--section=" + section}
 	if snapshot != "" {
 		args = append(args, "--snapshot="+snapshot)
 	}
+	args = append(args, extra...)
 	out, stderr, err := p.run(ctx, p.Path, databaseURL, args)
 	if err != nil {
 		return nil, fmt.Errorf("pg_dump %s (--section=%s) failed: %v: %s", p.Version, section, err, stderr)

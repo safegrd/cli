@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -19,6 +20,8 @@ import (
 
 // A Postgres snapshot is a tar archive, written and read strictly in order:
 //
+//	left-out.json     the tables the backup's role could not read, which the
+//	                  snapshot does not hold; absent when it read every table
 //	roles.sql         pg_dumpall --roles-only, cut to the roles the schema names
 //	                  (roles.go); absent when the schema names none
 //	pre-data.sql      pg_dump --section=pre-data: types, tables, functions, views,
@@ -40,7 +43,37 @@ const (
 	entrySequences = "sequences.sql"
 	entrySchema    = "schema.sql" // the native extractor's output: older archives, and the fallback
 	entryManifest  = "manifest.json"
+	entryLeftOut   = "left-out.json"
 )
+
+// LeftOutTable is a table the backup's role could not read, so the snapshot
+// holds neither its definition nor its rows.
+type LeftOutTable struct {
+	Schema string `json:"schema"`
+	Table  string `json:"table"`
+}
+
+func (t LeftOutTable) String() string { return t.Schema + "." + t.Table }
+
+// leftOutWarning names the tables a backup leaves out and what would include
+// them.
+func leftOutWarning(tables []LeftOutTable) string {
+	names := make([]string, 0, 8)
+	for i, t := range tables {
+		if i == 8 {
+			names = append(names, fmt.Sprintf("and %d more", len(tables)-8))
+			break
+		}
+		names = append(names, t.String())
+	}
+	what := "1 table"
+	if len(tables) > 1 {
+		what = fmt.Sprintf("%d tables", len(tables))
+	}
+	return fmt.Sprintf("This backup's role cannot read %s, so the snapshot leaves them out: %s.\n"+
+		"   To include them, grant the role USAGE on their schema and SELECT on them, or back up as a role that can read them.",
+		what, strings.Join(names, ", "))
+}
 
 // SchemaSourceNative marks a snapshot whose schema was re-derived without
 // pg_dump: it restores without foreign keys, views, triggers or enum types.
@@ -76,9 +109,13 @@ func NewNativeDumper(databaseURL string) *NativeDumper {
 // userTablesQuery lists the tables a backup copies: ordinary tables in user
 // schemas, not another session's temporary tables, and not tables an
 // extension creates and fills itself (restoring those rows would collide with
-// the ones CREATE EXTENSION puts back).
+// the ones CREATE EXTENSION puts back). The last column says whether the
+// backup's role can read the table: Supabase's sign-in role sees auth.users
+// in the catalogue and has no USAGE on auth, so pg_dump's LOCK TABLE and the
+// COPY both refuse it.
 const userTablesQuery = `
-	SELECT n.nspname, c.relname, pg_total_relation_size(c.oid)
+	SELECT n.nspname, c.relname, pg_total_relation_size(c.oid),
+	       has_schema_privilege(n.oid, 'USAGE') AND has_table_privilege(c.oid, 'SELECT')
 	FROM pg_class c
 	JOIN pg_namespace n ON n.oid = c.relnamespace
 	WHERE c.relkind = 'r' AND c.relpersistence <> 't'
@@ -104,8 +141,22 @@ const rowSecurityQuery = `
 	                  WHERE r.rolname = current_user AND (r.rolsuper OR r.rolbypassrls))
 	  AND (c.relforcerowsecurity OR NOT pg_has_role(current_user, c.relowner, 'USAGE'))`
 
-// userSequencesQuery lists the sequences whose positions a restore needs.
-const userSequencesQuery = `
+// unreadableSequenceCondition holds for a sequence in a schema the role
+// cannot use, or owned by a table it cannot read. pg_dump reads a sequence's
+// position even for the pre-data section, so these are excluded from it with
+// their tables, and their positions are not recorded.
+const unreadableSequenceCondition = `(NOT has_schema_privilege(n.oid, 'USAGE')
+	  OR EXISTS (SELECT 1 FROM pg_depend d
+	             JOIN pg_class t ON t.oid = d.refobjid
+	             JOIN pg_namespace tn ON tn.oid = t.relnamespace
+	             WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid
+	               AND d.refclassid = 'pg_class'::regclass AND d.deptype IN ('a', 'i')
+	               AND NOT (has_schema_privilege(tn.oid, 'USAGE') AND has_table_privilege(t.oid, 'SELECT'))))`
+
+// sequencesQuery lists sequences in user schemas, those an extension owns
+// aside, that meet cond.
+func sequencesQuery(cond string) string {
+	return `
 	SELECT n.nspname, c.relname
 	FROM pg_class c
 	JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -113,7 +164,14 @@ const userSequencesQuery = `
 	  AND n.nspname NOT LIKE 'pg\_%' AND n.nspname <> 'information_schema'
 	  AND NOT EXISTS (SELECT 1 FROM pg_depend d
 	                  WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype = 'e')
+	  AND ` + cond + `
 	ORDER BY n.nspname, c.relname`
+}
+
+// userSequencesQuery lists the sequences whose positions a restore needs:
+// not those in a schema the role cannot use, nor those owned by a table it
+// cannot read, because the backup leaves those tables out.
+var userSequencesQuery = sequencesQuery("NOT " + unreadableSequenceCondition)
 
 // Dump streams a complete snapshot archive of the database into dst.
 func (d *NativeDumper) Dump(ctx context.Context, databaseName string, dst io.Writer) (*model.SnapshotMetadata, error) {
@@ -154,17 +212,26 @@ func (d *NativeDumper) Dump(ctx context.Context, databaseName string, dst io.Wri
 	if err != nil {
 		return nil, fmt.Errorf("failed to list tables: %w", err)
 	}
+	var leftOut []LeftOutTable
 	for rows.Next() {
 		var t model.TableStat
-		if err := rows.Scan(&t.Schema, &t.TableName, &t.SizeBytes); err != nil {
+		var readable bool
+		if err := rows.Scan(&t.Schema, &t.TableName, &t.SizeBytes, &readable); err != nil {
 			rows.Close()
 			return nil, err
+		}
+		if !readable {
+			leftOut = append(leftOut, LeftOutTable{Schema: t.Schema, Table: t.TableName})
+			continue
 		}
 		meta.TableStats = append(meta.TableStats, t)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("failed to list tables: %w", err)
+	}
+	if len(leftOut) > 0 {
+		d.Warn(leftOutWarning(leftOut))
 	}
 
 	// What a backup records beyond its rows, which a one-table restore checks
@@ -221,6 +288,15 @@ func (d *NativeDumper) Dump(ctx context.Context, databaseName string, dst io.Wri
 	}
 
 	tw := tar.NewWriter(dst)
+	if len(leftOut) > 0 {
+		data, err := json.Marshal(leftOut)
+		if err != nil {
+			return nil, err
+		}
+		if err := writeTarEntry(tw, entryLeftOut, data); err != nil {
+			return nil, err
+		}
+	}
 
 	// The schema, from pg_dump under our snapshot when there is one that can
 	// dump this server. Without one the backup still runs, because the rows
@@ -232,11 +308,21 @@ func (d *NativeDumper) Dump(ctx context.Context, databaseName string, dst io.Wri
 		if err := tx.QueryRow(ctx, "SELECT pg_export_snapshot()").Scan(&snapshot); err != nil {
 			return nil, fmt.Errorf("failed to export the snapshot for pg_dump: %w", err)
 		}
-		preData, err := pgDump.Section(ctx, d.databaseURL, snapshot, "pre-data")
+		var exclude []string
+		if len(leftOut) > 0 {
+			seqs, err := queryNames(ctx, tx, sequencesQuery(unreadableSequenceCondition))
+			if err != nil {
+				return nil, fmt.Errorf("failed to list sequences: %w", err)
+			}
+			for _, t := range append(leftOut, seqs...) {
+				exclude = append(exclude, "--exclude-table="+pgx.Identifier{t.Schema, t.Table}.Sanitize())
+			}
+		}
+		preData, err := pgDump.Section(ctx, d.databaseURL, snapshot, "pre-data", exclude...)
 		if err != nil {
 			return nil, err
 		}
-		if postData, err = pgDump.Section(ctx, d.databaseURL, snapshot, "post-data"); err != nil {
+		if postData, err = pgDump.Section(ctx, d.databaseURL, snapshot, "post-data", exclude...); err != nil {
 			return nil, err
 		}
 		// The roles the schema names, before the schema, so a restore meets
@@ -436,6 +522,24 @@ func sequencePositions(ctx context.Context, tx pgx.Tx) ([]byte, error) {
 	return []byte(b.String()), nil
 }
 
+// queryNames runs q, which selects a schema and a relation name.
+func queryNames(ctx context.Context, tx pgx.Tx, q string) ([]LeftOutTable, error) {
+	rows, err := tx.Query(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []LeftOutTable
+	for rows.Next() {
+		var t LeftOutTable
+		if err := rows.Scan(&t.Schema, &t.Table); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
 func quoteLiteral(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }
@@ -545,6 +649,10 @@ func (r *NativeRestorer) Restore(ctx context.Context, src io.Reader) (*model.Sna
 	loaded := map[string]int64{}
 	var sawSchema, sawSequences, legacySchema bool
 	var super bool
+	// The tables the backup's role could not read, and the foreign keys
+	// that pointed at them, which cannot be restored without them.
+	var leftOut map[string]bool
+	var droppedKeys []string
 	if err := conn.QueryRow(ctx, "SELECT rolsuper FROM pg_roles WHERE rolname = current_user").Scan(&super); err != nil {
 		return nil, fmt.Errorf("could not read the restoring role: %w", err)
 	}
@@ -577,6 +685,15 @@ func (r *NativeRestorer) Restore(ctx context.Context, src io.Reader) (*model.Sna
 					return fmt.Errorf("the archive's manifest is unreadable: %w", err)
 				}
 				manifest = &m
+			case entryLeftOut:
+				var tables []LeftOutTable
+				if err := json.NewDecoder(rd).Decode(&tables); err != nil {
+					return fmt.Errorf("the archive's list of left-out tables is unreadable: %w", err)
+				}
+				leftOut = map[string]bool{}
+				for _, t := range tables {
+					leftOut[t.String()] = true
+				}
 			case entryRoles:
 				data, err := io.ReadAll(rd)
 				if err != nil {
@@ -589,6 +706,11 @@ func (r *NativeRestorer) Restore(ctx context.Context, src io.Reader) (*model.Sna
 					return err
 				}
 				sqlText := stripPublicSchemaOwner(dropUnknownSettings(string(data), known))
+				if hdr.Name == entryPostData && len(leftOut) > 0 {
+					var dropped []string
+					sqlText, dropped = dropKeysReferencing(sqlText, leftOut)
+					droppedKeys = append(droppedKeys, dropped...)
+				}
 				var ownership []string
 				switch {
 				case r.NoOwner:
@@ -678,6 +800,18 @@ func (r *NativeRestorer) Restore(ctx context.Context, src io.Reader) (*model.Sna
 	case legacySchema:
 		r.Warn("This snapshot's schema was captured without pg_dump. The rows are restored in full, but foreign keys,\n" +
 			"   views, triggers, functions and enum types are not, and a column type the old extractor did not know may differ.")
+	}
+	if len(leftOut) > 0 {
+		names := make([]string, 0, len(leftOut))
+		for name := range leftOut {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		msg := fmt.Sprintf("This snapshot does not hold %d tables its backup's role could not read: %s.", len(names), strings.Join(names, ", "))
+		if len(droppedKeys) > 0 {
+			msg += fmt.Sprintf("\n   %d foreign keys that point at them were not restored: %s.", len(droppedKeys), strings.Join(droppedKeys, ", "))
+		}
+		r.Warn(msg)
 	}
 	if n := len(r.SkippedOwnership); n > 0 {
 		shown := r.SkippedOwnership
@@ -795,6 +929,44 @@ func filterSchemaSQL(sqlText string, keep func(schema string) bool) string {
 		b.WriteString(sqlText[m[0]:end])
 	}
 	return b.String()
+}
+
+// referencesRe captures the table a foreign key constraint points at, each
+// part quoted or bare, as pg_dump writes it.
+var referencesRe = regexp.MustCompile(`REFERENCES ((?:"(?:[^"]|"")+"|[^\s."(]+))\.((?:"(?:[^"]|"")+"|[^\s."(]+))\(`)
+
+func unquoteIdent(s string) string {
+	if strings.HasPrefix(s, `"`) && strings.HasSuffix(s, `"`) && len(s) >= 2 {
+		return strings.ReplaceAll(s[1:len(s)-1], `""`, `"`)
+	}
+	return s
+}
+
+// dropKeysReferencing removes, from a post-data section, the foreign key
+// constraints that point at a table in tables (keyed schema.table), and
+// names each one it removed.
+func dropKeysReferencing(sqlText string, tables map[string]bool) (string, []string) {
+	matches := tocHeaderRe.FindAllStringSubmatchIndex(sqlText, -1)
+	if len(matches) == 0 {
+		return sqlText, nil
+	}
+	var b strings.Builder
+	var dropped []string
+	b.WriteString(sqlText[:matches[0][0]])
+	for i, m := range matches {
+		end := len(sqlText)
+		if i+1 < len(matches) {
+			end = matches[i+1][0]
+		}
+		if sqlText[m[4]:m[5]] == "FK CONSTRAINT" {
+			if ref := referencesRe.FindStringSubmatch(sqlText[m[1]:end]); ref != nil && tables[unquoteIdent(ref[1])+"."+unquoteIdent(ref[2])] {
+				dropped = append(dropped, sqlText[m[6]:m[7]]+"."+sqlText[m[2]:m[3]])
+				continue
+			}
+		}
+		b.WriteString(sqlText[m[0]:end])
+	}
+	return b.String(), dropped
 }
 
 // setvalRe matches one line of sequences.sql and captures the sequence's
