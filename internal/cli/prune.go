@@ -297,9 +297,15 @@ func pruneOne(ctx context.Context, b pruneBucket, s *pruneSnapshot, now time.Tim
 
 // serverKeepList asks the remote server which snapshots of a surface it
 // keeps: the last known good one of each open anomaly.
+//
+// A host that was never enrolled has no remote server to hold anything, so
+// it keeps nothing extra: the hold is an addition to prune's own rules (a
+// surface's newest snapshot stays, nothing goes before its lock ends), not
+// a condition for them. Refusing here left a standalone host unable to
+// prune its incremental backups at all, so its bucket only grew.
 func serverKeepList(ctx context.Context, c *config.CLIConfig, node string) (map[string]bool, error) {
 	if !hostIsEnrolled(c) {
-		return nil, errors.New("this host is not enrolled (no server_url and server_token)")
+		return map[string]bool{}, nil
 	}
 	if node == "" {
 		node = c.NodeID

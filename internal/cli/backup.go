@@ -198,6 +198,11 @@ and never leaves this host.`,
 					// The labelled line scripts and agents read, as every
 					// other backup prints it.
 					fmt.Printf("   Snapshot ID:     %s\n", meta.SnapshotID)
+					if len(excludes) > 0 {
+						// Nothing keeps them: the next run without the flag
+						// uploaded what this one left out.
+						fmt.Printf("   --exclude applies to this run only. To keep it, name the directory under surfaces: with excludes:\n")
+					}
 					return nil
 				}
 				if newEpoch || rescan || cmd.Flags().Changed("one-filesystem") {
@@ -491,7 +496,7 @@ and never leaves this host.`,
 					storageCfg.NodeID = cfg.NodeID
 				}
 				meta, _, err := runRepoDatabaseBackup(ctx, repoDBParams{
-					SurfaceID: repoDatabaseSurfaceID(cfg.DatabaseURL), DatabaseURL: cfg.DatabaseURL,
+					SurfaceID: adhocDatabaseSurfaceID(cfg), DatabaseURL: cfg.DatabaseURL,
 					StorageCfg: storageCfg, NodeID: cfg.NodeID, Recipient: cfg.Encryption.PublicKey,
 					Retention: policy.Retention{Days: storageCfg.RetentionDays}, Tier: format.TierBase, Planned: retentionUntil,
 					NewEpoch: newEpoch, SnapshotID: snapshotID, StateDir: resolveStateDir("", cfg), Out: out,

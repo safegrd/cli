@@ -42,16 +42,9 @@ other line to stderr, so the output can be piped to jq.`,
 			// with a centrally-managed sink has no bucket or sink secret locally, so reading
 			// cfg.Storage directly means this command cannot reach the bucket
 			// on hosts configured centrally.
-			storageCfg, routeErr := resolveStorageRouting(ctx, cfg, "", "", "", "", false)
-			if routeErr != nil {
-				return routeErr
-			}
-			if _, err := resolveHostedStorage(ctx, cfg, &storageCfg, false); err != nil {
+			storageCfg, err := listStorage(ctx)
+			if err != nil {
 				return err
-			}
-			resolveRuntimeCredentials(ctx, cfg, &storageCfg, false)
-			if cfg.NodeID != "" && storageCfg.NodeID == "" {
-				storageCfg.NodeID = cfg.NodeID
 			}
 			storageProvider, err := openStorage(ctx, cfg, storageCfg)
 			if err != nil {
@@ -153,6 +146,7 @@ other line to stderr, so the output can be piped to jq.`,
 			return nil
 		},
 	}
+	cmd.Flags().StringVar(&listFromDir, "from", "", "List an export: the directory 'safegrd export --to-dir' wrote, read without the remote server or this host's storage")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print the snapshots as a JSON array on stdout")
 	return cmd
 }
@@ -247,6 +241,34 @@ func printRepoTable(rows []repoSnapshot, storageCfg config.StorageConfig) {
 }
 
 // listJSON writes every snapshot as one JSON array to out.
+// listFromDir is list --from: an export directory read in place of this
+// host's storage. Restore took --from and list did not, so with the remote
+// server down nothing said which snapshot IDs an export holds.
+var listFromDir string
+
+// listStorage is the storage list reads: an export directory with --from,
+// otherwise this host's, routed and credentialed like backup and restore.
+func listStorage(ctx context.Context) (config.StorageConfig, error) {
+	if listFromDir != "" {
+		if fi, err := os.Stat(listFromDir); err != nil || !fi.IsDir() {
+			return config.StorageConfig{}, fmt.Errorf("--from %s is not a directory 'safegrd export --to-dir' wrote", listFromDir)
+		}
+		return config.StorageConfig{Type: config.StorageTypeLocal, LocalPath: listFromDir}, nil
+	}
+	storageCfg, routeErr := resolveStorageRouting(ctx, cfg, "", "", "", "", false)
+	if routeErr != nil {
+		return storageCfg, routeErr
+	}
+	if _, err := resolveHostedStorage(ctx, cfg, &storageCfg, false); err != nil {
+		return storageCfg, err
+	}
+	resolveRuntimeCredentials(ctx, cfg, &storageCfg, false)
+	if cfg.NodeID != "" && storageCfg.NodeID == "" {
+		storageCfg.NodeID = cfg.NodeID
+	}
+	return storageCfg, nil
+}
+
 func listJSON(ctx context.Context, out io.Writer) error {
 	entries, err := listedSnapshots(ctx)
 	if err != nil {
@@ -261,16 +283,9 @@ func listJSON(ctx context.Context, out io.Writer) error {
 // --json` describes them. guard reads it too, to find a recent locked
 // snapshot instead of taking another.
 func listedSnapshots(ctx context.Context) ([]listedSnapshot, error) {
-	storageCfg, routeErr := resolveStorageRouting(ctx, cfg, "", "", "", "", false)
-	if routeErr != nil {
-		return nil, routeErr
-	}
-	if _, err := resolveHostedStorage(ctx, cfg, &storageCfg, false); err != nil {
+	storageCfg, err := listStorage(ctx)
+	if err != nil {
 		return nil, err
-	}
-	resolveRuntimeCredentials(ctx, cfg, &storageCfg, false)
-	if cfg.NodeID != "" && storageCfg.NodeID == "" {
-		storageCfg.NodeID = cfg.NodeID
 	}
 	storageProvider, err := openStorage(ctx, cfg, storageCfg)
 	if err != nil {

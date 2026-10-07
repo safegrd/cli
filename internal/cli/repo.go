@@ -228,7 +228,7 @@ func runRepoBackup(ctx context.Context, p repoParams) (*model.SnapshotMetadata, 
 				EpochID:            r.Epoch.EpochID,
 				ObjectClass:        r.Class,
 			}
-			recordRetention(meta, p.StorageCfg, r.Snapshot.RetainUntil)
+			recordRetention(meta, p.StorageCfg, repoKeptUntil(r, repoLocked(p.StorageCfg)))
 			meta.CalculateTotals()
 			return json.MarshalIndent(meta, "", "  ")
 		},
@@ -254,7 +254,7 @@ func runRepoBackup(ctx context.Context, p repoParams) (*model.SnapshotMetadata, 
 		fmt.Fprintf(os.Stderr, "Warning: %s %s\n", label, res.RecoveryWarning)
 	}
 	if res.Excluded > 0 && len(p.Excludes) > 0 {
-		fmt.Fprintf(out, "%s Left out %s %s matching the surface's exclusions (%s).\n", label, formatNumber(res.Excluded),
+		fmt.Fprintf(out, "%s Left out %s %s matching the exclusions given (%s).\n", label, formatNumber(res.Excluded),
 			pluralWord(res.Excluded, "entry", "entries"), strings.Join(p.Excludes, ", "))
 	}
 	took := shortDuration(time.Since(started))
@@ -284,19 +284,36 @@ func repoLocked(sc config.StorageConfig) bool {
 	return err != nil || mode != config.WORMModeNone
 }
 
+// repoKeptUntil is the date a run's snapshot is recorded and printed with.
+// Under Object Lock it is the lock every object of the run carries, which
+// is the epoch's lock for the run's class: the planned retention can be
+// shorter (two days for a one-off backup), but nothing can delete the
+// objects before the lock ends, and the record said "locked until" the
+// shorter date while the bucket held them for weeks. Without a lock it is
+// how long the snapshot is kept.
+func repoKeptUntil(res *write.Result, locked bool) time.Time {
+	if locked {
+		if lock := res.Epoch.RetainUntil(res.Class); !lock.IsZero() {
+			return lock.UTC()
+		}
+	}
+	return res.Snapshot.RetainUntil.UTC()
+}
+
 // printRepoKept prints the line that closes a run: how long its snapshot is
 // kept, and whether it is locked for that long.
 func printRepoKept(out io.Writer, label string, res *write.Result, locked bool) {
 	snap := res.Snapshot
+	until := repoKeptUntil(res, locked).Format("2006-01-02")
 	switch {
 	case !locked:
 		fmt.Fprintf(out, "%s Snapshot %s complete. Not locked: this storage applies no Object Lock; it is kept until %s.\n",
-			label, snap.SnapshotID, snap.RetainUntil.UTC().Format("2006-01-02"))
+			label, snap.SnapshotID, until)
 	case res.Class == format.ClassOpening && res.Epoch.OpeningTier == format.TierMonthly:
 		fmt.Fprintf(out, "%s Snapshot %s complete. Immutable until %s: the month's first backup is kept as its monthly copy. Later backups follow the surface's retention.\n",
-			label, snap.SnapshotID, snap.RetainUntil.UTC().Format("2006-01-02"))
+			label, snap.SnapshotID, until)
 	default:
-		fmt.Fprintf(out, "%s Snapshot %s complete. Immutable until %s.\n", label, snap.SnapshotID, snap.RetainUntil.UTC().Format("2006-01-02"))
+		fmt.Fprintf(out, "%s Snapshot %s complete. Immutable until %s.\n", label, snap.SnapshotID, until)
 	}
 	// A capped lock is said once, as the reason, not as a second date: "Kept
 	// until 2026-10-19, not 2027-01-04" named a date nobody chose on a

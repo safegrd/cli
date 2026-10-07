@@ -1379,7 +1379,7 @@ func newDaemonStatusCmd() *cobra.Command {
 
 				if ok && st != nil {
 					if !st.LastSuccess.IsZero() {
-						lastSucc = st.LastSuccess.Format("2006-01-02 15:04:05")
+						lastSucc = st.LastSuccess.UTC().Format("2006-01-02 15:04 UTC")
 						lastSuccAt = st.LastSuccess.UTC().Format(time.RFC3339)
 					}
 					if !st.NextDue.IsZero() {
@@ -1387,7 +1387,7 @@ func newDaemonStatusCmd() *cobra.Command {
 						if time.Now().UTC().After(st.NextDue) {
 							nextDueStr = "Due now"
 						} else {
-							nextDueStr = st.NextDue.Format("2006-01-02 15:04:05")
+							nextDueStr = st.NextDue.UTC().Format("2006-01-02 15:04 UTC")
 						}
 					}
 					failures = st.ConsecutiveFailures
@@ -1642,6 +1642,33 @@ func systemdPath(userScope bool) string {
 	return filepath.Join(home, ".config/systemd/user/safegrd.service")
 }
 
+// noDaemonInstalled is what restart says on a host with no service: the
+// console's setup step and claim told every host to restart a daemon, and
+// one that never installed it got launchctl's "Could not find service".
+const noDaemonInstalled = "no daemon service is installed on this host, so there is nothing to restart. " +
+	"Install it, and it reads the config when it starts: safegrd daemon install. " +
+	"Or take one pass now: safegrd daemon run --once"
+
+// daemonServiceInstalled reports whether a system or user service file for
+// the daemon exists. Windows' Task Scheduler is not looked for; it says yes.
+func daemonServiceInstalled() bool {
+	if runtime.GOOS == "windows" {
+		return true
+	}
+	path := systemdPath
+	if runtime.GOOS == "darwin" {
+		path = launchdPath
+	}
+	for _, user := range []bool{false, true} {
+		if p := path(user); p != "" {
+			if _, err := os.Stat(p); err == nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // installedUserScope reports whether only the user-scoped service is
 // installed on this host.
 func installedUserScope() bool {
@@ -1810,6 +1837,9 @@ func newDaemonRestartCmd() *cobra.Command {
 			// nothing; it now runs the service manager and says what happened.
 			// Without --user it restarts whichever scope is installed: after
 			// `install --user` it used to aim at the system service and fail.
+			if !daemonServiceInstalled() {
+				return errors.New(noDaemonInstalled)
+			}
 			if !cmd.Flags().Changed("user") {
 				userScope = installedUserScope()
 			}

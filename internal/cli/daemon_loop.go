@@ -504,29 +504,38 @@ func sayKeptSandbox(s *config.SurfaceConfig, st *SurfaceState, local *runner.Loc
 // "" when it cannot say. A surface's snapshots live under its own node, not
 // the host's, so restore and verify ask before looking in the bucket.
 func recordedNodeID(ctx context.Context, c *config.CLIConfig, snapshotID string) string {
+	if rec := recordedSnapshot(ctx, c, snapshotID); rec != nil {
+		return rec.NodeID
+	}
+	return ""
+}
+
+// recordedSnapshot is the remote server's record of a snapshot, or nil when
+// this host cannot ask or the server has none.
+func recordedSnapshot(ctx context.Context, c *config.CLIConfig, snapshotID string) *model.SnapshotMetadata {
 	if !canReport(c) {
-		return ""
+		return nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(c.ServerURL, "/")+"/api/v1/snapshots/"+url.PathEscape(snapshotID), nil)
 	if err != nil {
-		return ""
+		return nil
 	}
 	req.Header.Set("Authorization", "Bearer "+c.ServerToken)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return ""
+		return nil
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return ""
+		return nil
 	}
 	var rec model.SnapshotMetadata
 	if json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&rec) != nil || rec.SnapshotID != snapshotID {
-		return ""
+		return nil
 	}
-	return rec.NodeID
+	return &rec
 }
 
 // surfaceIsPostgres reports whether s backs up a PostgreSQL database.

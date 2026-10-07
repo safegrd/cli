@@ -53,6 +53,7 @@ func showCurrentOrg() error {
 	// is decided.
 	var planCost, overage string
 	var planDisplayName string
+	var unlimited bool
 	catalogue, err := fetchPlansCatalogue(serverURL)
 	if err != nil {
 		// The price is the remote server's to state; without it, say so
@@ -70,6 +71,7 @@ func showCurrentOrg() error {
 		}
 		if matchedPlan != nil {
 			planDisplayName = matchedPlan.Name
+			unlimited = matchedPlan.UnlimitedSurfaces
 			if matchedPlan.MonthlyUSD > 0 {
 				planCost = fmt.Sprintf("$%d/mo", matchedPlan.MonthlyUSD)
 				if c := matchedPlan.OverageCentsPerGBMonth; c > 0 {
@@ -89,7 +91,14 @@ func showCurrentOrg() error {
 	fmt.Printf("   Org ID:        %s\n", org.ID)
 	fmt.Printf("   Slug:          %s\n", org.Slug)
 	fmt.Printf("   Plan:          %s (%s)\n", planDisplayName, planCost)
-	fmt.Printf("   Quota:         %d protected surfaces\n", org.MaxDatabases)
+	if unlimited {
+		// The plan is sold as unlimited; the number is the server's
+		// fair-use ceiling, and printing it as the quota disagreed with the
+		// pricing page and the console.
+		fmt.Printf("   Surfaces:      unlimited (fair use)\n")
+	} else {
+		fmt.Printf("   Quota:         %d protected surfaces\n", org.MaxDatabases)
+	}
 	if overage != "" {
 		fmt.Printf("   Extra hosted storage: %s\n", overage)
 	}

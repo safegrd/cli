@@ -119,6 +119,12 @@ func saveConfig() (string, error) {
 			return "", err
 		}
 	}
+	// A config first written by login carries the default local directory,
+	// which is relative: a backup would write it under whatever directory it
+	// ran in. It is anchored where init puts it, beside the config.
+	if cfg.Storage.Type == config.StorageTypeLocal && cfg.Storage.LocalPath == "./safegrd-storage" {
+		cfg.Storage.LocalPath = filepath.Join(filepath.Dir(target), "storage")
+	}
 	if err := config.SaveCLIConfig(cfg, target); err != nil {
 		return "", fmt.Errorf("failed to save config file: %w", err)
 	}

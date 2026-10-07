@@ -63,8 +63,14 @@ Output:
   and "Error:". Commands with --json print only JSON on stdout.
 
 Exit status:
-  0 on success, 1 on failure, 130 when interrupted. 'safegrd guard' exits with
-  the status of the command it runs, or 3 when it refused to run it.
+  0    success
+  1    failure, for a reason not listed below; the Error: line says why
+  10   the source: the database, mailbox or directory refused or is not there
+  11   the remote server: unreachable, a server error, or an unreadable answer
+  12   storage: the bucket or directory could not be opened, written or read
+  130  interrupted
+  'safegrd guard' exits with the status of the command it runs, or 3 when it
+  refused to run it.
 
 Environment (each overrides the config file; flags override both):
   SAFEGRD_SERVER_URL       remote server URL

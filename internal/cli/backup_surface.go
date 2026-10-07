@@ -111,3 +111,28 @@ func surfaceForDatabaseURL(c *config.CLIConfig, url string) *config.SurfaceConfi
 	}
 	return nil
 }
+
+// adhocDatabaseSurfaceID names the repository a database backup without
+// --surface writes to. The config's own database_url is the surface the
+// config loads it as (named after this host), which is what the daemon and
+// guard back up: naming it after the URL instead gave one database two
+// histories, each opening its own epoch and uploading everything. Any other
+// database is named after its URL, so the same database always lands in
+// the same repository.
+func adhocDatabaseSurfaceID(c *config.CLIConfig) string {
+	want := repoDatabaseSurfaceID(c.DatabaseURL)
+	if len(c.Surfaces) == 1 && implicitSurface(c, &c.Surfaces[0]) {
+		// Compared by host, port and database, as the repository is: the
+		// URL in hand has been resolved and stripped of unsupported options.
+		if got, err := resolveConfigSecret("database_url", c.Surfaces[0].DatabaseURL); err == nil && got != "" && repoDatabaseSurfaceID(got) == want {
+			return c.Surfaces[0].ID
+		}
+	}
+	return want
+}
+
+// implicitSurface reports whether s is the surface a config with a
+// top-level database_url and no surfaces: list loads as.
+func implicitSurface(c *config.CLIConfig, s *config.SurfaceConfig) bool {
+	return s.ID == c.NodeID || (c.NodeID == "" && s.ID == "default-postgres")
+}

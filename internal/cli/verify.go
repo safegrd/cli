@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 	"github.com/safegrd/cli/pkg/crypto"
 	"github.com/safegrd/cli/pkg/dump"
 	"github.com/safegrd/cli/pkg/model"
+	"github.com/safegrd/cli/pkg/repo/sink"
 	"github.com/safegrd/cli/pkg/runner"
 	"github.com/safegrd/cli/pkg/storage"
 	"github.com/spf13/cobra"
@@ -197,6 +199,11 @@ when this host is enrolled.`,
 
 				report, dryResult, err := verifier.RunDryRestore(ctx, snapshotID, resolvedKey)
 				if err != nil {
+					if unknownSnapshot(ctx, err, snapshotID) {
+						// A mistyped ID is the caller's, not storage's: it
+						// exited 12 with the object path the lookup tried.
+						return fmt.Errorf("no snapshot %s in this host's storage or the remote server's records. Run 'safegrd list' for the IDs", snapshotID)
+					}
 					return fmt.Errorf("dry restore of %s: %w", snapshotID, err)
 				}
 
@@ -764,4 +771,17 @@ func (s *attestationKeySet) usedLine() string {
 		}
 	}
 	return strings.Join(parts, "; ")
+}
+
+// unknownSnapshot reports whether a failed read means the snapshot does not
+// exist: storage said there is no such object, and the remote server, when
+// this host can ask it, has no record of the ID either.
+func unknownSnapshot(ctx context.Context, err error, snapshotID string) bool {
+	msg := err.Error()
+	notFound := errors.Is(err, os.ErrNotExist) || errors.Is(err, sink.ErrNotFound) ||
+		strings.Contains(msg, "No such object") || strings.Contains(msg, "NoSuchKey") || strings.Contains(msg, "not found")
+	if !notFound {
+		return false
+	}
+	return !canReport(cfg) || recordedSnapshot(ctx, cfg, snapshotID) == nil
 }

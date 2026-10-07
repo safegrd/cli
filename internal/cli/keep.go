@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/safegrd/cli/pkg/config"
+	"github.com/safegrd/cli/pkg/model"
 	"github.com/safegrd/cli/pkg/storage"
 	"github.com/spf13/cobra"
 )
@@ -32,6 +33,19 @@ func parseKeepDate(v string) (time.Time, error) {
 		return t.UTC(), nil
 	}
 	return time.Time{}, fmt.Errorf("--until must be a date (2027-01-31) or an RFC 3339 time, not %q", v)
+}
+
+// repoKeepRefusal says why an incremental snapshot cannot be kept alone and
+// what keeps a copy longer instead.
+func repoKeepRefusal(rec *model.SnapshotMetadata) string {
+	locked := ""
+	if !rec.WORMRetentionUntil.IsZero() {
+		locked = fmt.Sprintf(" Its objects are locked until %s.", rec.WORMRetentionUntil.UTC().Format("2006-01-02"))
+	}
+	return fmt.Sprintf("%s is an incremental snapshot: its data is shared with the other snapshots of its month, "+
+		"so it is kept as long as they are and cannot be kept on its own.%s "+
+		"To keep a copy longer, take a one-archive backup and keep that: safegrd backup --format tar, "+
+		"then safegrd keep --snapshot <its id> --until <date>", rec.SnapshotID, locked)
 }
 
 func newKeepCmd() *cobra.Command {
@@ -68,6 +82,12 @@ kept as long as its epoch and cannot be kept on its own.`,
 			}
 			if !until.After(now) {
 				return fmt.Errorf("--until %s is in the past", untilArg)
+			}
+			// An incremental snapshot shares its epoch's objects, so it is
+			// said before --yes is asked for: the confirmation used to come
+			// first, and the refusal only after it.
+			if rec := recordedSnapshot(ctx, cfg, snapshotID); rec != nil && rec.IsRepo() {
+				return errors.New(repoKeepRefusal(rec))
 			}
 			if !yes {
 				return fmt.Errorf("this locks %s until %s, and nobody can shorten that lock afterwards, SafeGrd included. Run it again with --yes",

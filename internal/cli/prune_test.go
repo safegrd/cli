@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"github.com/safegrd/cli/pkg/config"
 	"strings"
 	"testing"
 	"time"
@@ -173,5 +174,20 @@ func TestPruneKeepsTheNewestFewWhateverTheLocksSay(t *testing.T) {
 	}
 	if r.Deleted != 2 || r.Kept != 4 {
 		t.Errorf("report: %s", r)
+	}
+}
+
+// A host that was never enrolled has no remote server to hold a snapshot,
+// so prune runs on its own rules. It used to refuse every incremental
+// repository on such a host, so its bucket only grew. An enrolled host
+// whose server cannot answer still prunes nothing.
+func TestAStandaloneHostPrunesWithoutAServer(t *testing.T) {
+	keep, err := serverKeepList(context.Background(), &config.CLIConfig{}, "node-x")
+	if err != nil || keep == nil || len(keep) != 0 {
+		t.Fatalf("standalone keep list: %v, %v; want an empty list and no error", keep, err)
+	}
+	enrolled := &config.CLIConfig{ServerURL: "http://127.0.0.1:1", ServerToken: "sg_tok_x", NodeID: "node-x"}
+	if _, err := serverKeepList(context.Background(), enrolled, ""); err == nil {
+		t.Fatal("an enrolled host whose server is unreachable got a keep list")
 	}
 }

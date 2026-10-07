@@ -87,7 +87,7 @@ A new host enrolls with a claim code instead: safegrd enroll --claim <code>.`,
 			}
 			if len(add) == 0 {
 				fmt.Println("\nNothing to add: every surface named for this host is already in its config.")
-				fmt.Println("   If the daemon is running, restart it so it reads the config: safegrd daemon restart")
+				fmt.Println("   " + daemonNextStep())
 				return nil
 			}
 
@@ -98,11 +98,20 @@ A new host enrolls with a claim code instead: safegrd enroll --claim <code>.`,
 			fmt.Printf("\nAdded %d surface%s to %s (the previous config is at %s).\n", len(add), plural(len(add)), path, backup)
 			sayClaimedRoles(path, add)
 			fmt.Println("   Check the new surfaces open from this host (the console shows the result): safegrd doctor")
-			fmt.Println("   The daemon reads its config when it starts. Restart it: safegrd daemon restart")
+			fmt.Println("   " + daemonNextStep())
 			fmt.Println("   or take the first backups now: safegrd daemon run --once")
 			return nil
 		},
 	}
+}
+
+// daemonNextStep is how the daemon comes to read a changed config on this
+// host: a restart where its service is installed, an install where none is.
+func daemonNextStep() string {
+	if daemonServiceInstalled() {
+		return "The daemon reads its config when it starts. Restart it: safegrd daemon restart"
+	}
+	return "No daemon service is installed on this host. Install it, and it backs up on schedule: safegrd daemon install"
 }
 
 // sayClaimedRoles runs the role check on the PostgreSQL surfaces just added

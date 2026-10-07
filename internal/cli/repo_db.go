@@ -107,6 +107,12 @@ func runRepoDatabaseBackup(ctx context.Context, p repoDBParams) (*model.Snapshot
 	everything := "every table"
 	if kind == model.SurfaceTypeSQLite {
 		everything = "the whole database"
+		// Before anything is opened in storage: a mistyped path opened an
+		// epoch on the remote server, and printed "Epoch opened", before
+		// the dump found no file.
+		if err := sqliteFileExists(p.DatabaseURL); err != nil {
+			return nil, nil, classed(exitSource, err)
+		}
 	}
 	b, err := repoBackend(ctx, cfg, p.StorageCfg)
 	if err != nil {
@@ -261,7 +267,7 @@ func runRepoDatabaseBackup(ctx context.Context, p repoDBParams) (*model.Snapshot
 			m.StorageURI = epochURI(b, r.Epoch, p.SurfaceID)
 			m.DurationMs = backupMilliseconds(started)
 			m.Format, m.EpochID, m.ObjectClass = model.SnapshotFormatRepo, r.Epoch.EpochID, r.Class
-			recordRetention(&m, p.StorageCfg, r.Snapshot.RetainUntil)
+			recordRetention(&m, p.StorageCfg, repoKeptUntil(r, repoLocked(p.StorageCfg)))
 			m.TableStats = append([]model.TableStat(nil), dumpMeta.TableStats...)
 			for i := range m.TableStats {
 				t := &m.TableStats[i]
@@ -785,5 +791,22 @@ func verifyRepoDatabase(ctx context.Context, rs *repoSnapshot, privateKey, sandb
 	fmt.Printf("   Tables:          %d\n", report.TablesRestored)
 	fmt.Printf("   Rows:            %s\n", formatNumber(report.RowsRestored))
 	fmt.Printf("   Certificate:     %s\n", report.CertificateHash)
+	return nil
+}
+
+// sqliteFileExists says why the SQLite file a URL names cannot be backed up,
+// or nil when it is there and is a file.
+func sqliteFileExists(databaseURL string) error {
+	path, err := dump.SQLitePath(databaseURL)
+	if err != nil {
+		return err
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("SQLite database %s: %w", path, err)
+	}
+	if fi.IsDir() {
+		return fmt.Errorf("SQLite database %s is a directory, not a database file", path)
+	}
 	return nil
 }
