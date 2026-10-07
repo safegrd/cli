@@ -46,6 +46,10 @@ const (
 	entryLeftOut   = "left-out.json"
 )
 
+// loginRoleRe matches the role Supabase's sign-in hands out, and captures the
+// role it stands in for.
+var loginRoleRe = regexp.MustCompile(`^cli_login_([a-z_][a-z0-9_]*)$`)
+
 // LeftOutTable is a table the backup's role could not read, so the snapshot
 // holds neither its definition nor its rows.
 type LeftOutTable struct {
@@ -190,6 +194,21 @@ func (d *NativeDumper) Dump(ctx context.Context, databaseName string, dst io.Wri
 	}
 	defer conn.Close(context.Background())
 
+	// Supabase's sign-in hands out cli_login_<role>, a member of <role> that
+	// does not inherit its privileges: Supabase's own CLI dumps with
+	// pg_dump --role postgres. Take the role when the set works, so auth and
+	// storage are backed up; when it does not, the backup goes on as the
+	// session user and leaves out what that user cannot read.
+	var asRole string
+	var sessionUser string
+	if err := conn.QueryRow(ctx, "SELECT session_user").Scan(&sessionUser); err == nil {
+		if m := loginRoleRe.FindStringSubmatch(sessionUser); m != nil {
+			if _, err := conn.Exec(ctx, "SET ROLE "+pgx.Identifier{m[1]}.Sanitize()); err == nil {
+				asRole = m[1]
+			}
+		}
+	}
+
 	// One snapshot for everything: the table list, the schema pg_dump reads,
 	// the rows, and so the counts.
 	tx, err := conn.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
@@ -314,21 +333,24 @@ func (d *NativeDumper) Dump(ctx context.Context, databaseName string, dst io.Wri
 		if err := tx.QueryRow(ctx, "SELECT pg_export_snapshot()").Scan(&snapshot); err != nil {
 			return nil, fmt.Errorf("failed to export the snapshot for pg_dump: %w", err)
 		}
-		var exclude []string
+		var pgDumpArgs []string
+		if asRole != "" {
+			pgDumpArgs = append(pgDumpArgs, "--role="+asRole)
+		}
 		if len(leftOut) > 0 {
 			seqs, err := queryNames(ctx, tx, sequencesQuery(unreadableSequenceCondition))
 			if err != nil {
 				return nil, fmt.Errorf("failed to list sequences: %w", err)
 			}
 			for _, t := range append(leftOut, seqs...) {
-				exclude = append(exclude, "--exclude-table="+pgx.Identifier{t.Schema, t.Table}.Sanitize())
+				pgDumpArgs = append(pgDumpArgs, "--exclude-table="+pgx.Identifier{t.Schema, t.Table}.Sanitize())
 			}
 		}
-		preData, err := pgDump.Section(ctx, d.databaseURL, snapshot, "pre-data", exclude...)
+		preData, err := pgDump.Section(ctx, d.databaseURL, snapshot, "pre-data", pgDumpArgs...)
 		if err != nil {
 			return nil, err
 		}
-		if postData, err = pgDump.Section(ctx, d.databaseURL, snapshot, "post-data", exclude...); err != nil {
+		if postData, err = pgDump.Section(ctx, d.databaseURL, snapshot, "post-data", pgDumpArgs...); err != nil {
 			return nil, err
 		}
 		// The roles the schema names, before the schema, so a restore meets

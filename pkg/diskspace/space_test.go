@@ -19,6 +19,15 @@ func TestCheckFreeSpaceKeepsAShareOfTheDiskFree(t *testing.T) {
 		"not enough disk under /data for a test: it needs about 51.0 MiB and 100.0 MiB is free (keeping 50.0 MiB spare for the rest of the host); free some space") {
 		t.Errorf("51 MiB with 100 free: %v", err)
 	}
+	// A large disk keeps a gibibyte, not 5%: 2.6 GiB free of 72 GiB refused
+	// a 137 KiB drill on a CI runner.
+	spaceOf = func(string) (int64, int64, error) { return 2600 << 20, 72 << 30, nil }
+	if err := CheckFreeSpace("/data", 137<<10, "a test", ""); err != nil {
+		t.Errorf("137 KiB with 2.6 GiB of 72 free: %v", err)
+	}
+	if err := CheckFreeSpace("/data", 1600<<20, "a test", ""); !errors.Is(err, ErrNotEnoughDisk) {
+		t.Errorf("1.6 GiB with 2.6 GiB free should keep 1 GiB: %v", err)
+	}
 	spaceOf = func(string) (int64, int64, error) { return 0, 0, errors.New("unreadable") }
 	if err := CheckFreeSpace("/data", 1<<60, "a test", ""); err != nil {
 		t.Errorf("a filesystem that cannot be read refused a write; the write should speak for itself: %v", err)

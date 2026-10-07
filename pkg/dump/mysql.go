@@ -386,9 +386,38 @@ func (d *MySQLDumper) Dump(ctx context.Context, databaseName string, dst io.Writ
 	}
 	defer cleanup()
 
+	// --events needs the EVENT privilege for SHOW EVENTS, and a read-only
+	// account (SELECT, SHOW VIEW, TRIGGER, LOCK TABLES) lacks it: mysqldump
+	// then failed the whole backup. Such an account backs up without events,
+	// and is told.
+	events := "--events"
+	if rows, err := db.QueryContext(ctx, "SHOW EVENTS"); err != nil {
+		if !mysqlAccessDenied(err) {
+			return nil, fmt.Errorf("could not list the database's events: %w", err)
+		}
+		events = "--skip-events"
+		d.Warn(fmt.Sprintf("This account may not read %s's scheduled events (it lacks the EVENT privilege), so the snapshot "+
+			"holds none. Grant EVENT on %s.* to back them up.", target.Database, target.Database))
+	} else {
+		rows.Close()
+	}
+	// MySQL shows an account only the routines it may read: without
+	// SHOW_ROUTINE or a global SELECT it sees those it created, and mysqldump
+	// leaves the rest out without a word. The account cannot see them to
+	// name them, so say what it lacks.
+	if !mariaDB {
+		var n int
+		err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.user_privileges
+			WHERE privilege_type IN ('SHOW_ROUTINE', 'SELECT')
+			  AND grantee = CONCAT("'", SUBSTRING_INDEX(CURRENT_USER(), '@', 1), "'@'", SUBSTRING_INDEX(CURRENT_USER(), '@', -1), "'")`).Scan(&n)
+		if err == nil && n == 0 {
+			d.Warn(fmt.Sprintf("This account may read only the stored procedures and functions it created, so any other routine "+
+				"in %s is not in the snapshot. Grant SHOW_ROUTINE ON *.* (MySQL 8.0.20 or newer) to back them all up.", target.Database))
+		}
+	}
 	// --defaults-extra-file must come first, or the client ignores it.
 	args := []string{"--defaults-extra-file=" + cnf,
-		"--single-transaction", "--quick", "--routines", "--triggers", "--events",
+		"--single-transaction", "--quick", "--routines", "--triggers", events,
 		"--hex-blob", "--no-tablespaces", "--default-character-set=utf8mb4"}
 	if skipMaskingPolicies(ctx, tool, version, mariaDB) {
 		args = append(args, "--skip-masking-policies")
@@ -976,4 +1005,14 @@ func mysqlTLSAdvice(err error) error {
 		return fmt.Errorf("%w. The server's certificate did not verify: add ssl-ca=/path/ca.pem to the URL to check it against your own CA, or tls=skip-verify to encrypt without checking it", err)
 	}
 	return err
+}
+
+// mysqlAccessDenied reports whether err is the server refusing the account a
+// privilege: 1044 (database), 1142 (table), 1227 (operation).
+func mysqlAccessDenied(err error) bool {
+	var me *mysql.MySQLError
+	if errors.As(err, &me) {
+		return me.Number == 1044 || me.Number == 1142 || me.Number == 1227
+	}
+	return false
 }

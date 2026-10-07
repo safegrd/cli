@@ -7,9 +7,20 @@ import (
 )
 
 // KeepFreeShare is the share of a filesystem a backup or a drill leaves free
-// after writing to it. The host's own database, logs and applications live on
-// the same disk, and filling it would take them down with the backup.
+// after writing to it, up to KeepFreeMax. The host's own database, logs and
+// applications live on the same disk, and filling it would take them down
+// with the backup.
 const KeepFreeShare = 0.05
+
+// KeepFreeMax caps what is kept free. 5% of a 72 GB disk is 3.6 GiB, and a
+// host with 2.6 GiB free refused to drill a 137 KiB snapshot; 5% of 2 TB
+// held back 100 GB. A gibibyte is room for the host to go on writing.
+const KeepFreeMax = 1 << 30
+
+// keepFree is what is kept free on a filesystem of total bytes.
+func keepFree(total int64) int64 {
+	return min(int64(float64(total)*KeepFreeShare), KeepFreeMax)
+}
 
 // ErrNotEnoughDisk is a NotEnoughDiskError's sentinel, for errors.Is.
 var ErrNotEnoughDisk = errors.New("not enough disk")
@@ -35,14 +46,14 @@ func (e *NotEnoughDiskError) Error() string {
 func (e *NotEnoughDiskError) Is(target error) bool { return target == ErrNotEnoughDisk }
 
 // CheckFreeSpace refuses to write need bytes under dir when that would leave
-// less than KeepFreeShare of the filesystem free. A filesystem whose free
+// less than keepFree of the filesystem free. A filesystem whose free
 // space cannot be read is not refused: the write itself will say so.
 func CheckFreeSpace(dir string, need int64, what, remedy string) error {
 	avail, total, err := spaceOf(dir)
 	if err != nil {
 		return nil
 	}
-	keep := int64(float64(total) * KeepFreeShare)
+	keep := keepFree(total)
 	if avail < need+keep {
 		return &NotEnoughDiskError{Dir: dir, What: what, Need: need, Avail: avail, Keep: keep, Remedy: remedy}
 	}
@@ -70,7 +81,7 @@ var spaceOf = DiskSpace
 const guardEvery = 64 << 20
 
 // Guard writes to w and stops, with a NotEnoughDiskError, before the
-// filesystem under dir drops below KeepFreeShare free. It is for a write
+// filesystem under dir drops below keepFree free. It is for a write
 // whose size is not known in advance.
 type Guard struct {
 	w           io.Writer

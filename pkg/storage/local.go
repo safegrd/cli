@@ -65,7 +65,7 @@ func (l *LocalStorageProvider) UploadSnapshot(ctx context.Context, snapshotID st
 
 	// A local sink is often the disk the host's own database and logs live
 	// on. The write stops before it would leave that filesystem with less
-	// than diskspace.KeepFreeShare free, rather than fill it.
+	// than the share diskspace keeps free, rather than fill it.
 	what, remedy := "a backup to the local sink "+l.baseDir,
 		"free some space, move local_path to a larger disk, or back up to a bucket"
 	if err := diskspace.CheckFreeSpace(filepath.Dir(dstPath), max(size, 0), what, remedy); err != nil {
