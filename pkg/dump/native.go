@@ -112,13 +112,16 @@ func NewNativeDumper(databaseURL string) *NativeDumper {
 // the ones CREATE EXTENSION puts back). The last column says whether the
 // backup's role can read the table: Supabase's sign-in role sees auth.users
 // in the catalogue and has no USAGE on auth, so pg_dump's LOCK TABLE and the
-// COPY both refuse it.
+// COPY both refuse it. Partitioned parents are listed too, because pg_dump
+// locks them: an unreadable one is left out with its partitions, and a
+// readable one is skipped, its rows being its partitions'.
 const userTablesQuery = `
 	SELECT n.nspname, c.relname, pg_total_relation_size(c.oid),
-	       has_schema_privilege(n.oid, 'USAGE') AND has_table_privilege(c.oid, 'SELECT')
+	       has_schema_privilege(n.oid, 'USAGE') AND has_table_privilege(c.oid, 'SELECT'),
+	       c.relkind = 'p'
 	FROM pg_class c
 	JOIN pg_namespace n ON n.oid = c.relnamespace
-	WHERE c.relkind = 'r' AND c.relpersistence <> 't'
+	WHERE c.relkind IN ('r', 'p') AND c.relpersistence <> 't'
 	  AND n.nspname NOT LIKE 'pg\_%' AND n.nspname <> 'information_schema'
 	  AND NOT EXISTS (SELECT 1 FROM pg_depend d
 	                  WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype = 'e')
@@ -215,13 +218,16 @@ func (d *NativeDumper) Dump(ctx context.Context, databaseName string, dst io.Wri
 	var leftOut []LeftOutTable
 	for rows.Next() {
 		var t model.TableStat
-		var readable bool
-		if err := rows.Scan(&t.Schema, &t.TableName, &t.SizeBytes, &readable); err != nil {
+		var readable, partitioned bool
+		if err := rows.Scan(&t.Schema, &t.TableName, &t.SizeBytes, &readable, &partitioned); err != nil {
 			rows.Close()
 			return nil, err
 		}
 		if !readable {
 			leftOut = append(leftOut, LeftOutTable{Schema: t.Schema, Table: t.TableName})
+			continue
+		}
+		if partitioned {
 			continue
 		}
 		meta.TableStats = append(meta.TableStats, t)
