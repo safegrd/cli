@@ -172,7 +172,7 @@ func (d *NativeDumper) Dump(ctx context.Context, databaseName string, dst io.Wri
 	// not describe its tables still gets its backup, and is told.
 	if _, err := tx.Exec(ctx, "SAVEPOINT safegrd_describe"); err == nil {
 		if err := describeTables(ctx, tx, serverVersionNum, meta.TableStats); err != nil {
-			_, _ = tx.Exec(ctx, "ROLLBACK TO SAVEPOINT safegrd_describe")
+			rollbackSavepoint(ctx, tx, "safegrd_describe")
 			for i := range meta.TableStats {
 				t := &meta.TableStats[i]
 				t.SchemaHash, t.OwnedSequences, t.References = "", nil, nil
@@ -187,7 +187,7 @@ func (d *NativeDumper) Dump(ctx context.Context, databaseName string, dst io.Wri
 	// runs, and says so.
 	if _, err := tx.Exec(ctx, "SAVEPOINT safegrd_freshness"); err == nil {
 		if err := describeFreshness(ctx, tx, meta.TableStats); err != nil {
-			_, _ = tx.Exec(ctx, "ROLLBACK TO SAVEPOINT safegrd_freshness")
+			rollbackSavepoint(ctx, tx, "safegrd_freshness")
 			for i := range meta.TableStats {
 				t := &meta.TableStats[i]
 				t.FreshnessColumn, t.FreshnessMax, t.SampleHash = "", "", ""
@@ -211,7 +211,7 @@ func (d *NativeDumper) Dump(ctx context.Context, databaseName string, dst io.Wri
 	if d.Carry != nil {
 		if _, err := tx.Exec(ctx, "SAVEPOINT safegrd_carry"); err == nil {
 			if carry, err = d.Carry(ctx, tx, meta, filtered, serverVersionNum); err != nil {
-				_, _ = tx.Exec(ctx, "ROLLBACK TO SAVEPOINT safegrd_carry")
+				rollbackSavepoint(ctx, tx, "safegrd_carry")
 				carry = nil
 				d.Warn(fmt.Sprintf("The change log could not be read (%v). Every table is read.", err))
 			} else {
@@ -621,7 +621,7 @@ func (r *NativeRestorer) Restore(ctx context.Context, src io.Reader) (*model.Sna
 						return err
 					}
 					if _, err := pgConn.Exec(ctx, stmt).ReadAll(); err != nil {
-						if err := exec("rolling back", "ROLLBACK TO SAVEPOINT safegrd_ownership"); err != nil {
+						if err := exec("rolling back", "ROLLBACK TO SAVEPOINT safegrd_ownership; RELEASE SAVEPOINT safegrd_ownership"); err != nil {
 							return err
 						}
 						r.SkippedOwnership = append(r.SkippedOwnership, strings.TrimSuffix(stmt, ";"))

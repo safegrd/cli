@@ -23,7 +23,7 @@ func runIdentity(ctx context.Context, tx pgx.Tx, serverVersionNum int) (snapshot
 		}
 		var v string
 		if err := tx.QueryRow(ctx, q).Scan(&v); err != nil {
-			_, _ = tx.Exec(ctx, "ROLLBACK TO SAVEPOINT safegrd_identity")
+			rollbackSavepoint(ctx, tx, "safegrd_identity")
 			return ""
 		}
 		_, _ = tx.Exec(ctx, "RELEASE SAVEPOINT safegrd_identity")
@@ -112,3 +112,12 @@ func TableSchemaHash(ctx context.Context, q interface {
 // TablePath is the file a run of a repository database backup keeps a
 // table's rows in.
 func TablePath(schema, table string) string { return copyEntryName(schema, table, 0) }
+
+// rollbackSavepoint undoes a failed optional step and leaves the
+// subtransaction. ROLLBACK TO keeps the savepoint open, and
+// pg_export_snapshot refuses to run inside one, so a step that only meant
+// to warn would fail the backup.
+func rollbackSavepoint(ctx context.Context, tx pgx.Tx, name string) {
+	_, _ = tx.Exec(ctx, "ROLLBACK TO SAVEPOINT "+name)
+	_, _ = tx.Exec(ctx, "RELEASE SAVEPOINT "+name)
+}

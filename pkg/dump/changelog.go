@@ -312,7 +312,7 @@ func PlanChangeLog(ctx context.Context, tx pgx.Tx, in PlanChangeLogInput) (*Chan
 		}
 		var v string
 		if err := tx.QueryRow(ctx, q).Scan(&v); err != nil {
-			_, _ = tx.Exec(ctx, "ROLLBACK TO SAVEPOINT safegrd_changelog")
+			rollbackSavepoint(ctx, tx, "safegrd_changelog")
 			return ""
 		}
 		_, _ = tx.Exec(ctx, "RELEASE SAVEPOINT safegrd_changelog")
