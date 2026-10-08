@@ -14,7 +14,7 @@ DIST_TARGETS ?= linux/amd64 linux/arm64 darwin/amd64 darwin/arm64
 DIST_DIR     ?= dist
 CLI_BIN := $(BIN_DIR)/safegrd
 
-.PHONY: help all hooks build dist test vet fmt tidy clean ci check-fmt check-tidy check-go-version release-tag tag
+.PHONY: help all hooks build dist test vet fmt tidy clean ci check-fmt check-tidy check-go-version check-shell release-tag tag
 
 .DEFAULT_GOAL := help
 
@@ -82,10 +82,17 @@ check-go-version: ## Fail if the Dockerfile builds with an older Go than go.mod 
 	have="$$(sed -n 's/^ARG GO_VERSION=//p' Dockerfile)"; \
 	if [ "$$want" != "$$have" ]; then echo "Dockerfile builds with Go $$have; go.mod needs $$want. Set ARG GO_VERSION=$$want."; exit 1; fi
 
-ci: check-fmt check-tidy check-go-version build ## Run every gate CI runs
+ci: check-fmt check-tidy check-go-version check-shell build ## Run every gate CI runs
 	go vet ./...
 	go test -race ./...
 	sh scripts/packaging-version.sh check
+
+# install.sh is what `curl ... | sh` runs, under dash on Debian and Ubuntu, so
+# it is linted as POSIX sh. SC2059 is the colour codes in printf format
+# strings, which are constants.
+check-shell: ## Lint install.sh and scripts/ as POSIX sh (needs shellcheck)
+	@command -v shellcheck >/dev/null || { echo "Error: shellcheck is not installed: brew install shellcheck"; exit 1; }
+	shellcheck -s sh -e SC2059 install.sh scripts/*.sh
 
 clean: ## Clean build artifacts
 	rm -rf $(BIN_DIR) coverage.out coverage.html dist
