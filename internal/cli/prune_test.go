@@ -74,7 +74,7 @@ func TestPruneDeletesOnlyWhatTheBucketSaysHasExpired(t *testing.T) {
 	b.holds["safegrd/snapshots/db/held.safegrd|held.safegrd"] = true
 	keep := func(string) (map[string]bool, error) { return map[string]bool{"frozen": true}, nil }
 	var out bytes.Buffer
-	r, err := runPrune(context.Background(), b, keep, nil, false, &out)
+	r, err := runPrune(context.Background(), b, keep, nil, false, pruneWriters{Out: &out, Err: &out})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,10 +102,15 @@ func TestPruneWithoutTheServersKeepListPrunesNothing(t *testing.T) {
 	b := &fakePruneBucket{now: now, locks: map[string]time.Time{}, holds: map[string]bool{}}
 	b.put("db", "old", now.AddDate(0, 0, -40), now.AddDate(0, 0, -10))
 	b.put("db", "newest", now.AddDate(0, 0, -1), now.AddDate(0, 0, 1))
-	var out bytes.Buffer
-	r, _ := runPrune(context.Background(), b, func(string) (map[string]bool, error) { return nil, errors.New("offline") }, nil, false, &out)
+	var out, errs bytes.Buffer
+	r, _ := runPrune(context.Background(), b, func(string) (map[string]bool, error) { return nil, errors.New("offline") }, nil, false, pruneWriters{Out: &out, Err: &errs})
 	if len(b.deleted) != 0 || r.Failed != 1 {
 		t.Errorf("pruned without knowing what the server keeps: deleted %v, report %v", b.deleted, r)
+	}
+	// The warning is the command's stderr, as every command's is; stdout
+	// carries what was deleted.
+	if !strings.Contains(errs.String(), "Warning: Surface db: not pruned") || strings.Contains(out.String(), "Warning") {
+		t.Errorf("the warning should go to stderr only.\nstdout: %q\nstderr: %q", out.String(), errs.String())
 	}
 }
 
@@ -116,12 +121,12 @@ func TestPruneDryRunDeletesNothingAndRefusalsAreSaid(t *testing.T) {
 	b.put("db", "newest", now.AddDate(0, 0, -1), now.AddDate(0, 0, 1))
 	none := func(string) (map[string]bool, error) { return nil, nil }
 	var out bytes.Buffer
-	if r, _ := runPrune(context.Background(), b, none, nil, true, &out); len(b.deleted) != 0 || r.WouldDelete != 1 {
+	if r, _ := runPrune(context.Background(), b, none, nil, true, pruneWriters{Out: &out, Err: &out}); len(b.deleted) != 0 || r.WouldDelete != 1 {
 		t.Errorf("dry run: deleted %v, report %v", b.deleted, r)
 	}
 	b.denied = true
 	out.Reset()
-	if r, _ := runPrune(context.Background(), b, none, nil, false, &out); r.Failed == 0 || !bytes.Contains(out.Bytes(), []byte("s3:DeleteObjectVersion")) {
+	if r, _ := runPrune(context.Background(), b, none, nil, false, pruneWriters{Out: &out, Err: &out}); r.Failed == 0 || !bytes.Contains(out.Bytes(), []byte("s3:DeleteObjectVersion")) {
 		t.Errorf("a refused delete was not said with the permission it needs: %v\n%s", r, out.String())
 	}
 }
@@ -138,7 +143,7 @@ func TestPruneUnderWORMModeNoneReadsTheRecordedDate(t *testing.T) {
 		return until[strings.TrimSuffix(strings.TrimPrefix(key, "safegrd/snapshots/db/"), ".meta.json")], nil
 	}
 	var out bytes.Buffer
-	runPrune(context.Background(), b, func(string) (map[string]bool, error) { return nil, nil }, retain, false, &out)
+	runPrune(context.Background(), b, func(string) (map[string]bool, error) { return nil, nil }, retain, false, pruneWriters{Out: &out, Err: &out})
 	if !b.gone("db", "old") || len(b.deleted) != 2 {
 		t.Errorf("under NONE, deleted %v; want only the snapshot whose kept-until date has passed", b.deleted)
 	}
@@ -155,7 +160,7 @@ func TestPruneKeepsTheNewestFewWhateverTheLocksSay(t *testing.T) {
 	b.put("web", "w1", now.AddDate(0, 0, -30), now.AddDate(0, 0, -20))
 	var out bytes.Buffer
 	r, err := runPruneWithGrace(context.Background(), b, func(string) (map[string]bool, error) { return nil, nil },
-		nil, pruneGrace, 3, false, &out)
+		nil, pruneGrace, 3, false, pruneWriters{Out: &out, Err: &out})
 	if err != nil {
 		t.Fatal(err)
 	}

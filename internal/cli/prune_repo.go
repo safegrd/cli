@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"path"
 	"sort"
 	"strings"
@@ -47,7 +46,7 @@ type repoPruneStore interface {
 // catalogs and snapshot objects go first, sidecars after them, epoch.json
 // last, and each key's delete markers after its versions.
 func pruneRepos(ctx context.Context, st repoPruneStore, keepFor func(node string) (map[string]bool, error),
-	now time.Time, grace time.Duration, minKeep int, dryRun bool, out io.Writer, r *pruneReport) error {
+	now time.Time, grace time.Duration, minKeep int, dryRun bool, out pruneWriters, r *pruneReport) error {
 	root := strings.Trim(st.Root(), "/")
 	nodes, err := st.Children(ctx, root)
 	if err != nil {
@@ -69,7 +68,7 @@ func pruneRepos(ctx context.Context, st repoPruneStore, keepFor func(node string
 	for _, pl := range places {
 		keep, err := keepFor(pl.node)
 		if err != nil {
-			fmt.Fprintf(out, "Warning: Node %s: incremental snapshots not pruned, because the remote server could not say which snapshot it keeps as last known good: %v\n", pl.node, err)
+			fmt.Fprintf(out.Err, "Warning: Node %s: incremental snapshots not pruned, because the remote server could not say which snapshot it keeps as last known good: %v\n", pl.node, err)
 			r.Failed++
 			continue
 		}
@@ -80,7 +79,7 @@ func pruneRepos(ctx context.Context, st repoPruneStore, keepFor func(node string
 		}
 		for _, sf := range surfaces {
 			if err := pruneSurfaceRepo(ctx, st, d, sf, keep, now, grace, minKeep, dryRun, out, r); err != nil {
-				fmt.Fprintf(out, "Error: Surface %s: %v\n", sf, err)
+				fmt.Fprintf(out.Err, "Error: Surface %s: %v\n", sf, err)
 				r.Failed++
 			}
 		}
@@ -105,7 +104,7 @@ type sidecarInfo struct {
 }
 
 func pruneSurfaceRepo(ctx context.Context, st repoPruneStore, d *sink.Direct, surface string, keep map[string]bool,
-	now time.Time, grace time.Duration, minKeep int, dryRun bool, out io.Writer, r *pruneReport) error {
+	now time.Time, grace time.Duration, minKeep int, dryRun bool, out pruneWriters, r *pruneReport) error {
 	epochs, err := d.Epochs(ctx, surface)
 	if err != nil {
 		return err
@@ -220,7 +219,7 @@ func pruneSurfaceRepo(ctx context.Context, st repoPruneStore, d *sink.Direct, su
 				}
 				lock, err := st.Retention(ctx, k, v.VersionID)
 				if err != nil {
-					fmt.Fprintf(out, "Error: %s: could not read its lock: %v\n", k, err)
+					fmt.Fprintf(out.Err, "Error: %s: could not read its lock: %v\n", k, err)
 					failed++
 					left++
 					continue
@@ -271,7 +270,7 @@ func pruneSurfaceRepo(ctx context.Context, st repoPruneStore, d *sink.Direct, su
 			if dryRun {
 				verb = "would delete"
 			}
-			fmt.Fprintf(out, "   Surface %s, epoch %s: %s %d %s (%d still locked, %d kept)\n", surface, ep.EpochID, verb, deleted, what, locked, kept)
+			fmt.Fprintf(out.Out, "   Surface %s, epoch %s: %s %d %s (%d still locked, %d kept)\n", surface, ep.EpochID, verb, deleted, what, locked, kept)
 			if dryRun {
 				r.WouldDelete++
 			} else {
@@ -284,18 +283,18 @@ func pruneSurfaceRepo(ctx context.Context, st repoPruneStore, d *sink.Direct, su
 	return nil
 }
 
-func deleteVersion(ctx context.Context, st repoPruneStore, key, versionID string, dryRun bool, out io.Writer) error {
+func deleteVersion(ctx context.Context, st repoPruneStore, key, versionID string, dryRun bool, out pruneWriters) error {
 	if dryRun {
-		fmt.Fprintf(out, "   would delete %s (%s)\n", key, versionID)
+		fmt.Fprintf(out.Out, "   would delete %s (%s)\n", key, versionID)
 		return nil
 	}
 	if err := st.DeleteVersion(ctx, key, versionID); err != nil {
 		var api smithy.APIError
 		if errors.As(err, &api) && api.ErrorCode() == "AccessDenied" {
-			fmt.Fprintf(out, "Error: %s: the bucket refused the delete. Pruning needs s3:DeleteObjectVersion and s3:GetObjectRetention "+
+			fmt.Fprintf(out.Err, "Error: %s: the bucket refused the delete. Pruning needs s3:DeleteObjectVersion and s3:GetObjectRetention "+
 				"on this host's key (the recommended policy denies them).\n", key)
 		} else {
-			fmt.Fprintf(out, "Error: %s: %v\n", key, err)
+			fmt.Fprintf(out.Err, "Error: %s: %v\n", key, err)
 		}
 		return err
 	}

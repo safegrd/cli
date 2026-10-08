@@ -805,7 +805,7 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 	// A failure is said and retried tomorrow; it never fails the backups.
 	if c.Storage.ExpireAfterLock && c.Storage.Type == config.StorageTypeS3 && time.Since(daemonState.LastPrune) >= pruneEvery {
 		daemonState.LastPrune = time.Now().UTC()
-		if r, err := pruneOwnBucket(ctx, c, pruneGrace, minKeepOf(c.Storage), false, os.Stderr); err != nil {
+		if r, err := pruneOwnBucket(ctx, c, pruneGrace, minKeepOf(c.Storage), false, pruneWriters{Out: os.Stdout, Err: os.Stderr}); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: Prune (storage.expire_after_lock): %v\n", err)
 		} else {
 			fmt.Printf("Prune: %s\n", r)

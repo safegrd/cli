@@ -177,7 +177,7 @@ func testRepoPrune(t *testing.T, noLocks bool) {
 	keep := func(string) (map[string]bool, error) { return map[string]bool{}, nil }
 	prune := func(now time.Time) pruneReport {
 		var r pruneReport
-		if err := pruneRepos(context.Background(), mb, keep, now, time.Hour, 1, false, io.Discard, &r); err != nil {
+		if err := pruneRepos(context.Background(), mb, keep, now, time.Hour, 1, false, pruneWriters{Out: io.Discard, Err: io.Discard}, &r); err != nil {
 			t.Fatal(err)
 		}
 		return r

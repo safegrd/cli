@@ -92,15 +92,19 @@ type pruneSnapshot struct {
 // the snapshot ids the remote server keeps for a node; retainUntil reads the
 // "kept until" date recorded in the metadata at a listed key, which decides
 // under worm_mode NONE.
+// pruneWriters splits prune's output: what it deletes or would delete goes to
+// Out, its warnings and errors to Err, as every other command's do.
+type pruneWriters struct{ Out, Err io.Writer }
+
 func runPrune(ctx context.Context, b pruneBucket, keepFor func(node string) (map[string]bool, error),
-	retainUntil func(metaKey string) (time.Time, error), dryRun bool, out io.Writer) (pruneReport, error) {
+	retainUntil func(metaKey string) (time.Time, error), dryRun bool, out pruneWriters) (pruneReport, error) {
 	return runPruneWithGrace(ctx, b, keepFor, retainUntil, pruneGrace, 1, dryRun, out)
 }
 
 // runPruneWithGrace is runPrune with the grace and the number of each
 // surface's newest snapshots that are never deleted (at least one).
 func runPruneWithGrace(ctx context.Context, b pruneBucket, keepFor func(node string) (map[string]bool, error),
-	retainUntil func(metaKey string) (time.Time, error), grace time.Duration, minKeep int, dryRun bool, out io.Writer) (pruneReport, error) {
+	retainUntil func(metaKey string) (time.Time, error), grace time.Duration, minKeep int, dryRun bool, out pruneWriters) (pruneReport, error) {
 	var r pruneReport
 	now, err := b.BucketNow(ctx)
 	if err != nil {
@@ -173,7 +177,7 @@ func runPruneWithGrace(ctx context.Context, b pruneBucket, keepFor func(node str
 		sort.Slice(list, func(i, j int) bool { return list[i].newest.After(list[j].newest) })
 		keep, err := keepFor(node)
 		if err != nil {
-			fmt.Fprintf(out, "Warning: Surface %s: not pruned, because the remote server could not say which snapshot it keeps as last known good: %v\n", node, err)
+			fmt.Fprintf(out.Err, "Warning: Surface %s: not pruned, because the remote server could not say which snapshot it keeps as last known good: %v\n", node, err)
 			r.Failed++
 			continue
 		}
@@ -192,7 +196,7 @@ func runPruneWithGrace(ctx context.Context, b pruneBucket, keepFor func(node str
 // is under them, and then its metadata the same way. The report counts
 // snapshots, as its other columns do, not the objects each one is made of.
 func pruneOne(ctx context.Context, b pruneBucket, s *pruneSnapshot, now time.Time, grace time.Duration,
-	retainUntil func(string) (time.Time, error), dryRun bool, out io.Writer, r *pruneReport) {
+	retainUntil func(string) (time.Time, error), dryRun bool, out pruneWriters, r *pruneReport) {
 	expired := func(v storage.VersionInfo) bool {
 		var until time.Time
 		if b.LockDisabled() {
@@ -210,7 +214,7 @@ func pruneOne(ctx context.Context, b pruneBucket, s *pruneSnapshot, now time.Tim
 			t, hold, err := b.VersionLock(ctx, v.Key, v.VersionID)
 			switch {
 			case err != nil:
-				fmt.Fprintf(out, "Error: %s: could not read its lock: %v\n", v.Key, err)
+				fmt.Fprintf(out.Err, "Error: %s: could not read its lock: %v\n", v.Key, err)
 				r.Failed++
 				return false
 			case hold:
@@ -219,7 +223,7 @@ func pruneOne(ctx context.Context, b pruneBucket, s *pruneSnapshot, now time.Tim
 			case t.IsZero():
 				// Every snapshot is written locked; one that is not is for a
 				// person to look at, not for pruning to clean up.
-				fmt.Fprintf(out, "Warning: %s has no Object Lock; not deleted\n", v.Key)
+				fmt.Fprintf(out.Err, "Warning: %s has no Object Lock; not deleted\n", v.Key)
 				r.Held++
 				return false
 			}
@@ -234,17 +238,17 @@ func pruneOne(ctx context.Context, b pruneBucket, s *pruneSnapshot, now time.Tim
 	removed := 0
 	del := func(v storage.VersionInfo) bool {
 		if dryRun {
-			fmt.Fprintf(out, "   would delete %s (%s)\n", v.Key, v.VersionID)
+			fmt.Fprintf(out.Out, "   would delete %s (%s)\n", v.Key, v.VersionID)
 			removed++
 			return true
 		}
 		if err := b.DeleteVersion(ctx, v.Key, v.VersionID); err != nil {
 			var api smithy.APIError
 			if errors.As(err, &api) && api.ErrorCode() == "AccessDenied" {
-				fmt.Fprintf(out, "Error: %s: the bucket refused the delete. Pruning needs s3:DeleteObjectVersion and s3:GetObjectRetention "+
+				fmt.Fprintf(out.Err, "Error: %s: the bucket refused the delete. Pruning needs s3:DeleteObjectVersion and s3:GetObjectRetention "+
 					"on this host's key (the recommended policy denies them).\n", v.Key)
 			} else {
-				fmt.Fprintf(out, "Error: %s: %v\n", v.Key, err)
+				fmt.Fprintf(out.Err, "Error: %s: %v\n", v.Key, err)
 			}
 			r.Failed++
 			return false
@@ -343,7 +347,7 @@ func serverKeepList(ctx context.Context, c *config.CLIConfig, node string) (map[
 }
 
 // pruneOwnBucket prunes the configured S3 bucket.
-func pruneOwnBucket(ctx context.Context, c *config.CLIConfig, grace time.Duration, minKeep int, dryRun bool, out io.Writer) (pruneReport, error) {
+func pruneOwnBucket(ctx context.Context, c *config.CLIConfig, grace time.Duration, minKeep int, dryRun bool, out pruneWriters) (pruneReport, error) {
 	storageCfg, err := resolveStorageRouting(ctx, c, "", "", "", "", false)
 	if err != nil {
 		return pruneReport{}, err
@@ -405,7 +409,7 @@ prune once a day.`,
 			if minKeep < 1 {
 				return errors.New("--min-keep is at least 1: a surface's newest snapshot is never deleted")
 			}
-			r, err := pruneOwnBucket(cmd.Context(), cfg, grace, minKeep, dryRun, os.Stdout)
+			r, err := pruneOwnBucket(cmd.Context(), cfg, grace, minKeep, dryRun, pruneWriters{Out: os.Stdout, Err: os.Stderr})
 			if err != nil {
 				return err
 			}
