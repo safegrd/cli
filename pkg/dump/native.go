@@ -175,6 +175,53 @@ func sequencesQuery(cond string) string {
 	ORDER BY n.nspname, c.relname`
 }
 
+// sequencesWithoutSelectQuery lists the sequences a restore needs whose
+// position the role cannot read (no SELECT on the sequence, though it reads
+// the table that owns it), with the column that owns each, when one does, and
+// its increment. A customer who grants SELECT on the tables and not on their
+// sequences writes exactly this, and pg_dump refused the whole backup over it.
+var sequencesWithoutSelectQuery = `
+	SELECT n.nspname, c.relname, COALESCE(tn.nspname, ''), COALESCE(t.relname, ''), COALESCE(a.attname, ''), s.seqincrement
+	FROM pg_class c
+	JOIN pg_namespace n ON n.oid = c.relnamespace
+	JOIN pg_sequence s ON s.seqrelid = c.oid
+	LEFT JOIN pg_depend d ON d.classid = 'pg_class'::regclass AND d.objid = c.oid
+	     AND d.refclassid = 'pg_class'::regclass AND d.deptype IN ('a', 'i')
+	LEFT JOIN pg_class t ON t.oid = d.refobjid
+	LEFT JOIN pg_namespace tn ON tn.oid = t.relnamespace
+	LEFT JOIN pg_attribute a ON a.attrelid = d.refobjid AND a.attnum = d.refobjsubid
+	WHERE c.relkind = 'S'
+	  AND n.nspname NOT LIKE 'pg\_%' AND n.nspname <> 'information_schema'
+	  AND NOT EXISTS (SELECT 1 FROM pg_depend e
+	                  WHERE e.classid = 'pg_class'::regclass AND e.objid = c.oid AND e.deptype = 'e')
+	  AND NOT ` + unreadableSequenceCondition + `
+	  AND NOT has_sequence_privilege(c.oid, 'SELECT')
+	ORDER BY n.nspname, c.relname`
+
+// sequenceWithoutSelect is one row of sequencesWithoutSelectQuery.
+type sequenceWithoutSelect struct {
+	schema, name                 string
+	ownerSchema, ownerTable, col string
+	increment                    int64
+}
+
+func listSequencesWithoutSelect(ctx context.Context, tx pgx.Tx) (map[string]sequenceWithoutSelect, error) {
+	rows, err := tx.Query(ctx, sequencesWithoutSelectQuery)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list sequences: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]sequenceWithoutSelect{}
+	for rows.Next() {
+		var s sequenceWithoutSelect
+		if err := rows.Scan(&s.schema, &s.name, &s.ownerSchema, &s.ownerTable, &s.col, &s.increment); err != nil {
+			return nil, err
+		}
+		out[s.schema+"."+s.name] = s
+	}
+	return out, rows.Err()
+}
+
 // userSequencesQuery lists the sequences whose positions a restore needs:
 // not those in a schema the role cannot use, nor those owned by a table it
 // cannot read, because the backup leaves those tables out.
@@ -327,6 +374,10 @@ func (d *NativeDumper) Dump(ctx context.Context, databaseName string, dst io.Wri
 	// dump this server. Without one the backup still runs, because the rows
 	// are the part that cannot be recreated, and it says what it lost.
 	var postData []byte
+	noSelect, err := listSequencesWithoutSelect(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
 	pgDump, findErr := FindPgDump(ctx, serverVersionNum/10000)
 	if findErr == nil {
 		var snapshot string
@@ -337,12 +388,24 @@ func (d *NativeDumper) Dump(ctx context.Context, databaseName string, dst io.Wri
 		if asRole != "" {
 			pgDumpArgs = append(pgDumpArgs, "--role="+asRole)
 		}
+		// pg_dump reads every sequence's position, even for pre-data. One
+		// the role cannot read is left out of that, and its position is
+		// taken below from the column it numbers.
+		for _, sq := range noSelect {
+			pgDumpArgs = append(pgDumpArgs, "--exclude-table-data="+pgx.Identifier{sq.schema, sq.name}.Sanitize())
+		}
+		var readers leftOutReaders
 		if len(leftOut) > 0 {
 			seqs, err := queryNames(ctx, tx, sequencesQuery(unreadableSequenceCondition))
 			if err != nil {
 				return nil, fmt.Errorf("failed to list sequences: %w", err)
 			}
-			for _, t := range append(leftOut, seqs...) {
+			// A view or a policy that reads a left-out table stops a restore
+			// that does not have the table, so they are left out with it.
+			if readers, err = findLeftOutReaders(ctx, tx, leftOut); err != nil {
+				return nil, err
+			}
+			for _, t := range append(append(leftOut, seqs...), readers.views...) {
 				pgDumpArgs = append(pgDumpArgs, "--exclude-table="+pgx.Identifier{t.Schema, t.Table}.Sanitize())
 			}
 		}
@@ -352,6 +415,10 @@ func (d *NativeDumper) Dump(ctx context.Context, databaseName string, dst io.Wri
 		}
 		if postData, err = pgDump.Section(ctx, d.databaseURL, snapshot, "post-data", pgDumpArgs...); err != nil {
 			return nil, err
+		}
+		postData = dropPolicies(postData, readers.policies)
+		if msg := readers.warning(); msg != "" {
+			d.Warn(msg)
 		}
 		// The roles the schema names, before the schema, so a restore meets
 		// them first. A backup that cannot read them still runs, and says
@@ -424,9 +491,13 @@ func (d *NativeDumper) Dump(ctx context.Context, databaseName string, dst io.Wri
 
 	// Sequences are not transactional, so reading them now, after the rows,
 	// gives a position at or past every id that was copied.
-	seqSQL, err := sequencePositions(ctx, tx)
+	seqSQL, derived, err := sequencePositions(ctx, tx, noSelect)
 	if err != nil {
 		return nil, err
+	}
+	if len(derived) > 0 {
+		d.Warn(fmt.Sprintf("This backup's role cannot read the position of %s, so each is restored to just past the largest value of the column it numbers.\n"+
+			"   Grant the role SELECT on them (GRANT SELECT ON ALL SEQUENCES IN SCHEMA ...) to record the position itself.", strings.Join(derived, ", ")))
 	}
 	if err := writeTarEntry(tw, entrySequences, seqSQL); err != nil {
 		return nil, err
@@ -514,11 +585,14 @@ func markRowSecurity(stats []model.TableStat, filtered map[string]int64) string 
 	return b.String()
 }
 
-// sequencePositions writes a setval for every user sequence, as SQL.
-func sequencePositions(ctx context.Context, tx pgx.Tx) ([]byte, error) {
+// sequencePositions writes a setval for every user sequence, as SQL. A
+// sequence in noSelect, which the role cannot read, is set from the largest
+// value of the column it numbers, read in the same snapshot as the rows; its
+// name is returned in derived.
+func sequencePositions(ctx context.Context, tx pgx.Tx, noSelect map[string]sequenceWithoutSelect) (out []byte, derived []string, err error) {
 	rows, err := tx.Query(ctx, userSequencesQuery)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list sequences: %w", err)
+		return nil, nil, fmt.Errorf("failed to list sequences: %w", err)
 	}
 	type seq struct{ schema, name string }
 	var seqs []seq
@@ -526,28 +600,163 @@ func sequencePositions(ctx context.Context, tx pgx.Tx) ([]byte, error) {
 		var s seq
 		if err := rows.Scan(&s.schema, &s.name); err != nil {
 			rows.Close()
-			return nil, err
+			return nil, nil, err
 		}
 		seqs = append(seqs, s)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var b strings.Builder
 	b.WriteString("-- Sequence positions, read after the rows were copied.\n")
 	for _, s := range seqs {
 		ident := pgx.Identifier{s.schema, s.name}.Sanitize()
+		if ns, ok := noSelect[s.schema+"."+s.name]; ok {
+			// A restore that starts a sequence over hands out ids that are
+			// already taken, so one with no column to read the position
+			// from fails the backup, and says what to grant.
+			if ns.col == "" || ns.increment <= 0 {
+				return nil, nil, fmt.Errorf("this backup's role cannot read sequence %s.%s, and no column it numbers upward gives its position: "+
+					"grant the role SELECT on it (GRANT SELECT ON SEQUENCE %s TO <role>)", s.schema, s.name, ident)
+			}
+			var max *int64
+			q := "SELECT max(" + pgx.Identifier{ns.col}.Sanitize() + ")::bigint FROM " + pgx.Identifier{ns.ownerSchema, ns.ownerTable}.Sanitize()
+			if err := tx.QueryRow(ctx, q).Scan(&max); err != nil {
+				return nil, nil, fmt.Errorf("failed to read the largest %s.%s.%s for sequence %s.%s: %w", ns.ownerSchema, ns.ownerTable, ns.col, s.schema, s.name, err)
+			}
+			derived = append(derived, s.schema+"."+s.name)
+			if max == nil {
+				// An empty table: the sequence starts where its definition says.
+				continue
+			}
+			fmt.Fprintf(&b, "SELECT pg_catalog.setval(%s, %d, true);\n", quoteLiteral(ident), *max)
+			continue
+		}
 		var last int64
 		var called bool
 		if err := tx.QueryRow(ctx, "SELECT last_value, is_called FROM "+ident).Scan(&last, &called); err != nil {
 			// A restore that starts a sequence over hands out ids that are
 			// already taken, so a sequence that cannot be read fails the backup.
-			return nil, fmt.Errorf("failed to read sequence %s.%s: %w", s.schema, s.name, err)
+			return nil, nil, fmt.Errorf("failed to read sequence %s.%s: %w", s.schema, s.name, err)
 		}
 		fmt.Fprintf(&b, "SELECT pg_catalog.setval(%s, %d, %t);\n", quoteLiteral(ident), last, called)
 	}
-	return []byte(b.String()), nil
+	return []byte(b.String()), derived, nil
+}
+
+// leftOutReaders are the views and policies that read a left-out table, which
+// the backup leaves out with it.
+type leftOutReaders struct {
+	views []LeftOutTable
+	// policies are keyed as pg_dump names them in post-data: schema, then
+	// "table policy".
+	policies map[[2]string]bool
+	// policyNames are the same, as a person reads them.
+	policyNames []string
+}
+
+func (r leftOutReaders) warning() string {
+	if len(r.views) == 0 && len(r.policyNames) == 0 {
+		return ""
+	}
+	var parts []string
+	if len(r.views) > 0 {
+		names := make([]string, len(r.views))
+		for i, v := range r.views {
+			names[i] = v.String()
+		}
+		parts = append(parts, "views "+strings.Join(names, ", "))
+	}
+	if len(r.policyNames) > 0 {
+		parts = append(parts, "row-level security policies "+strings.Join(r.policyNames, ", "))
+	}
+	return "These read a table the snapshot leaves out, so they are left out too: " + strings.Join(parts, "; ") + ".\n" +
+		"   Row-level security stays on for their tables, so a restore lets a non-owner read less, not more."
+}
+
+// leftOutReadersQuery finds, by the catalogue's dependencies, the views and
+// materialized views that read the named relations, then the views that read
+// those, and the policies that read any of them on a table the backup keeps.
+// The relations are named by schema and name, never cast to regclass: the
+// lookup of a schema without USAGE refuses the cast.
+const leftOutReadersQuery = `
+	WITH RECURSIVE gone(oid) AS (
+	    SELECT c.oid FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+	    WHERE (n.nspname, c.relname) IN (SELECT * FROM unnest($1::text[], $2::text[]))
+	), readers(oid) AS (
+	    SELECT r.ev_class FROM pg_rewrite r
+	    JOIN pg_depend d ON d.classid = 'pg_rewrite'::regclass AND d.objid = r.oid
+	    WHERE d.refclassid = 'pg_class'::regclass AND d.refobjid IN (SELECT oid FROM gone) AND r.ev_class <> d.refobjid
+	  UNION
+	    SELECT r.ev_class FROM pg_rewrite r
+	    JOIN pg_depend d ON d.classid = 'pg_rewrite'::regclass AND d.objid = r.oid
+	    JOIN readers v ON v.oid = d.refobjid
+	    WHERE d.refclassid = 'pg_class'::regclass AND r.ev_class <> d.refobjid
+	)
+	SELECT 'view', n.nspname, c.relname, ''
+	FROM readers v JOIN pg_class c ON c.oid = v.oid JOIN pg_namespace n ON n.oid = c.relnamespace
+	UNION ALL
+	SELECT DISTINCT 'policy', n.nspname, t.relname, p.polname
+	FROM pg_policy p
+	JOIN pg_class t ON t.oid = p.polrelid
+	JOIN pg_namespace n ON n.oid = t.relnamespace
+	JOIN pg_depend d ON d.classid = 'pg_policy'::regclass AND d.objid = p.oid AND d.refclassid = 'pg_class'::regclass
+	WHERE (d.refobjid IN (SELECT oid FROM gone) OR d.refobjid IN (SELECT oid FROM readers))
+	  AND p.polrelid NOT IN (SELECT oid FROM gone)
+	ORDER BY 1 DESC, 2, 3, 4`
+
+func findLeftOutReaders(ctx context.Context, tx pgx.Tx, leftOut []LeftOutTable) (leftOutReaders, error) {
+	schemas := make([]string, len(leftOut))
+	names := make([]string, len(leftOut))
+	for i, t := range leftOut {
+		schemas[i], names[i] = t.Schema, t.Table
+	}
+	r := leftOutReaders{policies: map[[2]string]bool{}}
+	rows, err := tx.Query(ctx, leftOutReadersQuery, schemas, names)
+	if err != nil {
+		return r, fmt.Errorf("failed to list what reads the left-out tables: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var kind, schema, rel, policy string
+		if err := rows.Scan(&kind, &schema, &rel, &policy); err != nil {
+			return r, err
+		}
+		if kind == "view" {
+			r.views = append(r.views, LeftOutTable{Schema: schema, Table: rel})
+			continue
+		}
+		r.policies[[2]string{schema, rel + " " + policy}] = true
+		r.policyNames = append(r.policyNames, pgx.Identifier{policy}.Sanitize()+" on "+schema+"."+rel)
+	}
+	return r, rows.Err()
+}
+
+// dropPolicies removes the named policies from a pg_dump post-data section,
+// by the header pg_dump writes above each object.
+func dropPolicies(sqlText []byte, policies map[[2]string]bool) []byte {
+	if len(policies) == 0 {
+		return sqlText
+	}
+	text := string(sqlText)
+	matches := tocHeaderRe.FindAllStringSubmatchIndex(text, -1)
+	if len(matches) == 0 {
+		return sqlText
+	}
+	var b strings.Builder
+	b.WriteString(text[:matches[0][0]])
+	for i, m := range matches {
+		end := len(text)
+		if i+1 < len(matches) {
+			end = matches[i+1][0]
+		}
+		if text[m[4]:m[5]] == "POLICY" && policies[[2]string{text[m[6]:m[7]], text[m[2]:m[3]]}] {
+			continue
+		}
+		b.WriteString(text[m[0]:end])
+	}
+	return []byte(b.String())
 }
 
 // queryNames runs q, which selects a schema and a relation name.

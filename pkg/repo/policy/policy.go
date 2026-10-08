@@ -122,6 +122,10 @@ func NewEpoch(now time.Time, surfaceID, reason, tier string, r Retention, recipi
 	}
 	now = now.UTC()
 	end, opening, later := Locks(now, tier, r)
+	// Whole seconds, as the remote server's epochs are: a bucket keeps a lock
+	// to the millisecond, so a date with microseconds recorded beside an
+	// object reads later than the lock the object carries.
+	end, opening, later = end.Truncate(time.Second), opening.Truncate(time.Second), later.Truncate(time.Second)
 	e := format.Epoch{
 		Format:             format.FormatName,
 		Version:            format.Version,
