@@ -360,6 +360,10 @@ func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, d pendingDrill
 	verifier := runner.NewVerifier(provider, c.ServerURL)
 	verifier.SetServerToken(c.ServerToken)
 	verifier.KeepFailedSandbox = keep
+	var checks []model.DrillCheck
+	if s.Drill != nil {
+		checks = s.Drill.Checks
+	}
 	var report *model.VerificationReport
 	how := "in-memory restore"
 	// A surface whose last snapshot is still an archive from before it was
@@ -401,6 +405,7 @@ func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, d pendingDrill
 		how = "restore into a throwaway PostgreSQL " + local.Server.Version + " on this host"
 		fmt.Printf("Surface %s: Fire Drill due: restoring snapshot %s into a throwaway PostgreSQL %s on this host.\n",
 			s.ID, snapshotID, local.Server.Version)
+		verifier.Checks = checks
 		// The cluster is deleted after the drill, so it is not emptied.
 		if dbRun {
 			report, err = verifier.RunRepoDatabaseDrill(ctx, runner.RepoDrill{Backend: rs.Backend, Epoch: rs.Epoch, Meta: rs.Meta}, key, local.URL)
@@ -410,6 +415,7 @@ func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, d pendingDrill
 	case sandbox != "":
 		how = "restore into the sandbox database"
 		fmt.Printf("Surface %s: Fire Drill due: restoring snapshot %s into its sandbox database.\n", s.ID, snapshotID)
+		verifier.Checks = checks
 		if dbRun {
 			report, err = verifier.RunRepoSandboxDrill(ctx, runner.RepoDrill{Backend: rs.Backend, Epoch: rs.Epoch, Meta: rs.Meta}, key, sandbox)
 		} else {
@@ -441,6 +447,11 @@ func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, d pendingDrill
 	}
 	if report != nil && report.SandboxKept {
 		sayKeptSandbox(s, st, local, sandbox, verifier.CreatedRoles())
+	}
+	if len(checks) > 0 && verifier.Checks == nil && sandboxErr == nil {
+		fmt.Fprintf(os.Stderr, "Warning: Surface %s: its %d drill checks did not run, because this drill (%s) restored into no database.\n"+
+			"   Checks run on a drill into a sandbox database: drill.sandbox_url, or a throwaway PostgreSQL on this host where the plan includes sandbox drills.\n",
+			s.ID, len(checks), how)
 	}
 	var blocked *runner.DrillBlockedError
 	switch {

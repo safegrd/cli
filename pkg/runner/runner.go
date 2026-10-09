@@ -36,6 +36,10 @@ type Verifier struct {
 	// set by the drills that restore into a database.
 	KeepFailedSandbox bool
 	sandboxDrill      bool
+	// Checks are the customer's own drill checks, run against the sandbox
+	// after a restore into a database (drill.checks). A drill in memory has
+	// no database to run them in.
+	Checks []model.DrillCheck
 	// storageFailed is set when the last drill failed because the storage
 	// would not give the snapshot back, as opposed to a restore that failed.
 	storageFailed bool
@@ -173,16 +177,17 @@ func (v *Verifier) RunFireDrill(ctx context.Context, snapshotID, privateKey, san
 	}
 
 	allPassed := sandboxAssertions(report, meta, restoredMeta)
+	failedChecks := v.runChecks(ctx, report, sandboxTargetURL)
 
 	report.CompletedAt = time.Now()
 	report.DurationMs = drillMilliseconds(report.CompletedAt.Sub(startTime))
 
-	if allPassed {
+	if allPassed && len(failedChecks) == 0 {
 		report.Status = model.VerificationStatusPassed
 		report.CertificateHash = computeCertificateHash(report)
 	} else {
 		report.Status = model.VerificationStatusFailed
-		report.ErrorMessage = "One or more integrity assertions failed during Fire Drill"
+		report.ErrorMessage = drillFailureMessage(allPassed, failedChecks, len(v.Checks))
 	}
 
 	// 7. Submit certificate report to SafeGrd remote server
@@ -568,6 +573,11 @@ func computeCertificateHash(r *model.VerificationReport) string {
 	payload := fmt.Sprintf("CERT:%s:%s:%s:%d:%d:%d",
 		r.VerificationID, r.SnapshotID, r.NodeID,
 		r.TablesRestored, r.RowsRestored, r.CompletedAt.Unix())
+	// A drill that ran the customer's checks covers their results too, so
+	// the signed record fixes what each check returned.
+	if d := checksDigest(r); d != "" {
+		payload += ":CHECKS:" + d
+	}
 	h := sha256.Sum256([]byte(payload))
 	return "cert_sg_" + hex.EncodeToString(h[:])
 }

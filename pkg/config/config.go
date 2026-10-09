@@ -14,6 +14,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/safegrd/cli/pkg/crypto"
+	"github.com/safegrd/cli/pkg/model"
 )
 
 // StorageType enumerates supported storage backends.
@@ -235,6 +236,10 @@ type DrillConfig struct {
 	// drill left it, for a day, and says where it is: the database at
 	// sandbox_url, or the throwaway local cluster when there is none.
 	KeepFailedSandbox bool `yaml:"keep_failed_sandbox,omitempty" json:"keep_failed_sandbox,omitempty"`
+	// Checks are the customer's own queries and commands, run against the
+	// sandbox after the restore. A drill that restores in memory has no
+	// database to run them in, and says so.
+	Checks []model.DrillCheck `yaml:"checks,omitempty" json:"checks,omitempty"`
 }
 
 // CLIConfig is the complete configuration for the `safegrd` CLI.

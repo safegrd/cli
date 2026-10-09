@@ -22,7 +22,15 @@ type AssertionResult struct {
 	Expected string `json:"expected" yaml:"expected"`
 	Actual   string `json:"actual" yaml:"actual"`
 	Message  string `json:"message,omitempty" yaml:"message,omitempty"`
+	// Kind is AssertionKindCheck for a check the customer wrote
+	// (drill.checks), and empty for SafeGrd's own assertions.
+	Kind string `json:"kind,omitempty" yaml:"kind,omitempty"`
 }
+
+// AssertionKindCheck marks an assertion that is one of the customer's own
+// drill checks: a query and its expected value, or a command, run against the
+// sandbox after the restore.
+const AssertionKindCheck = "check"
 
 // VerificationReport contains complete results of an ephemeral sandbox restore test.
 type VerificationReport struct {

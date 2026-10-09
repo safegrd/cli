@@ -214,14 +214,15 @@ func (v *Verifier) RunRepoDatabaseDrill(ctx context.Context, d RepoDrill, privat
 		return fail("RestoreIntegrity", "the sandbox can be counted", err.Error(), "sandbox inspection failed: "+err.Error())
 	}
 	allPassed := sandboxAssertions(report, meta, restored)
+	failedChecks := v.runChecks(ctx, report, sandboxURL)
 	report.CompletedAt = time.Now()
 	report.DurationMs = drillMilliseconds(report.CompletedAt.Sub(started))
-	if allPassed {
+	if allPassed && len(failedChecks) == 0 {
 		report.Status = model.VerificationStatusPassed
 		report.CertificateHash = computeCertificateHash(report)
 	} else {
 		report.Status = model.VerificationStatusFailed
-		report.ErrorMessage = "One or more integrity assertions failed during Fire Drill"
+		report.ErrorMessage = drillFailureMessage(allPassed, failedChecks, len(v.Checks))
 	}
 	v.submitReport(ctx, report)
 	return report, nil

@@ -753,8 +753,9 @@ func restoreRepoSQLite(ctx context.Context, rs *repoSnapshot, privateKey, target
 
 // verifyRepoDatabase drills one database run, in memory or into a sandbox,
 // and prints it the way verify prints every drill.
-func verifyRepoDatabase(ctx context.Context, rs *repoSnapshot, privateKey, sandboxURL string) error {
+func verifyRepoDatabase(ctx context.Context, rs *repoSnapshot, privateKey, sandboxURL string, checks []model.DrillCheck) error {
 	verifier := runner.NewVerifier(nil, cfg.ServerURL)
+	verifier.Checks = checks
 	if cfg.ServerToken != "" {
 		verifier.SetServerToken(cfg.ServerToken)
 	}
@@ -776,6 +777,9 @@ func verifyRepoDatabase(ctx context.Context, rs *repoSnapshot, privateKey, sandb
 			status = "FAIL"
 		}
 		fmt.Printf("   [%s] %s (Expected: %s, Actual: %s)\n", status, a.Name, a.Expected, a.Actual)
+		if !a.Passed && a.Message != "" {
+			fmt.Printf("          %s\n", a.Message)
+		}
 	}
 	if report.Status != model.VerificationStatusPassed {
 		return fmt.Errorf("verification of %s failed: %s", id, report.ErrorMessage)

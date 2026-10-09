@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"encoding/hex"
@@ -23,6 +24,7 @@ import (
 	"github.com/safegrd/cli/pkg/runner"
 	"github.com/safegrd/cli/pkg/storage"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 func newVerifyCmd() *cobra.Command {
@@ -40,6 +42,7 @@ func newVerifyCmd() *cobra.Command {
 		s3Endpoint  string
 		s3AccessKey string
 		s3SecretKey string
+		checksFile  string
 	)
 
 	cmd := &cobra.Command{
@@ -51,10 +54,26 @@ and checks its tables, row counts, columns and extensions.
 By default (or with --dry-run) the restore is parsed in memory and needs no
 database. With --sandbox-target it is restored into that empty database, which
 is the full Fire Drill. Either way the result is reported to the remote server
-when this host is enrolled.`,
+when this host is enrolled.
+
+--checks names a YAML file of your own checks, the same list a surface's
+drill.checks takes, run against the sandbox after the restore:
+
+  - name: orders in the last day
+    sql: SELECT count(*) FROM orders WHERE created_at > now() - interval '1 day'
+    expect: "> 0"
+  - name: app smoke test
+    command: ./scripts/smoke.sh   # SAFEGRD_SANDBOX_URL is set; exit 0 passes`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if snapshotID == "" {
 				return fmt.Errorf("--snapshot is required")
+			}
+			checks, err := loadDrillChecks(checksFile)
+			if err != nil {
+				return err
+			}
+			if len(checks) > 0 && (dryRun || sandboxURL == "") {
+				return fmt.Errorf("--checks runs against the restored database, so it needs --sandbox-target and no --dry-run")
 			}
 
 			// Apply S3 sink overrides if provided
@@ -147,7 +166,7 @@ when this host is enrolled.`,
 					if dryRun {
 						sandbox = ""
 					}
-					return verifyRepoDatabase(ctx, rs, resolvedKey, sandbox)
+					return verifyRepoDatabase(ctx, rs, resolvedKey, sandbox, checks)
 				}
 				if sandboxURL != "" && !dryRun {
 					return fmt.Errorf("snapshot %s is a %s snapshot; it is proven by restoring it, so leave out --sandbox-target", snapshotID, rs.Meta.SurfaceType)
@@ -174,6 +193,7 @@ when this host is enrolled.`,
 			// a person is keeping it to look at, which the report records; a
 			// sandbox thrown away after the run is not "kept".
 			verifier.KeepFailedSandbox = keep
+			verifier.Checks = checks
 			if cfg.ServerToken != "" {
 				verifier.SetServerToken(cfg.ServerToken)
 			}
@@ -322,6 +342,7 @@ when this host is enrolled.`,
 	cmd.Flags().BoolVar(&showURL, "show-url", false, "When a sandbox drill fails, print the sandbox's URL with its password")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Restore in memory only, even with --sandbox-target (the default without it)")
 	cmd.Flags().StringVar(&sandboxURL, "sandbox-target", "", "An empty database to restore the snapshot into for a full Fire Drill: postgres://…, mysql://…, or sqlite:///path/to/absent.db")
+	cmd.Flags().StringVar(&checksFile, "checks", "", "YAML file of your own checks to run against the sandbox after the restore")
 	cmd.Flags().StringVar(&keyPath, "key-path", "", "Path to the age identity file")
 	cmd.Flags().StringVar(&privKey, "private-key", "", "Age identity (AGE-SECRET-KEY-1...), as env:VAR, file:/path or the key")
 	cmd.Flags().StringVar(&s3Bucket, "s3-bucket", "", "Read the snapshot from this S3 bucket instead of the configured storage")
@@ -784,4 +805,29 @@ func unknownSnapshot(ctx context.Context, err error, snapshotID string) bool {
 		return false
 	}
 	return !canReport(cfg) || recordedSnapshot(ctx, cfg, snapshotID) == nil
+}
+
+// loadDrillChecks reads a --checks file: a YAML list of checks, as a
+// surface's drill.checks holds. An empty path is no checks.
+func loadDrillChecks(path string) ([]model.DrillCheck, error) {
+	if path == "" {
+		return nil, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("--checks: %w", err)
+	}
+	var checks []model.DrillCheck
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&checks); err != nil {
+		return nil, fmt.Errorf("--checks %s: %w. It takes a YAML list of checks, each with a name and either sql and expect, or command", path, err)
+	}
+	if len(checks) == 0 {
+		return nil, fmt.Errorf("--checks %s holds no checks", path)
+	}
+	if err := model.ValidateDrillChecks(checks); err != nil {
+		return nil, fmt.Errorf("--checks %s: %w", path, err)
+	}
+	return checks, nil
 }

@@ -319,6 +319,7 @@ func runDoctorChecks(path string, c *config.CLIConfig) []CheckResult {
 	results = append(results, surfaceConnectionChecks(c)...)
 	results = append(results, surfaceRoleChecks(c, nil)...)
 	results = append(results, pgDumpChecks(c)...)
+	results = append(results, surfaceDrillCheckChecks(c)...)
 
 	// 1. Private Key Decryption check
 	resolvedKey := c.Encryption.PrivateKey
@@ -952,4 +953,25 @@ func surfaceLabel(s config.SurfaceConfig) string {
 		return s.Name
 	}
 	return s.Name + " (" + s.ID + ")"
+}
+
+// surfaceDrillCheckChecks reads each surface's drill.checks the way a drill
+// would, so a check with no expect or a typo in an operator is found here and
+// not at the next drill, where it fails the drill.
+func surfaceDrillCheckChecks(c *config.CLIConfig) []CheckResult {
+	var results []CheckResult
+	for _, s := range c.Surfaces {
+		if s.Drill == nil || len(s.Drill.Checks) == 0 {
+			continue
+		}
+		name := fmt.Sprintf("Surface %s drill checks", s.ID)
+		if err := model.ValidateDrillChecks(s.Drill.Checks); err != nil {
+			results = append(results, CheckResult{Name: name, Status: "FAIL", Message: err.Error(),
+				Fix: "Edit drill.checks in the config: each check has a name and either sql and expect, or command"})
+			continue
+		}
+		results = append(results, CheckResult{Name: name, Status: "PASS",
+			Message: fmt.Sprintf("%d checks, run after each drill that restores into a sandbox database", len(s.Drill.Checks))})
+	}
+	return results
 }
