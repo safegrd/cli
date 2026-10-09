@@ -144,24 +144,10 @@ func (h *hostedRepo) prefix(epochID string) (string, error) {
 	return p, nil
 }
 
-// callRetry is call, retried while the remote server answers HTTP 429: it
-// asks this host to confirm what it uploaded before it signs more, or to
-// slow down. Listings and signed reads go through it, so a restore started
-// in a burst waits instead of failing.
+// callRetry is the client's callRetry: listings and signed reads wait out a
+// 429 instead of failing a restore started in a burst.
 func (h *hostedRepo) callRetry(ctx context.Context, method, sub string, in, out any) error {
-	for attempt := 0; ; attempt++ {
-		err := h.c.call(ctx, method, sub, in, out)
-		var he *hostedError
-		if err == nil || !errors.As(err, &he) || he.Status != http.StatusTooManyRequests || attempt >= 20 ||
-			strings.Contains(he.Msg, "backups to hosted storage") || strings.Contains(he.Msg, "downloaded") {
-			return err
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(time.Duration(attempt+1) * 2 * time.Second):
-		}
-	}
+	return h.c.callRetry(ctx, method, sub, in, out)
 }
 
 func (h *hostedRepo) OpenEpoch(ctx context.Context, req sink.OpenRequest) (sink.Opened, error) {

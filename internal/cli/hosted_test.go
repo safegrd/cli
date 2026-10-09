@@ -286,3 +286,51 @@ func TestBucketErrorReadsS3sXML(t *testing.T) {
 		t.Errorf("an empty body gave %q", got)
 	}
 }
+
+// Every command on hosted storage starts by asking the remote server where
+// the organization stands. That first call failed the command on one 429
+// ("hosted storage: Rate limit exceeded"), while every later call waited it
+// out, so a restore started while another host on the same address was busy
+// stopped before it read a byte.
+func TestTheFirstHostedCallWaitsOutARateLimit(t *testing.T) {
+	var asked int32
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&asked, 1) <= 2 {
+			w.Header().Set("Retry-After", "60")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "Rate limit exceeded. Please try again later."})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(hostedInfo{WORMMode: "COMPLIANCE", RetentionDays: 14, PartSize: 5 << 20})
+	}))
+	defer srv.Close()
+	saved, savedPause := http.DefaultTransport, hostedRetryPause
+	http.DefaultTransport, hostedRetryPause = srv.Client().Transport, time.Millisecond
+	defer func() { http.DefaultTransport, hostedRetryPause = saved, savedPause }()
+
+	cfg := &config.CLIConfig{ServerURL: srv.URL, NodeID: "node-1", ServerToken: "sg_tok_1"}
+	st := &config.StorageConfig{Type: config.StorageTypeHosted}
+	info, err := resolveHostedStorage(context.Background(), cfg, st, false)
+	if err != nil {
+		t.Fatalf("two 429s then an answer: %v", err)
+	}
+	if info.RetentionDays != 14 || st.RetentionDays != 14 || atomic.LoadInt32(&asked) != 3 {
+		t.Errorf("retention %d (config %d) after %d requests, want 14 after 3", info.RetentionDays, st.RetentionDays, asked)
+	}
+}
+
+// A 429 that is a quota refusal is the answer, not a pause.
+func TestAQuotaRefusalIsNotRetried(t *testing.T) {
+	var asked int32
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&asked, 1)
+		w.WriteHeader(http.StatusTooManyRequests)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "This organization has downloaded its allowance this month."})
+	}))
+	defer srv.Close()
+	c := &hostedClient{base: srv.URL, token: "t", api: srv.Client()}
+	err := c.callRetry(context.Background(), http.MethodGet, "", nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "downloaded") || atomic.LoadInt32(&asked) != 1 {
+		t.Errorf("a quota 429 was retried or lost: %v after %d requests", err, asked)
+	}
+}

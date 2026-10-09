@@ -71,7 +71,7 @@ func resolveHostedStorage(ctx context.Context, cfg *config.CLIConfig, storageCfg
 		return nil, err
 	}
 	var info hostedInfo
-	if err := c.call(ctx, http.MethodGet, "", nil, &info); err != nil {
+	if err := c.callRetry(ctx, http.MethodGet, "", nil, &info); err != nil {
 		return nil, err
 	}
 	if info.WORMMode == "" || info.PartSize <= 0 {
@@ -191,6 +191,30 @@ func (c *hostedClient) call(ctx context.Context, method, sub string, in, out any
 		return serverFailure(fmt.Errorf("hosted storage: unreadable answer from the remote server: %w", err))
 	}
 	return nil
+}
+
+// hostedRetryPause is the first pause after a 429; each later one is longer.
+var hostedRetryPause = 2 * time.Second
+
+// callRetry is call, retried while the remote server answers HTTP 429: it
+// asks this host to confirm what it uploaded before it signs more, or to
+// slow down. Every command on hosted storage starts with one of these, and
+// several hosts behind one address share a limit, so a burst waits instead
+// of failing the command. A 429 that is a quota refusal is returned at once.
+func (c *hostedClient) callRetry(ctx context.Context, method, sub string, in, out any) error {
+	for attempt := 0; ; attempt++ {
+		err := c.call(ctx, method, sub, in, out)
+		var he *hostedError
+		if err == nil || !errors.As(err, &he) || he.Status != http.StatusTooManyRequests || attempt >= 20 ||
+			strings.Contains(he.Msg, "backups to hosted storage") || strings.Contains(he.Msg, "downloaded") {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Duration(attempt+1) * hostedRetryPause):
+		}
+	}
 }
 
 // --- the provider ----------------------------------------------------------------
