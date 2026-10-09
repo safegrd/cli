@@ -104,6 +104,9 @@ type SurfaceState struct {
 	// surface back on its config's schedule.
 	ConsoleSchedule      string `json:"console_schedule,omitempty"`
 	ConsoleRetentionDays int    `json:"console_retention_days,omitempty"`
+	// ConsoleDrillChecks are the drill checks the console holds for this
+	// surface, run beside the config's own. Kept for the same reason.
+	ConsoleDrillChecks []model.DrillCheck `json:"console_drill_checks,omitempty"`
 }
 
 // setDrill records how the last drill went. The three always change
@@ -487,6 +490,33 @@ func applyConsoleSettings(s, configured *config.SurfaceConfig, st *SurfaceState)
 	if st.ConsoleRetentionDays > 0 {
 		s.RetentionDays = st.ConsoleRetentionDays
 	}
+	if len(st.ConsoleDrillChecks) > 0 {
+		s.Drill = withConsoleDrillChecks(configured.Drill, st.ConsoleDrillChecks)
+	}
+}
+
+// withConsoleDrillChecks is the surface's drill config with the console's
+// checks after the config's own. A console check named like one in the config
+// is left out: the host's config is the one its operator edits by hand. The
+// config's struct is copied, never changed.
+func withConsoleDrillChecks(d *config.DrillConfig, console []model.DrillCheck) *config.DrillConfig {
+	var out config.DrillConfig
+	if d != nil {
+		out = *d
+	}
+	out.Checks = append([]model.DrillCheck(nil), out.Checks...)
+	have := map[string]bool{}
+	for _, c := range out.Checks {
+		have[strings.TrimSpace(c.Name)] = true
+	}
+	for _, c := range console {
+		// The remote server sends queries only; a command from it is never run.
+		if strings.TrimSpace(c.Command) != "" || have[strings.TrimSpace(c.Name)] {
+			continue
+		}
+		out.Checks = append(out.Checks, c)
+	}
+	return &out
 }
 
 // consoleSettingsSaid is the surfaces this process has already said run on
@@ -549,7 +579,29 @@ func noteConsoleSettings(st *SurfaceState, configured *config.SurfaceConfig, hb 
 		}
 		st.ConsoleRetentionDays = hb.RetentionDays
 	}
+	if !sameDrillChecks(hb.DrillChecks, st.ConsoleDrillChecks) {
+		changed = true
+		if len(hb.DrillChecks) == 0 {
+			fmt.Printf("Surface %s: the drill checks set in the console were cleared.\n", st.SurfaceID)
+		} else {
+			fmt.Printf("Surface %s: the console set %d drill checks, run after each drill that restores into a database.\n",
+				st.SurfaceID, len(hb.DrillChecks))
+		}
+		st.ConsoleDrillChecks = hb.DrillChecks
+	}
 	return changed
+}
+
+func sameDrillChecks(a, b []model.DrillCheck) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // warnAboutSchedules says out loud, once per daemon start, every surface whose

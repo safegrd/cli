@@ -101,6 +101,11 @@ type Node struct {
 	ConsoleSchedule      string `json:"console_schedule,omitempty" yaml:"console_schedule,omitempty"`
 	ConsoleRetentionDays int    `json:"console_retention_days,omitempty" yaml:"console_retention_days,omitempty"`
 	NamedInConsole       bool   `json:"named_in_console,omitempty" yaml:"named_in_console,omitempty"`
+	// DrillChecks are the surface's drill checks chosen in the console:
+	// queries only, never commands, which run on the host and are set in
+	// its own config. Sent to the daemon on its heartbeat and to SafeGrd's
+	// runner with each drill job.
+	DrillChecks []DrillCheck `json:"drill_checks,omitempty" yaml:"drill_checks,omitempty"`
 
 	// BackupRequestedAt is a one-shot "back up now" from the console or API,
 	// cleared when the next snapshot for this node arrives. Never inferred
@@ -369,6 +374,10 @@ type HeartbeatResponse struct {
 	// decides.
 	Schedule      string `json:"schedule,omitempty"`
 	RetentionDays int    `json:"retention_days,omitempty"`
+	// DrillChecks are the checks the console holds for this surface, run
+	// after a drill's restore beside the ones in the host's config. Absent
+	// means none.
+	DrillChecks []DrillCheck `json:"drill_checks,omitempty"`
 
 	// LatestCLIVersion and UpgradeAvailable inform the client when a newer
 	// version of SafeGrd CLI is released.
