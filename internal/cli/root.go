@@ -159,6 +159,7 @@ func init() {
 
 	RootCmd.AddCommand(newVersionCmd())
 	RootCmd.AddCommand(newInitCmd())
+	RootCmd.AddCommand(newKeygenCmd())
 	RootCmd.AddCommand(newBackupCmd())
 	RootCmd.AddCommand(newRestoreCmd())
 	RootCmd.AddCommand(newStatusCmd())

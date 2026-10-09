@@ -143,6 +143,10 @@ safegrd login
 # --key-custody decides whether the server keeps a copy (safegrd) or not (local)
 safegrd enroll --key-custody local
 
+# A host that should encrypt but never decrypt: make the key pair on your laptop,
+# then put only the printed public key in the host's encryption.public_key
+safegrd keygen --out ~/.safegrd/keys/prod.key
+
 # Headless / CI: a Personal Access Token instead of the browser
 safegrd enroll --token "sg_pat_..."
 
