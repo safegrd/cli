@@ -60,6 +60,26 @@ type mysqlTarget struct {
 	CAFile               string
 }
 
+// mysqlSSLModes maps the ssl-mode values MySQL's own clients take, and that
+// providers such as Aiven put in the URIs they hand out, onto tls. REQUIRED
+// encrypts without checking the certificate, as it does in mysql(1). Both
+// VERIFY modes check the chain and the host name: the driver has no mode that
+// checks one without the other.
+var mysqlSSLModes = map[string]string{
+	"DISABLED":        "false",
+	"PREFERRED":       "preferred",
+	"REQUIRED":        "skip-verify",
+	"VERIFY_CA":       "true",
+	"VERIFY_IDENTITY": "true",
+}
+
+// MySQLSSLModeTLS is the tls value an ssl-mode stands for, and whether
+// MySQL's clients know the mode.
+func MySQLSSLModeTLS(mode string) (string, bool) {
+	tls, ok := mysqlSSLModes[strings.ToUpper(mode)]
+	return tls, ok
+}
+
 func parseMySQLURL(raw string) (*mysqlTarget, error) {
 	u, err := url.Parse(raw)
 	if err != nil || (u.Scheme != "mysql" && u.Scheme != "mariadb") {
@@ -80,6 +100,16 @@ func parseMySQLURL(raw string) (*mysqlTarget, error) {
 	}
 	q := u.Query()
 	t.TLS, t.CAFile = q.Get("tls"), q.Get("ssl-ca")
+	if mode := q.Get("ssl-mode"); mode != "" {
+		tls, ok := MySQLSSLModeTLS(mode)
+		switch {
+		case !ok:
+			return nil, fmt.Errorf("ssl-mode=%s: use DISABLED, PREFERRED, REQUIRED, VERIFY_CA or VERIFY_IDENTITY", mode)
+		case t.TLS != "" && t.TLS != tls:
+			return nil, fmt.Errorf("tls=%s and ssl-mode=%s disagree: keep one of them", t.TLS, mode)
+		}
+		t.TLS = tls
+	}
 	if t.CAFile != "" && t.TLS == "" {
 		t.TLS = "true"
 	}

@@ -27,6 +27,9 @@ func TestDatabaseTLSWarningNamesTheModeToSet(t *testing.T) {
 		{"mysql://u:p@db.internal:3306/db", "tls=true"},
 		{"mariadb://u:p@db.internal:3306/db?tls=skip-verify", "tls=skip-verify"},
 		{"mysql://u:p@db.internal:3306/db?tls=preferred", "tls=preferred"},
+		{"mysql://u:p@db.internal:3306/db?ssl-mode=VERIFY_IDENTITY", ""},
+		{"mysql://u:p@db.internal:3306/db?ssl-mode=REQUIRED", "ssl-mode=REQUIRED, which checks no certificate"},
+		{"mysql://u:p@db.internal:3306/db?ssl-mode=DISABLED", "ssl-mode=DISABLED, so the password crosses"},
 		{"mongodb://u:p@db.internal/db", ""},
 		{"sqlite:///tmp/x.db", ""},
 	}

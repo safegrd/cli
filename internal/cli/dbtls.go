@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 	"sync"
+
+	"github.com/safegrd/cli/pkg/dump"
 )
 
 // databaseTLSWarning says when a database URL would carry its password to a
@@ -66,13 +68,22 @@ func mysqlTLSWarning(raw string) string {
 	if q.Get("ssl-ca") != "" {
 		return ""
 	}
-	switch mode := strings.ToLower(q.Get("tls")); mode {
-	case "", "false":
+	mode := strings.ToLower(q.Get("tls"))
+	set := "tls=" + mode
+	if sslMode := q.Get("ssl-mode"); mode == "" && sslMode != "" {
+		if tls, ok := dump.MySQLSSLModeTLS(sslMode); ok {
+			mode, set = tls, "ssl-mode="+sslMode
+		}
+	}
+	switch mode {
+	case "":
 		return "its connection URL sets no tls, so the password crosses the network in the clear; set tls=true (and ssl-ca=/path for a private CA)"
+	case "false":
+		return "its connection URL sets " + set + ", so the password crosses the network in the clear; set tls=true (and ssl-ca=/path for a private CA)"
 	case "preferred":
-		return "its connection URL sets tls=preferred, which falls back to plaintext and checks no certificate; set tls=true"
+		return "its connection URL sets " + set + ", which falls back to plaintext and checks no certificate; set tls=true"
 	case "skip-verify":
-		return "its connection URL sets tls=skip-verify, which checks no certificate; set tls=true (and ssl-ca=/path for a private CA)"
+		return "its connection URL sets " + set + ", which checks no certificate; set tls=true (and ssl-ca=/path for a private CA)"
 	}
 	return ""
 }

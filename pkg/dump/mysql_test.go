@@ -72,6 +72,36 @@ func TestMySQLURLs(t *testing.T) {
 	if _, err := parseMySQLURL("mysql://app@host/"); err == nil {
 		t.Error("a URL with no database was accepted")
 	}
+	// ssl-mode is what mysql(1) takes and what Aiven's URIs carry.
+	for raw, want := range map[string]string{
+		"mysql://a:p@h:3306/db?ssl-mode=REQUIRED":                      "skip-verify",
+		"mysql://a:p@h:3306/db?ssl-mode=verify_identity":               "true",
+		"mysql://a:p@h:3306/db?ssl-mode=VERIFY_CA":                     "true",
+		"mysql://a:p@h:3306/db?ssl-mode=PREFERRED":                     "preferred",
+		"mysql://a:p@h:3306/db?ssl-mode=DISABLED":                      "false",
+		"mysql://a:p@h:3306/db?ssl-mode=REQUIRED&tls=skip-verify":      "skip-verify",
+		"mysql://a:p@h:3306/db?ssl-mode=VERIFY_IDENTITY&ssl-ca=/c.pem": "true",
+	} {
+		tg, err := parseMySQLURL(raw)
+		if err != nil {
+			t.Fatalf("%s: %v", raw, err)
+		}
+		if tg.TLS != want {
+			t.Errorf("%s: tls %q, want %q", raw, tg.TLS, want)
+		}
+	}
+	for raw, words := range map[string]string{
+		"mysql://a:p@h:3306/db?ssl-mode=STRICT":            "ssl-mode=STRICT: use DISABLED",
+		"mysql://a:p@h:3306/db?ssl-mode=REQUIRED&tls=true": "disagree",
+	} {
+		_, err := parseMySQLURL(raw)
+		if err == nil {
+			t.Fatalf("%s was accepted", raw)
+		}
+		if !strings.Contains(err.Error(), words) {
+			t.Errorf("%s: %v, want %q", raw, err, words)
+		}
+	}
 	if !SameMySQLDatabase("mysql://a@localhost:3306/x", "mysql://b:pw@127.0.0.1/x") || SameMySQLDatabase("mysql://a@h/x", "mysql://a@h/y") {
 		t.Error("SameMySQLDatabase")
 	}
