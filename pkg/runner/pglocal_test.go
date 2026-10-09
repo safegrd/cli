@@ -194,11 +194,8 @@ func TestALocalSandboxUnderRootRunsAsTheStateDirsOwner(t *testing.T) {
 	if err != nil {
 		t.Skipf("this host cannot start a local PostgreSQL: %v", err)
 	}
-	rootOwned := t.TempDir()
-	if _, err := StartLocalPostgres(ctx, srv, rootOwned, 1<<20); err == nil ||
-		!strings.Contains(err.Error(), "root owns its state directory") {
-		t.Errorf("a root-owned state directory: %v", err)
-	}
+	// A state directory root owns runs the cluster as nobody instead:
+	// TestARootDaemonsSandboxRunsAsNobody.
 
 	// The enrolling user's state directory, in a tree that user can reach.
 	stateDir := sandboxStateDir(t)
