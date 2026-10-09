@@ -72,6 +72,27 @@ and never leaves this host.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 
+			// With nothing named on the command line, a config with one
+			// surface backs that one up: `init --database-url` writes the
+			// database as a surface, and `safegrd backup` is the next step the
+			// docs give. With several, one has to be named.
+			oneOffFlags := false
+			for _, f := range []string{"json", "tag", "retention-days", "s3-bucket", "s3-prefix", "s3-region", "s3-endpoint", "s3-access-key", "s3-secret-key", "format", "one-filesystem"} {
+				oneOffFlags = oneOffFlags || cmd.Flags().Changed(f)
+			}
+			if surfaceID == "" && dbURL == "" && cfg.DatabaseURL == "" && filesPath == "" && !emailMode && !oneOffFlags {
+				switch configured := len(cfg.Surfaces); {
+				case configured == 1:
+					surfaceID = cfg.Surfaces[0].ID
+				case configured > 1:
+					ids := make([]string, 0, configured)
+					for _, s := range cfg.Surfaces {
+						ids = append(ids, s.ID)
+					}
+					return fmt.Errorf("this config has %d surfaces (%s); name one with --surface, or run 'safegrd daemon run --once' for every one that is due",
+						configured, strings.Join(ids, ", "))
+				}
+			}
 			if surfaceID != "" {
 				for _, f := range []string{"database-url", "files", "email", "json", "tag", "retention-days", "s3-bucket", "s3-prefix", "s3-region", "s3-endpoint", "s3-access-key", "s3-secret-key", "format", "one-filesystem"} {
 					if cmd.Flags().Changed(f) {
@@ -743,14 +764,14 @@ func deliverSnapshotRecord(ctx context.Context, serverURL, token string, meta *m
 	// `init` writes a node_id with no enrolment at all, so having a
 	// node_id is not alone proof of enrolment.
 	if token == "" {
-		warn("not reported: no server_token in this config, so this host is standalone.\n" +
+		warn("not reported: no server.token in this config, so this host is standalone.\n" +
 			"                    The backup is stored; run 'safegrd enroll' to report it to the console.")
 		return "", false
 	}
 	if meta.NodeID == "" {
-		warn("NOT RECORDED: this config has no node_id, so the report names no node.\n" +
+		warn("NOT RECORDED: this config has no node.id, so the report names no node.\n" +
 			"                    The backup itself is fine. Add node_id, or re-run 'safegrd enroll'.")
-		return "this config has no node_id", false
+		return "this config has no node.id", false
 	}
 
 	body, err := json.Marshal(meta)

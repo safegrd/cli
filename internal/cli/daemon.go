@@ -236,7 +236,7 @@ exits at once.`,
 			// an enrolled host that lost its token must not look the same as
 			// one reporting fine.
 			if !hostIsEnrolled(cfg) {
-				fmt.Printf("   Remote server:       not reporting (no server_token; standalone)\n")
+				fmt.Printf("   Remote server:       not reporting (no server.token; standalone)\n")
 			}
 			if msg := unusedAlertBlock(cfg); msg != "" {
 				fmt.Fprintf(os.Stderr, "Warning: %s\n", msg)

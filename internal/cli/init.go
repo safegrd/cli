@@ -2,13 +2,17 @@ package cli
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/google/uuid"
 	"github.com/safegrd/cli/pkg/config"
 	"github.com/safegrd/cli/pkg/crypto"
+	"github.com/safegrd/cli/pkg/dump"
+	"github.com/safegrd/cli/pkg/model"
 	"github.com/safegrd/cli/pkg/storage"
 	"github.com/spf13/cobra"
 )
@@ -110,7 +114,6 @@ you if you have not already).`,
 				NodeID:      nodeID,
 				NodeName:    nodeName,
 				ServerURL:   serverURL,
-				DatabaseURL: dbURL,
 				Storage: config.StorageConfig{
 					Type:          config.StorageType(storageType),
 					Bucket:        s3Bucket,
@@ -167,6 +170,11 @@ you if you have not already).`,
 				}
 			}
 
+			// The database is a surface: every backup source in the file is.
+			if dbURL != "" {
+				cfg.Surfaces = []config.SurfaceConfig{initDatabaseSurface(dbURL)}
+			}
+
 			// 4. Save Config File
 			targetConfig, err := saveConfig()
 			if err != nil {
@@ -215,3 +223,29 @@ func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil || !os.IsNotExist(err)
 }
+
+// initDatabaseSurface is the surface `init --database-url` writes. The URL
+// is kept as given, a reference included; it is resolved here only to tell
+// the engine and name the surface after its database.
+func initDatabaseSurface(ref string) config.SurfaceConfig {
+	resolved, _ := resolveConfigSecret("database-url", ref)
+	kind := string(dump.SurfaceTypeOfURL(resolved))
+	if resolved == "" || kind == "" {
+		kind = string(model.SurfaceTypePostgres)
+	}
+	id := "db"
+	if dump.IsSQLiteURL(resolved) {
+		if p, err := dump.SQLitePath(resolved); err == nil {
+			id = strings.TrimSuffix(filepath.Base(p), filepath.Ext(p))
+		}
+	} else if u, err := url.Parse(resolved); err == nil && strings.Trim(u.Path, "/") != "" {
+		id = strings.Trim(u.Path, "/")
+	}
+	id = surfaceIDCleaner.ReplaceAllString(strings.ToLower(id), "-")
+	if id == "" || id == "-" {
+		id = "db"
+	}
+	return config.SurfaceConfig{ID: id, Type: kind, Name: id, DatabaseURL: ref}
+}
+
+var surfaceIDCleaner = regexp.MustCompile(`[^a-z0-9_.-]+`)

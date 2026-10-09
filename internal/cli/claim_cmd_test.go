@@ -24,9 +24,11 @@ func TestClaimAppendsToTheConfigAndKeepsTheRest(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	orig := `# managed by hand; do not reorder
-server_url: "https://safegrd.example"
-node_id: "node-1"
-server_token: "sg_tok_x"
+server:
+  url: "https://safegrd.example"
+  token: "sg_tok_x"
+node:
+  id: "node-1"
 surfaces:
   # the app's main database
   - id: moneydb
@@ -75,7 +77,7 @@ surfaces:
 // A config with no surfaces list gets one.
 func TestClaimAddsASurfacesListWhenThereIsNone(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(path, []byte("server_url: \"https://safegrd.example\"\nsurfaces:\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("server:\n  url: \"https://safegrd.example\"\nsurfaces:\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := appendSurfacesToConfig(path, []claimSurface{claimed("docs", "files", false, "")}); err != nil {
@@ -90,7 +92,7 @@ func TestClaimAddsASurfacesListWhenThereIsNone(t *testing.T) {
 // A result that would not load is not left behind: the previous config is put back.
 func TestClaimPutsThePreviousConfigBackWhenTheResultDoesNotLoad(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	orig := "server_url: \"https://safegrd.example\"\nsurfaces:\n  - id: a\n    type: postgres\n    credential_held: true\n"
+	orig := "server:\n  url: \"https://safegrd.example\"\nsurfaces:\n  - id: a\n    type: postgres\n    credential_held: true\n"
 	if err := os.WriteFile(path, []byte(orig), 0o600); err != nil {
 		t.Fatal(err)
 	}

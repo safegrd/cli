@@ -128,7 +128,7 @@ type hostedClient struct {
 func newHostedClient(cfg *config.CLIConfig) (*hostedClient, error) {
 	if cfg.ServerURL == "" || cfg.NodeID == "" || cfg.ServerToken == "" {
 		return nil, fmt.Errorf("storage.type is hosted, which needs this host enrolled with the remote server " +
-			"(node_id and server_token): run `safegrd enroll`")
+			"(node.id and server.token): run `safegrd enroll`")
 	}
 	if err := refuseInsecureServerURL(cfg.ServerURL); err != nil {
 		return nil, err

@@ -121,7 +121,7 @@ func refuseInsecurePersonalToken(serverURL string) error {
 func refuseInsecureServerURLFor(serverURL, verb, why string) error {
 	u, err := url.Parse(strings.TrimSpace(serverURL))
 	if err != nil {
-		return fmt.Errorf("server_url is not a URL: %w", err)
+		return fmt.Errorf("server.url is not a URL: %w", err)
 	}
 	if strings.EqualFold(u.Scheme, "https") {
 		return nil

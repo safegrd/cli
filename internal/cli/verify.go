@@ -388,7 +388,7 @@ a file with --file:
 				nodeID = cfg.NodeID
 			}
 			if nodeID == "" && localFile == "" {
-				return fmt.Errorf("--node is required: this config names no node_id")
+				return fmt.Errorf("--node is required: this config names no node.id")
 			}
 
 			serverURL := resolveServerURL()

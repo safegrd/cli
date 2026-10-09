@@ -68,7 +68,7 @@ func TestARejectedAttestationIsReported(t *testing.T) {
 }
 
 // The two misconfigurations that produced exactly this on a production host: a config
-// with no node_id, and one with no server_token. Both must say so before a
+// with no node.id, and one with no server.token. Both must say so before a
 // request is even attempted.
 func TestMissingNodeIdentityIsReportedWithoutCallingTheServer(t *testing.T) {
 	var called bool
@@ -78,23 +78,23 @@ func TestMissingNodeIdentityIsReportedWithoutCallingTheServer(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	t.Run("no node_id", func(t *testing.T) {
+	t.Run("no node.id", func(t *testing.T) {
 		out := captureStderr(t, func() {
 			sendMetadataToServer(context.Background(), srv.URL, "sg_tok_fine",
 				&model.SnapshotMetadata{SnapshotID: "snap-2"}, true)
 		})
-		if !strings.Contains(out, "no node_id") {
-			t.Errorf("a config with no node_id was not reported: %q", out)
+		if !strings.Contains(out, "no node.id") {
+			t.Errorf("a config with no node.id was not reported: %q", out)
 		}
 	})
 
-	t.Run("no server_token", func(t *testing.T) {
+	t.Run("no server.token", func(t *testing.T) {
 		out := captureStderr(t, func() {
 			sendMetadataToServer(context.Background(), srv.URL, "",
 				&model.SnapshotMetadata{SnapshotID: "snap-3", NodeID: "node-1"}, true)
 		})
-		if !strings.Contains(out, "no server_token") {
-			t.Errorf("a config with no server_token was not reported: %q", out)
+		if !strings.Contains(out, "no server.token") {
+			t.Errorf("a config with no server.token was not reported: %q", out)
 		}
 	})
 

@@ -39,8 +39,27 @@ func TestCLIConfigLoadSave(t *testing.T) {
 	if loaded.NodeID != cfg.NodeID {
 		t.Errorf("expected NodeID %s, got %s", cfg.NodeID, loaded.NodeID)
 	}
-	if loaded.DatabaseURL != cfg.DatabaseURL {
-		t.Errorf("expected DatabaseURL %s, got %s", cfg.DatabaseURL, loaded.DatabaseURL)
+	// A database named outside the file is not written into it: in the
+	// file a database is a surface.
+	if loaded.DatabaseURL != "" {
+		t.Errorf("the config file kept database_url %q", loaded.DatabaseURL)
+	}
+	if loaded.ServerURL != cfg.ServerURL || loaded.NodeName != cfg.NodeName {
+		t.Errorf("server and node did not round-trip: %q %q", loaded.ServerURL, loaded.NodeName)
+	}
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"server:\n", "  url: http://localhost:8080\n", "node:\n", "  id: node-123\n"} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("the saved file does not have %q:\n%s", want, raw)
+		}
+	}
+	for _, not := range []string{"server_url", "node_id:", "database_url"} {
+		if strings.Contains(string(raw), not) {
+			t.Errorf("the saved file still has %q:\n%s", not, raw)
+		}
 	}
 	if loaded.Storage.RetentionDays != 14 {
 		t.Errorf("expected RetentionDays 14, got %d", loaded.Storage.RetentionDays)
@@ -111,7 +130,8 @@ func TestCLIConfigInlinePrivateKeyMigration(t *testing.T) {
 	targetKeyPath := filepath.Join(tempDir, "keys", "daemon.key")
 
 	// Simulate legacy insecure config file containing inline private_key
-	legacyYAML := `node_id: node-mig-01
+	legacyYAML := `node:
+  id: node-mig-01
 encryption:
   public_key: age1legacyrecipient...
   private_key: AGE-SECRET-KEY-1LEGACYMIGRATEKEY
@@ -164,7 +184,8 @@ func TestCLIConfigInlineKeyStaysWhenKeyPathHoldsAnotherKey(t *testing.T) {
 	if err := os.WriteFile(keyPath, []byte("AGE-SECRET-KEY-1SOMEOTHERKEY\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	legacyYAML := `node_id: node-mig-02
+	legacyYAML := `node:
+  id: node-mig-02
 encryption:
   public_key: age1legacyrecipient
   private_key: AGE-SECRET-KEY-1THEONLYCOPY
@@ -197,7 +218,8 @@ func TestCLIConfigResolvesPrivateKeyFromKeyPath(t *testing.T) {
 	_ = os.WriteFile(keyPath, []byte("AGE-SECRET-KEY-1FROMFILETEST\n"), 0600)
 
 	configPath := filepath.Join(tempDir, "config.yaml")
-	cleanYAML := `node_id: node-clean-01
+	cleanYAML := `node:
+  id: node-clean-01
 encryption:
   public_key: age1cleanrecipient...
   key_path: "` + keyPath + `"
@@ -219,7 +241,7 @@ func TestCLIConfigInsecurePermissionsRejected(t *testing.T) {
 	configPath := filepath.Join(tempDir, "insecure_config.yaml")
 
 	// Write config with world-readable permissions (0644)
-	if err := os.WriteFile(configPath, []byte("node_id: insecure-node\n"), 0644); err != nil {
+	if err := os.WriteFile(configPath, []byte("node:\n  id: insecure-node\n"), 0644); err != nil {
 		t.Fatalf("failed to write insecure config: %v", err)
 	}
 
@@ -232,35 +254,39 @@ func TestCLIConfigInsecurePermissionsRejected(t *testing.T) {
 	}
 }
 
-func TestCLIConfigBackwardsCompatibilityV1(t *testing.T) {
+// A database named by SAFEGRD_DATABASE_URL, with no surfaces in the file,
+// is a surface for the run (the Docker image and the Helm chart back up one
+// database that way), and saving the config does not write it. A database
+// at the top of the file is refused, with where it goes now.
+func TestADatabaseFromTheEnvironmentIsASurfaceForTheRun(t *testing.T) {
 	tempDir := t.TempDir()
-	configPath := filepath.Join(tempDir, "v1_config.yaml")
-
-	v1YAML := `node_id: node-legacy-pg
-node_name: Legacy Postgres
-database_url: postgres://postgres:secret@localhost:5432/mydb
-`
-	if err := os.WriteFile(configPath, []byte(v1YAML), 0600); err != nil {
-		t.Fatalf("failed writing v1 config: %v", err)
+	configPath := filepath.Join(tempDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte("node:\n  id: node-env-pg\n  name: Env Postgres\n"), 0600); err != nil {
+		t.Fatal(err)
 	}
-
+	t.Setenv("SAFEGRD_DATABASE_URL", "postgres://postgres:secret@localhost:5432/mydb")
 	cfg, err := LoadCLIConfig(configPath)
 	if err != nil {
-		t.Fatalf("failed loading v1 config: %v", err)
+		t.Fatalf("load: %v", err)
+	}
+	if len(cfg.Surfaces) != 1 || cfg.Surfaces[0].ID != "node-env-pg" || cfg.Surfaces[0].Type != "postgres" ||
+		cfg.Surfaces[0].DatabaseURL != "postgres://postgres:secret@localhost:5432/mydb" {
+		t.Fatalf("surfaces %+v, want the one SAFEGRD_DATABASE_URL names", cfg.Surfaces)
+	}
+	if err := SaveCLIConfig(cfg, configPath); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(configPath)
+	if strings.Contains(string(raw), "secret") || strings.Contains(string(raw), "surfaces") {
+		t.Errorf("saving wrote the environment's database into the file:\n%s", raw)
 	}
 
-	if len(cfg.Surfaces) != 1 {
-		t.Fatalf("expected 1 implicit surface, got %d", len(cfg.Surfaces))
+	t.Setenv("SAFEGRD_DATABASE_URL", "")
+	if err := os.WriteFile(configPath, []byte("database_url: postgres://db/x\n"), 0600); err != nil {
+		t.Fatal(err)
 	}
-	s := cfg.Surfaces[0]
-	if s.ID != "node-legacy-pg" {
-		t.Errorf("expected surface ID node-legacy-pg, got %s", s.ID)
-	}
-	if s.Type != "postgres" {
-		t.Errorf("expected surface type postgres, got %s", s.Type)
-	}
-	if s.DatabaseURL != "postgres://postgres:secret@localhost:5432/mydb" {
-		t.Errorf("expected surface database URL populated, got %s", s.DatabaseURL)
+	if _, err := LoadCLIConfig(configPath); err == nil || !strings.Contains(err.Error(), "database_url is no longer read") || !strings.Contains(err.Error(), "a surface") {
+		t.Errorf("a top-level database_url: %v, want a refusal naming a surface", err)
 	}
 }
 

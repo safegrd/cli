@@ -148,6 +148,10 @@ func (s *SurfaceConfig) FromSafeGrd() bool { return s.CredentialFrom() == Creden
 
 // SurfaceConfig defines a protected surface on a host.
 type SurfaceConfig struct {
+	// implicit marks the surface SAFEGRD_DATABASE_URL made for this run,
+	// which is not saved.
+	implicit bool
+
 	ID            string `yaml:"id" json:"id"`     // Stable identifier
 	Type          string `yaml:"type" json:"type"` // "postgres", "mysql", "mongodb", "sqlite", "files", "email"
 	Name          string `yaml:"name,omitempty" json:"name,omitempty"`
@@ -234,16 +238,43 @@ type DrillConfig struct {
 	Checks []model.DrillCheck `yaml:"checks,omitempty" json:"checks,omitempty"`
 }
 
+// RemoteServerConfig is the file's server: block, the remote server this
+// host reports to.
+type RemoteServerConfig struct {
+	URL   string `yaml:"url,omitempty" json:"url,omitempty"`
+	Token string `yaml:"token,omitempty" json:"token,omitempty"`
+}
+
+// NodeIdentity is the file's node: block, who this host is to the remote
+// server.
+type NodeIdentity struct {
+	ID      string `yaml:"id,omitempty" json:"id,omitempty"`
+	Name    string `yaml:"name,omitempty" json:"name,omitempty"`
+	Project string `yaml:"project,omitempty" json:"project,omitempty"`
+}
+
 // CLIConfig is the complete configuration for the `safegrd` CLI.
+//
+// The file groups the host's identity and its remote server in node: and
+// server: blocks. The code reads them as the flat fields below, which
+// LoadCLIConfig fills from the blocks (and the environment) and
+// SaveCLIConfig writes back into them; the flat fields are never keys.
 type CLIConfig struct {
-	NodeID      string           `yaml:"node_id" json:"node_id"`
-	NodeName    string           `yaml:"node_name" json:"node_name"`
-	ProjectID   string           `yaml:"project_id,omitempty" json:"project_id,omitempty"`
-	ServerURL   string           `yaml:"server_url" json:"server_url"`
-	ServerToken string           `yaml:"server_token,omitempty" json:"server_token,omitempty"`
-	DatabaseURL string           `yaml:"database_url" json:"database_url"`
-	Storage     StorageConfig    `yaml:"storage" json:"storage"`
-	Encryption  EncryptionConfig `yaml:"encryption" json:"encryption"`
+	Server RemoteServerConfig `yaml:"server,omitempty" json:"-"`
+	Node   NodeIdentity       `yaml:"node,omitempty" json:"-"`
+
+	NodeID      string `yaml:"-" json:"node_id"`
+	NodeName    string `yaml:"-" json:"node_name"`
+	ProjectID   string `yaml:"-" json:"project_id,omitempty"`
+	ServerURL   string `yaml:"-" json:"server_url"`
+	ServerToken string `yaml:"-" json:"server_token,omitempty"`
+	// DatabaseURL is a database to back up named outside the file: by
+	// --database-url or SAFEGRD_DATABASE_URL. A database in the file is a
+	// surface.
+	DatabaseURL string `yaml:"-" json:"database_url"`
+
+	Storage    StorageConfig    `yaml:"storage" json:"storage"`
+	Encryption EncryptionConfig `yaml:"encryption" json:"encryption"`
 
 	// Daemon & Multi-Surface Unattended Protection
 	Daemon   DaemonConfig    `yaml:"daemon,omitempty" json:"daemon,omitempty"`
@@ -262,7 +293,7 @@ var unknownFieldRe = regexp.MustCompile(`line (\d+): field (\S+) not found in ty
 // so a key inside a surface's own storage block is named "storage." too; the
 // line number says which.
 var sectionOfType = map[string]string{
-	"CLIConfig": "", "StorageConfig": "storage.", "EncryptionConfig": "encryption.",
+	"CLIConfig": "", "RemoteServerConfig": "server.", "NodeIdentity": "node.", "StorageConfig": "storage.", "EncryptionConfig": "encryption.",
 	"DaemonConfig": "daemon.", "DefaultsConfig": "defaults.", "SurfaceConfig": "surfaces[].", "DrillConfig": "surfaces[].drill.",
 }
 
@@ -311,6 +342,12 @@ func replacedCredentialKeys(unknown []string) error {
 	// quietly, a drill would fall back to memory and a backup would be
 	// locked for another number of days.
 	retired := map[string]string{
+		"node_id":                          "node: {id: ...}",
+		"node_name":                        "node: {name: ...}",
+		"project_id":                       "node: {project: ...}",
+		"server_url":                       "server: {url: ...}",
+		"server_token":                     "server: {token: ...}",
+		"database_url":                     "a surface (surfaces: [{id: db, type: postgres, database_url: ...}]), or SAFEGRD_DATABASE_URL for one run",
 		"surfaces[].drill.sandbox_url_env": "drill.sandbox_url: env:VARIABLE",
 		"defaults.retention_days":          "storage.retention_days, or a surface's retention_days",
 	}
@@ -421,6 +458,11 @@ func LoadCLIConfig(path string) (*CLIConfig, error) {
 			return nil, fmt.Errorf("failed to parse config file %s: %w", path, err)
 		}
 		cfg.UnknownKeys = unknownKeys(data)
+		if cfg.Server.URL != "" {
+			cfg.ServerURL = cfg.Server.URL
+		}
+		cfg.ServerToken = cfg.Server.Token
+		cfg.NodeID, cfg.NodeName, cfg.ProjectID = cfg.Node.ID, cfg.Node.Name, cfg.Node.Project
 		// A relative key_path is relative to this file, not to wherever the
 		// command runs (SaveCLIConfig writes it that way).
 		if kp := cfg.Encryption.KeyPath; kp != "" && !filepath.IsAbs(kp) {
@@ -517,11 +559,11 @@ func LoadCLIConfig(path string) (*CLIConfig, error) {
 		cfg.Storage.SecretAccessKey = secKey
 	}
 
-	// Backwards compatibility:
-	// A v1 config with top-level database_url and no surfaces: loads as a single implicit postgres surface.
-	// A node_id alone is not one: a host enrolled to restore, or not yet given a surface, has
-	// nothing to back up, and doctor failed it twice for the credential of a database it does
-	// not have.
+	// A database named by SAFEGRD_DATABASE_URL, with no surfaces in the
+	// file, is a surface of its own for this run: the Docker image and the
+	// Helm chart back up one database that way. It is never written to the
+	// file. A node id alone is not a surface: a host enrolled to restore, or
+	// not yet given one, has nothing to back up.
 	if len(cfg.Surfaces) == 0 && cfg.DatabaseURL != "" {
 		sID := cfg.NodeID
 		if sID == "" {
@@ -540,6 +582,7 @@ func LoadCLIConfig(path string) (*CLIConfig, error) {
 				Schedule:      cfg.Defaults.Schedule,
 				RetentionDays: ret,
 				DatabaseURL:   cfg.DatabaseURL,
+				implicit:      true,
 			},
 		}
 	}
@@ -561,6 +604,14 @@ func SaveCLIConfig(cfg *CLIConfig, path string) error {
 	out := *cfg
 	if rel, ok := keyPathBeside(cfg.Encryption.KeyPath, path); ok {
 		out.Encryption.KeyPath = rel
+	}
+	out.Server = RemoteServerConfig{URL: cfg.ServerURL, Token: cfg.ServerToken}
+	out.Node = NodeIdentity{ID: cfg.NodeID, Name: cfg.NodeName, Project: cfg.ProjectID}
+	out.Surfaces = nil
+	for _, sc := range cfg.Surfaces {
+		if !sc.implicit {
+			out.Surfaces = append(out.Surfaces, sc)
+		}
 	}
 	data, err := yaml.Marshal(&out)
 	if err != nil {
@@ -631,7 +682,7 @@ func (c *CLIConfig) ValidateForBackup() error {
 		return fmt.Errorf("storage.layout: %s only reads a bucket; back up with storage.type: hosted", c.Storage.Layout)
 	}
 	if c.DatabaseURL == "" {
-		return fmt.Errorf("database_url is required (set via config or SAFEGRD_DATABASE_URL)")
+		return fmt.Errorf("no database to back up: pass --database-url, set SAFEGRD_DATABASE_URL, or add the database to the config as a surface")
 	}
 	if c.Encryption.PublicKey == "" {
 		return fmt.Errorf("encryption.public_key is required (run 'safegrd init' or set SAFEGRD_PUBLIC_KEY)")

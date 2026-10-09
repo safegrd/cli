@@ -18,8 +18,8 @@ func withRefusedConfig(t *testing.T) string {
 	t.Helper()
 
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	body := "server_url: https://safegrd.dev\n" +
-		"database_url: postgres://user:pass@localhost:5432/mydb\n" +
+	body := "server:\n  url: https://safegrd.dev\n" +
+		"surfaces:\n  - id: db\n    type: postgres\n    database_url: postgres://user:pass@localhost:5432/mydb\n" +
 		"encryption:\n" +
 		"  public_key: age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p\n" +
 		"storage:\n" +
@@ -131,7 +131,7 @@ func TestAnUnusedAlertBlockIsNamed(t *testing.T) {
 		t.Error("a config with no alert block was told about one")
 	}
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(path, []byte("node_name: web-01\nalert:\n  slack_webhook_url: https://hooks.slack.com/services/T/B/x\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("node:\n  name: web-01\nalert:\n  slack_webhook_url: https://hooks.slack.com/services/T/B/x\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	loaded, err := config.LoadCLIConfig(path)

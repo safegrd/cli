@@ -17,7 +17,7 @@ import (
 
 // storage.layout: hosted reads hosted storage's bucket with the bucket's own
 // key, for when the remote server cannot sign a request: list, restore and
-// verify work from it with no server_url. The bucket files an organization's
+// verify work from it with no server.url. The bucket files an organization's
 // objects under orgs/<org-id>/safegrd/ (the config's prefix):
 //
 //	snapshots/<node>/<snapshot>.safegrd, .meta.json   one archive per backup

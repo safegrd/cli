@@ -12,17 +12,23 @@
 # SAFEGRD_PRIVATE_KEY at load. This file still holds connection strings, so
 # keep it 0600 and do not commit a filled-in copy.
 
-# ---------------------------------------------------------------------------
-# CURRENT SCHEMA: one node, one surface. This is what the CLI reads today.
-# ---------------------------------------------------------------------------
+# The remote server this host reports to. `safegrd enroll` writes the token.
+server:
+  url: "https://safegrd.dev"
+  token: "" # sg_tok_..., or SAFEGRD_SERVER_TOKEN
 
-node_id: "node-prod-db-primary"
-node_name: "Production PostgreSQL"
-server_url: "http://localhost:8080" # or "https://api.safegrd.dev"
-server_token: ""
+# Who this host is to the remote server. `init` and `enroll` write these.
+node:
+  id: "node-prod-db-primary"
+  name: "prod-db-01"
+  # project: "proj-..." # the project it was enrolled into
 
-# Target PostgreSQL Database to protect
-database_url: "postgres://postgres:password@localhost:5432/myapp_prod?sslmode=disable"
+# What this host backs up. Every source is a surface; more examples follow
+# further down.
+surfaces:
+  - id: "app"
+    type: "postgres"
+    database_url: "env:APP_DATABASE_URL" # or the URL itself, or file:/path
 
 # Storage Backend: "s3" or "local"
 storage:
@@ -57,9 +63,6 @@ encryption:
 # `daemon run` reads everything below. A few keys are accepted but not yet
 # acted on; each says so where it appears, and says what happens instead.
 # See https://safegrd.dev/docs/daemon.
-#
-# The keys above stay valid: a config with no `surfaces:` list loads as a
-# single implicit `postgres` surface, so no existing install needs an edit.
 # ===========================================================================
 
 # daemon:
@@ -90,9 +93,9 @@ encryption:
 #   keep_weekly: 4
 #   keep_monthly: 12
 
-# Each entry becomes its own registered node on the remote server.
-# `id` must be stable: it is how state, locks and snapshot history are keyed.
-# surfaces:
+# More surfaces go under `surfaces:` at the top. Each becomes its own
+# registered node on the remote server. `id` must be stable: it is how state,
+# locks and snapshot history are keyed.
 #
 #   - id: "app-primary"
 #     type: "postgres"

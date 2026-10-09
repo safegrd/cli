@@ -74,10 +74,10 @@ Exit status:
 
 Environment (each overrides the config file; flags override both):
   SAFEGRD_SERVER_URL       remote server URL
-  SAFEGRD_SERVER_TOKEN     node token (server_token)
+  SAFEGRD_SERVER_TOKEN     node token (server.token)
   SAFEGRD_PRIVATE_KEY      age identity, read instead of encryption.key_path
   SAFEGRD_PUBLIC_KEY       age recipient (encryption.public_key)
-  SAFEGRD_DATABASE_URL     database to back up (database_url)
+  SAFEGRD_DATABASE_URL     a database to back up, when the config lists no surfaces
   SAFEGRD_STORAGE_BUCKET   S3 bucket (storage.bucket); sets storage.type to s3
   SAFEGRD_S3_REGION, SAFEGRD_S3_ENDPOINT, SAFEGRD_S3_ACCESS_KEY, SAFEGRD_S3_SECRET_KEY
                            S3 settings; AWS_REGION, AWS_ACCESS_KEY_ID and
