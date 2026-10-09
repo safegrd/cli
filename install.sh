@@ -519,7 +519,7 @@ log_success "SafeGrd CLI ${TAG} is installed."
 if [ -z "${SAFEGRD_NO_SETUP:-}" ] && already_enrolled; then
   printf "   This host is already enrolled (%s).\n" "${HOME}/.safegrd/config.yaml"
   printf "   To add the surfaces named for it in the console: ${CYAN}safegrd claim${RESET}\n"
-  printf "   Check it with: ${CYAN}safegrd status${RESET}\n\n"
+  printf "   Check it with: ${CYAN}safegrd doctor${RESET}\n\n"
   exit 0
 fi
 

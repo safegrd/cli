@@ -97,9 +97,11 @@ func surfaceNodeID(ctx context.Context, c *config.CLIConfig, s *config.SurfaceCo
 	if registered[s.ID] && st.ServerNodeID != "" {
 		return st.ServerNodeID
 	}
+	// The lock a backup gets: the surface's, else the storage's. Registered
+	// with the same number the backup is locked for.
 	retention := s.RetentionDays
 	if retention == 0 {
-		retention = c.Defaults.RetentionDays
+		retention = c.Storage.RetentionDays
 	}
 	pub := c.Encryption.PublicKey
 	if s.Encryption != nil && s.Encryption.PublicKey != "" {
@@ -623,11 +625,7 @@ func surfaceSandboxURL(ctx context.Context, c *config.CLIConfig, s *config.Surfa
 	if s.Drill == nil || !model.SurfaceType(strings.ToLower(s.Type)).IsDatabase() {
 		return "", nil
 	}
-	url := s.Drill.SandboxURL
-	if url == "" && s.Drill.SandboxURLEnv != "" {
-		url = os.Getenv(s.Drill.SandboxURLEnv)
-	}
-	resolved, err := resolveConfigSecret("drill.sandbox_url", url)
+	resolved, err := resolveConfigSecret("drill.sandbox_url", s.Drill.SandboxURL)
 	if err != nil || resolved == "" {
 		return "", err
 	}

@@ -39,7 +39,7 @@ func newEnrollCmd() *cobra.Command {
 
 Pass a personal access token (sg_pat_...) to register a new node, or a node token
 (sg_tok_...) with --node-id to take over one the console already created. With
-neither, it uses the login saved by 'safegrd login'. Both flags take env:VAR or
+neither, it uses the login saved by 'safegrd login'. --token takes env:VAR or
 file:/path, which keeps the token out of 'ps' and shell history.`,
 		RunE: func(cmd *cobra.Command, args []string) (runErr error) {
 			serverURL := resolveServerURL()
@@ -50,9 +50,6 @@ file:/path, which keeps the token out of 'ps' and shell history.`,
 
 			var err error
 			if token, err = ResolveSecretRef("token", token); err != nil {
-				return err
-			}
-			if apiKey, err = ResolveSecretRef("api-key", apiKey); err != nil {
 				return err
 			}
 
@@ -202,7 +199,7 @@ file:/path, which keeps the token out of 'ps' and shell history.`,
 					// be perfectly good, so this is written and said out loud
 					// rather than refused.
 					fmt.Fprintf(os.Stderr, "Warning: could not check the token: %v\n", err)
-					fmt.Fprintf(os.Stderr, "   The config is written without that check. Run 'safegrd status' once\n")
+					fmt.Fprintf(os.Stderr, "   The config is written without that check. Run 'safegrd doctor' once\n")
 					fmt.Fprintf(os.Stderr, "   the remote server is reachable to confirm this node is enrolled.\n")
 				default:
 					fmt.Printf("Node token accepted\n")
@@ -474,7 +471,6 @@ file:/path, which keeps the token out of 'ps' and shell history.`,
 	}
 
 	cmd.Flags().StringVar(&token, "token", "", "Personal access token (sg_pat_...) or node token (sg_tok_...), as env:VAR, file:/path or the token")
-	cmd.Flags().StringVar(&apiKey, "api-key", "", "Organization API key to register the node with, as env:VAR, file:/path or the key")
 	cmd.Flags().StringVar(&nodeName, "node-name", "", "Name this host is shown under (default: the hostname)")
 	cmd.Flags().StringVar(&projectID, "project", "", "Project ID or slug to attach this node to (default: the organization's default project)")
 	cmd.Flags().StringVar(&nodeIDFlag, "node-id", "",

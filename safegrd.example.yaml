@@ -31,7 +31,7 @@ storage:
   region: "us-east-1"
   endpoint: "" # Set for MinIO, Cloudflare R2, or Wasabi (e.g. http://localhost:9000)
   prefix: "safegrd/snapshots"
-  retention_days: 30 # Immutable WORM retention period
+  retention_days: 30 # Days each backup is locked; a surface's retention_days overrides it
   # Exactly "COMPLIANCE" or "GOVERNANCE", uppercase, or leave it unset for
   # COMPLIANCE. Anything else is refused at startup rather than guessed at:
   # under COMPLIANCE an object cannot be deleted before retention_days expires,
@@ -80,12 +80,12 @@ encryption:
 # defaults:
 #   schedule: "@daily"        # "@hourly" | "@daily" | "@weekly" | "6h" | "2d" (one hour minimum)
 #   timezone: "UTC"           # NOT YET ACTED ON: schedules are intervals, not wall-clock times
-#   retention_days: 30
 #   # Grandfather-father-son, applied by the daemon at upload: the first backup of
 #   # each UTC day is locked keep_daily days, of each ISO week keep_weekly weeks,
-#   # of each month keep_monthly months, every other one retention_days. 0 turns
-#   # a tier off. An hourly schedule stays cheap with a short retention_days and
-#   # keep_daily carrying the history.
+#   # of each month keep_monthly months, every other one the surface's
+#   # retention_days, else storage.retention_days. 0 turns a tier off. An hourly
+#   # schedule stays cheap with a short retention_days and keep_daily carrying
+#   # the history.
 #   keep_daily: 14
 #   keep_weekly: 4
 #   keep_monthly: 12
@@ -133,7 +133,7 @@ encryption:
 #     # postgres, the source's major or newer) and deletes afterwards. With no
 #     # server here, drills replay the snapshot in memory.
 #     # drill:
-#     #   sandbox_url_env: "APP_DRILL_DATABASE_URL"
+#     #   sandbox_url: "env:APP_DRILL_DATABASE_URL"
 #
 #   - id: "user-uploads"
 #     type: "files"

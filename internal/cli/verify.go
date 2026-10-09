@@ -31,7 +31,7 @@ func newVerifyCmd() *cobra.Command {
 	var (
 		snapshotID  string
 		sandboxURL  string
-		dryRun      bool
+		inMemory      bool
 		showURL     bool
 		keep        bool
 		keyPath     string
@@ -51,7 +51,7 @@ func newVerifyCmd() *cobra.Command {
 		Long: `Reads a snapshot from storage, decrypts it on this host with the private key,
 and checks its tables, row counts, columns and extensions.
 
-By default (or with --dry-run) the restore is parsed in memory and needs no
+By default (or with --in-memory) the restore is parsed in memory and needs no
 database. With --sandbox-target it is restored into that empty database, which
 is the full Fire Drill. Either way the result is reported to the remote server
 when this host is enrolled.
@@ -72,8 +72,8 @@ drill.checks takes, run against the sandbox after the restore:
 			if err != nil {
 				return err
 			}
-			if len(checks) > 0 && (dryRun || sandboxURL == "") {
-				return fmt.Errorf("--checks runs against the restored database, so it needs --sandbox-target and no --dry-run")
+			if len(checks) > 0 && (inMemory || sandboxURL == "") {
+				return fmt.Errorf("--checks runs against the restored database, so it needs --sandbox-target and no --in-memory")
 			}
 
 			// Apply S3 sink overrides if provided
@@ -163,12 +163,12 @@ drill.checks takes, run against the sandbox after the restore:
 			if rs != nil {
 				if runner.IsRepoDatabase(rs.Meta) {
 					sandbox := sandboxURL
-					if dryRun {
+					if inMemory {
 						sandbox = ""
 					}
 					return verifyRepoDatabase(ctx, rs, resolvedKey, sandbox, checks)
 				}
-				if sandboxURL != "" && !dryRun {
+				if sandboxURL != "" && !inMemory {
 					return fmt.Errorf("snapshot %s is a %s snapshot; it is proven by restoring it, so leave out --sandbox-target", snapshotID, rs.Meta.SurfaceType)
 				}
 				return verifyRepoSnapshot(ctx, rs, resolvedKey)
@@ -189,7 +189,7 @@ drill.checks takes, run against the sandbox after the restore:
 			warnAboutShadowedSnapshots(ctx, storageProvider)
 
 			verifier := runner.NewVerifier(storageProvider, cfg.ServerURL)
-			// verify never empties the target it restored into. --keep says
+			// verify never empties the target it restored into. --keep-sandbox says
 			// a person is keeping it to look at, which the report records; a
 			// sandbox thrown away after the run is not "kept".
 			verifier.KeepFailedSandbox = keep
@@ -198,8 +198,8 @@ drill.checks takes, run against the sandbox after the restore:
 				verifier.SetServerToken(cfg.ServerToken)
 			}
 
-			// Default to dry restore if --sandbox-target is not explicitly specified or --dry-run is set
-			isDryRun := dryRun || sandboxURL == ""
+			// Default to dry restore if --sandbox-target is not explicitly specified or --in-memory is set
+			isDryRun := inMemory || sandboxURL == ""
 
 			if isDryRun {
 				fmt.Printf("Dry restore of %s: decrypting and reading it in memory\n", snapshotID)
@@ -338,9 +338,9 @@ drill.checks takes, run against the sandbox after the restore:
 	}
 
 	cmd.Flags().StringVar(&snapshotID, "snapshot", "", "Snapshot ID to verify (required)")
-	cmd.Flags().BoolVar(&keep, "keep", false, "When a sandbox drill fails, record that the sandbox is kept for a person to look at")
+	cmd.Flags().BoolVar(&keep, "keep-sandbox", false, "When a sandbox drill fails, record that the sandbox is kept for a person to look at")
 	cmd.Flags().BoolVar(&showURL, "show-url", false, "When a sandbox drill fails, print the sandbox's URL with its password")
-	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Restore in memory only, even with --sandbox-target (the default without it)")
+	cmd.Flags().BoolVar(&inMemory, "in-memory", false, "Restore in memory only, even with --sandbox-target (the default without it)")
 	cmd.Flags().StringVar(&sandboxURL, "sandbox-target", "", "An empty database to restore the snapshot into for a full Fire Drill: postgres://…, mysql://…, or sqlite:///path/to/absent.db")
 	cmd.Flags().StringVar(&checksFile, "checks", "", "YAML file of your own checks to run against the sandbox after the restore")
 	cmd.Flags().StringVar(&keyPath, "key-path", "", "Path to the age identity file")
@@ -361,7 +361,6 @@ func newVerifyHistoryCmd() *cobra.Command {
 	var (
 		nodeID    string
 		keyStr    string
-		keyFile   string
 		keysFile  string
 		localFile string
 		saveFile  string
@@ -369,9 +368,8 @@ func newVerifyHistoryCmd() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:     "history",
-		Aliases: []string{"verify-history"},
-		Short:   "Check a node's attestation chain and Ed25519 signatures",
+		Use:   "history",
+		Short: "Check a node's attestation chain and Ed25519 signatures",
 		Long: `Checks a node's attestation records, fetched from the remote server or read from
 a file with --file:
 
@@ -381,9 +379,9 @@ a file with --file:
 3. Every signed record's Ed25519 signature is valid against the attestation
    key that signed it. Each record names its key; the remote server publishes
    the active key and every retired one, and a record under a retired key is
-   refused if it was completed, or chained, after the key retired. --key or
-   --key-file pins one public key for every record instead; --keys-file takes
-   the server's published key set, saved for an offline audit. Unsigned
+   refused if it was completed, or chained, after the key retired. --key pins
+   one public key for every record instead, as hex or file:/path; --keys-file
+   takes the server's published key set, saved for an offline audit. Unsigned
    records are counted and reported.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if nodeID == "" {
@@ -396,7 +394,13 @@ a file with --file:
 			serverURL := resolveServerURL()
 
 			// 1. Resolve the attestation keys
-			keys, err := loadAttestationKeys(cmd.Context(), serverURL, keyStr, keyFile, keysFile)
+			// A public key is no secret: file:/path is read, with no warning
+			// about the value being visible.
+			pinned, err := resolveConfigSecret("--key", keyStr)
+			if err != nil {
+				return err
+			}
+			keys, err := loadAttestationKeys(cmd.Context(), serverURL, pinned, keysFile)
 			if err != nil {
 				return err
 			}
@@ -441,7 +445,7 @@ a file with --file:
 					if err := os.WriteFile(saveFile, body, 0o644); err != nil {
 						return fmt.Errorf("could not save the records to %s: %w", saveFile, err)
 					}
-					fmt.Fprintf(os.Stderr, "Saved %d records to %s. Check them offline with: safegrd history --file %s --keys-file keys.json\n",
+					fmt.Fprintf(os.Stderr, "Saved %d records to %s. Check them offline with: safegrd verify history --file %s --keys-file keys.json\n",
 						len(reports), saveFile, saveFile)
 				}
 			}
@@ -523,8 +527,7 @@ a file with --file:
 	}
 
 	cmd.Flags().StringVar(&nodeID, "node", "", "Node ID to verify history for")
-	cmd.Flags().StringVar(&keyStr, "key", "", "Hex-encoded Ed25519 attestation public key")
-	cmd.Flags().StringVar(&keyFile, "key-file", "", "Path to file containing hex-encoded public key")
+	cmd.Flags().StringVar(&keyStr, "key", "", "Ed25519 attestation public key, hex-encoded, as the key or file:/path")
 	cmd.Flags().StringVar(&keysFile, "keys-file", "", "JSON saved from the server's /api/v1/attestations/public-key: the active key and the retired ones, for an offline audit of a chain that spans a key rotation")
 	cmd.Flags().StringVar(&localFile, "file", "", "JSON file of verification records to check offline")
 	cmd.Flags().StringVar(&saveFile, "save", "", "Also write the records fetched from the remote server to this file, for an offline check with --file")
@@ -588,7 +591,7 @@ type attestationKey struct {
 }
 
 // attestationKeySet is what a chain is checked against: either one pinned key
-// for every record (--key, --key-file), or the server's published set, where
+// for every record (--key), or the server's published set, where
 // each record is checked under the key it names.
 type attestationKeySet struct {
 	pinned *attestationKey
@@ -655,22 +658,12 @@ func keySetFromPublished(pk publishedAttestationKeys) (*attestationKeySet, error
 	return set, nil
 }
 
-// loadAttestationKeys resolves the keys from --key, --key-file, --keys-file or
+// loadAttestationKeys resolves the keys from --key, --keys-file or
 // the remote server, in that order of precedence.
-func loadAttestationKeys(ctx context.Context, serverURL, keyStr, keyFile, keysFile string) (*attestationKeySet, error) {
+func loadAttestationKeys(ctx context.Context, serverURL, keyStr, keysFile string) (*attestationKeySet, error) {
 	switch {
 	case keyStr != "":
-		pub, err := parseHexPublicKey("--key", keyStr)
-		if err != nil {
-			return nil, err
-		}
-		return &attestationKeySet{pinned: &attestationKey{ID: "pinned", Public: pub}}, nil
-	case keyFile != "":
-		data, err := os.ReadFile(keyFile)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read public key file: %w", err)
-		}
-		pub, err := parseHexPublicKey("--key-file", string(data))
+		pub, err := parseHexPublicKey("--key", strings.TrimSpace(keyStr))
 		if err != nil {
 			return nil, err
 		}

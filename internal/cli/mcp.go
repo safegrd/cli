@@ -124,9 +124,9 @@ func addLocalTools(server *mcp.Server, self string) {
 		return nil
 	}
 
-	tool(localTool{name: "status", title: "Status", readOnly: true,
-		desc: "This host's storage and remote server connection, and its latest snapshot."},
-		func(localArgs) ([]string, error) { return []string{"status"}, nil })
+	tool(localTool{name: "doctor", title: "Check this host", readOnly: true,
+		desc: "This host's config, key, storage, remote server and every surface, one line each, with a fix for each failure."},
+		func(localArgs) ([]string, error) { return []string{"doctor"}, nil })
 	tool(localTool{name: "list", title: "List snapshots", readOnly: true,
 		desc: "Every snapshot in this host's storage: when, what it holds, and until when it is locked."},
 		func(localArgs) ([]string, error) { return []string{"list"}, nil })
@@ -156,7 +156,7 @@ func addLocalTools(server *mcp.Server, self string) {
 			if a.SandboxURL != "" {
 				return []string{"verify", "--snapshot", a.SnapshotID, "--sandbox-target", a.SandboxURL}, nil
 			}
-			return []string{"verify", "--snapshot", a.SnapshotID, "--dry-run"}, nil
+			return []string{"verify", "--snapshot", a.SnapshotID, "--in-memory"}, nil
 		})
 	tool(localTool{name: "restore", title: "Restore into an empty target", required: []string{"snapshot_id"}, optional: []string{"target_dir", "target_url"},
 		desc: "Restore a snapshot into a new or empty directory (target_dir) or an empty database (target_url). Never over existing data."},

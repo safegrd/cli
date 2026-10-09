@@ -39,8 +39,8 @@ func statusConfig(t *testing.T) *config.CLIConfig {
 
 // A backup says the custody mode only when it fetches something from the
 // remote server, so a Postgres host with a local credential was never told.
-// status and doctor say it on every host.
-func TestStatusAndDoctorSayTheKeyCustodyMode(t *testing.T) {
+// doctor says it on every host.
+func TestDoctorSaysTheKeyCustodyMode(t *testing.T) {
 	cases := []struct {
 		name     string
 		enrolled bool
@@ -58,22 +58,6 @@ func TestStatusAndDoctorSayTheKeyCustodyMode(t *testing.T) {
 				c.ServerURL = nodeServer(t, tc.escrowed).URL
 				c.NodeID, c.ServerToken = "node-1", "tok"
 			}
-
-			old := cfg
-			t.Cleanup(func() { cfg = old })
-			cfg = c
-			out, _, err := captureStdoutErr(t, func() error {
-				cmd := newStatusCmd()
-				cmd.SetContext(context.Background())
-				return cmd.RunE(cmd, nil)
-			})
-			if err != nil {
-				t.Fatalf("status failed: %v\n%s", err, out)
-			}
-			if !strings.Contains(out, "Key custody:       "+tc.want) {
-				t.Errorf("status does not say %q:\n%s", tc.want, out)
-			}
-
 			got := keyCustodyCheck(context.Background(), c)
 			if got.Status != "PASS" || !strings.Contains(got.Message, tc.want) {
 				t.Errorf("doctor says %s %q, want PASS %q", got.Status, got.Message, tc.want)
@@ -82,16 +66,44 @@ func TestStatusAndDoctorSayTheKeyCustodyMode(t *testing.T) {
 	}
 }
 
+// What status said and doctor did not, before status folded into it: a
+// token the remote server refuses is a failure, not "online", and a newer
+// CLI is named.
+func TestDoctorFailsARefusedTokenAndNamesAnUpdate(t *testing.T) {
+	refusing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	t.Cleanup(refusing.Close)
+	c := statusConfig(t)
+	c.ServerURL, c.NodeID, c.ServerToken = refusing.URL, "node-1", "tok"
+	got := nodeRecordChecks(context.Background(), c)
+	if len(got) != 1 || got[0].Status != "FAIL" || !strings.Contains(got[0].Message, "refused this host's token (HTTP 401)") || !strings.Contains(got[0].Fix, "safegrd enroll") {
+		t.Errorf("a refused token: %+v", got)
+	}
+
+	newer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(model.Node{ID: "node-1", UpgradeAvailable: true, LatestCLIVersion: "9.9.9"})
+	}))
+	t.Cleanup(newer.Close)
+	c.ServerURL = newer.URL
+	got = nodeRecordChecks(context.Background(), c)
+	if len(got) != 2 || got[1].Name != "CLI Update" || got[1].Status != "WARN" || !strings.Contains(got[1].Message, "v9.9.9 is available") {
+		t.Errorf("an update: %+v", got)
+	}
+}
+
+// A remote server that answers but cannot say (a 500) is a warning: the
+// host may be fine. A refused token is the failure above.
 func TestDoctorWarnsWhenItCannotAskWhoHoldsTheKey(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusForbidden)
+		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	t.Cleanup(srv.Close)
 	c := statusConfig(t)
 	c.ServerURL, c.NodeID, c.ServerToken = srv.URL, "node-1", "tok"
 
 	got := keyCustodyCheck(context.Background(), c)
-	if got.Status != "WARN" || !strings.Contains(got.Message, "HTTP 403") {
-		t.Errorf("doctor says %s %q, want a WARN naming HTTP 403", got.Status, got.Message)
+	if got.Status != "WARN" || !strings.Contains(got.Message, "HTTP 500") {
+		t.Errorf("doctor says %s %q, want a WARN naming HTTP 500", got.Status, got.Message)
 	}
 }

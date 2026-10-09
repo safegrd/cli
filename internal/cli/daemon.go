@@ -1024,8 +1024,6 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 	}
 	if s.RetentionDays > 0 {
 		storageCfg.RetentionDays = s.RetentionDays
-	} else if storageCfg.RetentionDays == 0 && c.Defaults.RetentionDays > 0 {
-		storageCfg.RetentionDays = c.Defaults.RetentionDays
 	}
 	// Hosted storage: a write lease, refused when the organization is full.
 	lease, err := resolveHostedStorage(ctx, c, &storageCfg, true)

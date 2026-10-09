@@ -12,10 +12,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newProjectsCmd() *cobra.Command {
+// project is singular, like org: "safegrd project list".
+func newProjectCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "projects",
-		Short: "Manage projects within an organization",
+		Use:   "project",
+		Short: "List the projects in an organization",
 	}
 
 	cmd.AddCommand(newListProjectsCmd())

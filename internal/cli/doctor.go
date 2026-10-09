@@ -161,6 +161,9 @@ func runValidationChecks(path string, c *config.CLIConfig) []CheckResult {
 		results = append(results, CheckResult{Name: "Ignored Setting", Status: "WARN", Message: msg})
 	}
 	for _, k := range c.UnknownKeys {
+		if strings.HasSuffix(k, ": alert") {
+			continue // said above, with where alerts are set now
+		}
 		results = append(results, CheckResult{Name: "Unknown Key", Status: "WARN",
 			Message: k + " is not a SafeGrd setting and is ignored (a typo falls back to the default; see safegrd.dev/docs/config)"})
 	}
@@ -403,6 +406,18 @@ func runDoctorChecks(path string, c *config.CLIConfig) []CheckResult {
 			Status:  "PASS",
 			Message: fmt.Sprintf("initialized %s backend", stProvider.Type()),
 		})
+		// Read, not only opened: a key that can write but not list, or a
+		// prefix that holds nothing this host took, shows here. Incremental
+		// runs live in repositories beside the single-archive snapshots and
+		// are the default format, so both are counted.
+		if snaps, err := stProvider.ListSnapshots(ctx); err != nil {
+			results = append(results, CheckResult{Name: "Storage Read", Status: "FAIL",
+				Message: fmt.Sprintf("could not list snapshots in %s storage: %v", stCfg.Type, err)})
+		} else {
+			n := len(snaps) + len(listRepoSnapshots(ctx, stCfg))
+			results = append(results, CheckResult{Name: "Storage Read", Status: "PASS",
+				Message: fmt.Sprintf("%s storage readable, %d %s", stCfg.Type, n, pluralWord(int64(n), "snapshot", "snapshots"))})
+		}
 
 		// The check its heading always promised: whether the bucket locks.
 		// Under worm_mode NONE the answer is known and chosen, so it is
@@ -493,7 +508,7 @@ func runDoctorChecks(path string, c *config.CLIConfig) []CheckResult {
 		}
 	}
 
-	results = append(results, keyCustodyCheck(ctx, c))
+	results = append(results, nodeRecordChecks(ctx, c)...)
 
 	// 4. Surface Target Reachability
 	for _, s := range c.Surfaces {
@@ -614,15 +629,26 @@ func credentialProvenanceCheck(c *config.CLIConfig) []CheckResult {
 	return out
 }
 
-// unusedAlertBlock explains, when this config sets alert webhooks, that the
-// CLI does not send them.
+// unusedAlertBlock explains, when this config has an alert: block, that the
+// CLI sends no alerts. It is not a key any more, so it is found among the
+// unknown ones.
 func unusedAlertBlock(c *config.CLIConfig) string {
-	if c.Alert.SlackWebhookURL == "" && c.Alert.DiscordWebhookURL == "" {
+	if !hasUnknownKey(c, "alert") {
 		return ""
 	}
 	return "alert: webhooks in this file are not used; the remote server sends alerts: " +
 		"set the Slack, Discord or plain webhook in the console under Settings > Alerts " +
 		"(safegrd.dev/docs/alerts)"
+}
+
+// hasUnknownKey reports whether the file has key at its top level.
+func hasUnknownKey(c *config.CLIConfig, key string) bool {
+	for _, k := range c.UnknownKeys {
+		if strings.HasSuffix(k, ": "+key) {
+			return true
+		}
+	}
+	return false
 }
 
 // surfaceCredentialChecks resolves each surface's secret the way the daemon

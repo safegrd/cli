@@ -91,12 +91,6 @@ type EncryptionConfig struct {
 	KeyPath    string `yaml:"key_path" json:"key_path"`     // Path to identity file
 }
 
-// AlertConfig contains webhook notification channels.
-type AlertConfig struct {
-	SlackWebhookURL   string `yaml:"slack_webhook_url,omitempty" json:"slack_webhook_url,omitempty"`
-	DiscordWebhookURL string `yaml:"discord_webhook_url,omitempty" json:"discord_webhook_url,omitempty"`
-}
-
 // DaemonConfig configures the resident unattended daemon.
 type DaemonConfig struct {
 	Interval    string `yaml:"interval,omitempty" json:"interval,omitempty"`         // Poll interval, default "5m"
@@ -106,14 +100,13 @@ type DaemonConfig struct {
 
 // DefaultsConfig defines fallback values inherited by surfaces.
 type DefaultsConfig struct {
-	Schedule      string `yaml:"schedule,omitempty" json:"schedule,omitempty"`             // "@daily", "@hourly", "6h", cron
-	Timezone      string `yaml:"timezone,omitempty" json:"timezone,omitempty"`             // e.g. "UTC"
-	RetentionDays int    `yaml:"retention_days,omitempty" json:"retention_days,omitempty"` // Default WORM retention days
+	Schedule string `yaml:"schedule,omitempty" json:"schedule,omitempty"` // "@daily", "@hourly", "6h", cron
+	Timezone string `yaml:"timezone,omitempty" json:"timezone,omitempty"` // e.g. "UTC"
 	// KeepDaily, KeepWeekly and KeepMonthly are the grandfather-father-son
 	// tiers: the first backup of each UTC day is locked for KeepDaily days,
 	// the first of each ISO week for KeepWeekly weeks, the first of each month
-	// for KeepMonthly months, and every other backup for RetentionDays. Zero
-	// turns a tier off.
+	// for KeepMonthly months, and every other backup for the surface's
+	// retention_days, else the storage's. Zero turns a tier off.
 	KeepDaily   int `yaml:"keep_daily,omitempty" json:"keep_daily,omitempty"`
 	KeepWeekly  int `yaml:"keep_weekly,omitempty" json:"keep_weekly,omitempty"`
 	KeepMonthly int `yaml:"keep_monthly,omitempty" json:"keep_monthly,omitempty"`
@@ -230,8 +223,7 @@ type SurfaceConfig struct {
 // database must hold nothing: a drill refuses a sandbox with tables in it, and
 // empties it again afterwards.
 type DrillConfig struct {
-	SandboxURL    string `yaml:"sandbox_url,omitempty" json:"sandbox_url,omitempty"`
-	SandboxURLEnv string `yaml:"sandbox_url_env,omitempty" json:"sandbox_url_env,omitempty"`
+	SandboxURL string `yaml:"sandbox_url,omitempty" json:"sandbox_url,omitempty"`
 	// KeepFailedSandbox leaves the sandbox of a drill that failed as the
 	// drill left it, for a day, and says where it is: the database at
 	// sandbox_url, or the throwaway local cluster when there is none.
@@ -252,7 +244,6 @@ type CLIConfig struct {
 	DatabaseURL string           `yaml:"database_url" json:"database_url"`
 	Storage     StorageConfig    `yaml:"storage" json:"storage"`
 	Encryption  EncryptionConfig `yaml:"encryption" json:"encryption"`
-	Alert       AlertConfig      `yaml:"alert,omitempty" json:"alert,omitempty"`
 
 	// Daemon & Multi-Surface Unattended Protection
 	Daemon   DaemonConfig    `yaml:"daemon,omitempty" json:"daemon,omitempty"`
@@ -271,7 +262,7 @@ var unknownFieldRe = regexp.MustCompile(`line (\d+): field (\S+) not found in ty
 // so a key inside a surface's own storage block is named "storage." too; the
 // line number says which.
 var sectionOfType = map[string]string{
-	"CLIConfig": "", "StorageConfig": "storage.", "EncryptionConfig": "encryption.", "AlertConfig": "alert.",
+	"CLIConfig": "", "StorageConfig": "storage.", "EncryptionConfig": "encryption.",
 	"DaemonConfig": "daemon.", "DefaultsConfig": "defaults.", "SurfaceConfig": "surfaces[].", "DrillConfig": "surfaces[].drill.",
 }
 
@@ -313,6 +304,20 @@ func replacedCredentialKeys(unknown []string) error {
 			if strings.HasSuffix(k, "surfaces[]."+old) {
 				return fmt.Errorf("%s: %s is no longer read; a surface says where its credential comes from with %s. "+
 					"See safegrd.dev/docs/config", k, old, now)
+			}
+		}
+	}
+	// Keys removed because another one says the same thing. Dropped
+	// quietly, a drill would fall back to memory and a backup would be
+	// locked for another number of days.
+	retired := map[string]string{
+		"surfaces[].drill.sandbox_url_env": "drill.sandbox_url: env:VARIABLE",
+		"defaults.retention_days":          "storage.retention_days, or a surface's retention_days",
+	}
+	for _, k := range unknown {
+		for old, now := range retired {
+			if strings.HasSuffix(k, ": "+old) {
+				return fmt.Errorf("%s is no longer read; use %s. See safegrd.dev/docs/config", k, now)
 			}
 		}
 	}
@@ -527,9 +532,6 @@ func LoadCLIConfig(path string) (*CLIConfig, error) {
 			sName = "Production PostgreSQL"
 		}
 		ret := cfg.Storage.RetentionDays
-		if ret == 0 {
-			ret = cfg.Defaults.RetentionDays
-		}
 		cfg.Surfaces = []SurfaceConfig{
 			{
 				ID:            sID,

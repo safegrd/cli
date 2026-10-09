@@ -101,7 +101,7 @@ func TestHistoryChecksEachRecordUnderTheKeyItNames(t *testing.T) {
 	})
 
 	t.Run("a pinned key is checked against every record whatever it names", func(t *testing.T) {
-		keys, err := loadAttestationKeys(t.Context(), "", hex.EncodeToString(oldPub), "", "")
+		keys, err := loadAttestationKeys(t.Context(), "", hex.EncodeToString(oldPub), "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -117,7 +117,7 @@ func TestHistoryChecksEachRecordUnderTheKeyItNames(t *testing.T) {
 	})
 
 	t.Run("a wrong-length key is refused before any record is checked", func(t *testing.T) {
-		if _, err := loadAttestationKeys(t.Context(), "", "abcd", "", ""); err == nil {
+		if _, err := loadAttestationKeys(t.Context(), "", "abcd", ""); err == nil {
 			t.Error("a 2-byte --key was accepted")
 		}
 		pk := published()

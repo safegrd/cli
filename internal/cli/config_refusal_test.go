@@ -123,15 +123,42 @@ func TestConfigValidateDoesNotJudgeTheDefaultsItSubstituted(t *testing.T) {
 }
 
 // An alert block in the host config was never read, so a host that set one
-// believed it was alerting. Validation now says so.
+// believed it was alerting. It is no longer a key at all; validation still
+// says where alerts are set now.
 func TestAnUnusedAlertBlockIsNamed(t *testing.T) {
 	c := config.NewDefaultCLIConfig()
 	if unusedAlertBlock(c) != "" {
-		t.Error("an empty alert block was reported")
+		t.Error("a config with no alert block was told about one")
 	}
-	c.Alert.SlackWebhookURL = "https://hooks.slack.com/services/T/B/x"
-	if msg := unusedAlertBlock(c); !strings.Contains(msg, "Settings > Alerts") {
-		t.Errorf("a set alert block was not explained: %q", msg)
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("node_name: web-01\nalert:\n  slack_webhook_url: https://hooks.slack.com/services/T/B/x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := config.LoadCLIConfig(path)
+	if err != nil {
+		t.Fatalf("a config with an alert block was refused: %v", err)
+	}
+	if msg := unusedAlertBlock(loaded); !strings.Contains(msg, "Settings > Alerts") {
+		t.Errorf("an alert block was not explained: %q (unknown keys %q)", msg, loaded.UnknownKeys)
+	}
+}
+
+// Keys removed because another says the same thing refuse the file, naming
+// the replacement: read as nothing, a drill would fall back to memory and a
+// backup would be locked for another number of days.
+func TestRetiredKeysAreRefusedWithTheirReplacement(t *testing.T) {
+	for _, c := range []struct{ yaml, want string }{
+		{"defaults:\n  retention_days: 30\n", "storage.retention_days"},
+		{"surfaces:\n  - id: db\n    type: postgres\n    database_url: env:DB\n    drill:\n      sandbox_url_env: SANDBOX\n", "drill.sandbox_url: env:VARIABLE"},
+	} {
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(path, []byte(c.yaml), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, err := config.LoadCLIConfig(path)
+		if err == nil || !strings.Contains(err.Error(), "is no longer read") || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%q: %v, want a refusal naming %s", c.yaml, err, c.want)
+		}
 	}
 }
 

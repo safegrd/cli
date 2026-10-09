@@ -105,7 +105,7 @@ func showCurrentOrg() error {
 	fmt.Printf("   Created:       %s\n\n", org.CreatedAt.Format("2006-01-02 15:04:05 MST"))
 
 	fmt.Println("Projects and members:")
-	fmt.Println("   safegrd projects list")
+	fmt.Println("   safegrd project list")
 	fmt.Println("   safegrd org members")
 	// Projects are created in the console.
 	fmt.Println("   Create projects in the console at " + resolveServerURL() + "/dashboard")
