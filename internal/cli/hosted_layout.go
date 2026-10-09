@@ -85,6 +85,11 @@ func (readOnlyArchives) DeleteVersion(context.Context, string, string) error {
 	return errHostedLayoutReadOnly
 }
 
+// DeleteProbe writes an object to see whether it can delete it.
+func (readOnlyArchives) DeleteProbe(context.Context) (bool, bool, string, error) {
+	return false, false, "", errHostedLayoutReadOnly
+}
+
 // hostedLayoutRepos opens the repository half: one backend per node with a
 // repository, or only node's when it is set.
 func hostedLayoutRepos(ctx context.Context, s config.StorageConfig, node string) ([]sink.Backend, error) {
