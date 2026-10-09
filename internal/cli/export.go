@@ -38,7 +38,7 @@ storage: to a local directory (--to-dir) or to a bucket you own (--to-bucket).
 Use it to move from hosted storage to your own bucket, or to keep an offline
 copy. Nothing is decrypted and no key is needed. Each copied object is checked
 against the digest recorded when it was backed up. A snapshot already at the
-destination is skipped, so an interrupted export can simply be run again.
+destination is skipped, so an interrupted export resumes on rerun.
 
 --snapshot and --node narrow it to those snapshots, or to the snapshots of
 those nodes. Both can be repeated or given as a comma-separated list.
