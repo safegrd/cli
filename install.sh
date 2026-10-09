@@ -508,7 +508,7 @@ print_enrolled() {
 }
 
 already_enrolled() {
-  [ -f "${HOME}/.safegrd/config.yaml" ] && grep -q '^  token: *sg_tok_' "${HOME}/.safegrd/config.yaml" 2>/dev/null
+  [ -f "${HOME}/.safegrd/config.yaml" ] && grep -q '^[[:space:]]*token:[[:space:]]*sg_tok_' "${HOME}/.safegrd/config.yaml" 2>/dev/null
 }
 
 printf "\n"

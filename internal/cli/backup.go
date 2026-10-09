@@ -80,9 +80,18 @@ and never leaves this host.`,
 			for _, f := range []string{"json", "tag", "retention-days", "s3-bucket", "s3-prefix", "s3-region", "s3-endpoint", "s3-access-key", "s3-secret-key", "format", "one-filesystem"} {
 				oneOffFlags = oneOffFlags || cmd.Flags().Changed(f)
 			}
-			if surfaceID == "" && dbURL == "" && cfg.DatabaseURL == "" && filesPath == "" && !emailMode && !oneOffFlags {
+			if surfaceID == "" && dbURL == "" && cfg.DatabaseURL == "" && filesPath == "" && !emailMode {
 				switch configured := len(cfg.Surfaces); {
-				case configured == 1:
+				case configured == 1 && oneOffFlags && model.SurfaceType(strings.ToLower(cfg.Surfaces[0].Type)).IsDatabase():
+					// One-off flags (a retention, a format, --json) make this a
+					// one-off backup of the config's database, as a
+					// --database-url naming it would.
+					u, err := resolveSurfaceDatabaseURL(ctx, cfg, &cfg.Surfaces[0])
+					if err != nil {
+						return err
+					}
+					cfg.DatabaseURL = u
+				case configured == 1 && !oneOffFlags:
 					surfaceID = cfg.Surfaces[0].ID
 				case configured > 1:
 					ids := make([]string, 0, configured)

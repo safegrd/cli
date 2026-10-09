@@ -198,7 +198,7 @@ you if you have not already).`,
 		},
 	}
 
-	cmd.Flags().StringVar(&dbURL, "database-url", "", "Database connection URL, or env:VAR / file:/path to read it from")
+	cmd.Flags().StringVar(&dbURL, "database-url", "", "The database to protect, written to the config as its first surface: a URL, or env:VAR / file:/path")
 	cmd.Flags().StringVar(&storageType, "storage", "local", "Storage type: 'local', 's3', or 'hosted' (SafeGrd's locked bucket, leased per run)")
 	cmd.Flags().StringVar(&s3Bucket, "s3-bucket", "", "S3 bucket, with Object Lock enabled")
 	cmd.Flags().StringVar(&s3Prefix, "s3-prefix", "safegrd/snapshots", "Key prefix in the S3 bucket")

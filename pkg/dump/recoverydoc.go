@@ -159,7 +159,7 @@ func RenderRecoveryDoc(meta *model.SnapshotMetadata, loc Location) []byte {
 			w("    prefix: %s", loc.ConfigPrefix)
 		}
 		if meta.NodeID != "" {
-			w("  node_id: %s", meta.NodeID)
+			w("    node_id: %s", meta.NodeID)
 		}
 		w("Then run:")
 	case "local":
