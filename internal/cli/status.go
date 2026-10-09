@@ -142,6 +142,7 @@ host is configured for, one line each. Exits 1 if any check fails.`,
 				// Not enrolled: pinging the default remote server would report
 				// on a service this host does not use.
 				fmt.Printf("Remote server:     none (standalone; run 'safegrd enroll' to report to the console)\n")
+				fmt.Printf("Key custody:       %s\n", keyCustodyWords(false, cfg.Encryption.KeyPath))
 			} else if cfg.ServerURL != "" {
 				client := &http.Client{Timeout: 3 * time.Second}
 				req, err := http.NewRequestWithContext(ctx, http.MethodGet, cfg.ServerURL+"/api/v1/nodes/"+cfg.NodeID, nil)
@@ -155,8 +156,11 @@ host is configured for, one line each. Exits 1 if any check fails.`,
 						case resp.StatusCode == http.StatusOK:
 							fmt.Printf("Remote server:     online, node %s accepted (%s)\n", cfg.NodeID, cfg.ServerURL)
 							var n model.Node
-							if err := json.NewDecoder(resp.Body).Decode(&n); err == nil && n.UpgradeAvailable {
-								fmt.Printf("CLI update:        v%s is available (installed: %s)\n", n.LatestCLIVersion, Version)
+							if err := json.NewDecoder(resp.Body).Decode(&n); err == nil {
+								fmt.Printf("Key custody:       %s\n", keyCustodyWords(n.KeyEscrowed, cfg.Encryption.KeyPath))
+								if n.UpgradeAvailable {
+									fmt.Printf("CLI update:        v%s is available (installed: %s)\n", n.LatestCLIVersion, Version)
+								}
 							}
 						case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
 							// The server is up and said no. Reporting that as

@@ -493,6 +493,8 @@ func runDoctorChecks(path string, c *config.CLIConfig) []CheckResult {
 		}
 	}
 
+	results = append(results, keyCustodyCheck(ctx, c))
+
 	// 4. Surface Target Reachability
 	for _, s := range c.Surfaces {
 		if strings.ToLower(s.Type) == "files" {
