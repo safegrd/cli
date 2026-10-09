@@ -36,7 +36,7 @@ func newClaimCmd() *cobra.Command {
 		Use:   "claim",
 		Short: "Add the surfaces named for this host in the console to its config",
 		Long: `Adds to this host's config the surfaces named for it in the console
-(Protect a Surface, for an enrolled host). Nothing changes on the host until
+(Add surface, on an enrolled host). Nothing changes on the host until
 this runs, and it only adds: a surface the config already has is left as it is.
 The previous config is kept as config.yaml.bak.
 
@@ -63,7 +63,7 @@ A new host enrolls with a claim code instead: safegrd enroll --claim <code>.`,
 				return fmt.Errorf("could not ask the remote server what is named for this host: %w", err)
 			}
 			if len(pending.Surfaces) == 0 {
-				fmt.Println("Nothing is named for this host in the console. Add a surface there first (Protect a Surface, for this host).")
+				fmt.Println("Nothing is named for this host in the console. Add a surface there first (Add surface, on this host's row).")
 				return nil
 			}
 
