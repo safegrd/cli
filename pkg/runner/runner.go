@@ -86,7 +86,7 @@ func (v *Verifier) RunFireDrill(ctx context.Context, snapshotID, privateKey, san
 	rec := v.fetchRecord(ctx, snapshotID)
 
 	if !meta.SurfaceType.IsDatabase() {
-		return nil, fmt.Errorf("active sandbox Fire Drill requires a database snapshot; for %s use in-memory dry restore: safegrd verify --snapshot %s --dry-run", meta.SurfaceType, snapshotID)
+		return nil, fmt.Errorf("active sandbox Fire Drill requires a database snapshot; for %s restore it in memory: safegrd verify --snapshot %s --in-memory", meta.SurfaceType, snapshotID)
 	}
 	kind := meta.SurfaceType
 	if kind == "" {
@@ -486,7 +486,7 @@ func (v *Verifier) submitReport(ctx context.Context, report *model.VerificationR
 		return
 	}
 	if v.serverToken == "" {
-		fmt.Fprintf(os.Stderr, "\nWarning: NOT RECORDED: no server_token in this config, so the remote server cannot be told.\n"+
+		fmt.Fprintf(os.Stderr, "\nWarning: NOT RECORDED: no server.token in this config, so the remote server cannot be told.\n"+
 			"    The verification above is real; nothing outside this machine knows it happened.\n")
 		return
 	}

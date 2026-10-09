@@ -465,6 +465,12 @@ func LoadCLIConfig(path string) (*CLIConfig, error) {
 		cfg.NodeID, cfg.NodeName, cfg.ProjectID = cfg.Node.ID, cfg.Node.Name, cfg.Node.Project
 		// A relative key_path is relative to this file, not to wherever the
 		// command runs (SaveCLIConfig writes it that way).
+		// ~/ is the home directory, as the example config writes it.
+		if kp := cfg.Encryption.KeyPath; strings.HasPrefix(kp, "~/") {
+			if home, err := os.UserHomeDir(); err == nil {
+				cfg.Encryption.KeyPath = filepath.Join(home, kp[2:])
+			}
+		}
 		if kp := cfg.Encryption.KeyPath; kp != "" && !filepath.IsAbs(kp) {
 			cfg.Encryption.KeyPath = filepath.Join(filepath.Dir(absOrSelf(path)), kp)
 		}
@@ -521,8 +527,15 @@ func LoadCLIConfig(path string) (*CLIConfig, error) {
 	}
 
 	// Environment variable overrides
+	// SAFEGRD_DATABASE_URL names a database for a run when the file lists
+	// no surfaces. With surfaces it would back up something the file does
+	// not name, so it is said and left out.
 	if dbURL := os.Getenv("SAFEGRD_DATABASE_URL"); dbURL != "" {
-		cfg.DatabaseURL = dbURL
+		if len(cfg.Surfaces) > 0 {
+			fmt.Fprintf(os.Stderr, "Warning: SAFEGRD_DATABASE_URL is ignored: this config lists surfaces. Name a database with --database-url for a one-off backup.\n")
+		} else {
+			cfg.DatabaseURL = dbURL
+		}
 	}
 	if srvURL := os.Getenv("SAFEGRD_SERVER_URL"); srvURL != "" {
 		cfg.ServerURL = srvURL

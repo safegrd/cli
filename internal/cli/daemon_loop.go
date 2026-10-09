@@ -99,10 +99,7 @@ func surfaceNodeID(ctx context.Context, c *config.CLIConfig, s *config.SurfaceCo
 	}
 	// The lock a backup gets: the surface's, else the storage's. Registered
 	// with the same number the backup is locked for.
-	retention := s.RetentionDays
-	if retention == 0 {
-		retention = c.Storage.RetentionDays
-	}
+	retention := surfaceRetentionDays(c, s)
 	pub := c.Encryption.PublicKey
 	if s.Encryption != nil && s.Encryption.PublicKey != "" {
 		pub = s.Encryption.PublicKey

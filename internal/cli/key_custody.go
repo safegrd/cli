@@ -82,6 +82,11 @@ func nodeRecordChecks(ctx context.Context, c *config.CLIConfig) []CheckResult {
 	}
 	n, err := fetchNodeRecord(ctx, c)
 	var hs httpStatusError
+	if errors.As(err, &hs) && hs.code == http.StatusNotFound {
+		return []CheckResult{{Name: "Node Token", Status: "FAIL",
+			Message: fmt.Sprintf("%s has no node %s; it was retired or never registered", c.ServerURL, c.NodeID),
+			Fix:     "run 'safegrd enroll' again with a token from the console"}}
+	}
 	if errors.As(err, &hs) && (hs.code == http.StatusUnauthorized || hs.code == http.StatusForbidden) {
 		return []CheckResult{{Name: "Node Token", Status: "FAIL",
 			Message: fmt.Sprintf("%s refused this host's token (HTTP %d)", c.ServerURL, hs.code),

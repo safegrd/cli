@@ -38,7 +38,7 @@ func (v *Verifier) fetchRecord(ctx context.Context, snapshotID string) snapshotR
 		return snapshotRecord{why: "no remote server is configured"}
 	}
 	if v.serverToken == "" {
-		return snapshotRecord{why: "no server_token in this config"}
+		return snapshotRecord{why: "no server.token in this config"}
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()

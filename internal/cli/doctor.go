@@ -62,6 +62,8 @@ func newDoctorCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "Check the config, keys, storage and every surface before you rely on them",
+		// status was folded into doctor: "safegrd status" suggests it.
+		SuggestFor: []string{"status"},
 		Long: `Checks everything a backup depends on, one line each, with a fix for each failure:
 - the config file and its permissions (0600 on POSIX)
 - the age keypair
@@ -135,8 +137,8 @@ func runValidationChecks(path string, c *config.CLIConfig) []CheckResult {
 		results = append(results, CheckResult{
 			Name:   "Configuration Load",
 			Status: "FAIL",
-			Message: "the file was refused, so nothing in it was read and no check below " +
-				"this one could run. Fix the failure above first.",
+			// The refusal itself: it names the key and what replaces it.
+			Message: cfgLoadErr.Error() + ". Nothing in the file was read, so no check below this one could run",
 		})
 		return results
 	}
@@ -185,7 +187,7 @@ func runValidationChecks(path string, c *config.CLIConfig) []CheckResult {
 		results = append(results, CheckResult{
 			Name:    "Encryption Public Key",
 			Status:  "PASS",
-			Message: fmt.Sprintf("valid Age public key (%s...)", c.Encryption.PublicKey[:12]),
+			Message: fmt.Sprintf("valid Age public key (%s...)", c.Encryption.PublicKey[:min(12, len(c.Encryption.PublicKey))]),
 		})
 	}
 
@@ -466,18 +468,30 @@ func runDoctorChecks(path string, c *config.CLIConfig) []CheckResult {
 		}
 	}
 
-	// 3. Remote Server Reachability & Clock Skew
+	// 3. Remote Server Reachability & Clock Skew. A standalone host reports
+	// to nothing, so nothing is contacted. An enrolled host that cannot reach
+	// its server still backs up, but nothing it does is recorded: a failure.
 	serverURL := resolveServerURLFor(c)
-	resp, err := http.Get(serverURL + "/health")
-	if err != nil {
-		// Fallback to /api/v1/plans
-		resp, err = http.Get(serverURL + "/api/v1/plans")
+	var resp *http.Response
+	if c.ServerToken != "" {
+		resp, err = http.Get(serverURL + "/health")
+		if err != nil {
+			resp, err = http.Get(serverURL + "/api/v1/plans")
+		}
 	}
-	if err != nil {
+	if c.ServerToken == "" {
 		results = append(results, CheckResult{
 			Name:    "Remote Server Reachability",
-			Status:  "WARN",
-			Message: fmt.Sprintf("cannot reach %s: %v (offline mode operates normally)", serverURL, err),
+			Status:  "PASS",
+			Message: "standalone: no server.token, so this host reports to no server",
+			Fix:     "run 'safegrd enroll' to report to the console",
+		})
+	} else if err != nil {
+		results = append(results, CheckResult{
+			Name:    "Remote Server Reachability",
+			Status:  "FAIL",
+			Message: fmt.Sprintf("cannot reach %s: %v. Backups still run; the console hears of none of them", serverURL, err),
+			Fix:     "check this host's network and server.url",
 		})
 	} else {
 		defer resp.Body.Close()

@@ -76,22 +76,23 @@ and never leaves this host.`,
 			// surface backs that one up: `init --database-url` writes the
 			// database as a surface, and `safegrd backup` is the next step the
 			// docs give. With several, one has to be named.
-			oneOffFlags := false
+			oneOffFlag := ""
 			for _, f := range []string{"json", "tag", "retention-days", "s3-bucket", "s3-prefix", "s3-region", "s3-endpoint", "s3-access-key", "s3-secret-key", "format", "one-filesystem"} {
-				oneOffFlags = oneOffFlags || cmd.Flags().Changed(f)
+				if oneOffFlag == "" && cmd.Flags().Changed(f) {
+					oneOffFlag = f
+				}
 			}
+			oneOffFlags := oneOffFlag != ""
 			if surfaceID == "" && dbURL == "" && cfg.DatabaseURL == "" && filesPath == "" && !emailMode {
 				switch configured := len(cfg.Surfaces); {
-				case configured == 1 && oneOffFlags && model.SurfaceType(strings.ToLower(cfg.Surfaces[0].Type)).IsDatabase():
-					// One-off flags (a retention, a format, --json) make this a
-					// one-off backup of the config's database, as a
-					// --database-url naming it would.
-					u, err := resolveSurfaceDatabaseURL(ctx, cfg, &cfg.Surfaces[0])
-					if err != nil {
-						return err
-					}
-					cfg.DatabaseURL = u
-				case configured == 1 && !oneOffFlags:
+				case configured == 1 && oneOffFlags:
+					// A one-off backup of the surface's own source would start
+					// a second history beside the surface's, under its own
+					// repository, storage and lock.
+					return fmt.Errorf("--%s applies to a one-off backup, and this config's one surface is %s. "+
+						"Back the surface up with 'safegrd backup' (it uses the surface's own settings), "+
+						"or name a source with --database-url or --files", oneOffFlag, cfg.Surfaces[0].ID)
+				case configured == 1:
 					surfaceID = cfg.Surfaces[0].ID
 				case configured > 1:
 					ids := make([]string, 0, configured)
@@ -779,7 +780,7 @@ func deliverSnapshotRecord(ctx context.Context, serverURL, token string, meta *m
 	}
 	if meta.NodeID == "" {
 		warn("NOT RECORDED: this config has no node.id, so the report names no node.\n" +
-			"                    The backup itself is fine. Add node_id, or re-run 'safegrd enroll'.")
+			"                    The backup itself is fine. Add node.id, or re-run 'safegrd enroll'.")
 		return "this config has no node.id", false
 	}
 

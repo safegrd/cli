@@ -210,3 +210,29 @@ func TestUnknownConfigKeysAreNamed(t *testing.T) {
 		t.Error("config validate does not report the unknown key")
 	}
 }
+
+// config validate and doctor say why a file was refused: a host migrating an
+// old config is told which key to change, not to look above an empty list.
+func TestARefusedConfigSaysWhyInValidation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("node_id: n1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	savedFile, savedCfg, savedErr := cfgFile, cfg, cfgLoadErr
+	t.Cleanup(func() { cfgFile, cfg, cfgLoadErr = savedFile, savedCfg, savedErr })
+	cfgFile, cfgLoadErr = path, nil
+	initConfig()
+	if cfgLoadErr == nil {
+		t.Fatal("a config with node_id was accepted")
+	}
+	var load *CheckResult
+	for _, r := range runValidationChecks(path, cfg) {
+		if r.Name == "Configuration Load" {
+			r := r
+			load = &r
+		}
+	}
+	if load == nil || load.Status != "FAIL" || !strings.Contains(load.Message, "node_id is no longer read") || !strings.Contains(load.Message, "node: {id: ...}") {
+		t.Errorf("validation says %+v, want the refusal naming node.id", load)
+	}
+}

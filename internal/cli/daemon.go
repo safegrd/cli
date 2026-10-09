@@ -1022,9 +1022,7 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 	if nodeID != "" && storageCfg.NodeID == "" {
 		storageCfg.NodeID = nodeID
 	}
-	if s.RetentionDays > 0 {
-		storageCfg.RetentionDays = s.RetentionDays
-	}
+	storageCfg.RetentionDays = surfaceRetentionDays(c, s)
 	// Hosted storage: a write lease, refused when the organization is full.
 	lease, err := resolveHostedStorage(ctx, c, &storageCfg, true)
 	if err != nil {
@@ -1931,4 +1929,17 @@ func emailCAFileFor(s *config.SurfaceConfig) string {
 		return s.CAFile
 	}
 	return os.Getenv("SAFEGRD_EMAIL_CA_FILE")
+}
+
+// surfaceRetentionDays is how long a surface's backups are locked: its own
+// retention_days, else its own storage block's, else the config's storage.
+// Registration reports the same number the backup is locked for.
+func surfaceRetentionDays(c *config.CLIConfig, s *config.SurfaceConfig) int {
+	switch {
+	case s.RetentionDays > 0:
+		return s.RetentionDays
+	case s.Storage != nil && s.Storage.RetentionDays > 0:
+		return s.Storage.RetentionDays
+	}
+	return c.Storage.RetentionDays
 }

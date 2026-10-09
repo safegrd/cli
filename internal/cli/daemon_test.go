@@ -226,3 +226,24 @@ func TestDaemonLockHasOneWinnerUnderContention(t *testing.T) {
 		t.Fatalf("%d takers held the lock at once, want 1", wins)
 	}
 }
+
+// A surface's backups are locked for its own retention_days, else its own
+// storage block's, else the config's storage: a surface with a storage block
+// and no retention was locked for zero days while registering thirty.
+func TestASurfaceRetentionFallsBackThroughItsStorage(t *testing.T) {
+	c := config.NewDefaultCLIConfig()
+	c.Storage.RetentionDays = 30
+	for _, tc := range []struct {
+		s    config.SurfaceConfig
+		want int
+	}{
+		{config.SurfaceConfig{ID: "a", RetentionDays: 7}, 7},
+		{config.SurfaceConfig{ID: "b", Storage: &config.StorageConfig{Type: config.StorageTypeLocal, RetentionDays: 45}}, 45},
+		{config.SurfaceConfig{ID: "c", Storage: &config.StorageConfig{Type: config.StorageTypeLocal}}, 30},
+		{config.SurfaceConfig{ID: "d"}, 30},
+	} {
+		if got := surfaceRetentionDays(c, &tc.s); got != tc.want {
+			t.Errorf("surface %s: %d days, want %d", tc.s.ID, got, tc.want)
+		}
+	}
+}

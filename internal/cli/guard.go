@@ -71,8 +71,8 @@ command is not run and guard exits 3.
 With no command, guard takes the snapshot and exits: 0 when it is locked, 3
 when it is not. A hook that runs before an agent's shell command uses this.
 
-The surface is --surface, the only surface in the config, or the config's
-database_url when it lists none.
+The surface is --surface, the only surface in the config, or the database
+SAFEGRD_DATABASE_URL names when the config lists none.
 
 Exit codes: the command's own exit code when it ran; 3 when guard refused to
 run it; 1 for a usage or configuration error.
@@ -326,8 +326,8 @@ func guardSurface(id string) (*config.SurfaceConfig, bool, error) {
 	switch len(cfg.Surfaces) {
 	case 0:
 		if cfg.DatabaseURL == "" {
-			return nil, false, errors.New("the config lists no surfaces and has no database_url, so there is nothing to back up. " +
-				"Add a surface, or set database_url")
+			return nil, false, errors.New("the config lists no surfaces, so there is nothing to back up. " +
+				"Add a surface under surfaces:, or name a database for this run with SAFEGRD_DATABASE_URL")
 		}
 		return &config.SurfaceConfig{ID: "database_url", Type: string(dump.SurfaceTypeOfURL(cfg.DatabaseURL))}, true, nil
 	case 1:

@@ -124,9 +124,6 @@ func addLocalTools(server *mcp.Server, self string) {
 		return nil
 	}
 
-	tool(localTool{name: "doctor", title: "Check this host", readOnly: true,
-		desc: "This host's config, key, storage, remote server and every surface, one line each, with a fix for each failure."},
-		func(localArgs) ([]string, error) { return []string{"doctor"}, nil })
 	tool(localTool{name: "list", title: "List snapshots", readOnly: true,
 		desc: "Every snapshot in this host's storage: when, what it holds, and until when it is locked."},
 		func(localArgs) ([]string, error) { return []string{"list"}, nil })

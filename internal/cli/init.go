@@ -44,6 +44,17 @@ you if you have not already).`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			serverURL := resolveServerURL()
 
+			// The database is a surface: every backup source in the file is.
+			// Checked before anything is written.
+			var dbSurface *config.SurfaceConfig
+			if dbURL != "" {
+				surface, err := initDatabaseSurface(dbURL)
+				if err != nil {
+					return err
+				}
+				dbSurface = &surface
+			}
+
 			// Refuse to overwrite an existing config.
 			//
 			// init used to write a fresh default config over whatever was
@@ -170,9 +181,8 @@ you if you have not already).`,
 				}
 			}
 
-			// The database is a surface: every backup source in the file is.
-			if dbURL != "" {
-				cfg.Surfaces = []config.SurfaceConfig{initDatabaseSurface(dbURL)}
+			if dbSurface != nil {
+				cfg.Surfaces = []config.SurfaceConfig{*dbSurface}
 			}
 
 			// 4. Save Config File
@@ -187,6 +197,14 @@ you if you have not already).`,
 			if cfg.Storage.Type == config.StorageTypeHosted {
 				fmt.Println("   Hosted storage is leased from the remote server, so enrol this host before")
 				fmt.Println("   the first backup:")
+				fmt.Println("     safegrd enroll --token <your access token>")
+				return nil
+			}
+			if len(cfg.Surfaces) == 0 {
+				fmt.Println("   This config names nothing to back up yet. Back up a database or a directory once:")
+				fmt.Println("     safegrd backup --database-url env:DATABASE_URL")
+				fmt.Println("     safegrd backup --files /srv/app/uploads")
+				fmt.Println("   or add a surface under surfaces: in the config, or enrol and add one in the console:")
 				fmt.Println("     safegrd enroll --token <your access token>")
 				return nil
 			}
@@ -227,8 +245,15 @@ func fileExists(path string) bool {
 // initDatabaseSurface is the surface `init --database-url` writes. The URL
 // is kept as given, a reference included; it is resolved here only to tell
 // the engine and name the surface after its database.
-func initDatabaseSurface(ref string) config.SurfaceConfig {
-	resolved, _ := resolveConfigSecret("database-url", ref)
+func initDatabaseSurface(ref string) (config.SurfaceConfig, error) {
+	resolved, err := resolveConfigSecret("database-url", ref)
+	if err != nil || resolved == "" {
+		fmt.Fprintf(os.Stderr, "Warning: %s cannot be read now, so the surface is written as postgres. "+
+			"Change its type in the config if the database is another engine.\n", ref)
+		resolved = ""
+	} else if !strings.Contains(resolved, "://") && !strings.HasPrefix(strings.ToLower(resolved), "sqlite:") && !strings.Contains(resolved, "=") {
+		return config.SurfaceConfig{}, fmt.Errorf("--database-url is not a database URL: give postgres://, mysql://, mariadb://, mongodb:// or sqlite:///path. Nothing was written")
+	}
 	kind := string(dump.SurfaceTypeOfURL(resolved))
 	if resolved == "" || kind == "" {
 		kind = string(model.SurfaceTypePostgres)
@@ -245,7 +270,7 @@ func initDatabaseSurface(ref string) config.SurfaceConfig {
 	if id == "" || id == "-" {
 		id = "db"
 	}
-	return config.SurfaceConfig{ID: id, Type: kind, Name: id, DatabaseURL: ref}
+	return config.SurfaceConfig{ID: id, Type: kind, Name: id, DatabaseURL: ref}, nil
 }
 
 var surfaceIDCleaner = regexp.MustCompile(`[^a-z0-9_.-]+`)

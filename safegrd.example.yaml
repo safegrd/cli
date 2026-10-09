@@ -45,7 +45,7 @@ storage:
   worm_mode: "COMPLIANCE"
   local_path: "./safegrd-storage" # Used if type: local
 
-# Client-Side Zero-Knowledge Encryption (Age / X25519)
+# Encryption: every backup is encrypted on this host with age (X25519)
 encryption:
   # Recipient public key for encryption (never exposes the private key to the runner or the remote server)
   public_key: "age1..."

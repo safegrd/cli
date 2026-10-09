@@ -47,6 +47,8 @@ func newVerifyCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "verify",
+		// The attestation check is verify history: "safegrd history" suggests verify.
+		SuggestFor: []string{"history"},
 		Short: "Test a backup by restoring it in memory, or into a sandbox database",
 		Long: `Reads a snapshot from storage, decrypts it on this host with the private key,
 and checks its tables, row counts, columns and extensions.
