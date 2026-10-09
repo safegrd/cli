@@ -21,10 +21,18 @@ import (
 // does.
 type Dialer func(ctx context.Context, network, addr string) (net.Conn, error)
 
+// URLError is a connection string the driver could not read. No connection
+// was tried, and none would work from any machine until the string changes.
+type URLError struct{ Err error }
+
+func (e *URLError) Error() string { return e.Err.Error() }
+func (e *URLError) Unwrap() error { return e.Err }
+
 // PingDatabase opens the database a connection string names, as a backup
 // would, runs the cheapest query the engine has, and returns the server's own
 // words when it cannot: a refused password, an unknown database, a host that
-// does not answer. It stops at the context's deadline.
+// does not answer. A string it cannot read is a *URLError. It stops at the
+// context's deadline.
 func PingDatabase(ctx context.Context, databaseURL string, dial Dialer) error {
 	switch {
 	case IsSQLiteURL(databaseURL):
@@ -40,7 +48,7 @@ func PingDatabase(ctx context.Context, databaseURL string, dial Dialer) error {
 func pingPostgres(ctx context.Context, databaseURL string, dial Dialer) error {
 	cfg, err := pgx.ParseConfig(databaseURL)
 	if err != nil {
-		return err
+		return &URLError{err}
 	}
 	if dial != nil {
 		cfg.DialFunc = pgconn.DialFunc(dial)
@@ -68,7 +76,7 @@ func pingPostgres(ctx context.Context, databaseURL string, dial Dialer) error {
 func pingMySQL(ctx context.Context, databaseURL string, dial Dialer) error {
 	t, err := parseMySQLURL(databaseURL)
 	if err != nil {
-		return err
+		return &URLError{err}
 	}
 	cfg, err := t.driverConfig()
 	if err != nil {
@@ -104,9 +112,10 @@ func pingMongo(ctx context.Context, databaseURL string, dial Dialer) error {
 	if dial != nil {
 		opts.SetDialer(contextDialer(dial))
 	}
+	// Connect dials nothing: an error here is the string itself.
 	client, err := mongo.Connect(opts)
 	if err != nil {
-		return fmt.Errorf("mongodb: %w", err)
+		return &URLError{fmt.Errorf("mongodb: %w", err)}
 	}
 	defer func() { _ = client.Disconnect(context.Background()) }()
 	return client.Ping(ctx, readpref.Primary())
