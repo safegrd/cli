@@ -122,9 +122,9 @@ you if you have not already).`,
 			}
 
 			cfg = &config.CLIConfig{
-				NodeID:      nodeID,
-				NodeName:    nodeName,
-				ServerURL:   serverURL,
+				NodeID:    nodeID,
+				NodeName:  nodeName,
+				ServerURL: serverURL,
 				Storage: config.StorageConfig{
 					Type:          config.StorageType(storageType),
 					Bucket:        s3Bucket,

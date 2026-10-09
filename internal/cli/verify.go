@@ -31,7 +31,7 @@ func newVerifyCmd() *cobra.Command {
 	var (
 		snapshotID  string
 		sandboxURL  string
-		inMemory      bool
+		inMemory    bool
 		showURL     bool
 		keep        bool
 		keyPath     string
@@ -46,10 +46,10 @@ func newVerifyCmd() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "verify",
+		Use: "verify",
 		// The attestation check is verify history: "safegrd history" suggests verify.
 		SuggestFor: []string{"history"},
-		Short: "Test a backup by restoring it in memory, or into a sandbox database",
+		Short:      "Test a backup by restoring it in memory, or into a sandbox database",
 		Long: `Reads a snapshot from storage, decrypts it on this host with the private key,
 and checks its tables, row counts, columns and extensions.
 
