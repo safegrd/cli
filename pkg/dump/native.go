@@ -180,6 +180,10 @@ func sequencesQuery(cond string) string {
 // the table that owns it), with the column that owns each, when one does, and
 // its increment. A customer who grants SELECT on the tables and not on their
 // sequences writes exactly this, and pg_dump refused the whole backup over it.
+// has_sequence_privilege takes s.seqrelid, not c.oid: Postgres evaluates WHERE
+// terms in any order, and on a plan that scans pg_class it ran before
+// c.relkind = 'S' and refused the first index it met ("ix_realtime_subscription_entity"
+// is not a sequence, SQLSTATE 42809). Every pg_sequence row is a sequence.
 var sequencesWithoutSelectQuery = `
 	SELECT n.nspname, c.relname, COALESCE(tn.nspname, ''), COALESCE(t.relname, ''), COALESCE(a.attname, ''), s.seqincrement
 	FROM pg_class c
@@ -195,7 +199,7 @@ var sequencesWithoutSelectQuery = `
 	  AND NOT EXISTS (SELECT 1 FROM pg_depend e
 	                  WHERE e.classid = 'pg_class'::regclass AND e.objid = c.oid AND e.deptype = 'e')
 	  AND NOT ` + unreadableSequenceCondition + `
-	  AND NOT has_sequence_privilege(c.oid, 'SELECT')
+	  AND NOT has_sequence_privilege(s.seqrelid, 'SELECT')
 	ORDER BY n.nspname, c.relname`
 
 // sequenceWithoutSelect is one row of sequencesWithoutSelectQuery.
