@@ -138,7 +138,7 @@ func runValidationChecks(path string, c *config.CLIConfig) []CheckResult {
 			Name:   "Configuration Load",
 			Status: "FAIL",
 			// The refusal itself: it names the key and what replaces it.
-			Message: cfgLoadErr.Error() + ". Nothing in the file was read, so no check below this one could run",
+			Message: "the file was refused: " + cfgLoadErr.Error() + ". Nothing in it was read, so no check below this one could run",
 		})
 		return results
 	}
