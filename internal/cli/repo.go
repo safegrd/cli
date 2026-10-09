@@ -78,6 +78,16 @@ func repoBackend(ctx context.Context, c *config.CLIConfig, storageCfg config.Sto
 		}
 		return sink.NewDirect(d), nil
 	case config.StorageTypeS3:
+		if hostedLayout(storageCfg) {
+			if node == "" {
+				return nil, errors.New("storage.layout: hosted needs storage.node_id to name one host's repositories")
+			}
+			bs, err := hostedLayoutRepos(ctx, storageCfg, node)
+			if err != nil {
+				return nil, err
+			}
+			return bs[0], nil
+		}
 		prov, err := storage.NewS3Storage(ctx, storageCfg)
 		if err != nil {
 			return nil, err
@@ -557,6 +567,10 @@ func drillScratchIn(stateDir string) string {
 // storage: the host's own first, then each surface the daemon files under a
 // node of its own, then any other a recovery machine may be looking for.
 func repoBackendsAll(ctx context.Context, storageCfg config.StorageConfig) ([]sink.Backend, error) {
+	// Hosted storage's bucket holds the whole organization; read every node.
+	if hostedLayout(storageCfg) {
+		return hostedLayoutRepos(ctx, storageCfg, "")
+	}
 	primary, err := repoBackend(ctx, cfg, storageCfg)
 	if err != nil {
 		return nil, err

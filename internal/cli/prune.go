@@ -352,6 +352,9 @@ func pruneOwnBucket(ctx context.Context, c *config.CLIConfig, grace time.Duratio
 	if err != nil {
 		return pruneReport{}, err
 	}
+	if hostedLayout(storageCfg) {
+		return pruneReport{}, errHostedLayoutReadOnly
+	}
 	if storageCfg.Type != config.StorageTypeS3 {
 		return pruneReport{}, fmt.Errorf("prune works on your own S3 bucket (storage.type: s3), not %q: hosted storage expires on its own, "+
 			"and a local directory has no lock or clock to judge by", storageCfg.Type)

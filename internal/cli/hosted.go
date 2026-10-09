@@ -94,7 +94,13 @@ func resolveHostedStorage(ctx context.Context, cfg *config.CLIConfig, storageCfg
 // openStorage returns the provider a command reads and writes through: the
 // hosted provider for storage.type: hosted, the ordinary one otherwise.
 func openStorage(ctx context.Context, cfg *config.CLIConfig, storageCfg config.StorageConfig) (storage.StorageProvider, error) {
+	if hostedLayout(storageCfg) {
+		return hostedLayoutArchives(ctx, storageCfg)
+	}
 	if storageCfg.Type != config.StorageTypeHosted {
+		if err := checkHostedLayout(storageCfg); err != nil {
+			return nil, err
+		}
 		return storage.NewProvider(ctx, storageCfg)
 	}
 	c, err := newHostedClient(cfg)

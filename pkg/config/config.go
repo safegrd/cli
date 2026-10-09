@@ -73,7 +73,15 @@ type StorageConfig struct {
 	ForcePathStyle bool   `yaml:"force_path_style,omitempty" json:"force_path_style,omitempty"`
 	NodeID         string `yaml:"node_id,omitempty" json:"node_id,omitempty"`
 	IAMRoleARN     string `yaml:"iam_role_arn,omitempty" json:"iam_role_arn,omitempty"`
+	// Layout "hosted", with type s3, reads hosted storage's bucket with the
+	// bucket's own key and no remote server: Prefix is the organization's
+	// folder, orgs/<org-id>/safegrd. It only reads; a backup is refused.
+	Layout string `yaml:"layout,omitempty" json:"layout,omitempty"`
 }
+
+// StorageLayoutHosted is storage.layout's one value: the keys hosted storage
+// files snapshots and repositories under.
+const StorageLayoutHosted = "hosted"
 
 // EncryptionConfig holds Age asymmetric keypair configuration.
 type EncryptionConfig struct {
@@ -612,6 +620,9 @@ func (c *StorageConfig) ResolveWORMMode() (WORMMode, error) {
 
 // Validate validates that essential fields are present.
 func (c *CLIConfig) ValidateForBackup() error {
+	if c.Storage.Layout != "" {
+		return fmt.Errorf("storage.layout: %s only reads a bucket; back up with storage.type: hosted", c.Storage.Layout)
+	}
 	if c.DatabaseURL == "" {
 		return fmt.Errorf("database_url is required (set via config or SAFEGRD_DATABASE_URL)")
 	}
@@ -635,6 +646,9 @@ func (c *CLIConfig) ValidateForBackup() error {
 
 // ValidateForFileBackup validates that encryption and storage fields are present for file backups.
 func (c *CLIConfig) ValidateForFileBackup() error {
+	if c.Storage.Layout != "" {
+		return fmt.Errorf("storage.layout: %s only reads a bucket; back up with storage.type: hosted", c.Storage.Layout)
+	}
 	if c.Encryption.PublicKey == "" {
 		return fmt.Errorf("encryption.public_key is required (run 'safegrd init' or set SAFEGRD_PUBLIC_KEY)")
 	}
