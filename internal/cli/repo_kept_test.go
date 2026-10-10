@@ -7,8 +7,47 @@ import (
 	"time"
 
 	"github.com/safegrd/cli/pkg/repo/format"
+	"github.com/safegrd/cli/pkg/repo/sink"
 	"github.com/safegrd/cli/pkg/repo/write"
 )
+
+// In a project that locks only the copies it keeps, the remote server's
+// decision is what the record and the closing line say: a scheduled run is
+// locked until its lock, a recent run is kept until its keep date and is
+// never called immutable.
+func TestAKeptModeRunSaysWhatTheServerDecided(t *testing.T) {
+	created := time.Date(2026, 10, 10, 2, 0, 0, 0, time.UTC)
+	res := &write.Result{
+		Snapshot: format.Snapshot{SnapshotID: "snap-r", CreatedAt: created, RetainUntil: created.AddDate(0, 0, 2), Unlocked: true},
+		Epoch: format.Epoch{EpochID: "e202610-00000001", OpeningTier: format.TierBase,
+			OpeningRetainUntil: time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC), LaterRetainUntil: time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC)},
+		Class:    format.ClassLater,
+		Decision: sink.RunDecision{Known: true, Locked: false, KeptUntil: created.AddDate(0, 0, 2)},
+	}
+	if got := repoKeptUntil(res, true); !got.Equal(created.AddDate(0, 0, 2)) {
+		t.Fatalf("a recent run is recorded until its keep date, got %s", got)
+	}
+	if repoRunLocked(res, true) {
+		t.Fatal("a recent run is not locked")
+	}
+	var out bytes.Buffer
+	printRepoKept(&out, "[s]", res, true)
+	if !strings.Contains(out.String(), "Kept until 2026-10-12, not locked") || strings.Contains(out.String(), "Immutable") {
+		t.Fatalf("closing line: %q", out.String())
+	}
+
+	lock := created.AddDate(0, 0, 14)
+	res.Snapshot.Unlocked = false
+	res.Decision = sink.RunDecision{Known: true, Scheduled: true, Locked: true, LockUntil: lock}
+	if got := repoKeptUntil(res, true); !got.Equal(lock) {
+		t.Fatalf("a scheduled run is recorded until its lock, got %s", got)
+	}
+	out.Reset()
+	printRepoKept(&out, "[s]", res, true)
+	if !strings.Contains(out.String(), "Locked until 2026-10-24 (daily copy)") {
+		t.Fatalf("closing line: %q", out.String())
+	}
+}
 
 // A one-off backup plans two days, but every object of its run is locked
 // until the epoch's lock for its class. The record and the closing line say

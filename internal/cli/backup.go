@@ -323,7 +323,7 @@ and never leaves this host.`,
 				fmt.Printf("   Directories:     %d\n", meta.TotalContainers)
 				fmt.Printf("   Raw Size:        %.2f MB\n", float64(meta.RawSizeBytes)/(1024*1024))
 				fmt.Printf("   Encrypted Size:  %.2f MB (%.1fx compression)\n", float64(meta.EncryptedSizeBytes)/(1024*1024), cryptoMetrics.CompressionRatio)
-				printRetentionLine(storageCfg, meta.WORMRetentionUntil)
+				printRetentionLine(storageCfg, meta)
 				fmt.Printf("   Storage URI:     %s\n", meta.StorageURI)
 				return nil
 			}
@@ -460,7 +460,7 @@ and never leaves this host.`,
 				fmt.Printf("   Mailbox Folders: %d\n", meta.TotalContainers)
 				fmt.Printf("   Raw Size:        %.2f MB\n", float64(meta.RawSizeBytes)/(1024*1024))
 				fmt.Printf("   Encrypted Size:  %.2f MB (%.1fx compression)\n", float64(meta.EncryptedSizeBytes)/(1024*1024), cryptoMetrics.CompressionRatio)
-				printRetentionLine(storageCfg, meta.WORMRetentionUntil)
+				printRetentionLine(storageCfg, meta)
 				fmt.Printf("   Storage URI:     %s\n", meta.StorageURI)
 				return nil
 			}
@@ -667,7 +667,7 @@ and never leaves this host.`,
 			fmt.Printf("   Schema:          %s\n", schemaSourceLabel(dumpMeta.SchemaSource))
 			fmt.Printf("   Raw Size:        %.2f MB\n", float64(dumpMeta.RawSizeBytes)/(1024*1024))
 			fmt.Printf("   Encrypted Size:  %.2f MB (%.1fx compression)\n", float64(dumpMeta.EncryptedSizeBytes)/(1024*1024), cryptoMetrics.CompressionRatio)
-			printRetentionLine(storageCfg, dumpMeta.WORMRetentionUntil)
+			printRetentionLine(storageCfg, dumpMeta)
 			fmt.Printf("   SHA-256 Digest:  %s\n", dumpMeta.Sha256Checksum)
 			fmt.Printf("   Storage URI:     %s\n", dumpMeta.StorageURI)
 

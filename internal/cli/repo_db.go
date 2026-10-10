@@ -268,6 +268,7 @@ func runRepoDatabaseBackup(ctx context.Context, p repoDBParams) (*model.Snapshot
 			m.DurationMs = backupMilliseconds(started)
 			m.Format, m.EpochID, m.ObjectClass = model.SnapshotFormatRepo, r.Epoch.EpochID, r.Class
 			recordRetention(&m, p.StorageCfg, repoKeptUntil(r, repoLocked(p.StorageCfg)))
+			m.Unlocked = repoLocked(p.StorageCfg) && !repoRunLocked(r, true)
 			m.TableStats = append([]model.TableStat(nil), dumpMeta.TableStats...)
 			for i := range m.TableStats {
 				t := &m.TableStats[i]

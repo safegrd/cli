@@ -162,6 +162,10 @@ type SnapshotMetadata struct {
 	// COMPLIANCE, GOVERNANCE, or NONE. Empty on snapshots written before
 	// this field existed.
 	WORMMode string `json:"worm_mode,omitempty" yaml:"worm_mode,omitempty"`
+	// Unlocked says the snapshot was written with no lock and is kept until
+	// WORMRetentionUntil: a recent run of a project that locks only the
+	// copies it keeps. Never set on a snapshot the bucket holds a lock on.
+	Unlocked bool `json:"unlocked,omitempty" yaml:"unlocked,omitempty"`
 	// OutsideProjectStorage is decided by the remote server, never by the
 	// host: the report named a location other than the storage its project
 	// uses, so the project's storage does not hold this backup, and a restore

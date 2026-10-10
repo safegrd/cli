@@ -239,6 +239,7 @@ func runRepoBackup(ctx context.Context, p repoParams) (*model.SnapshotMetadata, 
 				ObjectClass:        r.Class,
 			}
 			recordRetention(meta, p.StorageCfg, repoKeptUntil(r, repoLocked(p.StorageCfg)))
+			meta.Unlocked = repoLocked(p.StorageCfg) && !repoRunLocked(r, true)
 			meta.CalculateTotals()
 			return json.MarshalIndent(meta, "", "  ")
 		},
@@ -302,6 +303,9 @@ func repoLocked(sc config.StorageConfig) bool {
 // shorter date while the bucket held them for weeks. Without a lock it is
 // how long the snapshot is kept.
 func repoKeptUntil(res *write.Result, locked bool) time.Time {
+	if res.Decision.Known {
+		return res.Decision.Until().UTC()
+	}
 	if locked {
 		if lock := res.Epoch.RetainUntil(res.Class); !lock.IsZero() {
 			return lock.UTC()
@@ -310,12 +314,26 @@ func repoKeptUntil(res *write.Result, locked bool) time.Time {
 	return res.Snapshot.RetainUntil.UTC()
 }
 
+// repoRunLocked reports whether the run's objects are under a lock: the
+// storage's lock, unless the remote server wrote this run unlocked.
+func repoRunLocked(res *write.Result, locked bool) bool {
+	if res.Decision.Known {
+		return locked && res.Decision.Locked
+	}
+	return locked
+}
+
 // printRepoKept prints the line that closes a run: how long its snapshot is
 // kept, and whether it is locked for that long.
 func printRepoKept(out io.Writer, label string, res *write.Result, locked bool) {
 	snap := res.Snapshot
 	until := repoKeptUntil(res, locked).Format("2006-01-02")
 	switch {
+	case res.Decision.Known && !res.Decision.Locked:
+		fmt.Fprintf(out, "%s Snapshot %s complete. Kept until %s, not locked: this project locks the day's first backup and the weekly and monthly copies.\n",
+			label, snap.SnapshotID, until)
+	case res.Decision.Known && res.Decision.Scheduled:
+		fmt.Fprintf(out, "%s Snapshot %s complete. Locked until %s (daily copy).\n", label, snap.SnapshotID, until)
 	case !locked:
 		fmt.Fprintf(out, "%s Snapshot %s complete. Not locked: this storage applies no Object Lock; it is kept until %s.\n",
 			label, snap.SnapshotID, until)

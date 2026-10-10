@@ -159,6 +159,8 @@ type Result struct {
 	// Keys are the objects this run wrote, sidecar included.
 	Keys       []string
 	SidecarKey string
+	// Decision is the backend's word on this run's lock, when it gave one.
+	Decision sink.RunDecision
 	// CacheWarning is set when the run succeeded but could not tidy the
 	// cache; the next run still works.
 	CacheWarning string
@@ -325,6 +327,16 @@ func Run(ctx context.Context, b sink.Backend, o Options) (*Result, error) {
 		o.OnStart(res)
 	}
 	runID := format.NewRandomID()
+	if rs, ok := b.(sink.RunStarter); ok {
+		dec, err := rs.StartRun(ctx, e, runID)
+		if err != nil {
+			return nil, fmt.Errorf("starting the run: %w", err)
+		}
+		if dec.Known {
+			res.Decision = dec
+			retain = dec.Until().UTC()
+		}
+	}
 	if err := cur.BeginRun(runID, o.SnapshotID, res.Class, started); err != nil {
 		return nil, err
 	}
@@ -452,7 +464,8 @@ func Run(ctx context.Context, b sink.Backend, o Options) (*Result, error) {
 		Version: format.Version, SnapshotID: o.SnapshotID, EpochID: e.EpochID, RunID: runID, Class: res.Class,
 		CreatedAt: started, Host: o.Host, Roots: roots, RootTree: rootTree.String(), ContentRoot: contentRoot,
 		Runs: runs, Packs: packs, Skipped: w.skipped, Inconsistent: w.inconsistent, RetainUntil: retain,
-		Stats: format.SnapshotStats{Files: w.files, Dirs: w.dirs, LogicalBytes: w.logical, NewPacks: up.packs},
+		Unlocked: res.Decision.Known && !res.Decision.Locked,
+		Stats:    format.SnapshotStats{Files: w.files, Dirs: w.dirs, LogicalBytes: w.logical, NewPacks: up.packs},
 	}
 	if snap.Skipped == nil {
 		snap.Skipped = []format.Skipped{}
@@ -522,7 +535,8 @@ func Run(ctx context.Context, b sink.Backend, o Options) (*Result, error) {
 		}
 		res.Keys = up.keys
 	}
-	if err := b.Commit(ctx, e, sink.RunCommit{SnapshotID: o.SnapshotID, RunID: runID, Class: res.Class, Keys: res.Keys, RetainUntil: retain}); err != nil {
+	if err := b.Commit(ctx, e, sink.RunCommit{SnapshotID: o.SnapshotID, RunID: runID, Class: res.Class, Keys: res.Keys,
+		Refs: referencedKeys(res.Keys, snap), RetainUntil: retain, Unlocked: snap.Unlocked}); err != nil {
 		return nil, fmt.Errorf("recording the run: %w", err)
 	}
 	var state map[string][]byte
@@ -542,6 +556,34 @@ func Run(ctx context.Context, b sink.Backend, o Options) (*Result, error) {
 		}
 	}
 	return res, nil
+}
+
+// referencedKeys is every object the snapshot reads that this run did not
+// write: the packs of earlier runs it references and the index of each run
+// it reads. Every key of an epoch shares the prefix of the keys written, so
+// the prefix is read off one of them.
+func referencedKeys(written []string, snap format.Snapshot) []string {
+	if len(written) == 0 {
+		return nil
+	}
+	prefix := path.Dir(path.Dir(written[0]))
+	own := make(map[string]bool, len(written))
+	for _, k := range written {
+		own[k] = true
+	}
+	var refs []string
+	add := func(k string) {
+		if !own[k] {
+			refs = append(refs, k)
+		}
+	}
+	for _, p := range snap.Packs {
+		add(prefix + "/packs/" + p)
+	}
+	for _, r := range snap.Runs {
+		add(prefix + "/index/" + r + ".age")
+	}
+	return refs
 }
 
 // CleanRoots resolves each root to the real directory it names and refuses

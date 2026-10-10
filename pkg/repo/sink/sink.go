@@ -51,10 +51,41 @@ type Slot struct {
 	EpochID     string
 	Class       string
 	RetainUntil time.Time
+	// Unlocked is an object written with no lock: a recent run's, in a
+	// project that locks only the copies it keeps. RetainUntil is then how
+	// long the run is kept, not a lock.
+	Unlocked bool
 	// URL and Headers are set when the remote server signed the request:
 	// the body must be PUT there with exactly these headers.
 	URL     string
 	Headers map[string]string
+}
+
+// RunDecision is what a backend decided about a run before it wrote: whether
+// its objects are locked when written, and until when they are locked or
+// kept. Known is false when the backend made no decision, and the epoch's
+// class lock applies as it always has.
+type RunDecision struct {
+	Known     bool
+	Scheduled bool
+	Locked    bool
+	LockUntil time.Time
+	KeptUntil time.Time
+	Slot      string
+}
+
+// Until is the date the run's snapshot is kept or locked until.
+func (d RunDecision) Until() time.Time {
+	if d.Locked {
+		return d.LockUntil
+	}
+	return d.KeptUntil
+}
+
+// RunStarter is a backend that decides a run's lock before the run writes.
+// The writer asks once per run, right after the epoch is open.
+type RunStarter interface {
+	StartRun(ctx context.Context, e format.Epoch, runID string) (RunDecision, error)
 }
 
 // OpenRequest is what a run knows when it starts.
@@ -88,11 +119,17 @@ type Opened struct {
 
 // RunCommit is what a finished run tells the backend.
 type RunCommit struct {
-	SnapshotID  string
-	RunID       string
-	Class       string
+	SnapshotID string
+	RunID      string
+	Class      string
+	// Keys is every object the run wrote; Refs every object its snapshot
+	// reads that an earlier run wrote (packs, and the index of each run it
+	// reads). Together they are what a kept copy of the run has to hold.
 	Keys        []string
+	Refs        []string
 	RetainUntil time.Time
+	// Unlocked says the run's objects carry no lock.
+	Unlocked bool
 }
 
 // ObjectInfo is one object in a listing.

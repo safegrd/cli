@@ -37,6 +37,9 @@ type hostedRepo struct {
 	// on node: a host never appends to another node's epoch.
 	allNodes bool
 
+	// run is the run this backend is writing, once StartRun named it.
+	run string
+
 	mu       sync.Mutex
 	prefixes map[string]string // epoch id -> key prefix
 	uris     map[string]string // epoch id -> the location a snapshot record carries
@@ -190,6 +193,40 @@ type hostedSlot struct {
 	Headers     map[string]string `json:"headers"`
 	Class       string            `json:"class"`
 	RetainUntil time.Time         `json:"retain_until"`
+	Locked      *bool             `json:"locked"`
+}
+
+type hostedRunView struct {
+	RunID     string    `json:"run_id"`
+	Mode      string    `json:"mode"`
+	Scheduled bool      `json:"scheduled"`
+	Locked    bool      `json:"locked"`
+	LockUntil time.Time `json:"lock_until"`
+	KeptUntil time.Time `json:"kept_until"`
+	Slot      string    `json:"slot"`
+}
+
+// StartRun tells the remote server a run begins and learns whether its
+// objects are locked when written: in a project that locks only the copies
+// it keeps, the first run of each day is, the rest are kept unlocked.
+func (h *hostedRepo) StartRun(ctx context.Context, e format.Epoch, runID string) (sink.RunDecision, error) {
+	var v hostedRunView
+	if err := h.callRetry(ctx, http.MethodPost, "/repo/epochs/"+url.PathEscape(e.EpochID)+"/runs", map[string]any{"run_id": runID}, &v); err != nil {
+		return sink.RunDecision{}, err
+	}
+	h.mu.Lock()
+	h.run = runID
+	h.mu.Unlock()
+	if v.Mode != "kept" {
+		return sink.RunDecision{}, nil
+	}
+	return sink.RunDecision{Known: true, Scheduled: v.Scheduled, Locked: v.Locked, LockUntil: v.LockUntil, KeptUntil: v.KeptUntil, Slot: v.Slot}, nil
+}
+
+func (h *hostedRepo) runID() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.run
 }
 
 func (h *hostedRepo) Reserve(ctx context.Context, e format.Epoch, class string, objs []sink.ObjectSpec) ([]sink.Slot, error) {
@@ -200,8 +237,9 @@ func (h *hostedRepo) Reserve(ctx context.Context, e format.Epoch, class string, 
 		MD5  string `json:"md5"`
 	}
 	in := struct {
+		RunID   string `json:"run_id,omitempty"`
 		Objects []spec `json:"objects"`
-	}{}
+	}{RunID: h.runID()}
 	for _, o := range objs {
 		in.Objects = append(in.Objects, spec{Kind: string(o.Kind), Name: o.Name, Size: o.Size, MD5: base64.StdEncoding.EncodeToString(o.MD5[:])})
 	}
@@ -219,7 +257,8 @@ func (h *hostedRepo) Reserve(ctx context.Context, e format.Epoch, class string, 
 		if s.Class != class {
 			return nil, fmt.Errorf("epoch %s takes %s objects now, and this run writes %s ones; run the backup again", e.EpochID, s.Class, class)
 		}
-		slots[i] = sink.Slot{Kind: objs[i].Kind, Key: s.Key, EpochID: e.EpochID, Class: s.Class, RetainUntil: s.RetainUntil, URL: s.URL, Headers: s.Headers}
+		slots[i] = sink.Slot{Kind: objs[i].Kind, Key: s.Key, EpochID: e.EpochID, Class: s.Class, RetainUntil: s.RetainUntil, URL: s.URL, Headers: s.Headers,
+			Unlocked: s.Locked != nil && !*s.Locked}
 	}
 	return slots, nil
 }
@@ -292,17 +331,12 @@ func (h *hostedRepo) uploaded(ctx context.Context, epochID string, keys []string
 	return h.callRetry(ctx, http.MethodPost, "/repo/epochs/"+url.PathEscape(epochID)+"/uploaded", map[string]any{"keys": keys}, nil)
 }
 
-// Commit names the run's metadata objects; its packs were each confirmed as
-// they finished.
+// Commit names every object the run wrote and every earlier one its
+// snapshot reads, so the remote server knows what a kept copy of this run
+// holds and can lock it.
 func (h *hostedRepo) Commit(ctx context.Context, e format.Epoch, c sink.RunCommit) error {
-	var keys []string
-	for _, k := range c.Keys {
-		if !strings.Contains(k, "/packs/") {
-			keys = append(keys, k)
-		}
-	}
 	return h.callRetry(ctx, http.MethodPost, "/repo/epochs/"+url.PathEscape(e.EpochID)+"/commit", map[string]any{
-		"snapshot_id": c.SnapshotID, "run_id": c.RunID, "class": c.Class, "keys": keys, "retain_until": c.RetainUntil,
+		"snapshot_id": c.SnapshotID, "run_id": c.RunID, "class": c.Class, "keys": c.Keys, "refs": c.Refs, "retain_until": c.RetainUntil,
 	}, nil)
 }
 

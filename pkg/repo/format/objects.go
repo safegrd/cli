@@ -71,20 +71,23 @@ const DefaultPackTarget = 32 << 20
 //	t_mid_days, opening_tier, opening_retain_until, later_retain_until,
 //	recipient, chunker {algorithm, min, avg, max}, pack_target_bytes
 type Epoch struct {
-	Format             string        `json:"format"`
-	Version            int           `json:"version"`
-	EpochID            string        `json:"epoch_id"`
-	SurfaceID          string        `json:"surface_id"`
-	OpenedAt           time.Time     `json:"opened_at"`
-	PlannedEnd         time.Time     `json:"planned_end"`
-	Reason             string        `json:"reason"`
-	TMidDays           int           `json:"t_mid_days"`
-	OpeningTier        string        `json:"opening_tier"`
-	OpeningRetainUntil time.Time     `json:"opening_retain_until"`
-	LaterRetainUntil   time.Time     `json:"later_retain_until"`
-	Recipient          string        `json:"recipient"`
-	Chunker            ChunkerParams `json:"chunker"`
-	PackTargetBytes    int           `json:"pack_target_bytes"`
+	Format             string    `json:"format"`
+	Version            int       `json:"version"`
+	EpochID            string    `json:"epoch_id"`
+	SurfaceID          string    `json:"surface_id"`
+	OpenedAt           time.Time `json:"opened_at"`
+	PlannedEnd         time.Time `json:"planned_end"`
+	Reason             string    `json:"reason"`
+	TMidDays           int       `json:"t_mid_days"`
+	OpeningTier        string    `json:"opening_tier"`
+	OpeningRetainUntil time.Time `json:"opening_retain_until"`
+	LaterRetainUntil   time.Time `json:"later_retain_until"`
+	// RetentionMode is the project's lock rule, "every" or "kept"; absent
+	// on epochs written before it existed, which lock every run.
+	RetentionMode   string        `json:"retention_mode,omitempty"`
+	Recipient       string        `json:"recipient"`
+	Chunker         ChunkerParams `json:"chunker"`
+	PackTargetBytes int           `json:"pack_target_bytes"`
 }
 
 // RetainUntil is the lock every object of class carries.
@@ -264,6 +267,10 @@ type Snapshot struct {
 	Skipped      []Skipped     `json:"skipped"`
 	Inconsistent []RawPath     `json:"inconsistent"`
 	RetainUntil  time.Time     `json:"retain_until"`
+	// Unlocked says the run's objects were written with no lock and are
+	// kept until RetainUntil: a recent run of a project that locks only the
+	// copies it keeps. Absent on every run written locked.
+	Unlocked bool `json:"unlocked,omitempty"`
 }
 
 // Validate checks a snapshot object's shape.

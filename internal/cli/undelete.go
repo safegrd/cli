@@ -197,7 +197,12 @@ func recordRetention(meta *model.SnapshotMetadata, storageCfg config.StorageConf
 //
 // A backup written with worm_mode: NONE is encrypted and checksummed,
 // but an attacker with write access to the bucket can delete it.
-func printRetentionLine(storageCfg config.StorageConfig, retainUntil time.Time) {
+func printRetentionLine(storageCfg config.StorageConfig, meta *model.SnapshotMetadata) {
+	retainUntil := meta.WORMRetentionUntil
+	if meta.Unlocked {
+		fmt.Printf("   Kept until:      %s, not locked. This project locks the day's first backup and the weekly and monthly copies.\n", retainUntil.UTC().Format("2006-01-02 15:04:05 UTC"))
+		return
+	}
 	if mode, err := storageCfg.ResolveWORMMode(); err == nil && mode == config.WORMModeNone {
 		fmt.Printf("   WORM Locked:     NO Object Lock: worm_mode is NONE.\n")
 		fmt.Printf("                    The backup is encrypted and attested, and it can be deleted.\n")
