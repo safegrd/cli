@@ -72,16 +72,42 @@ type S3SinkConfig struct {
 	UpdatedAt         time.Time `json:"updated_at,omitempty" yaml:"updated_at,omitempty"`
 }
 
+// RetentionMode is which of a project's backups are locked under Object
+// Lock. It is chosen when the project is created and never changed: a
+// setting that could be loosened later would make every lock a promise
+// only as strong as the console session that could flip it.
+type RetentionMode string
+
+const (
+	// RetentionLockEvery locks every backup for the plan's retention, and
+	// the daily, weekly and monthly copies for longer. The default, and
+	// what the organization's first project uses.
+	RetentionLockEvery RetentionMode = "every"
+	// RetentionLockKept locks the first backup of each day when it is
+	// written and the weekly and monthly copies for their tier; the backups
+	// in between are kept for the plan's retention, unlocked.
+	RetentionLockKept RetentionMode = "kept"
+)
+
 // Project organizes database nodes into environments (e.g. Production, Staging).
 type Project struct {
-	ID          string        `json:"id" yaml:"id"`
-	OrgID       string        `json:"org_id" yaml:"org_id"`
-	Name        string        `json:"name" yaml:"name"`
-	Slug        string        `json:"slug" yaml:"slug"`
-	Description string        `json:"description,omitempty" yaml:"description,omitempty"`
-	CreatedAt   time.Time     `json:"created_at" yaml:"created_at"`
-	ArchivedAt  *time.Time    `json:"archived_at,omitempty" yaml:"archived_at,omitempty"`
-	S3Sink      *S3SinkConfig `json:"s3_sink,omitempty" yaml:"s3_sink,omitempty"`
+	ID            string        `json:"id" yaml:"id"`
+	OrgID         string        `json:"org_id" yaml:"org_id"`
+	Name          string        `json:"name" yaml:"name"`
+	Slug          string        `json:"slug" yaml:"slug"`
+	Description   string        `json:"description,omitempty" yaml:"description,omitempty"`
+	CreatedAt     time.Time     `json:"created_at" yaml:"created_at"`
+	ArchivedAt    *time.Time    `json:"archived_at,omitempty" yaml:"archived_at,omitempty"`
+	S3Sink        *S3SinkConfig `json:"s3_sink,omitempty" yaml:"s3_sink,omitempty"`
+	RetentionMode RetentionMode `json:"retention_mode,omitempty" yaml:"retention_mode,omitempty"`
+}
+
+// LocksEveryBackup reports whether every backup in the project is locked.
+// Anything but an explicit "kept" locks everything, so a record written
+// before the field existed, or a value nothing recognises, never leaves a
+// backup unlocked.
+func (p *Project) LocksEveryBackup() bool {
+	return p.RetentionMode != RetentionLockKept
 }
 
 // IsArchived reports whether the project has been archived.

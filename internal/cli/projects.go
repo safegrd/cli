@@ -78,9 +78,13 @@ func newListProjectsCmd() *cobra.Command {
 			}
 
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-			fmt.Fprintln(w, "PROJECT ID\tNAME\tSLUG\tCREATED AT")
+			fmt.Fprintln(w, "PROJECT ID\tNAME\tSLUG\tLOCKED\tCREATED AT")
 			for _, p := range projects {
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", p.ID, p.Name, p.Slug, p.CreatedAt.Format("2006-01-02"))
+				locked := "kept copies"
+				if p.LocksEveryBackup() {
+					locked = "every backup"
+				}
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", p.ID, p.Name, p.Slug, locked, p.CreatedAt.Format("2006-01-02"))
 			}
 			w.Flush()
 
