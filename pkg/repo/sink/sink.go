@@ -82,6 +82,23 @@ func (d RunDecision) Until() time.Time {
 	return d.KeptUntil
 }
 
+// KeptRule is the lock rule a writer applies in a store it holds the key
+// for, when the project locks only the copies it keeps: the day's first run
+// is scheduled and locked until LockUntil when written, every other run is
+// written unlocked and kept until KeptUntil. The remote server says which
+// a run is; the host applies it with its own key.
+type KeptRule struct {
+	Scheduled bool
+	LockUntil time.Time
+	KeptUntil time.Time
+}
+
+// Extender is a store that can move an object's lock later, the one change
+// Object Lock allows. A directory extends nothing and says so with nil.
+type Extender interface {
+	Extend(ctx context.Context, key string, until time.Time) error
+}
+
 // RunStarter is a backend that decides a run's lock before the run writes.
 // The writer asks once per run, right after the epoch is open.
 type RunStarter interface {

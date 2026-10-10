@@ -9,6 +9,7 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/safegrd/cli/pkg/repo/format"
 	"github.com/safegrd/cli/pkg/repo/policy"
@@ -19,6 +20,10 @@ import (
 // policy decides epochs and lock dates.
 type Direct struct {
 	S Store
+	// Rule, when set, is the kept rule this run writes under in a bucket
+	// the host holds the key for: a recent run's objects go in unlocked, a
+	// scheduled run's commit locks every object it references.
+	Rule *KeptRule
 }
 
 // NewDirect returns a backend over s.
@@ -57,6 +62,14 @@ func (d *Direct) OpenEpoch(ctx context.Context, req OpenRequest) (Opened, error)
 	return Opened{Epoch: e, New: true}, nil
 }
 
+// StartRun says what the rule decided for this run, when there is one.
+func (d *Direct) StartRun(_ context.Context, _ format.Epoch, _ string) (RunDecision, error) {
+	if d.Rule == nil {
+		return RunDecision{}, nil
+	}
+	return RunDecision{Known: true, Scheduled: d.Rule.Scheduled, Locked: d.Rule.Scheduled, LockUntil: d.Rule.LockUntil, KeptUntil: d.Rule.KeptUntil}, nil
+}
+
 func (d *Direct) Reserve(_ context.Context, e format.Epoch, class string, objs []ObjectSpec) ([]Slot, error) {
 	prefix := EpochPrefix(d.S.Root(), e.SurfaceID, e.EpochID)
 	out := make([]Slot, len(objs))
@@ -65,18 +78,53 @@ func (d *Direct) Reserve(_ context.Context, e format.Epoch, class string, objs [
 		if err != nil {
 			return nil, err
 		}
-		out[i] = Slot{Kind: o.Kind, Key: key, EpochID: e.EpochID, Class: class, RetainUntil: e.RetainUntil(class)}
+		slot := Slot{Kind: o.Kind, Key: key, EpochID: e.EpochID, Class: class, RetainUntil: e.RetainUntil(class)}
+		if d.Rule != nil {
+			if d.Rule.Scheduled {
+				slot.RetainUntil = d.Rule.LockUntil
+			} else {
+				slot.RetainUntil, slot.Unlocked = d.Rule.KeptUntil, true
+			}
+		}
+		out[i] = slot
 	}
 	return out, nil
 }
 
 func (d *Direct) Put(ctx context.Context, slot Slot, body []byte) error {
-	return d.S.Put(ctx, slot.Key, body, md5.Sum(body), slot.RetainUntil)
+	retain := slot.RetainUntil
+	if slot.Unlocked {
+		retain = time.Time{}
+	}
+	return d.S.Put(ctx, slot.Key, body, md5.Sum(body), retain)
 }
 
 func (d *Direct) Uploaded(context.Context, format.Epoch, []string) error { return nil }
 
-func (d *Direct) Commit(context.Context, format.Epoch, RunCommit) error { return nil }
+// Commit locks, for a scheduled run under the kept rule, every object the
+// run wrote or references to the run's lock, with the store's own key. A
+// store that cannot extend (a directory) has nothing to lock.
+func (d *Direct) Commit(ctx context.Context, e format.Epoch, c RunCommit) error {
+	if d.Rule == nil || !d.Rule.Scheduled {
+		return nil
+	}
+	ext, ok := d.S.(Extender)
+	if !ok {
+		return nil
+	}
+	epochKey, _ := ObjectKey(EpochPrefix(d.S.Root(), e.SurfaceID, e.EpochID), KindEpoch, "")
+	seen := map[string]bool{}
+	for _, k := range append(append(append([]string(nil), c.Keys...), c.Refs...), epochKey) {
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		if err := ext.Extend(ctx, k, d.Rule.LockUntil); err != nil {
+			return fmt.Errorf("locking %s until %s: %w", k, d.Rule.LockUntil.UTC().Format("2006-01-02"), err)
+		}
+	}
+	return nil
+}
 
 // Epochs lists a surface's epochs by their descriptors. A store that can
 // list the names under a prefix is asked for the epoch directories and then

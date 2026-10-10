@@ -44,7 +44,10 @@ func (s *S3) Put(ctx context.Context, key string, body []byte, md5 [16]byte, ret
 		ContentMD5:    aws.String(base64.StdEncoding.EncodeToString(md5[:])),
 		ContentType:   aws.String("application/octet-stream"),
 	}
-	if s.Mode != "" {
+	// A zero date is a run the project keeps unlocked (Direct.Put under a
+	// kept rule): written with no lock headers. Any other date has to be
+	// ahead, or the object would go in unlocked by mistake.
+	if s.Mode != "" && !retainUntil.IsZero() {
 		now := time.Now
 		if s.Now != nil {
 			now = s.Now
@@ -141,6 +144,33 @@ func (s *S3) Versions(ctx context.Context, prefix string) ([]Version, error) {
 		}
 	}
 	return out, nil
+}
+
+// Extend moves the lock on key's current version to until when it is
+// unlocked or locked earlier, in the bucket's mode. A lock already later
+// stays.
+func (s *S3) Extend(ctx context.Context, key string, until time.Time) error {
+	if s.Mode == "" {
+		return nil
+	}
+	head, err := s.Client.HeadObject(ctx, &s3.HeadObjectInput{Bucket: &s.Bucket, Key: &key})
+	if err != nil {
+		return fmt.Errorf("s3://%s/%s: %w", s.Bucket, key, err)
+	}
+	version := aws.ToString(head.VersionId)
+	cur, err := s.Retention(ctx, key, version)
+	if err != nil {
+		return err
+	}
+	if !cur.IsZero() && !cur.Before(until) {
+		return nil
+	}
+	_, err = s.Client.PutObjectRetention(ctx, &s3.PutObjectRetentionInput{Bucket: &s.Bucket, Key: &key, VersionId: aws.String(version),
+		Retention: &s3types.ObjectLockRetention{Mode: s3types.ObjectLockRetentionMode(s.Mode), RetainUntilDate: aws.Time(until.UTC())}})
+	if err != nil {
+		return fmt.Errorf("s3://%s/%s: %w", s.Bucket, key, err)
+	}
+	return nil
 }
 
 // Retention reads one version's lock date by the bucket's own record. A

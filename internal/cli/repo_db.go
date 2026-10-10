@@ -24,6 +24,7 @@ import (
 	"github.com/safegrd/cli/pkg/repo/format"
 	"github.com/safegrd/cli/pkg/repo/policy"
 	"github.com/safegrd/cli/pkg/repo/read"
+	"github.com/safegrd/cli/pkg/repo/sink"
 	"github.com/safegrd/cli/pkg/repo/unseal"
 	"github.com/safegrd/cli/pkg/repo/write"
 	"github.com/safegrd/cli/pkg/runner"
@@ -73,6 +74,9 @@ type repoDBParams struct {
 	SnapshotID  string
 	StateDir    string
 	Out         io.Writer
+	// Kept is the rule this run writes under in the host's own bucket when
+	// its project locks only the kept copies; nil locks every object.
+	Kept *sink.KeptRule
 	// ServerCache keeps the writer's cache on the remote server between
 	// runs, for a run on a machine that does not outlive it.
 	ServerCache bool
@@ -117,6 +121,9 @@ func runRepoDatabaseBackup(ctx context.Context, p repoDBParams) (*model.Snapshot
 	b, err := repoBackend(ctx, cfg, p.StorageCfg)
 	if err != nil {
 		return nil, nil, storageFailure(err)
+	}
+	if d, ok := b.(*sink.Direct); ok && p.Kept != nil {
+		d.Rule = p.Kept
 	}
 	label := "[" + p.SurfaceID + "]"
 	started := time.Now()

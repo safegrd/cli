@@ -1077,12 +1077,13 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 			if storageCfg.NodeID == "" {
 				storageCfg.NodeID = nodeID
 			}
+			kept := ownKeptRule(ctx, c, storageCfg, plan, time.Now())
 			meta, res, err := runRepoBackup(ctx, repoParams{
 				SurfaceID: s.ID, Roots: roots, Excludes: s.Excludes, OneFS: s.OneFilesystem, StorageCfg: storageCfg,
 				NodeID: nodeID, Recipient: pubKey,
 				Retention: policy.Retention{Days: storageCfg.RetentionDays, KeepDaily: tiers.Days, KeepWeekly: tiers.Weeks, KeepMonthly: tiers.Months},
 				Tier:      plan.Tier, Planned: plan.Until, SnapshotID: snapshotID, StateDir: stateDir, Out: os.Stdout,
-				NewEpoch: st.newEpoch, Rescan: st.rescan, RecoverySealTo: recoveryDocSealTo(s, pubKey),
+				NewEpoch: st.newEpoch, Rescan: st.rescan, RecoverySealTo: recoveryDocSealTo(s, pubKey), Kept: kept,
 			})
 			st.newEpoch, st.rescan = false, false
 			if err != nil {
@@ -1098,6 +1099,9 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 			}
 			if hostIsEnrolled(c) {
 				st.notRecorded = reportSnapshot(ctx, c, st, meta)
+			}
+			if kept != nil {
+				keepOwnCopies(ctx, c, storageCfg, daemonPrivateKey(ctx, c), os.Stdout)
 			}
 			return meta, plan, nil
 		}
@@ -1261,12 +1265,13 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 			if storageCfg.NodeID == "" {
 				storageCfg.NodeID = nodeID
 			}
+			kept := ownKeptRule(ctx, c, storageCfg, plan, time.Now())
 			meta, res, err := runRepoDatabaseBackup(ctx, repoDBParams{
 				SurfaceID: s.ID, DatabaseURL: dbURL, StorageCfg: storageCfg, NodeID: nodeID, Recipient: pubKey,
 				Retention: policy.Retention{Days: storageCfg.RetentionDays, KeepDaily: tiers.Days, KeepWeekly: tiers.Weeks, KeepMonthly: tiers.Months},
 				Tier:      plan.Tier, Planned: plan.Until, SnapshotID: snapshotID, StateDir: stateDir, Out: os.Stdout,
 				NewEpoch: st.newEpoch, ChangeLog: s.ChangeLog, RolesWithoutPasswords: s.RolesWithoutPasswords,
-				RecoverySealTo: recoveryDocSealTo(s, pubKey),
+				RecoverySealTo: recoveryDocSealTo(s, pubKey), Kept: kept,
 			})
 			st.newEpoch, st.rescan = false, false
 			if err != nil {
@@ -1278,6 +1283,9 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 			}
 			if hostIsEnrolled(c) {
 				st.notRecorded = reportSnapshot(ctx, c, st, meta)
+			}
+			if kept != nil {
+				keepOwnCopies(ctx, c, storageCfg, daemonPrivateKey(ctx, c), os.Stdout)
 			}
 			return meta, plan, nil
 		default:

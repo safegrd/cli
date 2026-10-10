@@ -136,6 +136,9 @@ type repoParams struct {
 	// RecoverySealTo seals the recovery document to this recipient; ""
 	// writes it as text.
 	RecoverySealTo string
+	// Kept is the rule this run writes under in the host's own bucket when
+	// its project locks only the kept copies; nil locks every object.
+	Kept *sink.KeptRule
 }
 
 func reasonText(reason string) string {
@@ -189,6 +192,9 @@ func runRepoBackup(ctx context.Context, p repoParams) (*model.SnapshotMetadata, 
 	b, err := repoBackend(ctx, cfg, p.StorageCfg)
 	if err != nil {
 		return nil, nil, err
+	}
+	if d, ok := b.(*sink.Direct); ok && p.Kept != nil {
+		d.Rule = p.Kept
 	}
 	label := "[" + p.SurfaceID + "]"
 	locked := repoLocked(p.StorageCfg)
