@@ -154,6 +154,8 @@ func reasonText(reason string) string {
 		return "--new-epoch"
 	case format.ReasonRecipient:
 		return "the public key changed"
+	case format.ReasonChurn:
+		return "this month's changes outgrew the first backup"
 	}
 	return reason
 }

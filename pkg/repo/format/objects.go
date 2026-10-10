@@ -26,6 +26,9 @@ const (
 	// ReasonRecipient: the surface's public key changed. Packs are wrapped
 	// to one recipient per epoch, so a new key starts a new epoch.
 	ReasonRecipient = "recipient-changed"
+	// ReasonChurn is the remote server's: the epoch's later runs uploaded
+	// more than its first, so a new one starts.
+	ReasonChurn = "churn"
 )
 
 // Retention tiers an opening snapshot can be declared at.
