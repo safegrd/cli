@@ -66,6 +66,11 @@ type VerificationReport struct {
 	// to look at, as the surface's drill.keep_failed_sandbox asks, and that
 	// the host removes it a day later.
 	SandboxKept bool `json:"sandbox_kept,omitempty" yaml:"sandbox_kept,omitempty"`
+	// ObjectsRead is every storage object the drill read of a repository
+	// snapshot. The server checks it against the objects the run's commit
+	// named, so a copy kept for months is one whose every object is locked.
+	// Not stored and not part of the certificate.
+	ObjectsRead []string `json:"objects_read,omitempty" yaml:"-"`
 }
 
 // CanonicalBytes returns the deterministic serialization for cryptographic signing and chaining.

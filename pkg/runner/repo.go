@@ -17,6 +17,20 @@ import (
 )
 
 // RepoDrill is what RunRepoDrill needs to find a repository snapshot.
+// readRecorder is a backend that can say which objects it read: the hosted
+// one. A drill reports them so the remote server can check them against the
+// objects the run's commit named.
+type readRecorder interface {
+	ReadKeys() []string
+}
+
+// attachReadKeys puts what the drill read on its report.
+func attachReadKeys(report *model.VerificationReport, b sink.Backend) {
+	if rr, ok := b.(readRecorder); ok {
+		report.ObjectsRead = rr.ReadKeys()
+	}
+}
+
 type RepoDrill struct {
 	Backend sink.Backend
 	Epoch   sink.EpochInfo
@@ -159,6 +173,7 @@ func (v *Verifier) RunRepoDrill(ctx context.Context, d RepoDrill, privateKey str
 	report.TablesRestored = int(res.Dirs)
 	report.Status = model.VerificationStatusPassed
 	report.CertificateHash = computeCertificateHash(report)
+	attachReadKeys(report, d.Backend)
 	v.submitReport(ctx, report)
 	return report, nil
 }

@@ -178,6 +178,7 @@ func (v *Verifier) RunRepoDatabaseDrill(ctx context.Context, d RepoDrill, privat
 				report.ErrorMessage = "One or more assertions failed during in-memory dry restore"
 			}
 		}
+		attachReadKeys(report, d.Backend)
 		v.submitReport(ctx, report)
 		return report, nil
 	}
@@ -224,6 +225,7 @@ func (v *Verifier) RunRepoDatabaseDrill(ctx context.Context, d RepoDrill, privat
 		report.Status = model.VerificationStatusFailed
 		report.ErrorMessage = drillFailureMessage(allPassed, failedChecks, len(v.Checks))
 	}
+	attachReadKeys(report, d.Backend)
 	v.submitReport(ctx, report)
 	return report, nil
 }

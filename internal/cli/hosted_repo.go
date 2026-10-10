@@ -44,6 +44,8 @@ type hostedRepo struct {
 	prefixes map[string]string // epoch id -> key prefix
 	uris     map[string]string // epoch id -> the location a snapshot record carries
 	gets     map[string]signedGet
+	// read is every key fetched through this backend, for a drill's report.
+	read map[string]bool
 	// signing serialises the signing of one key, so concurrent reads of
 	// one pack ask the remote server once; every signed download counts
 	// against the day's budget.
@@ -455,6 +457,12 @@ func (h *hostedRepo) fetch(ctx context.Context, key string, rng string) ([]byte,
 	if err != nil {
 		return nil, err
 	}
+	h.mu.Lock()
+	if h.read == nil {
+		h.read = map[string]bool{}
+	}
+	h.read[key] = true
+	h.mu.Unlock()
 	var body []byte
 	err = retryTransfer(ctx, func() (bool, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, g.url, nil)
@@ -481,6 +489,18 @@ func (h *hostedRepo) fetch(ctx context.Context, key string, rng string) ([]byte,
 		return err == nil, err
 	})
 	return body, err
+}
+
+// ReadKeys is every object read through this backend so far, sorted.
+func (h *hostedRepo) ReadKeys() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	keys := make([]string, 0, len(h.read))
+	for k := range h.read {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func (h *hostedRepo) Get(ctx context.Context, key string) ([]byte, error) {

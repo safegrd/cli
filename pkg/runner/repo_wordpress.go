@@ -138,6 +138,7 @@ func (v *Verifier) RunRepoWordPressDrill(ctx context.Context, d RepoDrill, priva
 			report.ErrorMessage = "One or more assertions failed during in-memory dry restore"
 		}
 	}
+	attachReadKeys(report, d.Backend)
 	v.submitReport(ctx, report)
 	return report, nil
 }
