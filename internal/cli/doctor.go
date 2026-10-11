@@ -536,6 +536,11 @@ func runDoctorChecks(path string, c *config.CLIConfig) []CheckResult {
 	for _, s := range c.Surfaces {
 		if strings.ToLower(s.Type) == "files" {
 			for _, root := range s.Roots {
+				if _, _, isBucket := dump.ParseObjectStoreRoot(root); isBucket {
+					// A bucket is reached when the backup runs; there is no
+					// path on this host to stat.
+					continue
+				}
 				if fi, err := os.Stat(root); err != nil {
 					results = append(results, CheckResult{
 						Name:    fmt.Sprintf("Files Target (%s)", root),

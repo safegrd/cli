@@ -195,6 +195,12 @@ type SurfaceConfig struct {
 	// OneFilesystem keeps a repo surface's walk on each root's filesystem.
 	// Unset means yes when a root is "/", no otherwise.
 	OneFilesystem *bool `yaml:"one_filesystem,omitempty" json:"one_filesystem,omitempty"`
+	// ObjectStore makes a files surface read a bucket over the S3 API
+	// (Supabase Storage, or any S3-compatible store) instead of paths on
+	// this host. The root is then s3://bucket or s3://bucket/prefix, and the
+	// format is tar. The keys reach every bucket the store has, so they are
+	// given as env:VAR or file:/path like a database password.
+	ObjectStore *ObjectStoreSourceConfig `yaml:"object_store,omitempty" json:"object_store,omitempty"`
 
 	// Email fields
 	Host     string   `yaml:"host,omitempty" json:"host,omitempty"`
@@ -219,6 +225,17 @@ type SurfaceConfig struct {
 
 	// Drill configures how the daemon proves this surface restores.
 	Drill *DrillConfig `yaml:"drill,omitempty" json:"drill,omitempty"`
+}
+
+// ObjectStoreSourceConfig is where a files surface's bucket is and how to
+// sign requests to it. Endpoint is the store's S3 URL (for Supabase Storage,
+// https://PROJECT.storage.supabase.co/storage/v1/s3); empty means AWS S3.
+// Region is what the store shows for the bucket.
+type ObjectStoreSourceConfig struct {
+	Endpoint        string `yaml:"endpoint,omitempty" json:"endpoint,omitempty"`
+	Region          string `yaml:"region,omitempty" json:"region,omitempty"`
+	AccessKeyID     string `yaml:"access_key_id,omitempty" json:"access_key_id,omitempty"`
+	SecretAccessKey string `yaml:"secret_access_key,omitempty" json:"secret_access_key,omitempty"`
 }
 
 // DrillConfig gives a Postgres surface a scratch database for its Fire Drills.

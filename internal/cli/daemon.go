@@ -1073,6 +1073,18 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 		if err != nil {
 			return nil, plan, stageErr(model.BackupReasonConfig, fmt.Errorf("surface %s: %w", s.ID, err))
 		}
+		source, err := objectStoreSourceOf(s)
+		if err != nil {
+			return nil, plan, stageErr(model.BackupReasonConfig, err)
+		}
+		if source != nil {
+			// A bucket is one archive per backup: the incremental
+			// repository walks a filesystem.
+			if s.Format != "" && ff == formatRepo {
+				return nil, plan, stageErr(model.BackupReasonConfig, fmt.Errorf("surface %s reads a bucket, which is backed up as one archive per run; set format: tar or leave it out", s.ID))
+			}
+			ff = formatTar
+		}
 		if ff == formatRepo {
 			if storageCfg.NodeID == "" {
 				storageCfg.NodeID = nodeID
@@ -1112,6 +1124,7 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 		collector := dump.NewFileCollector(dump.FileCollectorConfig{
 			RootDir:  roots[0],
 			Excludes: s.Excludes,
+			Source:   source,
 		})
 		rawStream, meta, err := collector.ScanAndStream(ctx)
 		// What the walk left out is said out loud, even when the backup succeeds.

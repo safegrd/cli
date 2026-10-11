@@ -36,8 +36,13 @@ func newBackupCmd() *cobra.Command {
 		// File surface flags
 		filesPath string
 		excludes  []string
-		fileFmt   string
-		newEpoch  bool
+		// --files s3://bucket/prefix reads a bucket; these say which store.
+		sourceEndpoint  string
+		sourceRegion    string
+		sourceAccessKey string
+		sourceSecretKey string
+		fileFmt         string
+		newEpoch        bool
 		// serverCache: see repoDBParams.ServerCache.
 		serverCache bool
 		changeLog   bool
@@ -77,7 +82,7 @@ and never leaves this host.`,
 			// database as a surface, and `safegrd backup` is the next step the
 			// docs give. With several, one has to be named.
 			oneOffFlag := ""
-			for _, f := range []string{"json", "tag", "retention-days", "s3-bucket", "s3-prefix", "s3-region", "s3-endpoint", "s3-access-key", "s3-secret-key", "format", "one-filesystem"} {
+			for _, f := range []string{"json", "tag", "retention-days", "s3-bucket", "s3-prefix", "s3-region", "s3-endpoint", "s3-access-key", "s3-secret-key", "format", "one-filesystem", "source-endpoint", "source-region", "source-access-key", "source-secret-key"} {
 				if oneOffFlag == "" && cmd.Flags().Changed(f) {
 					oneOffFlag = f
 				}
@@ -104,7 +109,7 @@ and never leaves this host.`,
 				}
 			}
 			if surfaceID != "" {
-				for _, f := range []string{"database-url", "files", "email", "json", "tag", "retention-days", "s3-bucket", "s3-prefix", "s3-region", "s3-endpoint", "s3-access-key", "s3-secret-key", "format", "one-filesystem"} {
+				for _, f := range []string{"database-url", "files", "email", "json", "tag", "retention-days", "s3-bucket", "s3-prefix", "s3-region", "s3-endpoint", "s3-access-key", "s3-secret-key", "format", "one-filesystem", "source-endpoint", "source-region", "source-access-key", "source-secret-key"} {
 					if cmd.Flags().Changed(f) {
 						return fmt.Errorf("--surface backs up the surface as the config defines it; leave out --%s", f)
 					}
@@ -193,6 +198,21 @@ and never leaves this host.`,
 				if err != nil {
 					return err
 				}
+				var source *dump.ObjectStoreSource
+				if bucket, prefix, isBucket := dump.ParseObjectStoreRoot(filesPath); isBucket {
+					// A bucket is one archive per backup: the incremental
+					// repository walks a filesystem.
+					if cmd.Flags().Changed("format") && ff == formatRepo {
+						return fmt.Errorf("--files %s reads a bucket, which is backed up as one archive per run; leave out --format repo", filesPath)
+					}
+					ff = formatTar
+					source, err = objectStoreSourceFromFlags(bucket, prefix, sourceEndpoint, sourceRegion, sourceAccessKey, sourceSecretKey)
+					if err != nil {
+						return err
+					}
+				} else if cmd.Flags().Changed("source-endpoint") || cmd.Flags().Changed("source-region") || cmd.Flags().Changed("source-access-key") || cmd.Flags().Changed("source-secret-key") {
+					return fmt.Errorf("--source-endpoint, --source-region, --source-access-key and --source-secret-key go with --files s3://bucket/prefix")
+				}
 				if ff == formatRepo {
 					var oneFSFlag *bool
 					if cmd.Flags().Changed("one-filesystem") {
@@ -250,6 +270,7 @@ and never leaves this host.`,
 				collector := dump.NewFileCollector(dump.FileCollectorConfig{
 					RootDir:  filesPath,
 					Excludes: excludes,
+					Source:   source,
 				})
 
 				rawStream, meta, err := collector.ScanAndStream(ctx)
@@ -683,7 +704,11 @@ and never leaves this host.`,
 
 	// Flags for Files
 	cmd.Flags().StringVar(&surfaceID, "surface", "", "Back up this surface from the config's surfaces now, as the daemon would, whatever its schedule")
-	cmd.Flags().StringVar(&filesPath, "files", "", "Back up this directory tree")
+	cmd.Flags().StringVar(&filesPath, "files", "", "Back up this directory tree, or a bucket as s3://bucket/prefix (with --source-endpoint and the source keys)")
+	cmd.Flags().StringVar(&sourceEndpoint, "source-endpoint", "", "With --files s3://…: the store's S3 URL (Supabase Storage: https://PROJECT.storage.supabase.co/storage/v1/s3); empty means AWS S3")
+	cmd.Flags().StringVar(&sourceRegion, "source-region", "", "With --files s3://…: the bucket's region as the store shows it")
+	cmd.Flags().StringVar(&sourceAccessKey, "source-access-key", "", "With --files s3://…: the store's access key id, as env:VAR or file:/path")
+	cmd.Flags().StringVar(&sourceSecretKey, "source-secret-key", "", "With --files s3://…: the store's secret access key, as env:VAR or file:/path")
 	cmd.Flags().StringSliceVar(&excludes, "exclude", nil, "Glob patterns to leave out of --files (e.g. '*.tmp,node_modules/*')")
 	cmd.Flags().StringVar(&fileFmt, "format", formatRepo, "How the backup is stored: repo (incremental: each run uploads only what changed) or tar (one archive per backup). Repo is the default for --files and a PostgreSQL or SQLite database; MySQL and MongoDB are one archive")
 	cmd.Flags().BoolVar(&newEpoch, "new-epoch", false, "With --format repo, or --surface of a repo surface: start a new epoch now, uploading everything once")
@@ -974,4 +999,54 @@ func implicitSurfaceName(cfg *config.CLIConfig) string {
 		return ""
 	}
 	return surfaceLabel(cfg.Surfaces[0])
+}
+
+// objectStoreSourceFromFlags builds the bucket a one-off --files s3:// backup
+// reads, resolving the keys like every other secret flag.
+func objectStoreSourceFromFlags(bucket, prefix, endpoint, region, accessKey, secretKey string) (*dump.ObjectStoreSource, error) {
+	if accessKey == "" || secretKey == "" {
+		return nil, fmt.Errorf("--files s3://%s needs --source-access-key and --source-secret-key (env:VAR or file:/path)", bucket)
+	}
+	ak, err := ResolveSecretRef("source-access-key", accessKey)
+	if err != nil {
+		return nil, err
+	}
+	sk, err := ResolveSecretRef("source-secret-key", secretKey)
+	if err != nil {
+		return nil, err
+	}
+	return &dump.ObjectStoreSource{Endpoint: endpoint, Region: region, Bucket: bucket, Prefix: prefix, AccessKeyID: ak, SecretAccessKey: sk}, nil
+}
+
+// objectStoreSourceOf is the bucket a configured files surface reads, or nil
+// for a surface of paths on this host. The root names the bucket; the
+// object_store block says where it is and signs for it.
+func objectStoreSourceOf(s *config.SurfaceConfig) (*dump.ObjectStoreSource, error) {
+	if s.ObjectStore == nil {
+		if len(s.Roots) == 1 {
+			if _, _, isBucket := dump.ParseObjectStoreRoot(s.Roots[0]); isBucket {
+				return nil, fmt.Errorf("surface %s: root %s is a bucket, so it needs an object_store: block with the store's endpoint and keys", s.ID, s.Roots[0])
+			}
+		}
+		return nil, nil
+	}
+	if len(s.Roots) != 1 {
+		return nil, fmt.Errorf("surface %s: object_store needs one root, s3://bucket or s3://bucket/prefix", s.ID)
+	}
+	bucket, prefix, isBucket := dump.ParseObjectStoreRoot(s.Roots[0])
+	if !isBucket {
+		return nil, fmt.Errorf("surface %s: object_store needs a root of the form s3://bucket/prefix; %s is not one", s.ID, s.Roots[0])
+	}
+	ak, err := resolveConfigSecret("object_store.access_key_id", s.ObjectStore.AccessKeyID)
+	if err != nil {
+		return nil, fmt.Errorf("surface %s: %w", s.ID, err)
+	}
+	sk, err := resolveConfigSecret("object_store.secret_access_key", s.ObjectStore.SecretAccessKey)
+	if err != nil {
+		return nil, fmt.Errorf("surface %s: %w", s.ID, err)
+	}
+	if ak == "" || sk == "" {
+		return nil, fmt.Errorf("surface %s: object_store needs access_key_id and secret_access_key (env:VAR or file:/path)", s.ID)
+	}
+	return &dump.ObjectStoreSource{Endpoint: s.ObjectStore.Endpoint, Region: s.ObjectStore.Region, Bucket: bucket, Prefix: prefix, AccessKeyID: ak, SecretAccessKey: sk}, nil
 }

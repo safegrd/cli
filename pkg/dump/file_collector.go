@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+
 	"github.com/safegrd/cli/pkg/model"
 )
 
@@ -33,6 +35,9 @@ type FileEntryManifest struct {
 	// written before 2026-09-24; a restore then leaves ownership alone.
 	UID *int `json:"uid,omitempty"`
 	GID *int `json:"gid,omitempty"`
+	// ContentType is what an object store reported for the object, so a
+	// restore can upload it back as it was. Empty for a file on disk.
+	ContentType string `json:"content_type,omitempty"`
 }
 
 // SealedFileManifest is stored as .safegrd-manifest.json inside the sealed archive.
@@ -52,12 +57,17 @@ type FileCollectorConfig struct {
 	Excludes       []string
 	FollowSymlinks bool
 	ArchiveTime    time.Time // Optional fixed timestamp for reproducible byte-stable archive generation
+	// Source, when set, reads a bucket instead of RootDir. The archive has
+	// the same shape, so it restores into a directory like any other.
+	Source *ObjectStoreSource
 }
 
-// FileCollector traverses a filesystem tree and produces a streaming POSIX tar archive.
+// FileCollector traverses a filesystem tree, or lists a bucket, and produces
+// a streaming POSIX tar archive.
 type FileCollector struct {
 	cfg     FileCollectorConfig
 	skipped []string
+	objects *s3.Client
 }
 
 // Skipped lists what the last scan left out because it is not a file, a
@@ -103,113 +113,35 @@ type collectedItem struct {
 	isDir    bool
 	isSym    bool
 	linkDest string
+	// For an object store source: the object's key, and the content type
+	// the store reported when the hash pass read it.
+	objectKey   string
+	contentType string
+}
+
+// open reads one item's bytes, from disk or from the bucket.
+func (fc *FileCollector) open(ctx context.Context, item *collectedItem) (io.ReadCloser, error) {
+	if fc.cfg.Source != nil {
+		return fc.openObject(ctx, item)
+	}
+	return os.Open(item.fullPath)
 }
 
 // ScanAndStream walks the root directory, constructs the sealed manifest, and streams the tarball.
 // The sealed manifest (.safegrd-manifest.json) is written as the very first entry of the tar.
 func (fc *FileCollector) ScanAndStream(ctx context.Context) (io.Reader, *model.SnapshotMetadata, error) {
-	absRoot, err := filepath.Abs(fc.cfg.RootDir)
-	if err != nil {
-		return nil, nil, fmt.Errorf("invalid root directory: %w", err)
-	}
-
-	rootInfo, err := os.Stat(absRoot)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed stating root directory %s: %w", absRoot, err)
-	}
-	if !rootInfo.IsDir() {
-		return nil, nil, fmt.Errorf("root path is not a directory: %s", absRoot)
-	}
-
-	// 1. Traverse and discover files, failing on permission errors
 	fc.skipped = nil
-	var items []collectedItem
-	visitedRealDirs := make(map[string]bool)
-
-	realRoot, err := filepath.EvalSymlinks(absRoot)
-	if err == nil {
-		visitedRealDirs[realRoot] = true
+	var (
+		absRoot string
+		items   []collectedItem
+		err     error
+	)
+	if fc.cfg.Source != nil {
+		absRoot = fc.cfg.Source.Root()
+		items, err = fc.scanObjects(ctx)
+	} else {
+		absRoot, items, err = fc.scanLocal(ctx)
 	}
-
-	err = filepath.WalkDir(absRoot, func(path string, d os.DirEntry, walkErr error) error {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-
-		// Fail loudly on any access error: a directory skipped for permissions
-		// is a hole in the backup, not a warning.
-		if walkErr != nil {
-			return fmt.Errorf("access error reading %s: %w", path, walkErr)
-		}
-
-		if path == absRoot {
-			return nil
-		}
-
-		rel, err := filepath.Rel(absRoot, path)
-		if err != nil {
-			return fmt.Errorf("failed computing relative path: %w", err)
-		}
-		relSlash := filepath.ToSlash(rel)
-
-		if MatchesExclude(relSlash, fc.cfg.Excludes) {
-			if d.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-
-		info, err := d.Info()
-		if err != nil {
-			return fmt.Errorf("failed reading file info for %s: %w", path, err)
-		}
-
-		isSym := (info.Mode() & os.ModeSymlink) != 0
-		// A FIFO, socket or device node is not data to back up, and each one
-		// broke the backup differently: hashing a FIFO blocked forever, which
-		// hangs the daemon; tar refuses sockets, which failed the whole run; a
-		// character device such as /dev/zero reads without end.
-		if !isSym && !d.IsDir() && !info.Mode().IsRegular() {
-			fc.skipped = append(fc.skipped, relSlash+" ("+specialKind(info.Mode())+")")
-			return nil
-		}
-		var linkDest string
-		if isSym {
-			dest, err := os.Readlink(path)
-			if err != nil {
-				return fmt.Errorf("failed reading symlink %s: %w", path, err)
-			}
-			linkDest = dest
-			// A symlink is recorded, never followed, so it cannot form a
-			// loop. The check that stood here failed the whole backup for any
-			// link to a directory already walked ("latest -> releases/42",
-			// or a link back to the root), which is an ordinary tree.
-		}
-
-		if d.IsDir() {
-			realDir, err := filepath.EvalSymlinks(path)
-			if err == nil {
-				if visitedRealDirs[realDir] {
-					return fmt.Errorf("symlink directory loop detected at %s", path)
-				}
-				visitedRealDirs[realDir] = true
-			}
-		}
-
-		items = append(items, collectedItem{
-			relPath:  relSlash,
-			fullPath: path,
-			info:     info,
-			isDir:    d.IsDir(),
-			isSym:    isSym,
-			linkDest: linkDest,
-		})
-
-		return nil
-	})
-
 	if err != nil {
 		return nil, nil, err
 	}
@@ -229,7 +161,8 @@ func (fc *FileCollector) ScanAndStream(ctx context.Context) (io.Reader, *model.S
 		extBytes         = make(map[string]int64)
 	)
 
-	for _, item := range items {
+	for i := range items {
+		item := &items[i]
 		if item.isDir {
 			totalDirectories++
 			uid, gid := ownerOf(item.info)
@@ -269,13 +202,13 @@ func (fc *FileCollector) ScanAndStream(ctx context.Context) (io.Reader, *model.S
 		var hashStr string
 		if !item.isSym {
 			h := sha256.New()
-			f, err := os.Open(item.fullPath)
+			f, err := fc.open(ctx, item)
 			if err != nil {
-				return nil, nil, fmt.Errorf("failed opening file %s for hashing: %w", item.fullPath, err)
+				return nil, nil, fmt.Errorf("failed opening file %s for hashing: %w", item.relPath, err)
 			}
 			if _, err := io.Copy(h, f); err != nil {
 				f.Close()
-				return nil, nil, fmt.Errorf("failed hashing file %s: %w", item.fullPath, err)
+				return nil, nil, fmt.Errorf("failed hashing file %s: %w", item.relPath, err)
 			}
 			f.Close()
 			hashStr = hex.EncodeToString(h.Sum(nil))
@@ -283,16 +216,17 @@ func (fc *FileCollector) ScanAndStream(ctx context.Context) (io.Reader, *model.S
 
 		uid, gid := ownerOf(item.info)
 		manifestEntries = append(manifestEntries, FileEntryManifest{
-			UID:        uid,
-			GID:        gid,
-			Path:       item.relPath,
-			Size:       size,
-			Mode:       item.info.Mode(),
-			ModTime:    item.info.ModTime().UTC().Truncate(time.Second),
-			Sha256:     hashStr,
-			IsDir:      false,
-			IsSymlink:  item.isSym,
-			LinkTarget: item.linkDest,
+			UID:         uid,
+			GID:         gid,
+			Path:        item.relPath,
+			Size:        size,
+			Mode:        item.info.Mode(),
+			ModTime:     item.info.ModTime().UTC().Truncate(time.Second),
+			Sha256:      hashStr,
+			IsDir:       false,
+			IsSymlink:   item.isSym,
+			LinkTarget:  item.linkDest,
+			ContentType: item.contentType,
 		})
 	}
 
@@ -437,9 +371,12 @@ func (fc *FileCollector) ScanAndStream(ctx context.Context) (io.Reader, *model.S
 				return
 			}
 
-			file, err := os.Open(item.fullPath)
+			// An object is read a second time here: the manifest, with its
+			// hashes, is the first entry of the archive, so every file is
+			// read once to hash and once to stream, as on disk.
+			file, err := fc.open(ctx, &item)
 			if err != nil {
-				writeErr = fmt.Errorf("failed opening file %s for tar streaming: %w", item.fullPath, err)
+				writeErr = fmt.Errorf("failed opening file %s for tar streaming: %w", item.relPath, err)
 				return
 			}
 
@@ -457,6 +394,116 @@ func (fc *FileCollector) ScanAndStream(ctx context.Context) (io.Reader, *model.S
 	}()
 
 	return pr, meta, nil
+}
+
+// scanLocal walks the root directory and returns its absolute path and every
+// item under it, in walk order.
+func (fc *FileCollector) scanLocal(ctx context.Context) (string, []collectedItem, error) {
+	absRoot, err := filepath.Abs(fc.cfg.RootDir)
+	if err != nil {
+		return "", nil, fmt.Errorf("invalid root directory: %w", err)
+	}
+
+	rootInfo, err := os.Stat(absRoot)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed stating root directory %s: %w", absRoot, err)
+	}
+	if !rootInfo.IsDir() {
+		return "", nil, fmt.Errorf("root path is not a directory: %s", absRoot)
+	}
+
+	// 1. Traverse and discover files, failing on permission errors
+	var items []collectedItem
+	visitedRealDirs := make(map[string]bool)
+
+	realRoot, err := filepath.EvalSymlinks(absRoot)
+	if err == nil {
+		visitedRealDirs[realRoot] = true
+	}
+
+	err = filepath.WalkDir(absRoot, func(path string, d os.DirEntry, walkErr error) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		// Fail loudly on any access error: a directory skipped for permissions
+		// is a hole in the backup, not a warning.
+		if walkErr != nil {
+			return fmt.Errorf("access error reading %s: %w", path, walkErr)
+		}
+
+		if path == absRoot {
+			return nil
+		}
+
+		rel, err := filepath.Rel(absRoot, path)
+		if err != nil {
+			return fmt.Errorf("failed computing relative path: %w", err)
+		}
+		relSlash := filepath.ToSlash(rel)
+
+		if MatchesExclude(relSlash, fc.cfg.Excludes) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		info, err := d.Info()
+		if err != nil {
+			return fmt.Errorf("failed reading file info for %s: %w", path, err)
+		}
+
+		isSym := (info.Mode() & os.ModeSymlink) != 0
+		// A FIFO, socket or device node is not data to back up, and each one
+		// broke the backup differently: hashing a FIFO blocked forever, which
+		// hangs the daemon; tar refuses sockets, which failed the whole run; a
+		// character device such as /dev/zero reads without end.
+		if !isSym && !d.IsDir() && !info.Mode().IsRegular() {
+			fc.skipped = append(fc.skipped, relSlash+" ("+specialKind(info.Mode())+")")
+			return nil
+		}
+		var linkDest string
+		if isSym {
+			dest, err := os.Readlink(path)
+			if err != nil {
+				return fmt.Errorf("failed reading symlink %s: %w", path, err)
+			}
+			linkDest = dest
+			// A symlink is recorded, never followed, so it cannot form a
+			// loop. The check that stood here failed the whole backup for any
+			// link to a directory already walked ("latest -> releases/42",
+			// or a link back to the root), which is an ordinary tree.
+		}
+
+		if d.IsDir() {
+			realDir, err := filepath.EvalSymlinks(path)
+			if err == nil {
+				if visitedRealDirs[realDir] {
+					return fmt.Errorf("symlink directory loop detected at %s", path)
+				}
+				visitedRealDirs[realDir] = true
+			}
+		}
+
+		items = append(items, collectedItem{
+			relPath:  relSlash,
+			fullPath: path,
+			info:     info,
+			isDir:    d.IsDir(),
+			isSym:    isSym,
+			linkDest: linkDest,
+		})
+
+		return nil
+	})
+
+	if err != nil {
+		return "", nil, err
+	}
+	return absRoot, items, nil
 }
 
 // specialKind names a file type the collector does not archive.
