@@ -79,3 +79,45 @@ func TestARepoRunIsRecordedWithTheLockItsObjectsCarry(t *testing.T) {
 		t.Fatalf("an unlocked run is recorded until %s; want %s", got, res.Snapshot.RetainUntil)
 	}
 }
+
+// When the remote server locks a run for less time than it keeps it, the
+// closing line gives both dates, and the record keeps the lock.
+func TestARunLockedShorterThanItIsKeptSaysBothDates(t *testing.T) {
+	created := time.Date(2026, 10, 11, 2, 0, 0, 0, time.UTC)
+	lock, kept := created.AddDate(0, 0, 1), created.AddDate(0, 0, 7)
+	res := &write.Result{
+		Snapshot: format.Snapshot{SnapshotID: "snap-f", CreatedAt: created, RetainUntil: lock},
+		Epoch: format.Epoch{EpochID: "e202610-00000002", OpeningTier: format.TierBase, Reason: format.ReasonFull,
+			OpeningRetainUntil: lock, LaterRetainUntil: lock},
+		Class:    format.ClassOpening,
+		Capped:   true,
+		Decision: sink.RunDecision{Known: true, Scheduled: true, Locked: true, LockUntil: lock, KeptUntil: kept},
+	}
+	if got := repoKeptUntil(res, true); !got.Equal(lock) {
+		t.Fatalf("the run is recorded until %s, want its lock %s", got, lock)
+	}
+	var out bytes.Buffer
+	printRepoKept(&out, "[s]", res, true)
+	got := out.String()
+	if !strings.Contains(got, "Locked until 2026-10-12, kept until 2026-10-18.") || strings.Contains(got, "Immutable") || strings.Contains(got, "month") {
+		t.Fatalf("closing line: %q", got)
+	}
+}
+
+// "Once this month" is said only of an epoch that runs to its month's end.
+func TestOnlyAMonthLongEpochSaysOnceThisMonth(t *testing.T) {
+	opened := time.Date(2026, 10, 11, 2, 0, 0, 0, time.UTC)
+	month := format.Epoch{OpenedAt: opened, PlannedEnd: time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC), Reason: format.ReasonFirst}
+	if got := onceThisMonth(month); got != " once this month" {
+		t.Errorf("a month-long epoch says %q", got)
+	}
+	single := format.Epoch{OpenedAt: opened, PlannedEnd: opened.AddDate(0, 0, 1), Reason: format.ReasonFirst}
+	if got := onceThisMonth(single); got != "" {
+		t.Errorf("an epoch that ends with its one backup's lock says %q", got)
+	}
+	full := month
+	full.Reason = format.ReasonFull
+	if got := onceThisMonth(full); got != "" {
+		t.Errorf("an epoch opened for a full copy says %q", got)
+	}
+}

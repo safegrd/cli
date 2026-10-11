@@ -30,8 +30,11 @@ import (
 // hosted storage stand": the retention to use when the config sets none, the
 // quota, and the part size to upload in. It carries no secret.
 type hostedInfo struct {
-	WORMMode       string    `json:"worm_mode"`
-	RetentionDays  int       `json:"retention_days"`
+	WORMMode      string `json:"worm_mode"`
+	RetentionDays int    `json:"retention_days"`
+	// LockDays is set when the remote server locks each backup for less time
+	// than it keeps it: for its first LockDays, then held unlocked.
+	LockDays       int       `json:"lock_days"`
 	KeepDaily      int       `json:"keep_daily"`
 	KeepWeekly     int       `json:"keep_weekly"`
 	KeepMonthly    int       `json:"keep_monthly"`
@@ -263,7 +266,7 @@ func (p *hostedProvider) UploadSnapshot(ctx context.Context, snapshotID string, 
 	if retentionUntil.IsZero() && p.retentionDays > 0 {
 		retentionUntil = time.Now().UTC().AddDate(0, 0, p.retentionDays)
 	}
-	uri, kept, locked, err := p.upload(ctx, snapshotID+".safegrd", stream, retentionUntil)
+	uri, kept, keptUntil, locked, err := p.upload(ctx, snapshotID+".safegrd", stream, retentionUntil)
 	if err != nil {
 		return "", err
 	}
@@ -279,7 +282,10 @@ func (p *hostedProvider) UploadSnapshot(ctx context.Context, snapshotID string, 
 		p.mu.Unlock()
 		// Not a warning: the plan, or a trial's end, sets how long hosted
 		// storage locks a copy, and the host asked within its own tiers.
-		if locked && !retentionUntil.IsZero() && !sameDay(kept, retentionUntil) {
+		switch {
+		case locked && keptUntil.After(kept) && !sameDay(keptUntil, kept):
+			fmt.Printf("   Hosted storage locks it until %s and keeps it until %s.\n", kept.UTC().Format("2006-01-02"), keptUntil.UTC().Format("2006-01-02"))
+		case locked && !retentionUntil.IsZero() && !sameDay(kept, retentionUntil):
 			fmt.Printf("   Hosted storage locks it until %s, the longest your plan allows now.\n", kept.UTC().Format("2006-01-02"))
 		}
 	}
@@ -310,7 +316,7 @@ func (p *hostedProvider) UploadMetadata(ctx context.Context, snapshotID string, 
 	if retain.IsZero() && p.retentionDays > 0 {
 		retain = time.Now().UTC().AddDate(0, 0, p.retentionDays)
 	}
-	if _, _, _, err := p.upload(ctx, snapshotID+".meta.json", bytes.NewReader(data), retain); err != nil {
+	if _, _, _, _, err := p.upload(ctx, snapshotID+".meta.json", bytes.NewReader(data), retain); err != nil {
 		return err
 	}
 	p.forget()
@@ -323,7 +329,7 @@ func (p *hostedProvider) UploadRecoveryDoc(ctx context.Context, snapshotID strin
 	if retainUntil.IsZero() && p.retentionDays > 0 {
 		retainUntil = time.Now().UTC().AddDate(0, 0, p.retentionDays)
 	}
-	_, _, _, err := p.upload(ctx, snapshotID+storage.RecoveryDocSuffix(sealed), bytes.NewReader(doc), retainUntil)
+	_, _, _, _, err := p.upload(ctx, snapshotID+storage.RecoveryDocSuffix(sealed), bytes.NewReader(doc), retainUntil)
 	return err
 }
 
@@ -334,8 +340,11 @@ type hostedUpload struct {
 	// Locked is false when the remote server wrote the object with no
 	// lock: a recent copy in a project that locks only the copies it keeps.
 	// Then RetainUntil is how long it is kept.
-	Locked     *bool  `json:"locked"`
-	StorageURI string `json:"storage_uri"`
+	Locked *bool `json:"locked"`
+	// KeptUntil is when hosted storage deletes it, after RetainUntil when
+	// the lock is shorter than the retention.
+	KeptUntil  time.Time `json:"kept_until"`
+	StorageURI string    `json:"storage_uri"`
 }
 
 type hostedPartURL struct {
@@ -354,15 +363,15 @@ const hostedBufferBudget = 128 << 20
 // so nothing half-written is left to be billed or mistaken for a backup.
 // It returns the lock the remote server set, which may differ from the one
 // asked for.
-func (p *hostedProvider) upload(ctx context.Context, name string, r io.Reader, retainUntil time.Time) (uri string, kept time.Time, locked bool, err error) {
+func (p *hostedProvider) upload(ctx context.Context, name string, r io.Reader, retainUntil time.Time) (uri string, kept, keptUntil time.Time, locked bool, err error) {
 	var up hostedUpload
 	if err := p.client.call(ctx, http.MethodPost, "/uploads", map[string]any{
 		"node_id": p.nodeID, "name": name, "retain_until": retainUntil,
 	}, &up); err != nil {
-		return "", time.Time{}, false, err
+		return "", time.Time{}, time.Time{}, false, err
 	}
 	if up.PartSize <= 0 {
-		return "", time.Time{}, false, fmt.Errorf("hosted storage: the remote server gave no part size")
+		return "", time.Time{}, time.Time{}, false, fmt.Errorf("hosted storage: the remote server gave no part size")
 	}
 	concurrency := int(hostedBufferBudget / up.PartSize)
 	if concurrency < 1 {
@@ -423,19 +432,19 @@ func (p *hostedProvider) upload(ctx context.Context, name string, r io.Reader, r
 	}
 	if firstErr != nil {
 		p.abort(up.UploadID)
-		return "", time.Time{}, false, firstErr
+		return "", time.Time{}, time.Time{}, false, firstErr
 	}
 	var done struct {
 		StorageURI string `json:"storage_uri"`
 		Bytes      int64  `json:"bytes"`
 	}
 	if err := p.client.call(context.WithoutCancel(ctx), http.MethodPost, "/uploads/"+up.UploadID+"/complete", nil, &done); err != nil {
-		return "", time.Time{}, false, err
+		return "", time.Time{}, time.Time{}, false, err
 	}
 	if done.Bytes != total {
-		return "", time.Time{}, false, fmt.Errorf("hosted storage: %s was stored as %d bytes, %d were sent", name, done.Bytes, total)
+		return "", time.Time{}, time.Time{}, false, fmt.Errorf("hosted storage: %s was stored as %d bytes, %d were sent", name, done.Bytes, total)
 	}
-	return done.StorageURI, up.RetainUntil, up.Locked == nil || *up.Locked, nil
+	return done.StorageURI, up.RetainUntil, up.KeptUntil, up.Locked == nil || *up.Locked, nil
 }
 
 // abort tells the remote server to abandon an upload. Said out loud when it

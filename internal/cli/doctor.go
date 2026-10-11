@@ -389,9 +389,17 @@ func runDoctorChecks(path string, c *config.CLIConfig) []CheckResult {
 			if l.QuotaBytes > 0 && l.UsedBytes*5 >= l.QuotaBytes*4 {
 				status = "WARN"
 			}
-			results = append(results, CheckResult{Name: "Hosted Storage", Status: status,
-				Message: fmt.Sprintf("%s of %s locked in SafeGrd hosted storage (compliance mode)",
-					formatBytes(l.UsedBytes), formatBytes(l.QuotaBytes))})
+			msg := fmt.Sprintf("%s of %s locked in SafeGrd hosted storage (compliance mode)",
+				formatBytes(l.UsedBytes), formatBytes(l.QuotaBytes))
+			if l.LockDays > 0 {
+				first := "day"
+				if l.LockDays > 1 {
+					first = fmt.Sprintf("%d days", l.LockDays)
+				}
+				msg = fmt.Sprintf("%s of %s held in SafeGrd hosted storage; each backup is locked (compliance mode) for its first %s",
+					formatBytes(l.UsedBytes), formatBytes(l.QuotaBytes), first)
+			}
+			results = append(results, CheckResult{Name: "Hosted Storage", Status: status, Message: msg})
 		}
 	}
 

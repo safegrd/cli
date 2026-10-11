@@ -159,8 +159,21 @@ func reasonText(reason string) string {
 		return "the public key changed"
 	case format.ReasonChurn:
 		return "this month's changes outgrew the first backup"
+	case format.ReasonFull:
+		return "hosted storage keeps each backup on its own"
 	}
 	return reason
+}
+
+// onceThisMonth is " once this month" for an epoch that runs to the end of
+// its month, so later runs upload only what changed, and "" for one that
+// holds a single backup and ends with its lock.
+func onceThisMonth(e format.Epoch) string {
+	end := e.PlannedEnd.UTC()
+	if e.Reason == format.ReasonFull || end.Day() != 1 || end.Hour() != 0 || end.Minute() != 0 || end.Sub(e.OpenedAt) < 24*time.Hour {
+		return ""
+	}
+	return " once this month"
 }
 
 func shortDuration(d time.Duration) string {
@@ -216,7 +229,7 @@ func runRepoBackup(ctx context.Context, p repoParams) (*model.SnapshotMetadata, 
 		NewEpoch: p.NewEpoch, Rescan: p.Rescan, Host: host, SnapshotID: p.SnapshotID,
 		OnStart: func(r *write.Result) {
 			if r.Opened {
-				fmt.Fprintf(out, "%s Epoch %s opened (%s). Every file is uploaded once this month.\n", label, r.Epoch.EpochID, reasonText(r.Reason))
+				fmt.Fprintf(out, "%s Epoch %s opened (%s). Every file is uploaded%s.\n", label, r.Epoch.EpochID, reasonText(r.Reason), onceThisMonth(r.Epoch))
 			}
 			if r.Resumed {
 				fmt.Fprintf(out, "%s Resuming epoch %s: %d %s (%s) already uploaded are reused.\n", label, r.Epoch.EpochID,
@@ -337,6 +350,12 @@ func printRepoKept(out io.Writer, label string, res *write.Result, locked bool) 
 	snap := res.Snapshot
 	until := repoKeptUntil(res, locked).Format("2006-01-02")
 	switch {
+	case res.Decision.Known && res.Decision.Locked && res.Decision.KeptUntil.After(res.Decision.LockUntil):
+		// Locked for a shorter time than it is kept: the lock is not what
+		// capped it, so the line below does not apply.
+		fmt.Fprintf(out, "%s Snapshot %s complete. Locked until %s, kept until %s.\n", label, snap.SnapshotID, until,
+			res.Decision.KeptUntil.UTC().Format("2006-01-02"))
+		return
 	case res.Decision.Known && !res.Decision.Locked:
 		fmt.Fprintf(out, "%s Snapshot %s complete. Kept until %s, not locked: this project locks the day's first backup and the weekly and monthly copies.\n",
 			label, snap.SnapshotID, until)

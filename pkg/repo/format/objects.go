@@ -29,6 +29,9 @@ const (
 	// ReasonChurn is the remote server's: the epoch's later runs uploaded
 	// more than its first, so a new one starts.
 	ReasonChurn = "churn"
+	// ReasonFull is the remote server's: every backup is written on its own
+	// epoch, so each can be deleted when its own retention ends.
+	ReasonFull = "full"
 )
 
 // Retention tiers an opening snapshot can be declared at.

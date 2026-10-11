@@ -239,8 +239,8 @@ func runRepoDatabaseBackup(ctx context.Context, p repoDBParams) (*model.Snapshot
 		OnStart: func(r *write.Result) {
 			priorRaw, canCarry = r.PriorState, r.CanCarry
 			if r.Opened {
-				fmt.Fprintf(out, "%s Epoch %s opened (%s). %s is uploaded once this month.\n", label, r.Epoch.EpochID, reasonText(r.Reason),
-					strings.ToUpper(everything[:1])+everything[1:])
+				fmt.Fprintf(out, "%s Epoch %s opened (%s). %s is uploaded%s.\n", label, r.Epoch.EpochID, reasonText(r.Reason),
+					strings.ToUpper(everything[:1])+everything[1:], onceThisMonth(r.Epoch))
 			}
 			if r.Resumed {
 				fmt.Fprintf(out, "%s Resuming epoch %s: %d %s (%s) already uploaded are reused.\n", label, r.Epoch.EpochID,

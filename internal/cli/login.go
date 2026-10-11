@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"runtime"
@@ -28,8 +29,8 @@ func newLoginCmd() *cobra.Command {
 		Short: "Sign in to the remote server, in a browser or with an access token",
 		Long: `Signs this CLI in to the remote server and saves the token in the config.
 
-By default it prints a URL and a code, and opens the URL in a browser, where
-you type the code. In CI or on a host with no browser, pass a personal access token from
+By default it prints a URL and a code, and opens the URL in a browser, which
+shows the same code for you to check before you approve. In CI or on a host with no browser, pass a personal access token from
 Tokens in the console: --token env:SAFEGRD_TOKEN (or file:/path, or the token itself).`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			serverURL := resolveServerURL()
@@ -102,11 +103,12 @@ Tokens in the console: --token env:SAFEGRD_TOKEN (or file:/path, or the token it
 			if session.DeviceCode == "" {
 				return fmt.Errorf("%s did not answer a device code: it is older than this CLI. Sign in with --token instead", serverURL)
 			}
-			// The URL names the sign-in only. The code is typed on the page,
-			// and the token is collected with the device code, which never
-			// leaves this process: whoever sees the URL can neither approve
-			// without the code nor collect the token.
-			authURL := fmt.Sprintf("%s/auth/cli?session=%s", serverURL, session.SessionID)
+			// The URL names the sign-in, and carries the code in its fragment,
+			// which a browser never sends to a server: the page shows it to be
+			// checked against this terminal. The token is collected with the
+			// device code, which never leaves this process, so whoever sees the
+			// URL cannot collect the token.
+			authURL := fmt.Sprintf("%s/auth/cli?session=%s#code=%s", serverURL, session.SessionID, url.QueryEscape(session.UserCode))
 
 			remote := isRemoteSession()
 
@@ -115,9 +117,9 @@ Tokens in the console: --token env:SAFEGRD_TOKEN (or file:/path, or the token it
 				// Over SSH or PuTTY the browser is on the operator's own
 				// machine, not this one, so say where to open it.
 				fmt.Printf("Open this URL in a browser on any device, such as the machine you are\n")
-				fmt.Printf("connecting from, and type the code:\n\n  %s\n\n", ansi("4;34", authURL))
+				fmt.Printf("connecting from, and check it shows the same code:\n\n  %s\n\n", ansi("4;34", authURL))
 			} else {
-				fmt.Printf("Open this URL in your browser and type the code:\n\n  %s\n\n", ansi("4;34", authURL))
+				fmt.Printf("Open this URL in your browser and check it shows the same code:\n\n  %s\n\n", ansi("4;34", authURL))
 			}
 
 			// Never launch a browser on a remote host: xdg-open there either

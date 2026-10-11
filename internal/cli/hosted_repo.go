@@ -210,7 +210,8 @@ type hostedRunView struct {
 
 // StartRun tells the remote server a run begins and learns whether its
 // objects are locked when written: in a project that locks only the copies
-// it keeps, the first run of each day is, the rest are kept unlocked.
+// it keeps, the first run of each day is, the rest are kept unlocked. A run
+// may also be locked for less time than it is kept.
 func (h *hostedRepo) StartRun(ctx context.Context, e format.Epoch, runID string) (sink.RunDecision, error) {
 	var v hostedRunView
 	if err := h.callRetry(ctx, http.MethodPost, "/repo/epochs/"+url.PathEscape(e.EpochID)+"/runs", map[string]any{"run_id": runID}, &v); err != nil {
@@ -219,7 +220,9 @@ func (h *hostedRepo) StartRun(ctx context.Context, e format.Epoch, runID string)
 	h.mu.Lock()
 	h.run = runID
 	h.mu.Unlock()
-	if v.Mode != "kept" {
+	// Every run locked, for as long as it is kept: the epoch's class lock
+	// says it all. A run kept past its lock is told so, to print both dates.
+	if v.Mode != "kept" && !v.KeptUntil.After(v.LockUntil) {
 		return sink.RunDecision{}, nil
 	}
 	return sink.RunDecision{Known: true, Scheduled: v.Scheduled, Locked: v.Locked, LockUntil: v.LockUntil, KeptUntil: v.KeptUntil, Slot: v.Slot}, nil
