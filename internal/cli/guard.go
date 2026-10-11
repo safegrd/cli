@@ -49,14 +49,18 @@ type guardOptions struct {
 	// checkOnly, with maxAge, takes no backup at all: without a recent
 	// locked snapshot the command is refused.
 	checkOnly bool
+	// wait is how long a hook waits for its backup before it denies the
+	// command and leaves the backup running.
+	wait time.Duration
 }
 
 func newGuardCmd() *cobra.Command {
 	var (
-		opts    guardOptions
-		matches string
-		list    bool
-		hook    string
+		opts       guardOptions
+		matches    string
+		list       bool
+		hook       string
+		resultFile string
 	)
 	cmd := &cobra.Command{
 		Use:   "guard [--surface ID] [-- command [args...]]",
@@ -80,12 +84,6 @@ run it; 1 for a usage or configuration error.
   safegrd guard --list                 the commands hooks treat as destructive
   safegrd guard --matches "<command>"  exit 0 if it is one of them, 1 if not
 
-As an AI coding tool's pre-command hook, guard reads the tool's JSON on stdin,
-backs up first when the command matches the list, and blocks the command when
-no locked snapshot could be taken:
-
-  safegrd guard --hook claude-code --surface prod-db   (also: cursor, codex)
-
 A locked snapshot taken in the last while can stand in for a new one, so an
 agent running several destructive commands in a row does not take a backup
 for each:
@@ -95,7 +93,19 @@ for each:
 
 --check-only takes no backup at all: without a locked snapshot younger than
 --max-age the command is refused (exit 3). Use it where the surface is backed
-up by its daemon or by the remote server, and this host should only check.`,
+up by its daemon or by the remote server, and this host should only check.
+
+As an AI coding tool's pre-command hook, guard reads the tool's JSON on stdin
+and lets a command that is not on the list through at once:
+
+  safegrd guard --hook claude-code --surface prod-db   (also: cursor, codex)
+
+For a command on the list, a locked snapshot younger than --max-age (30m by
+default here) lets it through. Otherwise guard starts a backup in a process of
+its own and waits up to --wait (20s). If the backup finishes, the command runs.
+If not, the command is denied with "run it again shortly", the backup keeps
+going, and the agent's retry goes through once the snapshot is locked. A hook
+exits 2 when it cannot answer, which blocks the command.`,
 		// A hook answers even when the config cannot be read: an exit 1 lets
 		// the agent's command through, so the refusal has to be the answer
 		// (runGuardHook blocks a destructive command with the reason).
@@ -127,7 +137,11 @@ up by its daemon or by the remote server, and this host should only check.`,
 				if ctx == nil {
 					ctx = context.Background()
 				}
-				return runGuardHook(ctx, hook, opts, os.Stdin, os.Stdout)
+				if err := runGuardHook(ctx, hook, opts, os.Stdin, os.Stdout); err != nil {
+					// Any exit but 0 and 2 lets the agent's command through.
+					return &exitError{code: 2, err: err}
+				}
+				return nil
 			}
 
 			var command []string
@@ -144,6 +158,11 @@ up by its daemon or by the remote server, and this host should only check.`,
 				ctx = context.Background()
 			}
 			snap, err := guardSnapshot(ctx, opts, describeCommand(command))
+			if resultFile != "" {
+				if werr := writeGuardResult(resultFile, snap, err); werr != nil {
+					fmt.Fprintf(os.Stderr, "Error: could not write the result to %s: %v\n", resultFile, werr)
+				}
+			}
 			if err != nil {
 				if len(command) > 0 {
 					fmt.Fprintf(os.Stderr, "Error: not running %s: %v\n", describeCommand(command), err)
@@ -167,9 +186,13 @@ up by its daemon or by the remote server, and this host should only check.`,
 		"Run the command after a backup that is not locked: local storage, or worm_mode NONE. "+
 			"Without it guard refuses, because anyone who can run the command can delete that backup")
 	cmd.Flags().DurationVar(&opts.maxAge, "max-age", 0,
-		"A locked snapshot of the surface younger than this stands in for a new backup (30m, 2h). 0 backs up every time")
+		"A locked snapshot of the surface younger than this stands in for a new backup (30m, 2h). 0 backs up every time; with --hook the default is 30m")
 	cmd.Flags().BoolVar(&opts.checkOnly, "check-only", false,
 		"Take no backup: refuse the command unless a locked snapshot younger than --max-age exists")
+	cmd.Flags().DurationVar(&opts.wait, "wait", hookDefaultWait,
+		"With --hook: how long to wait for the backup before denying the command and leaving the backup running")
+	cmd.Flags().StringVar(&resultFile, "result-file", "", "Write how the backup ended to this file, as JSON (used by --hook)")
+	_ = cmd.Flags().MarkHidden("result-file") // the flag exists; hiding it cannot fail
 	cmd.Flags().StringVar(&matches, "matches", "", "Check a command against the destructive list and take no backup")
 	cmd.Flags().BoolVar(&list, "list", false, "Print the destructive command list and exit")
 	cmd.Flags().StringVar(&hook, "hook", "", "Answer an AI coding tool's pre-command hook on stdin: claude-code, cursor or codex")

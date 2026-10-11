@@ -21,3 +21,18 @@ func runGuarded(command []string) error {
 	}
 	return nil
 }
+
+// detachProcess puts the command in a session of its own, so the agent's
+// tool ending the hook, or its process group, does not end the backup.
+func detachProcess(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+}
+
+// processAlive says whether a process with this pid exists.
+func processAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	err := syscall.Kill(pid, 0)
+	return err == nil || err == syscall.EPERM
+}

@@ -4,8 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/safegrd/cli/pkg/model"
 )
 
 // The stdin each tool documents for its pre-command hook, with the fields a
@@ -21,8 +26,24 @@ const (
 		`"command":%q,"cwd":"/home/u/app","sandbox":false}`
 )
 
+// inlineGuardBackup stands in for the detached `guard --result-file`
+// process: the backup runs before it returns, as a fast one would.
+func inlineGuardBackup(t *testing.T) {
+	t.Helper()
+	old := spawnGuardBackup
+	t.Cleanup(func() { spawnGuardBackup = old })
+	spawnGuardBackup = func(opts guardOptions, resultPath, _ string) (int, <-chan struct{}, error) {
+		opts.maxAge, opts.checkOnly = 0, false
+		meta, err := guardSnapshot(context.Background(), opts, "")
+		done := make(chan struct{})
+		close(done)
+		return os.Getpid(), done, writeGuardResult(resultPath, meta, err)
+	}
+}
+
 func runGuardHookFor(t *testing.T, tool, input string, allowUnlocked bool) (string, error) {
 	t.Helper()
+	inlineGuardBackup(t)
 	var out bytes.Buffer
 	var err error
 	captureStdoutErr(t, func() error {
@@ -58,9 +79,25 @@ func TestClaudeCodeAndCodexHooksBlockOnlyWithoutASnapshot(t *testing.T) {
 			}
 
 			// On the list, snapshot taken: the normal permission flow decides.
+			// Claude Code is told which snapshot covers the command; guard
+			// never approves it.
 			out, err = runGuardHookFor(t, tool, sprintfJSON(format, `psql -c 'DROP TABLE users'`), true)
-			if err != nil || out != "" {
-				t.Errorf("after a snapshot: %q %v", out, err)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tool == hookCodex {
+				if out != "" {
+					t.Errorf("after a snapshot: %q", out)
+				}
+				return
+			}
+			ans = preToolUseOutput{}
+			if jsonErr := json.Unmarshal([]byte(out), &ans); jsonErr != nil {
+				t.Fatalf("not the documented JSON: %v\n%s", jsonErr, out)
+			}
+			h = ans.HookSpecificOutput
+			if h.PermissionDecision != "" || !strings.Contains(h.AdditionalContext, "To undo it: safegrd restore --snapshot snap-") {
+				t.Errorf("after a snapshot: %+v", h)
 			}
 		})
 	}
@@ -116,4 +153,81 @@ func TestUnreadableHookInputIsRefused(t *testing.T) {
 func sprintfJSON(format, command string) string {
 	b, _ := json.Marshal(command)
 	return strings.Replace(format, "%q", string(b), 1)
+}
+
+// A backup that outlasts --wait does not hold the agent: the command is
+// denied with "run it again", the backup goes on, a second call waits for
+// the same backup instead of starting another, and once it has finished the
+// retry goes through. A backup that dies without a result is a refusal.
+func TestAHookDeniesWhileItsBackupRunsAndLetsTheRetryThrough(t *testing.T) {
+	guardConfig(t)
+	var spawned []string
+	old := spawnGuardBackup
+	t.Cleanup(func() { spawnGuardBackup = old })
+	spawnGuardBackup = func(_ guardOptions, resultPath, _ string) (int, <-chan struct{}, error) {
+		spawned = append(spawned, resultPath)
+		return os.Getpid(), make(chan struct{}), nil // still running
+	}
+	opts := guardOptions{allowUnlocked: true, wait: 50 * time.Millisecond}
+	hook := func() preToolUseOutput {
+		t.Helper()
+		var out bytes.Buffer
+		captureStdoutErr(t, func() error {
+			return runGuardHook(context.Background(), hookClaudeCode, opts, strings.NewReader(sprintfJSON(claudeCodeInput, "psql -c 'TRUNCATE orders'")), &out)
+		})
+		var ans preToolUseOutput
+		if out.Len() > 0 {
+			if err := json.Unmarshal(out.Bytes(), &ans); err != nil {
+				t.Fatalf("not the documented JSON: %v\n%s", err, out.String())
+			}
+		}
+		return ans
+	}
+
+	h := hook().HookSpecificOutput
+	if h.PermissionDecision != "deny" || !strings.Contains(h.PermissionDecisionReason, "still running") ||
+		!strings.Contains(h.PermissionDecisionReason, "run the same command again") {
+		t.Fatalf("while the backup runs: %+v", h)
+	}
+	h = hook().HookSpecificOutput
+	if h.PermissionDecision != "deny" || len(spawned) != 1 {
+		t.Fatalf("a second call started another backup (%d) or let the command through: %+v", len(spawned), h)
+	}
+
+	// The backup finishes.
+	if err := writeGuardResult(spawned[0], &model.SnapshotMetadata{SnapshotID: "snap-20261011-120000-abcdef",
+		StorageURI: "file:///store/x"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	h = hook().HookSpecificOutput
+	if h.PermissionDecision != "" || !strings.Contains(h.AdditionalContext, "snap-20261011-120000-abcdef") || len(spawned) != 1 {
+		t.Fatalf("the retry after the backup finished: %+v (%d backups)", h, len(spawned))
+	}
+
+	// A backup process that ends with no result refuses the command.
+	if err := os.Remove(filepath.Join(cfg.Daemon.StateDir, "guard", "docs.run.json")); err != nil {
+		t.Fatal(err)
+	}
+	spawnGuardBackup = func(_ guardOptions, _, _ string) (int, <-chan struct{}, error) {
+		done := make(chan struct{})
+		close(done)
+		return os.Getpid(), done, nil
+	}
+	h = hook().HookSpecificOutput
+	if h.PermissionDecision != "deny" || !strings.Contains(h.PermissionDecisionReason, "stopped without a result") {
+		t.Fatalf("a backup that died: %+v", h)
+	}
+}
+
+func TestAnyHookInvocationExitsTwoOnError(t *testing.T) {
+	for args, want := range map[string]bool{
+		"guard --hook claude-code --max-age 30":  true,
+		"guard --hook=cursor":                    true,
+		"guard --surface db -- grep --hook x.sh": false,
+		"guard --surface db":                     false,
+	} {
+		if got := hookInvocation(strings.Fields(args)); got != want {
+			t.Errorf("%q: %v, want %v", args, got, want)
+		}
+	}
 }

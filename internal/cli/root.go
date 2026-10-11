@@ -116,6 +116,9 @@ func Execute() {
 			os.Exit(ee.code)
 		}
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		if hookInvocation(os.Args[1:]) {
+			os.Exit(2)
+		}
 		if interrupted {
 			os.Exit(130)
 		}
