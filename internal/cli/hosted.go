@@ -533,7 +533,7 @@ func (p *hostedProvider) download(ctx context.Context, path string) (io.ReadClos
 	var d struct {
 		URL string `json:"url"`
 	}
-	if err := p.client.call(ctx, http.MethodPost, "/downloads", map[string]string{"path": path}, &d); err != nil {
+	if err := p.client.callRetry(ctx, http.MethodPost, "/downloads", map[string]string{"path": path}, &d); err != nil {
 		return nil, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, d.URL, nil)
@@ -594,7 +594,7 @@ func (p *hostedProvider) list(ctx context.Context) ([]hostedObject, error) {
 	var out struct {
 		Objects []hostedObject `json:"objects"`
 	}
-	if err := p.client.call(ctx, http.MethodGet, "/objects", nil, &out); err != nil {
+	if err := p.client.callRetry(ctx, http.MethodGet, "/objects", nil, &out); err != nil {
 		return nil, err
 	}
 	if out.Objects == nil {

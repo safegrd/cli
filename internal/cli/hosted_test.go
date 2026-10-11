@@ -334,3 +334,49 @@ func TestAQuotaRefusalIsNotRetried(t *testing.T) {
 		t.Errorf("a quota 429 was retried or lost: %v after %d requests", err, asked)
 	}
 }
+
+// A restore of an archive snapshot lists the objects and asks for each
+// download. Both answered a 429 with a failed restore, while every
+// repository read waited it out.
+func TestArchiveReadsWaitOutARateLimit(t *testing.T) {
+	var asked int32
+	var srv *httptest.Server
+	srv = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/bucket/a" {
+			_, _ = w.Write([]byte("the object"))
+			return
+		}
+		if atomic.AddInt32(&asked, 1)%2 == 1 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "Rate limit exceeded. Please try again later."})
+			return
+		}
+		switch r.URL.Path {
+		case "/objects":
+			_ = json.NewEncoder(w).Encode(map[string]any{"objects": []hostedObject{{Path: "a"}}})
+		case "/downloads":
+			_ = json.NewEncoder(w).Encode(map[string]string{"url": srv.URL + "/bucket/a"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	saved := hostedRetryPause
+	hostedRetryPause = time.Millisecond
+	defer func() { hostedRetryPause = saved }()
+
+	p := &hostedProvider{client: &hostedClient{base: srv.URL, token: "t", api: srv.Client(), bucket: srv.Client()}}
+	objs, err := p.list(context.Background())
+	if err != nil || len(objs) != 1 {
+		t.Fatalf("listing after a 429: %v %v", objs, err)
+	}
+	rc, err := p.download(context.Background(), "a")
+	if err != nil {
+		t.Fatalf("download after a 429: %v", err)
+	}
+	body, _ := io.ReadAll(rc)
+	rc.Close()
+	if string(body) != "the object" || atomic.LoadInt32(&asked) != 4 {
+		t.Errorf("read %q after %d requests, want the object after 4 (each read refused once)", body, asked)
+	}
+}
