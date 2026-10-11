@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -27,8 +28,8 @@ func newLoginCmd() *cobra.Command {
 		Short: "Sign in to the remote server, in a browser or with an access token",
 		Long: `Signs this CLI in to the remote server and saves the token in the config.
 
-By default it prints a URL and a confirmation code, and opens the URL in a
-browser. In CI or on a host with no browser, pass a personal access token from
+By default it prints a URL and a code, and opens the URL in a browser, where
+you type the code. In CI or on a host with no browser, pass a personal access token from
 Tokens in the console: --token env:SAFEGRD_TOKEN (or file:/path, or the token itself).`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			serverURL := resolveServerURL()
@@ -79,6 +80,9 @@ Tokens in the console: --token env:SAFEGRD_TOKEN (or file:/path, or the token it
 			if err != nil {
 				return err
 			}
+			// The approving page shows this, so the person can tell their own
+			// sign-in from one someone else started.
+			req.Header.Set("User-Agent", UserAgent())
 			client := &http.Client{Timeout: 5 * time.Second}
 			resp, err := client.Do(req)
 			if err != nil {
@@ -95,18 +99,25 @@ Tokens in the console: --token env:SAFEGRD_TOKEN (or file:/path, or the token it
 				return fmt.Errorf("could not read the sign-in session from %s: %w", serverURL, err)
 			}
 
-			authURL := fmt.Sprintf("%s/auth/cli?session=%s&code=%s", serverURL, session.SessionID, session.UserCode)
+			if session.DeviceCode == "" {
+				return fmt.Errorf("%s did not answer a device code: it is older than this CLI. Sign in with --token instead", serverURL)
+			}
+			// The URL names the sign-in only. The code is typed on the page,
+			// and the token is collected with the device code, which never
+			// leaves this process: whoever sees the URL can neither approve
+			// without the code nor collect the token.
+			authURL := fmt.Sprintf("%s/auth/cli?session=%s", serverURL, session.SessionID)
 
 			remote := isRemoteSession()
 
-			fmt.Printf("\nConfirmation code: %s\n\n", ansi("1;36", session.UserCode))
+			fmt.Printf("\nCode: %s\n\n", ansi("1;36", session.UserCode))
 			if remote {
 				// Over SSH or PuTTY the browser is on the operator's own
 				// machine, not this one, so say where to open it.
 				fmt.Printf("Open this URL in a browser on any device, such as the machine you are\n")
-				fmt.Printf("connecting from, and check the code matches:\n\n  %s\n\n", ansi("4;34", authURL))
+				fmt.Printf("connecting from, and type the code:\n\n  %s\n\n", ansi("4;34", authURL))
 			} else {
-				fmt.Printf("Open this URL in your browser and check the code matches:\n\n  %s\n\n", ansi("4;34", authURL))
+				fmt.Printf("Open this URL in your browser and type the code:\n\n  %s\n\n", ansi("4;34", authURL))
 			}
 
 			// Never launch a browser on a remote host: xdg-open there either
@@ -133,15 +144,29 @@ Tokens in the console: --token env:SAFEGRD_TOKEN (or file:/path, or the token it
 					return fmt.Errorf("the sign-in was not approved within 5 minutes. Run 'safegrd login' again")
 				case <-ticker.C:
 					fmt.Print(".")
-					pollReq, _ := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("%s/api/v1/auth/cli/session?session_id=%s", serverURL, session.SessionID), nil)
+					body, _ := json.Marshal(model.CLISessionPoll{SessionID: session.SessionID, DeviceCode: session.DeviceCode})
+					pollReq, _ := http.NewRequestWithContext(ctx, "POST", serverURL+"/api/v1/auth/cli/session/poll", bytes.NewReader(body))
+					pollReq.Header.Set("Content-Type", "application/json")
+					pollReq.Header.Set("User-Agent", UserAgent())
 					pollResp, err := client.Do(pollReq)
 					if err != nil {
 						continue
 					}
 
 					var pollSession model.CLISession
-					_ = json.NewDecoder(pollResp.Body).Decode(&pollSession)
+					decodeErr := json.NewDecoder(pollResp.Body).Decode(&pollSession)
 					pollResp.Body.Close()
+					if pollResp.StatusCode == http.StatusNotFound {
+						fmt.Println()
+						return fmt.Errorf("%s no longer knows this sign-in. Run 'safegrd login' again", serverURL)
+					}
+					if pollResp.StatusCode != http.StatusOK || decodeErr != nil {
+						continue // a busy or restarting server; the next tick asks again
+					}
+					if pollSession.Status == model.CLISessionStatusExpired {
+						fmt.Println()
+						return fmt.Errorf("the sign-in expired before it was approved. Run 'safegrd login' again")
+					}
 
 					if pollSession.Status == model.CLISessionStatusAuthorized && pollSession.Token != "" {
 						fmt.Println("\n\nSigned in.")

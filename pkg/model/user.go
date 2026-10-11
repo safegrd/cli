@@ -40,4 +40,31 @@ type CLISession struct {
 	// TokenExpiresAt is when the token handed back by this session stops
 	// working. ExpiresAt is the session's own ten-minute window.
 	TokenExpiresAt *time.Time `json:"token_expires_at,omitempty"`
+
+	// DeviceCode is the secret the client polls with. The server returns it
+	// once, when the session starts, and it is never part of the link a
+	// browser opens, so whoever holds the link cannot collect the token.
+	DeviceCode string `json:"device_code,omitempty"`
+	// DeviceCodeHash is the SHA-256 of DeviceCode, which is all the server keeps.
+	DeviceCodeHash string `json:"-"`
+	// Client is what started the sign-in: "" for the CLI, "wordpress" for
+	// the plugin, with Site naming the site it runs on.
+	Client string `json:"client,omitempty"`
+	Site   string `json:"site,omitempty"`
+	// RequestedFrom and RequestedAgent are the address and User-Agent that
+	// started the sign-in, shown on the page that approves it.
+	RequestedFrom  string `json:"requested_from,omitempty"`
+	RequestedAgent string `json:"requested_agent,omitempty"`
+}
+
+// CLISessionStart is the optional body that starts a sign-in.
+type CLISessionStart struct {
+	Client string `json:"client,omitempty"`
+	Site   string `json:"site,omitempty"`
+}
+
+// CLISessionPoll asks whether a sign-in was approved.
+type CLISessionPoll struct {
+	SessionID  string `json:"session_id"`
+	DeviceCode string `json:"device_code"`
 }
