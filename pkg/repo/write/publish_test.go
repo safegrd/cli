@@ -186,3 +186,38 @@ func TestTheRecoveryDocumentSitsBesideTheSidecar(t *testing.T) {
 		t.Errorf("the snapshots listed beside recovery documents: %v %v", ids, err)
 	}
 }
+
+// A host that backed up before it enrolled writes under its node's root
+// afterwards, with the cache still naming the epoch it opened in the old root.
+// Continuing that epoch filed the snapshot under a root with no epoch.json, so
+// list and verify could not see it and its chunks were in the old root's
+// packs. The new root gets an epoch of its own.
+func TestAnEpochTheStoreDoesNotHoldIsNotContinued(t *testing.T) {
+	h := newHarness(t)
+	if err := os.WriteFile(filepath.Join(h.src, "f"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before, err := sink.NewDir(filepath.Join(filepath.Dir(h.state), "sink"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrolled := h.b
+	h.b = sink.NewDirect(before)
+	a := h.backup(nil)
+
+	h.b = enrolled
+	b := h.backup(nil)
+	if b.Epoch.EpochID == a.Epoch.EpochID || !b.Opened || b.Class != format.ClassOpening {
+		t.Fatalf("after the root changed: epoch %s (was %s), opened %v, class %s", b.Epoch.EpochID, a.Epoch.EpochID, b.Opened, b.Class)
+	}
+	h.epoch(b.Epoch.EpochID)
+	if got, _, _ := h.restore(b.Epoch.EpochID, b.Snapshot.SnapshotID, nil); got["f"].typ != "f" {
+		t.Fatal("the snapshot under the new root does not restore from that root alone")
+	}
+
+	// Once the new root holds the epoch, the next run continues it.
+	c := h.backup(nil)
+	if c.Epoch.EpochID != b.Epoch.EpochID || c.Opened {
+		t.Fatalf("the next run opened epoch %s; want it to continue %s", c.Epoch.EpochID, b.Epoch.EpochID)
+	}
+}

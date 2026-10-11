@@ -75,8 +75,8 @@ var localArgDescriptions = map[string]string{
 	"surface":     "The id of one surface in this host's config to back up now.",
 	"files":       "A directory tree to back up instead of the configured database.",
 	"sandbox_url": "An empty database to restore into for a full Fire Drill. Without it the snapshot is replayed in memory.",
-	"target_dir":  "A new or empty directory to restore files or mail into.",
-	"target_url":  "An empty database URL to restore into.",
+	"target_dir":  "A new or empty directory, for a files or mail snapshot. A database snapshot needs target_url.",
+	"target_url":  "The URL of an empty database, for a database snapshot.",
 	"to_dir":      "A directory to copy every snapshot into, still encrypted.",
 	"to_bucket":   "Your own S3 bucket to copy every snapshot into, still encrypted.",
 	"to_endpoint": "The S3 endpoint of to_bucket.",
@@ -156,7 +156,7 @@ func addLocalTools(server *mcp.Server, self string) {
 			return []string{"verify", "--snapshot", a.SnapshotID, "--in-memory"}, nil
 		})
 	tool(localTool{name: "restore", title: "Restore into an empty target", required: []string{"snapshot_id"}, optional: []string{"target_dir", "target_url"},
-		desc: "Restore a snapshot into a new or empty directory (target_dir) or an empty database (target_url). Never over existing data."},
+		desc: "Restore a snapshot into an empty target: target_url, an empty database, for a database snapshot; target_dir, a new or empty directory, for files or mail. Never over existing data."},
 		func(a localArgs) ([]string, error) {
 			if err := need(a.SnapshotID, "snapshot_id"); err != nil {
 				return nil, err

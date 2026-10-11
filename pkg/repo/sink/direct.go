@@ -36,7 +36,22 @@ func (d *Direct) OpenEpoch(ctx context.Context, req OpenRequest) (Opened, error)
 		if req.Current == nil {
 			return Opened{}, fmt.Errorf("no epoch to continue")
 		}
-		return Opened{Epoch: req.Current.Epoch, OpeningDone: req.Current.OpeningDone}, nil
+		// The cache is keyed by surface, not by where the epoch lives. A
+		// host that backed up before it enrolled writes under its node's
+		// root afterwards, and continuing the cached epoch there filed
+		// snapshots under an epoch.json that root never had: list and
+		// verify could not see them, and their chunks were in the old
+		// root's packs. Continue only an epoch this store holds.
+		key, _ := ObjectKey(EpochPrefix(d.S.Root(), req.SurfaceID, req.Current.Epoch.EpochID), KindEpoch, "")
+		rc, err := d.S.Get(ctx, key)
+		switch {
+		case err == nil:
+			rc.Close()
+			return Opened{Epoch: req.Current.Epoch, OpeningDone: req.Current.OpeningDone}, nil
+		case !errors.Is(err, ErrNotFound):
+			return Opened{}, fmt.Errorf("reading epoch %s: %w", req.Current.Epoch.EpochID, err)
+		}
+		req.Decision = policy.Decision{Open: true, Reason: format.ReasonFirst}
 	}
 	e, err := policy.NewEpoch(req.Now, req.SurfaceID, req.Decision.Reason, req.OpeningTier, req.Retention, req.Recipient)
 	if err != nil {
