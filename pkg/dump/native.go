@@ -897,12 +897,40 @@ func (r *NativeRestorer) Restore(ctx context.Context, src io.Reader) (*model.Sna
 	if err := conn.QueryRow(ctx, "SELECT rolsuper FROM pg_roles WHERE rolname = current_user").Scan(&super); err != nil {
 		return nil, fmt.Errorf("could not read the restoring role: %w", err)
 	}
+	// notLoaded names the tables of a data-only schema whose rows stayed in
+	// the snapshot: the target has no such table, or the restoring role may
+	// not insert into it. A hosted Supabase project owns auth and storage
+	// through service roles, and postgres may write auth.users but not
+	// auth.schema_migrations or storage.migrations; a restore that stopped
+	// at those never put a user back. They are left out and said, and the
+	// row-count check skips them. A schema none of whose tables could be
+	// loaded is still refused: there was nothing to restore into.
+	notLoaded := map[string]string{}
+	loadable := map[string]int{}
 
 	streams := &tableStreams{
 		consume: func(schema, table string, rd io.Reader) error {
 			if !wantRows(schema) {
 				_, err := io.Copy(io.Discard, rd)
 				return err
+			}
+			if filtered && r.DataOnlySchemas[schema] {
+				var exists, canInsert bool
+				if err := conn.QueryRow(ctx, "SELECT to_regclass($1) IS NOT NULL, coalesce(has_table_privilege(current_user, to_regclass($1), 'INSERT'), false)",
+					pgx.Identifier{schema, table}.Sanitize()).Scan(&exists, &canInsert); err != nil {
+					return fmt.Errorf("checking %s.%s on the target: %w", schema, table, err)
+				}
+				switch {
+				case !exists:
+					notLoaded[schema+"."+table] = "the target has no such table"
+				case !canInsert:
+					notLoaded[schema+"."+table] = "the restoring role may not insert into it"
+				}
+				if _, left := notLoaded[schema+"."+table]; left {
+					_, err := io.Copy(io.Discard, rd)
+					return err
+				}
+				loadable[schema]++
 			}
 			tag, err := pgConn.CopyFrom(ctx, rd, "COPY "+pgx.Identifier{schema, table}.Sanitize()+" FROM STDIN (FORMAT binary)")
 			if err != nil {
@@ -1017,9 +1045,24 @@ func (r *NativeRestorer) Restore(ctx context.Context, src io.Reader) (*model.Sna
 	}
 	// Current archives count exactly; before, a count at or above 10,000
 	// rows was Postgres's estimate and cannot be held to.
+	for schema := range r.DataOnlySchemas {
+		if loadable[schema] == 0 {
+			var missing []string
+			for name := range notLoaded {
+				if strings.HasPrefix(name, schema+".") {
+					missing = append(missing, name)
+				}
+			}
+			sort.Strings(missing)
+			return nil, fmt.Errorf("loading rows into %s, which has to exist already with the backup's tables and columns: none of its tables could be loaded (%s)", schema, strings.Join(missing, ", "))
+		}
+	}
 	if manifest.SchemaSource != "" {
 		for _, t := range manifest.TableStats {
 			if !wantRows(t.Schema) {
+				continue
+			}
+			if _, left := notLoaded[t.Schema+"."+t.TableName]; left {
 				continue
 			}
 			if got := loaded[t.Schema+"."+t.TableName]; got != t.RowCount {
@@ -1041,6 +1084,24 @@ func (r *NativeRestorer) Restore(ctx context.Context, src io.Reader) (*model.Sna
 	case legacySchema:
 		r.Warn("This snapshot's schema was captured without pg_dump. The rows are restored in full, but foreign keys,\n" +
 			"   views, triggers, functions and enum types are not, and a column type the old extractor did not know may differ.")
+	}
+	if len(notLoaded) > 0 {
+		names := make([]string, 0, len(notLoaded))
+		for name := range notLoaded {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		rows := map[string]int64{}
+		if manifest != nil {
+			for _, t := range manifest.TableStats {
+				rows[t.Schema+"."+t.TableName] = t.RowCount
+			}
+		}
+		parts := make([]string, 0, len(names))
+		for _, name := range names {
+			parts = append(parts, fmt.Sprintf("%s (%s; %d rows in the snapshot)", name, notLoaded[name], rows[name]))
+		}
+		r.Warn(fmt.Sprintf("%d tables of the rows-only schemas were not loaded: %s.", len(names), strings.Join(parts, ", ")))
 	}
 	if len(leftOut) > 0 {
 		names := make([]string, 0, len(leftOut))

@@ -15,6 +15,7 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
 // ObjectStoreSource is a files surface read from a bucket over the S3 API:
@@ -198,6 +199,14 @@ func (fc *FileCollector) openObject(ctx context.Context, item *collectedItem) (i
 		Key:    aws.String(item.objectKey),
 	})
 	if err != nil {
+		var missing *s3types.NoSuchKey
+		if errors.As(err, &missing) {
+			// Supabase Storage lists what its storage.objects table holds,
+			// and a row written by SQL, or left by a restore of the rows
+			// alone, has no file behind it. The backup fails rather than
+			// record a file it did not read.
+			return nil, fmt.Errorf("the store lists %s but has no object for it: a row in its object table with no file behind it. Upload the file again, or delete the entry through the store's own API, then back up again", item.objectKey)
+		}
 		return nil, fmt.Errorf("reading %s: %w", item.objectKey, err)
 	}
 	if ct := aws.ToString(out.ContentType); ct != "" && item.contentType == "" {
