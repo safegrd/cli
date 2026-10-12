@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"os"
 	"path"
 	"sort"
 	"strings"
@@ -18,10 +19,12 @@ import (
 type sourceDir struct {
 	files map[string]format.Node
 	dirs  map[string]*sourceDir
+	// mounted are directories walked from this host, stored whole.
+	mounted map[string]format.Node
 }
 
 func newSourceDir() *sourceDir {
-	return &sourceDir{files: map[string]format.Node{}, dirs: map[string]*sourceDir{}}
+	return &sourceDir{files: map[string]format.Node{}, dirs: map[string]*sourceDir{}, mounted: map[string]format.Node{}}
 }
 
 // Streamed files and the directories that hold them have no stat of their
@@ -31,8 +34,9 @@ const (
 	sourceDirMode  = 0o700
 )
 
-// source stores every file the source emits and returns the root tree.
-func (w *walker) source(src Source, started time.Time) (format.ID, error) {
+// source stores every file the source emits, then walks each mount into
+// the tree, and returns the root tree.
+func (w *walker) source(src Source, mounts []Mount, started time.Time) (format.ID, error) {
 	top := newSourceDir()
 	err := src(w.ctx, func(e Entry) error {
 		if err := w.ctx.Err(); err != nil {
@@ -79,7 +83,59 @@ func (w *walker) source(src Source, started time.Time) (format.ID, error) {
 	if err != nil {
 		return format.ID{}, err
 	}
+	for _, m := range mounts {
+		if err := w.mount(top, m); err != nil {
+			return format.ID{}, err
+		}
+	}
 	return w.sourceTree("", top, started)
+}
+
+// mount walks one directory into the source's tree at its path.
+func (w *walker) mount(top *sourceDir, m Mount) error {
+	segs, err := sourcePath(m.Path)
+	if err != nil {
+		return err
+	}
+	fi, err := os.Lstat(m.Dir)
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", m.Dir, err)
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("%s is not a directory", m.Dir)
+	}
+	d := top
+	for _, s := range segs[:len(segs)-1] {
+		if _, clash := d.files[s]; clash {
+			return fmt.Errorf("mount %s is under a file", m.Path)
+		}
+		if _, clash := d.mounted[s]; clash {
+			return fmt.Errorf("mount %s is inside another mount", m.Path)
+		}
+		sub, ok := d.dirs[s]
+		if !ok {
+			sub = newSourceDir()
+			d.dirs[s] = sub
+		}
+		d = sub
+	}
+	name := segs[len(segs)-1]
+	_, f := d.files[name]
+	_, sd := d.dirs[name]
+	_, md := d.mounted[name]
+	if f || sd || md {
+		return fmt.Errorf("mount %s is already in the tree", m.Path)
+	}
+	w.root = m.Dir
+	if m.ExcludeBase != "" {
+		w.root = m.ExcludeBase
+	}
+	id, err := w.dir(m.Dir, m.Path, sysStat(fi).dev)
+	if err != nil {
+		return err
+	}
+	d.mounted[name] = w.dirNode(name, fi, id)
+	return w.entry(m.Path, format.ContentDir, "-", fi, 0)
 }
 
 // sourcePath splits a source path into its segments and refuses one that is
@@ -178,6 +234,9 @@ func (w *walker) carry(rel, name string, started time.Time) (format.Node, error)
 func (w *walker) sourceTree(rel string, d *sourceDir, started time.Time) (format.ID, error) {
 	var t format.Tree
 	for _, n := range d.files {
+		t.Entries = append(t.Entries, n)
+	}
+	for _, n := range d.mounted {
 		t.Entries = append(t.Entries, n)
 	}
 	for name, sub := range d.dirs {

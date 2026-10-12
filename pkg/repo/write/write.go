@@ -84,6 +84,10 @@ type Options struct {
 	// a walk of Roots, which must then be empty. Its files are the top of
 	// the snapshot's tree and its one root is "/".
 	Source Source
+	// Mounts are directories walked into a Source's tree once the source
+	// has run, each at its own path: an app's database streams in, and its
+	// uploads are walked with the files cache, their modes and their times.
+	Mounts []Mount
 	// State, when set, returns what this run leaves for the next one of the
 	// surface, kept in the cache with the run and handed to the next run as
 	// Result.PriorState. It is called once the run is published.
@@ -106,6 +110,18 @@ type Entry struct {
 	// returns ErrNotCarried when the epoch does not hold it, which
 	// Result.CanCarry said beforehand.
 	Carry bool
+}
+
+// Mount is a directory on this host walked into a Source's tree.
+type Mount struct {
+	// Path is where the directory sits in the snapshot: "files/storage/app".
+	Path string
+	// Dir is the directory walked. It must exist and be a directory.
+	Dir string
+	// ExcludeBase is what relative Excludes are matched from; empty is Dir.
+	// An app's mounts share its root, so "storage/app/backup-temp" names
+	// the same directory however the app is split into mounts.
+	ExcludeBase string
 }
 
 // ErrNotCarried is returned by emit for an Entry to carry that the epoch
@@ -205,6 +221,9 @@ func Run(ctx context.Context, b sink.Backend, o Options) (*Result, error) {
 	}
 	var roots []string
 	var err error
+	if len(o.Mounts) > 0 && o.Source == nil {
+		return nil, fmt.Errorf("mounts are walked into a source's tree; this run has no source")
+	}
 	if o.Source != nil {
 		if len(o.Roots) > 0 {
 			return nil, fmt.Errorf("a run takes a source or roots, not both")
@@ -371,7 +390,9 @@ func Run(ctx context.Context, b sink.Backend, o Options) (*Result, error) {
 	}
 	oneFS := false
 	for _, r := range roots {
-		if r == "/" {
+		// A source's "/" is the top of its own tree, not this host's: its
+		// mounts are walked without the excludes a walk of / needs.
+		if r == "/" && o.Source == nil {
 			oneFS = true
 			w.exclude = append(append([]string{}, DefaultExcludesForSlash...), w.exclude...)
 		}
@@ -391,7 +412,7 @@ func Run(ctx context.Context, b sink.Backend, o Options) (*Result, error) {
 	var rootTree format.ID
 	var walkErr error
 	if o.Source != nil {
-		rootTree, walkErr = w.source(o.Source, started)
+		rootTree, walkErr = w.source(o.Source, o.Mounts, started)
 	} else {
 		rootTree, walkErr = w.walkRoots(roots)
 	}

@@ -1174,6 +1174,48 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 		}
 		return meta, plan, nil
 
+	case "laravel":
+		root, err := laravelSurfaceRoot(s)
+		if err != nil {
+			return nil, plan, stageErr(model.BackupReasonConfig, err)
+		}
+		// The connection comes from the app's .env unless the surface names
+		// one of its own (a role made for backups).
+		var dbURL string
+		if s.DatabaseURL != "" || s.Credential != nil {
+			if dbURL, err = resolveSurfaceDatabaseURL(ctx, c, s); err != nil {
+				return nil, plan, err
+			}
+		}
+		if storageCfg.NodeID == "" {
+			storageCfg.NodeID = nodeID
+		}
+		kept := ownKeptRule(ctx, c, storageCfg, plan, time.Now())
+		meta, res, err := runRepoLaravelBackup(ctx, repoLaravelParams{
+			repoDBParams: repoDBParams{
+				SurfaceID: s.ID, DatabaseURL: dbURL, StorageCfg: storageCfg, NodeID: nodeID, Recipient: pubKey,
+				Retention: policy.Retention{Days: storageCfg.RetentionDays, KeepDaily: tiers.Days, KeepWeekly: tiers.Weeks, KeepMonthly: tiers.Months},
+				Tier:      plan.Tier, Planned: plan.Until, SnapshotID: snapshotID, StateDir: stateDir, Out: os.Stdout,
+				NewEpoch: st.newEpoch, RecoverySealTo: recoveryDocSealTo(s, pubKey), Kept: kept,
+			},
+			Root: root, Excludes: s.Excludes, Rescan: st.rescan,
+		})
+		st.newEpoch, st.rescan = false, false
+		if err != nil {
+			return nil, plan, err
+		}
+		if res.Tier != plan.Tier {
+			plan.DayKey, plan.WeekKey, plan.MonthKey = "", "", ""
+			fmt.Printf("   Surface %s: kept at the epoch's %s tier. The %s slot stays open for the next backup.\n", s.ID, res.Tier, plan.Tier)
+		}
+		if hostIsEnrolled(c) {
+			st.notRecorded = reportSnapshot(ctx, c, st, meta)
+		}
+		if kept != nil {
+			keepOwnCopies(ctx, c, storageCfg, daemonPrivateKey(ctx, c), os.Stdout)
+		}
+		return meta, plan, nil
+
 	case "email":
 		host := s.Host
 		if host == "" {

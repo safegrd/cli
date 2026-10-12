@@ -358,6 +358,17 @@ func restoreRepo(ctx context.Context, rs *repoSnapshot, privateKey, targetDir, t
 		fmt.Printf("Writing %s (epoch %s, %s) to %s as SQL and COPY files\n", id, rs.Epoch.Epoch.EpochID, rs.SurfaceID, toSQL)
 		return restoreRepoSQL(ctx, rs, privateKey, toSQL)
 	}
+	if runner.IsRepoLaravel(rs.Meta) {
+		if targetDir == "" || targetURL == "" {
+			return fmt.Errorf("snapshot %s is a Laravel app; pass --target with an empty database of its engine "+
+				"and --target-dir with an empty directory for its .env and files", id)
+		}
+		if len(paths) > 0 || len(tables) > 0 {
+			return fmt.Errorf("snapshot %s is a Laravel app and restores whole; leave out --path and --table", id)
+		}
+		fmt.Printf("Restoring %s (epoch %s, %s) into %s and %s\n", id, rs.Epoch.Epoch.EpochID, rs.SurfaceID, dump.RedactURL(targetURL), targetDir)
+		return restoreRepoLaravel(ctx, rs, privateKey, targetURL, targetDir)
+	}
 	if !runner.IsRepoWordPress(rs.Meta) && targetDir != "" && targetURL != "" {
 		return fmt.Errorf("snapshot %s is a %s snapshot; give --target or --target-dir, not both", id, rs.Meta.SurfaceType)
 	}

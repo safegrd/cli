@@ -86,8 +86,9 @@ files: each upload writes or updates the file's row in storage.objects.`,
 				if targetDir != "" || toSQL != "" || len(paths) > 0 || len(tables) > 0 || version > 0 || len(schemas) > 0 || len(dataOnly) > 0 {
 					return fmt.Errorf("--target %s uploads a whole files snapshot into a bucket; leave out --target-dir, --to-sql, --path, --table, --version and the schema flags", targetURL)
 				}
-				if snapshotID == "" {
-					return fmt.Errorf("--target %s needs --snapshot <id> (from 'safegrd list')", targetURL)
+				// --from names the snapshot itself, or with --snapshot.
+				if snapshotID == "" && fromPath == "" {
+					return fmt.Errorf("--target %s needs --snapshot <id> (from 'safegrd list'), or --from with a .safegrd file", targetURL)
 				}
 				src, err := objectStoreTargetFromFlags(b, prefix, sourceEndpoint, sourceRegion, sourceAccessKey, sourceSecretKey)
 				if err != nil {
@@ -155,10 +156,11 @@ files: each upload writes or updates the file's row in storage.objects.`,
 					given++
 				}
 			}
-			// A WordPress site takes both a database and a directory; the
-			// surface is checked once the snapshot's metadata is read.
+			// A WordPress site or a Laravel app takes both a database and a
+			// directory; the surface is checked once the snapshot's metadata
+			// is read.
 			if given != 1 && !(given == 2 && toSQL == "") {
-				return fmt.Errorf("give one of --target (a database), --target-dir (files or email) or --to-sql (a PostgreSQL snapshot as files psql loads); a WordPress site takes --target and --target-dir together")
+				return fmt.Errorf("give one of --target (a database), --target-dir (files or email) or --to-sql (a PostgreSQL snapshot as files psql loads); a WordPress site or a Laravel app takes --target and --target-dir together")
 			}
 			// Checked before anything is written: a failed export removes the
 			// directory, which is only safe when it held nothing of the user's.

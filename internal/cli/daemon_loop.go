@@ -142,7 +142,7 @@ func surfaceNodeID(ctx context.Context, c *config.CLIConfig, s *config.SurfaceCo
 
 func surfaceRef(s *config.SurfaceConfig) string {
 	switch strings.ToLower(s.Type) {
-	case "files":
+	case "files", "laravel":
 		return strings.Join(s.Roots, ",")
 	case "email":
 		return s.Username

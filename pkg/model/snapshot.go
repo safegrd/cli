@@ -33,6 +33,9 @@ const (
 	// SurfaceTypeWordPress is a WordPress site: its MySQL database and the
 	// files under its root, in one archive.
 	SurfaceTypeWordPress SurfaceType = "wordpress"
+	// SurfaceTypeLaravel is a Laravel app: its database, its .env and the
+	// files under storage/app, in one snapshot.
+	SurfaceTypeLaravel SurfaceType = "laravel"
 )
 
 // IsDatabase reports whether a surface is a database, counted in tables and
@@ -134,6 +137,35 @@ type WordPressStats struct {
 	Skipped []string `json:"skipped,omitempty" yaml:"skipped,omitempty"`
 }
 
+// LaravelStats is what a Laravel snapshot records about the app beside the
+// database's table counts. The .env and the files stay sealed in the
+// snapshot; these are counts, names and versions.
+type LaravelStats struct {
+	// Connection is the app's DB_CONNECTION: mysql, mariadb, pgsql or
+	// sqlite. The database is stored as that engine's surface stores it.
+	Connection     string `json:"connection" yaml:"connection"`
+	LaravelVersion string `json:"laravel_version,omitempty" yaml:"laravel_version,omitempty"`
+	AppName        string `json:"app_name,omitempty" yaml:"app_name,omitempty"`
+	AppEnv         string `json:"app_env,omitempty" yaml:"app_env,omitempty"`
+	// MigrationsTable is the table the migrations ran are recorded in, and
+	// MigrationsRan its rows as the backup read them.
+	MigrationsTable string `json:"migrations_table" yaml:"migrations_table"`
+	MigrationsRan   int64  `json:"migrations_ran" yaml:"migrations_ran"`
+	// MigrationFiles counts database/migrations/*.php; Pending names the
+	// ones the database had not run.
+	MigrationFiles int64    `json:"migration_files" yaml:"migration_files"`
+	Pending        []string `json:"pending,omitempty" yaml:"pending,omitempty"`
+	// SchemaDump is set when database/schema holds a schema:dump file.
+	SchemaDump bool  `json:"schema_dump,omitempty" yaml:"schema_dump,omitempty"`
+	TotalFiles int64 `json:"total_files" yaml:"total_files"`
+	FileBytes  int64 `json:"file_bytes" yaml:"file_bytes"`
+	// FilesystemDisk is FILESYSTEM_DISK when it is not local: the uploads
+	// are elsewhere and not in this snapshot.
+	FilesystemDisk string `json:"filesystem_disk,omitempty" yaml:"filesystem_disk,omitempty"`
+	// LeftOut names what the backup left out on purpose.
+	LeftOut []string `json:"left_out,omitempty" yaml:"left_out,omitempty"`
+}
+
 // SnapshotMetadata represents client-side collected metadata sent to the remote server.
 // Crucially: Plaintext database contents and credentials are NEVER in this metadata.
 type SnapshotMetadata struct {
@@ -204,10 +236,13 @@ type SnapshotMetadata struct {
 	EmailStats    *EmailStatsSummary `json:"email_stats,omitempty" yaml:"email_stats,omitempty"`
 	// WordPress describes a WordPress site's snapshot; nil for every other
 	// surface.
-	WordPress          *WordPressStats `json:"wordpress,omitempty" yaml:"wordpress,omitempty"`
-	DurationMs         int64           `json:"duration_ms" yaml:"duration_ms"`
-	IsPoisonPillFrozen bool            `json:"is_poison_pill_frozen" yaml:"is_poison_pill_frozen"`
-	ErrorMessage       string          `json:"error_message,omitempty" yaml:"error_message,omitempty"`
+	WordPress *WordPressStats `json:"wordpress,omitempty" yaml:"wordpress,omitempty"`
+	// Laravel describes a Laravel app's snapshot; nil for every other
+	// surface.
+	Laravel            *LaravelStats `json:"laravel,omitempty" yaml:"laravel,omitempty"`
+	DurationMs         int64         `json:"duration_ms" yaml:"duration_ms"`
+	IsPoisonPillFrozen bool          `json:"is_poison_pill_frozen" yaml:"is_poison_pill_frozen"`
+	ErrorMessage       string        `json:"error_message,omitempty" yaml:"error_message,omitempty"`
 	// FailureReason is why a failed backup failed, as a code; ErrorMessage
 	// is the same in the host's words.
 	FailureReason BackupReason `json:"failure_reason,omitempty" yaml:"failure_reason,omitempty"`
@@ -247,9 +282,9 @@ func (m *SnapshotMetadata) CalculateTotals() {
 		m.TotalRows = rows
 		m.TotalItems = rows
 		m.TotalContainers = m.TotalTables
-	} else if m.SurfaceType == SurfaceTypeWordPress {
+	} else if m.SurfaceType == SurfaceTypeWordPress || m.SurfaceType == SurfaceTypeLaravel {
 		// Counted as the database it holds, so a drill's row and table
-		// counts compare with the manifest's; the files are in WordPress.
+		// counts compare with the manifest's; the files are in WordPress or Laravel.
 		m.TotalTables = len(m.TableStats)
 		var rows int64
 		for _, t := range m.TableStats {

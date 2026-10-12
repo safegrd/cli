@@ -61,6 +61,9 @@ func (v *Verifier) RunRepoDrill(ctx context.Context, d RepoDrill, privateKey str
 	if IsRepoWordPress(d.Meta) {
 		return v.RunRepoWordPressDrill(ctx, d, privateKey)
 	}
+	if IsRepoLaravel(d.Meta) {
+		return v.RunRepoLaravelDrill(ctx, d, privateKey)
+	}
 	started := time.Now()
 	meta := d.Meta
 	// The restore writes the whole tree to this host's disk before deleting

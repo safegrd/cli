@@ -276,6 +276,21 @@ func runValidationChecks(path string, c *config.CLIConfig) []CheckResult {
 						Message: fmt.Sprintf("%d root path(s) specified", len(s.Roots)),
 					})
 				}
+			case "laravel":
+				name := fmt.Sprintf("Surface %s (laravel)", surfaceLabel(s))
+				root, err := laravelSurfaceRoot(&s)
+				var app *dump.LaravelApp
+				if err == nil {
+					app, err = dump.DiscoverLaravel(root)
+				}
+				switch {
+				case err != nil:
+					results = append(results, CheckResult{Name: name, Status: "FAIL", Message: err.Error()})
+				case app.AppKeyProblem != "":
+					results = append(results, CheckResult{Name: name, Status: "WARN", Message: app.AppKeyProblem + "; the drill fails until it is set"})
+				default:
+					results = append(results, CheckResult{Name: name, Status: "PASS", Message: fmt.Sprintf("Laravel %s on %s, read from %s", orUnknown(app.LaravelVersion), app.Connection, filepath.Join(app.Root, dump.LaravelEnvFile))})
+				}
 			case "email":
 				if s.Username == "" {
 					results = append(results, CheckResult{
@@ -778,6 +793,25 @@ func surfaceConnectionChecks(c *config.CLIConfig) []CheckResult {
 		name := fmt.Sprintf("Surface %s connection", surfaceLabel(*s))
 		ctx, cancel := context.WithTimeout(context.Background(), credentialCommandTimeout)
 		switch strings.ToLower(s.Type) {
+		case "laravel":
+			u := ""
+			if s.DatabaseURL != "" || s.Credential != nil {
+				u, _ = resolveSurfaceDatabaseURL(ctx, c, s)
+			} else if root, err := laravelSurfaceRoot(s); err == nil {
+				if app, err := dump.DiscoverLaravel(root); err == nil {
+					u = app.DatabaseURL
+				}
+			}
+			if u == "" {
+				// The config check above has said why.
+				cancel()
+				continue
+			}
+			if err := dump.PingDatabase(ctx, u, nil); err != nil {
+				results = append(results, CheckResult{Name: name, Status: "FAIL", Message: err.Error()})
+			} else {
+				results = append(results, CheckResult{Name: name, Status: "PASS", Message: "opened " + databaseTargetWords(u)})
+			}
 		case "postgres", "mysql", "mongodb", "sqlite":
 			u, err := resolveSurfaceDatabaseURL(ctx, c, s)
 			if err != nil || u == "" {

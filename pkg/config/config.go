@@ -153,7 +153,7 @@ type SurfaceConfig struct {
 	implicit bool
 
 	ID            string `yaml:"id" json:"id"`     // Stable identifier
-	Type          string `yaml:"type" json:"type"` // "postgres", "mysql", "mongodb", "sqlite", "files", "email"
+	Type          string `yaml:"type" json:"type"` // "postgres", "mysql", "mongodb", "sqlite", "files", "email", "laravel"
 	Name          string `yaml:"name,omitempty" json:"name,omitempty"`
 	Schedule      string `yaml:"schedule,omitempty" json:"schedule,omitempty"`
 	RetentionDays int    `yaml:"retention_days,omitempty" json:"retention_days,omitempty"`

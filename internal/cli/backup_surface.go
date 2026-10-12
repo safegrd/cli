@@ -61,10 +61,13 @@ func backupNamedSurface(ctx context.Context, c *config.CLIConfig, surfaceID stri
 	applyConsoleSettings(surface, &configured, sState)
 	files := strings.EqualFold(surface.Type, "files")
 	database := surface.Type == "" || strings.EqualFold(surface.Type, "postgres") || strings.EqualFold(surface.Type, "sqlite")
-	if f, _ := fileFormat(surface.Format); (newEpoch || rescan) && (!(files || database) || f != formatRepo) {
+	// A Laravel app is always a run of its repository, and its uploads are
+	// walked like a files surface's.
+	laravel := strings.EqualFold(surface.Type, "laravel")
+	if f, _ := fileFormat(surface.Format); (newEpoch || rescan) && !laravel && (!(files || database) || f != formatRepo) {
 		return fmt.Errorf("--new-epoch and --rescan apply to a surface with format: repo; %s is not one", surface.ID)
 	}
-	if rescan && !files {
+	if rescan && !files && !laravel {
 		return fmt.Errorf("--rescan applies to a files surface: a database run reads every table")
 	}
 	sState.newEpoch, sState.rescan = newEpoch, rescan
