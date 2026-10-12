@@ -3,6 +3,7 @@ package dump
 import (
 	"bytes"
 	"context"
+	"github.com/safegrd/cli/pkg/model"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -93,6 +94,21 @@ func TestASQLiteBackupUnderWritesIsOneCommittedState(t *testing.T) {
 	}
 	if meta.DatabaseName != "app.db" || meta.TotalTables != 2 || meta.SurfaceType != "sqlite" {
 		t.Errorf("manifest = %+v", meta)
+	}
+	// Each table's columns and a hash over them, from PRAGMA table_info.
+	for _, ts := range meta.TableStats {
+		if ts.TableName != "ledger" {
+			continue
+		}
+		want := []model.ColumnStat{{Name: "id", Type: "INTEGER", PrimaryKey: true}, {Name: "amount", Type: "INTEGER", NotNull: true}, {Name: "note", Type: "TEXT"}}
+		if len(ts.Columns) != len(want) || len(ts.SchemaHash) != 64 {
+			t.Fatalf("ledger's columns %+v, hash %q", ts.Columns, ts.SchemaHash)
+		}
+		for i := range want {
+			if ts.Columns[i] != want[i] {
+				t.Errorf("ledger column %d: %+v, want %+v", i, ts.Columns[i], want[i])
+			}
+		}
 	}
 
 	// The Fire Drill is a real restore: integrity and counts.

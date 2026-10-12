@@ -2,6 +2,7 @@ package dump
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -37,8 +38,8 @@ func runIdentity(ctx context.Context, tx pgx.Tx, serverVersionNum int) (snapshot
 }
 
 // tableCatalogQuery returns, for every ordinary or partitioned table, an MD5
-// of its definition as the catalog states it, the sequences its columns own
-// and the tables its foreign keys point at.
+// of its definition as the catalog states it, the sequences its columns own,
+// the tables its foreign keys point at, and its columns as JSON.
 const tableCatalogQuery = `
 SELECT n.nspname, c.relname,
   md5(coalesce((SELECT string_agg(quote_ident(a.attname) || ' ' || format_type(a.atttypid, a.atttypmod)
@@ -58,12 +59,16 @@ SELECT n.nspname, c.relname,
   coalesce((SELECT array_agg(DISTINCT quote_ident(fn.nspname) || '.' || quote_ident(f.relname))
       FROM pg_constraint co JOIN pg_class f ON f.oid = co.confrelid
       JOIN pg_namespace fn ON fn.oid = f.relnamespace
-      WHERE co.conrelid = c.oid AND co.contype = 'f'), '{}')
+      WHERE co.conrelid = c.oid AND co.contype = 'f'), '{}'),
+  coalesce((SELECT json_agg(json_build_object('name', a.attname, 'type', format_type(a.atttypid, a.atttypmod),
+          'not_null', a.attnotnull, 'primary_key', coalesce(a.attnum = ANY(pk.conkey), false)) ORDER BY a.attnum)
+        FROM pg_attribute a LEFT JOIN pg_constraint pk ON pk.conrelid = a.attrelid AND pk.contype = 'p'
+        WHERE a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped), '[]')::text
 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE c.relkind IN ('r', 'p') AND n.nspname NOT LIKE 'pg\_%' AND n.nspname <> 'information_schema'`
 
-// describeTables fills each table's schema hash, owned sequences and
-// foreign key targets. It needs PostgreSQL 10 or newer (attidentity) and
+// describeTables fills each table's schema hash, owned sequences, foreign
+// key targets and columns. It needs PostgreSQL 10 or newer (attidentity) and
 // leaves the fields empty on an older server.
 func describeTables(ctx context.Context, tx pgx.Tx, serverVersionNum int, stats []model.TableStat) error {
 	if serverVersionNum < 100000 || len(stats) == 0 {
@@ -79,13 +84,18 @@ func describeTables(ctx context.Context, tx pgx.Tx, serverVersionNum int, stats 
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var schema, table, hash string
+		var schema, table, hash, colsJSON string
 		var owned, refs []string
-		if err := rows.Scan(&schema, &table, &hash, &owned, &refs); err != nil {
+		if err := rows.Scan(&schema, &table, &hash, &owned, &refs, &colsJSON); err != nil {
 			return fmt.Errorf("failed to describe the tables: %w", err)
 		}
 		if t, ok := byName[schema+"."+table]; ok {
 			t.SchemaHash, t.OwnedSequences, t.References = hash, owned, refs
+			var cols []model.ColumnStat
+			if err := json.Unmarshal([]byte(colsJSON), &cols); err != nil {
+				return fmt.Errorf("failed to describe the tables: %s.%s: %w", schema, table, err)
+			}
+			t.Columns = cols
 		}
 	}
 	return rows.Err()
@@ -97,9 +107,9 @@ func describeTables(ctx context.Context, tx pgx.Tx, serverVersionNum int, stats 
 func TableSchemaHash(ctx context.Context, q interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }, schema, table string) (hash string, ok bool, err error) {
-	var s, t string
+	var s, t, cols string
 	var owned, refs []string
-	err = q.QueryRow(ctx, tableCatalogQuery+` AND n.nspname = $1 AND c.relname = $2`, schema, table).Scan(&s, &t, &hash, &owned, &refs)
+	err = q.QueryRow(ctx, tableCatalogQuery+` AND n.nspname = $1 AND c.relname = $2`, schema, table).Scan(&s, &t, &hash, &owned, &refs, &cols)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", false, nil
 	}

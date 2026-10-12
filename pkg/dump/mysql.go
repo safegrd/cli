@@ -380,6 +380,22 @@ func (d *MySQLDumper) Dump(ctx context.Context, databaseName string, dst io.Writ
 		rows.Close()
 	}
 
+	// Each table's columns, and a hash over them in place of the catalog
+	// hash PostgreSQL gives: it moves when a column is added, dropped,
+	// renamed or retyped. Read the way the sizes are: a server that refuses
+	// the query leaves them unrecorded.
+	columns := map[string][]model.ColumnStat{}
+	if rows, err := db.QueryContext(ctx, `SELECT table_name, column_name, column_type, is_nullable, column_key
+		FROM information_schema.columns WHERE table_schema = DATABASE() ORDER BY table_name, ordinal_position`); err == nil {
+		for rows.Next() {
+			var tbl, col, typ, nullable, key string
+			if rows.Scan(&tbl, &col, &typ, &nullable, &key) == nil {
+				columns[tbl] = append(columns[tbl], model.ColumnStat{Name: col, Type: typ, NotNull: nullable == "NO", PrimaryKey: key == "PRI"})
+			}
+		}
+		rows.Close()
+	}
+
 	// A trigger created through a multi-statement API is stored with its
 	// trailing ';', and mysqldump writes it back as "...; */;;", which no
 	// server will load. The dump succeeds and the restore fails, so say so
@@ -487,6 +503,7 @@ func (d *MySQLDumper) Dump(ctx context.Context, databaseName string, dst io.Writ
 	for _, t := range counter.Tables() {
 		meta.TableStats = append(meta.TableStats, model.TableStat{
 			Schema: target.Database, TableName: t, RowCount: counter.Rows[t], SizeBytes: sizes[t],
+			Columns: columns[t], SchemaHash: model.ColumnsHash(columns[t]),
 		})
 	}
 	if err := finishArchive(tw, meta, start); err != nil {

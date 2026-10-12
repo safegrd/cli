@@ -318,9 +318,9 @@ func (d *NativeDumper) Dump(ctx context.Context, databaseName string, dst io.Wri
 			rollbackSavepoint(ctx, tx, "safegrd_describe")
 			for i := range meta.TableStats {
 				t := &meta.TableStats[i]
-				t.SchemaHash, t.OwnedSequences, t.References = "", nil, nil
+				t.SchemaHash, t.OwnedSequences, t.References, t.Columns = "", nil, nil, nil
 			}
-			d.Warn(fmt.Sprintf("%v. The backup goes on without each table's schema hash, owned sequences and foreign key targets.", err))
+			d.Warn(fmt.Sprintf("%v. The backup goes on without each table's schema hash, columns, owned sequences and foreign key targets.", err))
 		} else {
 			_, _ = tx.Exec(ctx, "RELEASE SAVEPOINT safegrd_describe")
 		}

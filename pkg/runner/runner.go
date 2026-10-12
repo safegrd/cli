@@ -231,6 +231,33 @@ func sandboxAssertions(report *model.VerificationReport, meta, restoredMeta *mod
 	}
 	report.Assertions = append(report.Assertions, rowMatch)
 
+	// Assertion B2: each table's rows, by name, so a drill says which table
+	// did not come back and the remote server can show each table's last
+	// drill. The totals above decide the drill; these say where.
+	restoredRows := map[string]int64{}
+	for _, t := range restoredMeta.TableStats {
+		restoredRows[t.Schema+"."+t.TableName] = t.RowCount
+	}
+	for _, t := range meta.TableStats {
+		key := t.Schema + "." + t.TableName
+		got, ok := restoredRows[key]
+		if !ok {
+			allPassed = false
+			report.Assertions = append(report.Assertions, model.AssertionResult{
+				Name: "Table Existence: " + key, Expected: "table in the sandbox", Actual: "missing",
+				Message: "The table did not come back in the sandbox",
+			})
+			continue
+		}
+		a := model.AssertionResult{Name: "Row Count: " + key, Passed: got == t.RowCount,
+			Expected: fmt.Sprintf("%d rows", t.RowCount), Actual: fmt.Sprintf("%d rows", got)}
+		if !a.Passed {
+			allPassed = false
+			a.Message = "The table's rows in the sandbox are not the rows the backup counted"
+		}
+		report.Assertions = append(report.Assertions, a)
+	}
+
 	// Assertion C: Extension boot match
 	extMatch := model.AssertionResult{
 		Name:     "ExtensionBootCheck",

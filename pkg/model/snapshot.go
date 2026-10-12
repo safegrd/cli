@@ -1,6 +1,9 @@
 package model
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"time"
 )
 
@@ -105,6 +108,11 @@ type TableStat struct {
 	SchemaHash     string   `json:"schema_hash,omitempty" yaml:"schema_hash,omitempty"`
 	OwnedSequences []string `json:"owned_sequences,omitempty" yaml:"owned_sequences,omitempty"`
 	References     []string `json:"references,omitempty" yaml:"references,omitempty"`
+	// Columns are the table's columns as the catalog states them, in
+	// column order: schema, not contents. Nil when the backup did not record
+	// them (MongoDB, the WordPress plugin, an older CLI), which the server
+	// reads as "not recorded", never as a table with no columns.
+	Columns []ColumnStat `json:"columns,omitempty" yaml:"columns,omitempty"`
 	// NewBytes is, for a run of an incremental database backup, the bytes
 	// of chunks this table added to the repository, before compression:
 	// zero when its rows did not move. Absent on an archive.
@@ -113,6 +121,30 @@ type TableStat struct {
 	// read the table: the change log showed no write to it since the
 	// previous run, whose rows and row count this run holds.
 	Carried bool `json:"carried,omitempty" yaml:"carried,omitempty"`
+}
+
+// ColumnStat is one column of a table: its name and type as the engine
+// states them, whether it refuses nulls and whether it is part of the
+// primary key.
+type ColumnStat struct {
+	Name       string `json:"name" yaml:"name"`
+	Type       string `json:"type" yaml:"type"`
+	NotNull    bool   `json:"not_null,omitempty" yaml:"not_null,omitempty"`
+	PrimaryKey bool   `json:"primary_key,omitempty" yaml:"primary_key,omitempty"`
+}
+
+// ColumnsHash is a SHA-256 over a table's columns, for an engine that has
+// no catalog hash of its own (MySQL, SQLite): it moves when a column is
+// added, removed, renamed or retyped, and for nothing else.
+func ColumnsHash(cols []ColumnStat) string {
+	if len(cols) == 0 {
+		return ""
+	}
+	h := sha256.New()
+	for _, c := range cols {
+		fmt.Fprintf(h, "%s\x00%s\x00%t\x00%t\n", c.Name, c.Type, c.NotNull, c.PrimaryKey)
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // WordPressStats is what a WordPress snapshot records about the site beside
@@ -247,6 +279,12 @@ type SnapshotMetadata struct {
 	// is the same in the host's words.
 	FailureReason BackupReason `json:"failure_reason,omitempty" yaml:"failure_reason,omitempty"`
 
+	// Shield is what Threat Shield compared this snapshot with and what it
+	// found, set by the remote server when the backup is recorded and never
+	// by the host. Nil on a failed backup and on records from before it
+	// existed.
+	Shield *ShieldComparison `json:"shield,omitempty" yaml:"shield,omitempty"`
+
 	// Format is how the snapshot is stored: empty for one archive object,
 	// SnapshotFormatRepo for a snapshot in an incremental file repository.
 	// For that format Sha256Checksum is the content root, EncryptedSha256 is
@@ -258,6 +296,66 @@ type SnapshotMetadata struct {
 	// ("opening") or a later one ("later").
 	EpochID     string `json:"epoch_id,omitempty" yaml:"epoch_id,omitempty"`
 	ObjectClass string `json:"object_class,omitempty" yaml:"object_class,omitempty"`
+}
+
+// ShieldComparison is what Threat Shield held one snapshot to: the backup
+// before it, each check with the numbers it looked at, and what changed
+// between the two. It is recorded on every completed snapshot, so a clean
+// one says what it was compared with and not only a flagged one.
+type ShieldComparison struct {
+	// BaselineSnapshotID is the snapshot this one was compared with: the
+	// newest completed one of the same surface. Empty, with Skipped set,
+	// when there was none.
+	BaselineSnapshotID string     `json:"baseline_snapshot_id,omitempty" yaml:"baseline_snapshot_id,omitempty"`
+	BaselineCreatedAt  *time.Time `json:"baseline_created_at,omitempty" yaml:"baseline_created_at,omitempty"`
+	// Skipped says why no check ran: the surface's first backup, or a
+	// backup taken across a CLI upgrade that changed what is counted.
+	Skipped string `json:"skipped,omitempty" yaml:"skipped,omitempty"`
+	// Checks are every check that ran, in the order they are decided, each
+	// with whether it passed. A failed check is the anomaly the snapshot
+	// was flagged with, or a warning.
+	Checks []ShieldCheck `json:"checks,omitempty" yaml:"checks,omitempty"`
+	// TablesAdded and TablesGone name the tables (schema.table) in one
+	// snapshot and not the other. SchemaChanged names the tables whose
+	// definition moved between the two, where both recorded a schema hash.
+	TablesAdded   []string `json:"tables_added,omitempty" yaml:"tables_added,omitempty"`
+	TablesGone    []string `json:"tables_gone,omitempty" yaml:"tables_gone,omitempty"`
+	SchemaChanged []string `json:"schema_changed,omitempty" yaml:"schema_changed,omitempty"`
+	// Columns lists each table whose columns changed by name, where both
+	// snapshots recorded columns.
+	Columns []ShieldColumnChange `json:"columns,omitempty" yaml:"columns,omitempty"`
+	// RowMoves are the tables whose row count moved most, largest first,
+	// at most five.
+	RowMoves []ShieldRowMove `json:"row_moves,omitempty" yaml:"row_moves,omitempty"`
+}
+
+// ShieldCheck is one of Threat Shield's checks on one snapshot.
+type ShieldCheck struct {
+	// Type is the anomaly the check raises when it fails, as AnomalyType
+	// names it (row_volume_drop, table_drop, column_drop, ...).
+	Type   string `json:"type" yaml:"type"`
+	Passed bool   `json:"passed" yaml:"passed"`
+	// Words say what was compared, with the numbers: "70,210 rows, against
+	// 70,000 before. Flags a drop of 20% or more."
+	Words string `json:"words" yaml:"words"`
+}
+
+// ShieldColumnChange is one table whose columns changed between two
+// snapshots, by name.
+type ShieldColumnChange struct {
+	Schema    string   `json:"schema" yaml:"schema"`
+	TableName string   `json:"table_name" yaml:"table_name"`
+	Dropped   []string `json:"dropped,omitempty" yaml:"dropped,omitempty"`
+	Added     []string `json:"added,omitempty" yaml:"added,omitempty"`
+}
+
+// ShieldRowMove is one table's row count in the backup before and in this
+// one.
+type ShieldRowMove struct {
+	Schema     string `json:"schema" yaml:"schema"`
+	TableName  string `json:"table_name" yaml:"table_name"`
+	RowsBefore int64  `json:"rows_before" yaml:"rows_before"`
+	RowsNow    int64  `json:"rows_now" yaml:"rows_now"`
 }
 
 // SnapshotFormatRepo is the Format of a snapshot in an incremental file

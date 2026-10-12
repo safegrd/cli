@@ -232,9 +232,34 @@ func sqliteTables(ctx context.Context, db *sql.DB) ([]model.TableStat, error) {
 		if err := db.QueryRowContext(ctx, "SELECT count(*) FROM "+quoteSQLiteIdent(n)).Scan(&count); err != nil {
 			return nil, fmt.Errorf("counting %s: %w", n, err)
 		}
-		stats = append(stats, model.TableStat{Schema: "main", TableName: n, RowCount: count})
+		cols, err := sqliteColumns(ctx, db, n)
+		if err != nil {
+			return nil, fmt.Errorf("describing %s: %w", n, err)
+		}
+		stats = append(stats, model.TableStat{Schema: "main", TableName: n, RowCount: count, Columns: cols, SchemaHash: model.ColumnsHash(cols)})
 	}
 	return stats, nil
+}
+
+// sqliteColumns reads one table's columns from PRAGMA table_info, in
+// column order.
+func sqliteColumns(ctx context.Context, db *sql.DB, table string) ([]model.ColumnStat, error) {
+	rows, err := db.QueryContext(ctx, "PRAGMA table_info("+quoteSQLiteIdent(table)+")")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var cols []model.ColumnStat
+	for rows.Next() {
+		var cid, notNull, pk int
+		var name, typ string
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &dflt, &pk); err != nil {
+			return nil, err
+		}
+		cols = append(cols, model.ColumnStat{Name: name, Type: typ, NotNull: notNull != 0, PrimaryKey: pk != 0})
+	}
+	return cols, rows.Err()
 }
 
 // SQLiteDumper backs up one SQLite database file.
