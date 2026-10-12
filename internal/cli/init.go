@@ -30,6 +30,9 @@ func newInitCmd() *cobra.Command {
 		wormMode      string
 		nodeName      string
 		initForce     bool
+		laravelRoot   string
+		surfaceID     string
+		migrations    string
 	)
 
 	cmd := &cobra.Command{
@@ -40,14 +43,27 @@ func newInitCmd() *cobra.Command {
 Nothing leaves this machine: init is the offline half of setup, and a node set up
 this way can back up and restore standalone. To register it with a remote server
 so the console can track it, run 'safegrd enroll' (which will run this step for
-you if you have not already).`,
+you if you have not already).
+
+--laravel adds a Laravel app as a surface. On a host that is set up already it
+adds the surface to the config and leaves the key, the node and the storage as
+they are, so it can run after 'safegrd enroll'.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			serverURL := resolveServerURL()
 
 			// The database is a surface: every backup source in the file is.
 			// Checked before anything is written.
 			var dbSurface *config.SurfaceConfig
-			if dbURL != "" {
+			laravelFound := ""
+			if laravelRoot != "" {
+				surface, found, err := initLaravelSurface(laravelRoot, surfaceID, dbURL, migrations)
+				if err != nil {
+					return err
+				}
+				dbSurface, laravelFound = &surface, found
+			} else if migrations != "" || surfaceID != "" {
+				return fmt.Errorf("--migrations-table and --surface-id go with --laravel. Nothing was written")
+			} else if dbURL != "" {
 				surface, err := initDatabaseSurface(dbURL)
 				if err != nil {
 					return err
@@ -79,6 +95,34 @@ you if you have not already).`,
 					return err
 				}
 				targetPath = defaultPath
+			}
+			// A Laravel app joins a host that is set up already: only the
+			// surface is added, so the key and its custody stay as they are.
+			if laravelRoot != "" && !initForce && fileExists(targetPath) {
+				for _, f := range []string{"storage", "s3-bucket", "s3-prefix", "s3-region", "s3-endpoint", "local-path", "retention-days", "worm-mode", "node-name"} {
+					if cmd.Flags().Changed(f) {
+						return fmt.Errorf("--%s changes the host's setup, and %s exists already, so init --laravel only adds the surface. "+
+							"Edit the config for that, or pass --force to start over. Nothing was written", f, targetPath)
+					}
+				}
+				if cfgLoadErr != nil {
+					return fmt.Errorf("the config at %s cannot be read: %w. Nothing was written", targetPath, cfgLoadErr)
+				}
+				id, had, err := mergeLaravelSurface(cfg, *dbSurface, surfaceID != "")
+				if err != nil {
+					return err
+				}
+				if had {
+					fmt.Printf("Surface %s already backs up %s; the config was left as it is.\n", id, dbSurface.Roots[0])
+				} else {
+					if _, err := saveConfig(); err != nil {
+						return err
+					}
+					fmt.Printf("Added surface %s to %s: the Laravel app at %s\n", id, targetPath, dbSurface.Roots[0])
+				}
+				fmt.Printf("   %s\n\n", laravelFound)
+				printLaravelSchedule(id, hostIsEnrolled(cfg))
+				return nil
 			}
 			if !initForce && fileExists(targetPath) {
 				return fmt.Errorf(
@@ -191,6 +235,19 @@ you if you have not already).`,
 				return err
 			}
 			fmt.Printf("Saved to %s\n\n", targetConfig)
+			if laravelRoot != "" {
+				fmt.Printf("Added surface %s: the Laravel app at %s\n", dbSurface.ID, dbSurface.Roots[0])
+				fmt.Printf("   %s\n", laravelFound)
+				fmt.Println("   Keep a copy of the private key file somewhere safe. It is the key that opens these backups.")
+				fmt.Println()
+				if cfg.Storage.Type == config.StorageTypeHosted {
+					fmt.Println("Hosted storage is leased from the remote server, so enrol this host before the first backup:")
+					fmt.Println("   safegrd enroll --token <your access token>")
+					return nil
+				}
+				printLaravelSchedule(dbSurface.ID, false)
+				return nil
+			}
 			fmt.Println("Local setup complete.")
 			fmt.Println("   Keep a copy of the private key file somewhere safe. It is the key that opens these backups.")
 			fmt.Println()
@@ -217,6 +274,9 @@ you if you have not already).`,
 	}
 
 	cmd.Flags().StringVar(&dbURL, "database-url", "", "The database to protect, written to the config as its first surface: a URL, or env:VAR / file:/path")
+	cmd.Flags().StringVar(&laravelRoot, "laravel", "", "A Laravel app's root (where artisan and .env are), added as a surface. --database-url then overrides the .env's connection")
+	cmd.Flags().StringVar(&surfaceID, "surface-id", "", "With --laravel: the surface's id (default: from APP_NAME, else the directory's name)")
+	cmd.Flags().StringVar(&migrations, "migrations-table", "", "With --laravel: the table the app records its migrations in, when it is not migrations")
 	cmd.Flags().StringVar(&storageType, "storage", "local", "Storage type: 'local', 's3', or 'hosted' (SafeGrd's locked bucket, leased per run)")
 	cmd.Flags().StringVar(&s3Bucket, "s3-bucket", "", "S3 bucket, with Object Lock enabled")
 	cmd.Flags().StringVar(&s3Prefix, "s3-prefix", "safegrd/snapshots", "Key prefix in the S3 bucket")

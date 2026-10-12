@@ -114,12 +114,19 @@ func TestDiscoverLaravelRefusesWhatItCannotReadForCertain(t *testing.T) {
 		"no .env":       {func(t *testing.T) string { return laravelApp(t, "") }, "has no .env"},
 		"no connection": {func(t *testing.T) string { return laravelApp(t, "DB_DATABASE=x\n") }, "no DB_CONNECTION"},
 		"sqlsrv":        {func(t *testing.T) string { return laravelApp(t, "DB_CONNECTION=sqlsrv\n") }, "SQL Server"},
-		"socket":        {func(t *testing.T) string { return laravelApp(t, "DB_CONNECTION=mysql\nDB_DATABASE=x\nDB_SOCKET=/run/mysqld.sock\n") }, "DB_SOCKET"},
-		"memory":        {func(t *testing.T) string { return laravelApp(t, "DB_CONNECTION=sqlite\nDB_DATABASE=:memory:\n") }, ":memory:"},
-		"unresolved":    {func(t *testing.T) string { return laravelApp(t, "DB_CONNECTION=mysql\nDB_DATABASE=x\nDB_PASSWORD=${SAFEGRD_TEST_NOPE}\n") }, "SAFEGRD_TEST_NOPE"},
+		"socket": {func(t *testing.T) string {
+			return laravelApp(t, "DB_CONNECTION=mysql\nDB_DATABASE=x\nDB_SOCKET=/run/mysqld.sock\n")
+		}, "DB_SOCKET"},
+		"memory": {func(t *testing.T) string { return laravelApp(t, "DB_CONNECTION=sqlite\nDB_DATABASE=:memory:\n") }, ":memory:"},
+		"unresolved": {func(t *testing.T) string {
+			return laravelApp(t, "DB_CONNECTION=mysql\nDB_DATABASE=x\nDB_PASSWORD=${SAFEGRD_TEST_NOPE}\n")
+		}, "SAFEGRD_TEST_NOPE"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := DiscoverLaravel(tc.root(t))
+			app, err := DiscoverLaravel(tc.root(t))
+			if err == nil {
+				_, _, err = app.Database()
+			}
 			if err == nil || !strings.Contains(err.Error(), tc.says) {
 				t.Fatalf("got %v, want an error saying %q", err, tc.says)
 			}

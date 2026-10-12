@@ -32,8 +32,12 @@ type repoLaravelParams struct {
 	Root     string
 	Excludes []string
 	// DatabaseURL in repoDBParams, when set, overrides the .env's
-	// connection: a role made for backups instead of the app's.
+	// connection: a role made for backups instead of the app's, or the
+	// connection Laravel resolved from its config.
 	Rescan bool
+	// MigrationsTable is the table the app records its migrations in;
+	// "" is Laravel's default.
+	MigrationsTable string
 }
 
 // laravelDumper is the dumper the app's database engine backs up with, as
@@ -70,14 +74,19 @@ func runRepoLaravelBackup(ctx context.Context, p repoLaravelParams) (*model.Snap
 	if err != nil {
 		return nil, nil, stageErr(model.BackupReasonConfig, err)
 	}
-	dbURL := app.DatabaseURL
-	connection := app.Connection
+	var dbURL, connection string
 	if p.DatabaseURL != "" {
 		dbURL = p.DatabaseURL
 		connection = dump.LaravelConnectionOfURL(dbURL)
 		if connection == "" {
 			return nil, nil, stageErr(model.BackupReasonConfig, fmt.Errorf("surface %s: database_url must be a MySQL, MariaDB, PostgreSQL or SQLite database", p.SurfaceID))
 		}
+	} else if connection, dbURL, err = app.Database(); err != nil {
+		return nil, nil, stageErr(model.BackupReasonConfig, err)
+	}
+	migrationsTable := dump.LaravelMigrationsTable
+	if p.MigrationsTable != "" {
+		migrationsTable = p.MigrationsTable
 	}
 	dumper, err := laravelDumper(dbURL)
 	if err != nil {
@@ -120,7 +129,7 @@ func runRepoLaravelBackup(ctx context.Context, p repoLaravelParams) (*model.Snap
 	var dumpMeta, meta *model.SnapshotMetadata
 	stats := &model.LaravelStats{
 		Connection: connection, LaravelVersion: app.LaravelVersion, AppName: app.AppName, AppEnv: app.AppEnv,
-		MigrationsTable: dump.LaravelMigrationsTable, MigrationFiles: int64(len(migrationFiles)),
+		MigrationsTable: migrationsTable, MigrationFiles: int64(len(migrationFiles)),
 		SchemaDump: schemaErr == nil, FilesystemDisk: app.FilesystemDisk, LeftOut: excludes,
 	}
 	dbSource := dbrun.Source(dumper, "", &dumpMeta)
@@ -155,15 +164,24 @@ func runRepoLaravelBackup(ctx context.Context, p repoLaravelParams) (*model.Snap
 		if err := emit(write.Entry{Path: larun.FilesDir + "/" + dump.LaravelEnvFile, Reader: bytes.NewReader(env)}); err != nil {
 			return err
 		}
+		// PostgreSQL may hold a migrations table in more than one schema;
+		// Laravel's is in public unless search_path says otherwise.
+		inPublic := false
 		for _, t := range dumpMeta.TableStats {
-			if t.TableName == stats.MigrationsTable && (t.Schema == "" || t.Schema == "public" || connection != "pgsql") {
-				stats.MigrationsRan = t.RowCount
+			if t.TableName != stats.MigrationsTable || inPublic {
+				continue
 			}
+			stats.MigrationsRan = t.RowCount
+			inPublic = connection == "pgsql" && t.Schema == "public"
 		}
-		ran, _, err := dump.LaravelMigrationsRan(ctx, dbURL, stats.MigrationsTable)
-		if err != nil {
+		ran, found, err := dump.LaravelMigrationsRan(ctx, dbURL, stats.MigrationsTable)
+		switch {
+		case err != nil:
 			fmt.Fprintf(os.Stderr, "Warning: %s could not read the %s table to find migrations not yet run: %v\n", label, stats.MigrationsTable, err)
-		} else {
+		case !found && len(migrationFiles) > 0:
+			fmt.Fprintf(os.Stderr, "Warning: %s the database has no %s table, so a restored app would run every migration again. "+
+				"The drill fails until php artisan migrate has run.\n", label, stats.MigrationsTable)
+		default:
 			done := map[string]bool{}
 			for _, m := range ran {
 				done[m] = true

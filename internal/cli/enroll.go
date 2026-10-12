@@ -447,6 +447,9 @@ file:/path, which keeps the token out of 'ps' and shell history.`,
 					fmt.Printf("     safegrd daemon run --once\n")
 					fmt.Printf("   Then keep it running as a service that starts at boot:\n")
 					fmt.Printf("     sudo safegrd daemon install\n")
+				} else if wd, _ := os.Getwd(); len(cfg.Surfaces) == 0 && isLaravelApp(wd) {
+					fmt.Printf("\n   Next: this directory is a Laravel app. Add it as a surface:\n")
+					fmt.Printf("     safegrd init --laravel %s\n", wd)
 				} else if len(cfg.Surfaces) == 0 && cfg.DatabaseURL == "" && os.Getenv("SAFEGRD_DATABASE_URL") == "" {
 					fmt.Printf("\n   Next: name what this host protects. Either add a surface to this host in the\n")
 					fmt.Printf("   console (Hosts, Add surface on its row) and run:\n")

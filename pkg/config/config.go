@@ -202,6 +202,10 @@ type SurfaceConfig struct {
 	// given as env:VAR or file:/path like a database password.
 	ObjectStore *ObjectStoreSourceConfig `yaml:"object_store,omitempty" json:"object_store,omitempty"`
 
+	// MigrationsTable is the table a Laravel app records its migrations in,
+	// when config/database.php names another than "migrations".
+	MigrationsTable string `yaml:"migrations_table,omitempty" json:"migrations_table,omitempty"`
+
 	// Email fields
 	Host     string   `yaml:"host,omitempty" json:"host,omitempty"`
 	Port     int      `yaml:"port,omitempty" json:"port,omitempty"`

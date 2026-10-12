@@ -283,13 +283,17 @@ func runValidationChecks(path string, c *config.CLIConfig) []CheckResult {
 				if err == nil {
 					app, err = dump.DiscoverLaravel(root)
 				}
+				// A surface with a database of its own does not need the .env's.
+				if err == nil && s.DatabaseURL == "" && s.Credential == nil {
+					_, _, err = app.Database()
+				}
 				switch {
 				case err != nil:
 					results = append(results, CheckResult{Name: name, Status: "FAIL", Message: err.Error()})
 				case app.AppKeyProblem != "":
 					results = append(results, CheckResult{Name: name, Status: "WARN", Message: app.AppKeyProblem + "; the drill fails until it is set"})
 				default:
-					results = append(results, CheckResult{Name: name, Status: "PASS", Message: fmt.Sprintf("Laravel %s on %s, read from %s", orUnknown(app.LaravelVersion), app.Connection, filepath.Join(app.Root, dump.LaravelEnvFile))})
+					results = append(results, CheckResult{Name: name, Status: "PASS", Message: laravelDoctorLine(&s, app)})
 				}
 			case "email":
 				if s.Username == "" {
@@ -796,7 +800,12 @@ func surfaceConnectionChecks(c *config.CLIConfig) []CheckResult {
 		case "laravel":
 			u := ""
 			if s.DatabaseURL != "" || s.Credential != nil {
-				u, _ = resolveSurfaceDatabaseURL(ctx, c, s)
+				var err error
+				if u, err = resolveSurfaceDatabaseURL(ctx, c, s); err != nil {
+					results = append(results, CheckResult{Name: name, Status: "FAIL", Message: err.Error()})
+					cancel()
+					continue
+				}
 			} else if root, err := laravelSurfaceRoot(s); err == nil {
 				if app, err := dump.DiscoverLaravel(root); err == nil {
 					u = app.DatabaseURL
@@ -1063,4 +1072,21 @@ func surfaceDrillCheckChecks(c *config.CLIConfig) []CheckResult {
 			Message: fmt.Sprintf("%d checks, run after each drill that restores into a sandbox database", len(s.Drill.Checks))})
 	}
 	return results
+}
+
+// laravelDoctorLine names the Laravel version and where the backup's
+// connection comes from.
+func laravelDoctorLine(s *config.SurfaceConfig, app *dump.LaravelApp) string {
+	from := "read from " + filepath.Join(app.Root, dump.LaravelEnvFile)
+	conn := app.Connection
+	if s.DatabaseURL != "" || s.Credential != nil {
+		from = "from the surface's own database_url"
+		if strings.HasPrefix(s.DatabaseURL, "env:") {
+			from = "from " + strings.TrimPrefix(s.DatabaseURL, "env:")
+		}
+		if u, err := resolveConfigSecret("database_url", s.DatabaseURL); err == nil && u != "" {
+			conn = dump.LaravelConnectionOfURL(u)
+		}
+	}
+	return fmt.Sprintf("Laravel %s on %s, %s", orUnknown(app.LaravelVersion), orUnknown(conn), from)
 }

@@ -371,7 +371,8 @@ func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, d pendingDrill
 	// A PostgreSQL or SQLite surface is a run of its repository unless it
 	// says format: tar.
 	notTar := !strings.EqualFold(strings.TrimSpace(s.Format), formatTar)
-	if notTar && (strings.EqualFold(s.Type, "files") || surfaceIsPostgres(s) || strings.EqualFold(s.Type, "sqlite") || strings.TrimSpace(s.Type) == "") {
+	// A Laravel app is always a run of its repository.
+	if strings.EqualFold(s.Type, "laravel") || notTar && (strings.EqualFold(s.Type, "files") || surfaceIsPostgres(s) || strings.EqualFold(s.Type, "sqlite") || strings.TrimSpace(s.Type) == "") {
 		rs = repoDrillTarget(ctx, c, storageCfg, snapshotID)
 	}
 	dbRun := rs != nil && runner.IsRepoDatabase(rs.Meta)
@@ -428,6 +429,9 @@ func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, d pendingDrill
 		// does this line (it said "full restore" right after a warning
 		// that the drill would run in memory).
 		how = "full restore"
+		if runner.IsRepoLaravel(rs.Meta) {
+			how = "in-memory restore"
+		}
 		if dbRun {
 			how = "in-memory restore"
 			// A SQLite run is written out to a scratch file and opened,

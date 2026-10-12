@@ -262,8 +262,14 @@ exits at once.`,
 				// No tick: a cron-driven run must not look like a resident
 				// daemon, or it would be reported silent between runs and a
 				// console "back up now" would wait for a daemon that does
-				// not exist.
-				return reconcileSurfaces(ctx, cfg, resolvedStateDir, 0, registered)
+				// not exist. A scheduler that runs the pass every --interval
+				// says so, and is then one: it picks the request up on its
+				// next run, and the console says when the runs stop.
+				tick := time.Duration(0)
+				if intervalStr != "" {
+					tick = interval
+				}
+				return reconcileSurfaces(ctx, cfg, resolvedStateDir, tick, registered)
 			}
 
 			fmt.Printf("   Poll interval:       %s (±10%% jitter)\n\n", interval)
@@ -293,7 +299,8 @@ exits at once.`,
 	}
 
 	cmd.Flags().BoolVar(&once, "once", false, "Back up every due surface once and exit, for cron or a Kubernetes CronJob")
-	cmd.Flags().StringVar(&intervalStr, "interval", "", "How often to check which surfaces are due (default: daemon.interval, then 5m)")
+	cmd.Flags().StringVar(&intervalStr, "interval", "", "How often to check which surfaces are due (default: daemon.interval, then 5m). "+
+		"With --once, how often a scheduler runs the pass: the console then sends it Back up now and Drill now, and alerts when the runs stop")
 	cmd.Flags().StringVar(&stateDir, "state-dir", "", "Directory for daemon state and locks")
 
 	return cmd
@@ -1198,7 +1205,7 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 				Tier:      plan.Tier, Planned: plan.Until, SnapshotID: snapshotID, StateDir: stateDir, Out: os.Stdout,
 				NewEpoch: st.newEpoch, RecoverySealTo: recoveryDocSealTo(s, pubKey), Kept: kept,
 			},
-			Root: root, Excludes: s.Excludes, Rescan: st.rescan,
+			Root: root, Excludes: s.Excludes, Rescan: st.rescan, MigrationsTable: s.MigrationsTable,
 		})
 		st.newEpoch, st.rescan = false, false
 		if err != nil {

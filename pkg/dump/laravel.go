@@ -78,11 +78,16 @@ type LaravelApp struct {
 	// AppKeyProblem says why the .env's APP_KEY cannot decrypt anything; ""
 	// when it can.
 	AppKeyProblem string
+	// DatabaseErr says why the .env names no database the backup can take;
+	// nil when DatabaseURL is set. A surface with a database_url of its own
+	// does not need one.
+	DatabaseErr error
 }
 
 // DiscoverLaravel reads the Laravel app at root: its .env, the database it
 // names, and the Laravel version composer.lock pins. It refuses what it
-// cannot read for certain rather than guess.
+// cannot read for certain rather than guess. A database it cannot read is
+// left in DatabaseErr, which Database returns.
 func DiscoverLaravel(root string) (*LaravelApp, error) {
 	abs, err := filepath.Abs(root)
 	if err != nil {
@@ -115,12 +120,18 @@ func DiscoverLaravel(root string) (*LaravelApp, error) {
 	if err := CheckLaravelAppKey(key); err != nil {
 		app.AppKeyProblem = err.Error()
 	}
-	app.Connection, app.DatabaseURL, err = laravelDatabaseURL(env, abs)
-	if err != nil {
-		return nil, err
-	}
+	app.Connection, app.DatabaseURL, app.DatabaseErr = laravelDatabaseURL(env, abs)
 	app.LaravelVersion = laravelVersion(abs)
 	return app, nil
+}
+
+// Database is the connection and URL the .env names, or why it names none
+// the backup can take.
+func (a *LaravelApp) Database() (connection, url string, err error) {
+	if a.DatabaseErr != nil {
+		return "", "", a.DatabaseErr
+	}
+	return a.Connection, a.DatabaseURL, nil
 }
 
 // LaravelConnectionOfURL is the DB_CONNECTION a database URL stands for.
@@ -433,8 +444,10 @@ func LaravelAssertions(m *model.LaravelStats, db *DryRestoreResult, env []byte, 
 	}
 	var rows int64 = -1
 	if db != nil {
+		// A table in public wins, as the backup chose it: PostgreSQL may
+		// hold one per schema.
 		for _, t := range db.Tables {
-			if t.TableName == table {
+			if t.TableName == table && (rows < 0 || t.Schema == "public") {
 				rows = t.RowCount
 			}
 		}
