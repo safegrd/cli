@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // SchemaExtractor generates DDL SQL statements directly from PostgreSQL catalog tables.
@@ -31,7 +33,7 @@ func (s *SchemaExtractor) ExtractDDL(ctx context.Context) (string, error) {
 	if len(exts) > 0 {
 		b.WriteString("-- Extensions\n")
 		for _, ext := range exts {
-			b.WriteString(fmt.Sprintf("CREATE EXTENSION IF NOT EXISTS \"%s\";\n", ext))
+			b.WriteString(fmt.Sprintf("CREATE EXTENSION IF NOT EXISTS %s;\n", quoteIdent(ext)))
 		}
 		b.WriteString("\n")
 	}
@@ -45,7 +47,7 @@ func (s *SchemaExtractor) ExtractDDL(ctx context.Context) (string, error) {
 		b.WriteString("-- Custom Schemas\n")
 		for _, sc := range schemas {
 			if sc != "public" {
-				b.WriteString(fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS \"%s\";\n", sc))
+				b.WriteString(fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s;\n", quoteIdent(sc)))
 			}
 		}
 		b.WriteString("\n")
@@ -59,7 +61,7 @@ func (s *SchemaExtractor) ExtractDDL(ctx context.Context) (string, error) {
 	if len(seqs) > 0 {
 		b.WriteString("-- Sequences\n")
 		for _, seq := range seqs {
-			b.WriteString(fmt.Sprintf("CREATE SEQUENCE IF NOT EXISTS \"%s\".\"%s\";\n", seq.Schema, seq.Name))
+			b.WriteString(fmt.Sprintf("CREATE SEQUENCE IF NOT EXISTS %s;\n", quoteIdent(seq.Schema, seq.Name)))
 		}
 		b.WriteString("\n")
 	}
@@ -70,7 +72,7 @@ func (s *SchemaExtractor) ExtractDDL(ctx context.Context) (string, error) {
 		return "", err
 	}
 	for _, t := range tables {
-		b.WriteString(fmt.Sprintf("-- Table: %s.%s\n", t.Schema, t.Name))
+		b.WriteString(fmt.Sprintf("-- Table: %s.%s\n", oneLine(t.Schema), oneLine(t.Name)))
 		tableDDL, err := s.generateTableDDL(ctx, t.Schema, t.Name)
 		if err != nil {
 			return "", err
@@ -93,6 +95,19 @@ func (s *SchemaExtractor) ExtractDDL(ctx context.Context) (string, error) {
 	}
 
 	return b.String(), nil
+}
+
+// quoteIdent quotes a catalog name for the DDL, doubling any quote inside
+// it: a table named a"b otherwise ends the identifier early and the schema
+// fails to load at restore.
+func quoteIdent(parts ...string) string {
+	return pgx.Identifier(parts).Sanitize()
+}
+
+// oneLine keeps a catalog name inside its comment line: a name may hold a
+// newline, and what followed it would be read as SQL.
+func oneLine(name string) string {
+	return strings.NewReplacer("\n", " ", "\r", " ").Replace(name)
 }
 
 type tableRef struct {
@@ -195,7 +210,7 @@ func (s *SchemaExtractor) generateTableDDL(ctx context.Context, schema, table st
 
 		typeStr := dataType
 		if dataType == "USER-DEFINED" {
-			typeStr = fmt.Sprintf(`"%s"`, udtName)
+			typeStr = quoteIdent(udtName)
 		} else if dataType == "character varying" {
 			if charLen.Valid && charLen.String != "" {
 				typeStr = fmt.Sprintf("VARCHAR(%s)", charLen.String)
@@ -204,7 +219,7 @@ func (s *SchemaExtractor) generateTableDDL(ctx context.Context, schema, table st
 			}
 		}
 
-		colDef := fmt.Sprintf(`    "%s" %s`, colName, typeStr)
+		colDef := fmt.Sprintf(`    %s %s`, quoteIdent(colName), typeStr)
 		if isNullable == "NO" {
 			colDef += " NOT NULL"
 		}
@@ -213,6 +228,9 @@ func (s *SchemaExtractor) generateTableDDL(ctx context.Context, schema, table st
 		}
 
 		colDefs = append(colDefs, colDef)
+	}
+	if err := rows.Err(); err != nil {
+		return "", err
 	}
 
 	// Query Primary Keys
@@ -232,7 +250,7 @@ func (s *SchemaExtractor) generateTableDDL(ctx context.Context, schema, table st
 		for pkRows.Next() {
 			var col string
 			if err := pkRows.Scan(&col); err == nil {
-				pkCols = append(pkCols, fmt.Sprintf(`"%s"`, col))
+				pkCols = append(pkCols, quoteIdent(col))
 			}
 		}
 		pkRows.Close()
@@ -242,8 +260,8 @@ func (s *SchemaExtractor) generateTableDDL(ctx context.Context, schema, table st
 		}
 	}
 
-	ddl := fmt.Sprintf("CREATE TABLE IF NOT EXISTS \"%s\".\"%s\" (\n%s\n);",
-		schema, table, strings.Join(colDefs, ",\n"))
+	ddl := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (\n%s\n);",
+		quoteIdent(schema, table), strings.Join(colDefs, ",\n"))
 
 	return ddl, nil
 }

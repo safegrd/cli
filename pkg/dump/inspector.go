@@ -100,8 +100,8 @@ func (i *Inspector) GetTableStats(ctx context.Context) ([]model.TableStat, error
 	for idx := range stats {
 		if stats[idx].RowCount < 10000 {
 			var exactCount int64
-			safeName := fmt.Sprintf(`"%s"."%s"`, stats[idx].Schema, stats[idx].TableName)
-			err := i.db.QueryRowContext(ctx, fmt.Sprintf("SELECT COUNT(*) FROM %s", safeName)).Scan(&exactCount)
+			ident := `"` + strings.ReplaceAll(stats[idx].Schema, `"`, `""`) + `"."` + strings.ReplaceAll(stats[idx].TableName, `"`, `""`) + `"`
+			err := i.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+ident).Scan(&exactCount)
 			if err == nil {
 				stats[idx].RowCount = exactCount
 			}

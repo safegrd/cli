@@ -983,13 +983,20 @@ func MySQLResetDatabase(ctx context.Context, db *sql.DB) error {
 		if err != nil {
 			return err
 		}
+		// One missed here is still in the sandbox when the next drill
+		// restores into it, so a short list fails the reset.
 		for rows.Next() {
 			var n string
-			if rows.Scan(&n) == nil {
-				objs = append(objs, obj{kind, n})
+			if err := rows.Scan(&n); err != nil {
+				rows.Close()
+				return err
 			}
+			objs = append(objs, obj{kind, n})
 		}
 		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
 	}
 	for _, o := range objs {
 		if _, err := conn.ExecContext(ctx, "DROP "+o.kind+" IF EXISTS `"+strings.ReplaceAll(o.name, "`", "``")+"`"); err != nil {

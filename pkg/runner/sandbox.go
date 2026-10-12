@@ -169,14 +169,21 @@ func resetSandbox(ctx context.Context, sandboxURL string, createdRoles []string)
 	if err != nil {
 		return err
 	}
+	// A schema missed here is still standing when the next drill restores
+	// onto this sandbox, so a short list is an error, not a smaller reset.
 	var schemas []string
 	for rows.Next() {
 		var n string
-		if rows.Scan(&n) == nil {
-			schemas = append(schemas, n)
+		if err := rows.Scan(&n); err != nil {
+			rows.Close()
+			return err
 		}
+		schemas = append(schemas, n)
 	}
 	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
 	for _, n := range schemas {
 		if _, err := conn.Exec(ctx, "DROP SCHEMA "+pgx.Identifier{n}.Sanitize()+" CASCADE"); err != nil {
 			return fmt.Errorf("dropping schema %s: %w", n, err)
