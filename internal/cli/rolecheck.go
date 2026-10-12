@@ -72,3 +72,38 @@ func surfaceRoleChecks(c *config.CLIConfig, only map[string]bool) []CheckResult 
 	}
 	return results
 }
+
+// refuseHiddenRows is the backup's check of a role a sign-in made, before any
+// table is read: a table row-level security filters for it would be backed up
+// with only the rows it sees, and the role is not this host's to change. The
+// remote server runs the same check when it can reach the database; a
+// firewall that admits this machine and not the server leaves it to here.
+func refuseHiddenRows(ctx context.Context, databaseURL, via string) error {
+	f, err := inspectRole(ctx, databaseURL)
+	if err != nil {
+		// The dump says how the connection failed, in its own words.
+		return nil
+	}
+	if len(f.RowSecurity) == 0 {
+		return nil
+	}
+	fix := fmt.Sprintf("Run ALTER ROLE %s BYPASSRLS; as the database's owner, or hold a connection string for a role that reads every row.", dbrole.Ident(f.Name))
+	if via == "supabase" {
+		fix = "Type the project's database password instead: its postgres user reads every row."
+	}
+	return fmt.Errorf("row-level security hides rows of %d table(s) (%s) from %s, the role the %s sign-in gave this backup, so the backup would miss them. %s",
+		len(f.RowSecurity), dbrole.Some(f.RowSecurity), f.Name, signInTitle(via), fix)
+}
+
+// signInTitle is a sign-in's name as the console shows it.
+func signInTitle(via string) string {
+	switch via {
+	case "supabase":
+		return "Supabase"
+	case "digitalocean":
+		return "DigitalOcean"
+	case "heroku":
+		return "Heroku"
+	}
+	return via
+}

@@ -32,8 +32,12 @@ type nodeCredentialsResponse struct {
 	NodeID      string `json:"node_id"`
 	ProjectID   string `json:"project_id"`
 	DatabaseURL string `json:"database_url"`
-	Password    string `json:"password"`
-	Sink        *struct {
+	// CredentialVia names a sign-in the remote server holds in place of a
+	// typed string ("supabase", "digitalocean", "heroku"): DatabaseURL is
+	// then a role the customer cannot change from here.
+	CredentialVia string `json:"credential_via"`
+	Password      string `json:"password"`
+	Sink          *struct {
 		AccessKeyID     string `json:"access_key_id"`
 		SecretAccessKey string `json:"secret_access_key"`
 	} `json:"sink"`
@@ -153,6 +157,10 @@ func refuseInsecureServerURLFor(serverURL, verb, why string) error {
 // printing the password.
 type credentialSource struct {
 	DatabaseURL string
+	// DatabaseVia is the sign-in the remote server read DatabaseURL from
+	// ("supabase", "digitalocean", "heroku"), or "" for a string someone
+	// typed or this host's own config.
+	DatabaseVia string
 	SinkSecret  string
 	PublicKey   string
 	// ObjectStore is the bucket the remote server holds for a files surface
@@ -220,6 +228,7 @@ func resolveCredentials(ctx context.Context, cfg *config.CLIConfig, storageCfg *
 	if surface && cfg.DatabaseURL == "" && creds.DatabaseURL != "" {
 		cfg.DatabaseURL = creds.DatabaseURL
 		src.DatabaseURL = "remote server"
+		src.DatabaseVia = creds.CredentialVia
 	}
 	if storageCfg.SecretAccessKey == "" && !hosted && creds.Sink != nil && creds.Sink.SecretAccessKey != "" {
 		storageCfg.AccessKeyID = creds.Sink.AccessKeyID

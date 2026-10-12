@@ -533,6 +533,18 @@ and never leaves this host.`,
 			engine := dump.EngineType(engineStr)
 			dbSurface := dump.SurfaceTypeOfURL(cfg.DatabaseURL)
 
+			// A role a sign-in made is not this customer's to change from
+			// here, so rows it cannot see would be missing from every
+			// backup with nothing to do about it on this host: refused
+			// before anything is read, with the tables named. A typed role
+			// is warned about by the dumper and backed up.
+			if dbSurface == model.SurfaceTypePostgres && held.DatabaseVia != "" {
+				if err := refuseHiddenRows(ctx, cfg.DatabaseURL, held.DatabaseVia); err != nil {
+					reportBackupFailure(ctx, cfg, snapshotID, dbSurface, dbName, err, !jsonOutput)
+					return err
+				}
+			}
+
 			// A PostgreSQL or SQLite database is a run of its repository
 			// unless --format tar asks for one archive; MySQL and MongoDB are
 			// one archive.

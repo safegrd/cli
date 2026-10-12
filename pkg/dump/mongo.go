@@ -169,10 +169,86 @@ type mongoArchiveStats struct {
 	Docs        map[string]int64
 	// DocBytes is each collection's documents in BSON bytes: its size in the
 	// snapshot, reported as the table's size the way the SQL engines report theirs.
-	DocBytes  map[string]int64
+	DocBytes map[string]int64
+	// Shapes is each collection's top-level fields across every document
+	// in the archive, in order of first appearance: the collection's shape,
+	// recorded as a table's columns are for the SQL engines.
+	Shapes    map[string]*mongoShape
 	Ended     map[string]bool // namespace -> its EOF block arrived
 	CRCFailed []string
 	Bytes     int64
+}
+
+// mongoShapeMaxFields bounds what one collection's shape records, so a
+// collection whose documents carry free-form keys (a map keyed by user id)
+// does not record one column per key.
+const mongoShapeMaxFields = 500
+
+// mongoShape is one collection's top-level fields across its documents.
+type mongoShape struct {
+	order  []string
+	fields map[string]*mongoField
+	docs   int64
+	// capped is set once a document brought a field past mongoShapeMaxFields;
+	// the shape is then the first fields seen, and no hash is recorded.
+	capped bool
+}
+
+// mongoField is one top-level field: how many documents carry it and its
+// BSON type, or "mixed" once two documents disagree.
+type mongoField struct {
+	count int64
+	typ   string
+	mixed bool
+}
+
+func (sh *mongoShape) add(doc bson.Raw) {
+	sh.docs++
+	elems, err := doc.Elements()
+	if err != nil {
+		// mongodump wrote it and its CRC holds: left out of the shape, and
+		// counted like every other document.
+		return
+	}
+	for _, e := range elems {
+		key, err := e.KeyErr()
+		if err != nil {
+			continue
+		}
+		f := sh.fields[key]
+		if f == nil {
+			if len(sh.order) >= mongoShapeMaxFields {
+				sh.capped = true
+				continue
+			}
+			f = &mongoField{typ: e.Value().Type.String()}
+			sh.fields[key] = f
+			sh.order = append(sh.order, key)
+		} else if !f.mixed && f.typ != e.Value().Type.String() {
+			f.mixed = true
+		}
+		f.count++
+	}
+}
+
+// columns is the shape as a table's columns: _id is the primary key, a field
+// every document carries is not null, and a field whose documents disagree on
+// its type is "mixed". Nil for a collection with no documents, which has no
+// shape to record.
+func (sh *mongoShape) columns() []model.ColumnStat {
+	if sh == nil || sh.docs == 0 || len(sh.order) == 0 {
+		return nil
+	}
+	out := make([]model.ColumnStat, 0, len(sh.order))
+	for _, key := range sh.order {
+		f := sh.fields[key]
+		typ := f.typ
+		if f.mixed {
+			typ = "mixed"
+		}
+		out = append(out, model.ColumnStat{Name: key, Type: typ, NotNull: f.count == sh.docs, PrimaryKey: key == "_id"})
+	}
+	return out
 }
 
 // readMongoArchive reads a whole mongodump archive: the prelude, then the
@@ -180,7 +256,7 @@ type mongoArchiveStats struct {
 // checking each namespace's CRC as it ends.
 func readMongoArchive(r io.Reader) (*mongoArchiveStats, error) {
 	br := bufio.NewReaderSize(r, 1<<20)
-	st := &mongoArchiveStats{Docs: map[string]int64{}, DocBytes: map[string]int64{}, Ended: map[string]bool{}}
+	st := &mongoArchiveStats{Docs: map[string]int64{}, DocBytes: map[string]int64{}, Shapes: map[string]*mongoShape{}, Ended: map[string]bool{}}
 	var magic [4]byte
 	if _, err := io.ReadFull(br, magic[:]); err != nil {
 		return st, fmt.Errorf("the archive is empty: %w", err)
@@ -281,6 +357,10 @@ func readMongoArchive(r io.Reader) (*mongoArchiveStats, error) {
 			_, _ = crcs[ns].Write(d)
 			st.Docs[ns]++
 			st.DocBytes[ns] += int64(len(d))
+			if st.Shapes[ns] == nil {
+				st.Shapes[ns] = &mongoShape{fields: map[string]*mongoField{}}
+			}
+			st.Shapes[ns].add(d)
 		}
 	}
 }
@@ -375,7 +455,17 @@ func (d *MongoDumper) Dump(ctx context.Context, databaseName string, dst io.Writ
 	}
 	for _, ns := range st.Collections {
 		db, coll, _ := strings.Cut(ns, ".")
-		meta.TableStats = append(meta.TableStats, model.TableStat{Schema: db, TableName: coll, RowCount: st.Docs[ns], SizeBytes: st.DocBytes[ns]})
+		t := model.TableStat{Schema: db, TableName: coll, RowCount: st.Docs[ns], SizeBytes: st.DocBytes[ns]}
+		// The collection's shape, read from every document as the archive
+		// streamed: its columns, and a hash over them so Threat Shield can
+		// say when a field every document carried is gone.
+		if sh := st.Shapes[ns]; sh != nil {
+			t.Columns = sh.columns()
+			if !sh.capped {
+				t.SchemaHash = model.ColumnsHash(t.Columns)
+			}
+		}
+		meta.TableStats = append(meta.TableStats, t)
 	}
 	if err := finishArchive(tw, meta, start); err != nil {
 		return nil, err

@@ -81,6 +81,12 @@ type Node struct {
 	// BackupFormatTar, one whole archive per backup. Empty on a surface a
 	// host runs, whose config says.
 	BackupFormat string `json:"backup_format,omitempty" yaml:"backup_format,omitempty"`
+	// ChangeLog is set on a PostgreSQL surface the remote server backs up as
+	// runs when its owner asked for the change log in the console: each
+	// backup installs a safegrd schema and one trigger per table in the
+	// database and skips reading tables nothing wrote since the previous
+	// run. Off unless asked, and never set on a surface a host runs.
+	ChangeLog bool `json:"change_log,omitempty" yaml:"change_log,omitempty"`
 
 	// CredentialSource is where a surface's own credential comes from, as its
 	// host's config says: "held" (the remote server holds it and the host

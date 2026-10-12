@@ -384,6 +384,8 @@ func snapshotLocked(meta *model.SnapshotMetadata, now time.Time) (bool, string) 
 		return false, "it is in a directory on this host, which has no Object Lock"
 	case meta.WORMMode == string(config.WORMModeNone):
 		return false, "worm_mode is NONE, so the bucket applies no Object Lock"
+	case meta.Unlocked:
+		return false, "it is a recent backup this project keeps without a lock"
 	case meta.WORMRetentionUntil.IsZero() || !meta.WORMRetentionUntil.After(now):
 		return false, "it has no retention date in the future"
 	}

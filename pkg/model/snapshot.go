@@ -109,8 +109,12 @@ type TableStat struct {
 	OwnedSequences []string `json:"owned_sequences,omitempty" yaml:"owned_sequences,omitempty"`
 	References     []string `json:"references,omitempty" yaml:"references,omitempty"`
 	// Columns are the table's columns as the catalog states them, in
-	// column order: schema, not contents. Nil when the backup did not record
-	// them (MongoDB, the WordPress plugin, an older CLI), which the server
+	// column order: schema, not contents. For a MongoDB collection they are
+	// its top-level fields across every document in the backup, in order of
+	// first appearance, with the BSON type ("mixed" when documents
+	// disagree), NotNull for a field every document carries and _id as the
+	// primary key. Nil when the backup did not record them (an empty
+	// collection, the WordPress plugin, an older CLI), which the server
 	// reads as "not recorded", never as a table with no columns.
 	Columns []ColumnStat `json:"columns,omitempty" yaml:"columns,omitempty"`
 	// NewBytes is, for a run of an incremental database backup, the bytes

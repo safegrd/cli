@@ -170,8 +170,12 @@ type listedSnapshot struct {
 	WORMMode    string `json:"worm_mode,omitempty"`
 	LockedUntil string `json:"locked_until,omitempty"`
 	// Locked is true while Object Lock still holds the snapshot.
-	Locked    bool `json:"locked"`
-	Anomalous bool `json:"anomalous"`
+	Locked bool `json:"locked"`
+	// Unlocked marks a recent run of a project that locks only its kept
+	// copies: it carries no lock, and KeptUntil is when it is deleted.
+	Unlocked  bool   `json:"unlocked,omitempty"`
+	KeptUntil string `json:"kept_until,omitempty"`
+	Anomalous bool   `json:"anomalous"`
 	// MetadataError says why the snapshot could not be described. The
 	// snapshot itself may still restore.
 	MetadataError string `json:"metadata_error,omitempty"`
@@ -353,7 +357,10 @@ func listedSnapshots(ctx context.Context) ([]listedSnapshot, error) {
 		if meta.CompletedAt != nil {
 			e.CompletedAt = meta.CompletedAt.UTC().Format(time.RFC3339)
 		}
-		if e.WORMMode != string(config.WORMModeNone) && !meta.WORMRetentionUntil.IsZero() {
+		if meta.Unlocked {
+			e.Unlocked = true
+			e.KeptUntil = meta.WORMRetentionUntil.UTC().Format(time.RFC3339)
+		} else if e.WORMMode != string(config.WORMModeNone) && !meta.WORMRetentionUntil.IsZero() {
 			e.LockedUntil = meta.WORMRetentionUntil.UTC().Format(time.RFC3339)
 			e.Locked = meta.WORMRetentionUntil.After(now) && storageCfg.Type != config.StorageTypeLocal
 		}
@@ -416,6 +423,11 @@ func describeRetention(meta *model.SnapshotMetadata, storageCfg config.StorageCo
 	// One clock for every row: archive sidecars carried the host's local
 	// time and repository ones UTC, so one table mixed the two unlabelled.
 	until := meta.WORMRetentionUntil.UTC().Format("2006-01-02 15:04") + " UTC"
+	if meta.Unlocked {
+		// A recent run of a project that locks only its kept copies: the
+		// date is when it is deleted, and nothing holds it before then.
+		return "kept until " + until + ", not locked"
+	}
 	if storageCfg.Type == config.StorageTypeLocal {
 		// The sidecar may say COMPLIANCE (the config's default mode), but a
 		// directory enforces nothing: only safegrd's own refusal to delete.

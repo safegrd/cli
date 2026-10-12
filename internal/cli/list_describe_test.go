@@ -123,3 +123,19 @@ func TestDescribeRetentionOnLocalStorageNamesNoLock(t *testing.T) {
 		t.Errorf("wormLabel for a local directory = %q, which claims a lock it does not have", label)
 	}
 }
+
+// A recent run of a project that locks only its kept copies is written with
+// no lock. The sidecar still records the bucket's mode and the date the run
+// is deleted, and list printed "COMPLIANCE until" over objects anyone with
+// the bucket's key could delete.
+func TestDescribeRetentionSaysAnUnlockedRunIsNotLocked(t *testing.T) {
+	until := time.Date(2026, 10, 14, 17, 43, 0, 0, time.UTC)
+	hosted := config.StorageConfig{Type: config.StorageTypeHosted, WORMMode: config.WORMModeCompliance}
+	meta := &model.SnapshotMetadata{WORMMode: "COMPLIANCE", WORMRetentionUntil: until, Unlocked: true}
+	if got, want := describeRetention(meta, hosted), "kept until 2026-10-14 17:43 UTC, not locked"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	if locked, why := snapshotLocked(meta, until.Add(-time.Hour)); locked {
+		t.Errorf("guard counts an unlocked run as locked: %s", why)
+	}
+}
