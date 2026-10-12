@@ -1058,6 +1058,8 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 		tiers = lease.gfs()
 	}
 	plan = planRetention(time.Now(), storageCfg.RetentionDays, tiers, st)
+	// Asked once: a repository run below replans under it (keptPlan).
+	ownRule := ownLockRule(ctx, c, storageCfg)
 	retentionUntil := plan.Until
 	// Under worm_mode NONE nothing is locked, so no tier is claimed either.
 	// On hosted storage the remote server decides the lock within the plan,
@@ -1096,7 +1098,8 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 			if storageCfg.NodeID == "" {
 				storageCfg.NodeID = nodeID
 			}
-			kept := ownKeptRule(ctx, c, storageCfg, plan, time.Now())
+			plan = keptPlan(ownRule, plan, time.Now(), st)
+			kept := ownKeptRule(ownRule, plan, time.Now())
 			meta, res, err := runRepoBackup(ctx, repoParams{
 				SurfaceID: s.ID, Roots: roots, Excludes: s.Excludes, OneFS: s.OneFilesystem, StorageCfg: storageCfg,
 				NodeID: nodeID, Recipient: pubKey,
@@ -1197,7 +1200,8 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 		if storageCfg.NodeID == "" {
 			storageCfg.NodeID = nodeID
 		}
-		kept := ownKeptRule(ctx, c, storageCfg, plan, time.Now())
+		plan = keptPlan(ownRule, plan, time.Now(), st)
+		kept := ownKeptRule(ownRule, plan, time.Now())
 		meta, res, err := runRepoLaravelBackup(ctx, repoLaravelParams{
 			repoDBParams: repoDBParams{
 				SurfaceID: s.ID, DatabaseURL: dbURL, StorageCfg: storageCfg, NodeID: nodeID, Recipient: pubKey,
@@ -1327,7 +1331,8 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 			if storageCfg.NodeID == "" {
 				storageCfg.NodeID = nodeID
 			}
-			kept := ownKeptRule(ctx, c, storageCfg, plan, time.Now())
+			plan = keptPlan(ownRule, plan, time.Now(), st)
+			kept := ownKeptRule(ownRule, plan, time.Now())
 			meta, res, err := runRepoDatabaseBackup(ctx, repoDBParams{
 				SurfaceID: s.ID, DatabaseURL: dbURL, StorageCfg: storageCfg, NodeID: nodeID, Recipient: pubKey,
 				Retention: policy.Retention{Days: storageCfg.RetentionDays, KeepDaily: tiers.Days, KeepWeekly: tiers.Weeks, KeepMonthly: tiers.Months},

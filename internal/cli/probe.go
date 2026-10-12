@@ -97,6 +97,16 @@ func probeSink(ctx context.Context, c *config.CLIConfig, s *config.SurfaceConfig
 	if s.Storage != nil {
 		cfg = *s.Storage
 	}
+	// A host whose project keeps its backups in a bucket set up on the
+	// remote server writes there, not to the directory the claim left in its
+	// config: routeProjectSink points every backup at the bucket. Probing the
+	// directory said a surface that backs up fine was unreachable. The
+	// lookup releases no key.
+	if s.Storage == nil && cfg.Type == config.StorageTypeLocal && hostIsEnrolled(c) {
+		if r, err := fetchNodeSink(ctx, c.ServerURL, c.NodeID, c.ServerToken); err == nil && r.Configured && r.Sink != nil && r.Sink.Bucket != "" {
+			return false, nil
+		}
+	}
 	switch cfg.Type {
 	case config.StorageTypeLocal:
 		path := cfg.LocalPath

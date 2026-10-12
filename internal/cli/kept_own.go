@@ -87,12 +87,11 @@ func ownBucketLocked(sc config.StorageConfig) bool {
 	return sc.Type == config.StorageTypeS3 && !hostedLayout(sc) && repoLocked(sc)
 }
 
-// ownKeptRule is the rule this run writes under in the host's own bucket, or
-// nil when every run is locked: the storage is not such a bucket, the host
-// is not enrolled, the project locks every backup, or the server could not
-// be asked. The daemon's own slot decision (planRetention) says whether the
-// run is the day's first.
-func ownKeptRule(ctx context.Context, c *config.CLIConfig, sc config.StorageConfig, plan retentionPlan, now time.Time) *sink.KeptRule {
+// ownLockRule is the project's rule for a run into this host's own bucket,
+// or nil when every run is locked: the storage is not such a bucket, the
+// host is not enrolled, the project locks every backup, or the server could
+// not be asked.
+func ownLockRule(ctx context.Context, c *config.CLIConfig, sc config.StorageConfig) *lockRule {
 	if !ownBucketLocked(sc) || !hostIsEnrolled(c) {
 		return nil
 	}
@@ -104,14 +103,36 @@ func ownKeptRule(ctx context.Context, c *config.CLIConfig, sc config.StorageConf
 	if !rule.Active {
 		return nil
 	}
-	days := rule.RetentionDays
-	if days < 1 {
-		days = 1
+	if rule.RetentionDays < 1 {
+		rule.RetentionDays = 1
+	}
+	return &rule
+}
+
+// keptPlan is the plan of a repository run under rule: the day's first run
+// is locked for the project's daily tier, and the rest are kept for the
+// plan's retention. It is the project's rule, not the surface's own tiers:
+// a surface added in the console names none, and planned from the config
+// alone every run was "base", so nothing in the bucket was ever locked. The
+// weekly and monthly copies are the ones the remote server chooses later.
+func keptPlan(rule *lockRule, plan retentionPlan, now time.Time, st *SurfaceState) retentionPlan {
+	if rule == nil {
+		return plan
+	}
+	return planRetention(now, rule.RetentionDays, gfs{Days: rule.KeepDaily}, st)
+}
+
+// ownKeptRule is the rule this run writes under in the host's own bucket, or
+// nil when every run is locked. plan, from keptPlan, says whether the run
+// is the day's first.
+func ownKeptRule(rule *lockRule, plan retentionPlan, now time.Time) *sink.KeptRule {
+	if rule == nil {
+		return nil
 	}
 	if plan.Tier != "base" {
 		return &sink.KeptRule{Scheduled: true, LockUntil: plan.Until.UTC(), KeptUntil: plan.Until.UTC()}
 	}
-	return &sink.KeptRule{Scheduled: false, KeptUntil: now.UTC().AddDate(0, 0, days)}
+	return &sink.KeptRule{Scheduled: false, KeptUntil: now.UTC().AddDate(0, 0, rule.RetentionDays)}
 }
 
 // keptCopyDue is one copy the remote server says to lock.
