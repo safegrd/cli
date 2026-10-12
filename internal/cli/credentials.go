@@ -16,6 +16,7 @@ import (
 
 	"github.com/safegrd/cli/pkg/config"
 	"github.com/safegrd/cli/pkg/crypto"
+	"github.com/safegrd/cli/pkg/dump"
 )
 
 // nodeCredentialsResponse mirrors the remote server's credential release
@@ -38,6 +39,16 @@ type nodeCredentialsResponse struct {
 	} `json:"sink"`
 	PublicKey string `json:"public_key"`
 	Notice    string `json:"notice"`
+	// ObjectStore is the bucket a files surface reads and the key that signs
+	// for it, when the remote server holds them.
+	ObjectStore *struct {
+		Endpoint        string `json:"endpoint"`
+		Region          string `json:"region"`
+		Bucket          string `json:"bucket"`
+		Prefix          string `json:"prefix"`
+		AccessKeyID     string `json:"access_key_id"`
+		SecretAccessKey string `json:"secret_access_key"`
+	} `json:"object_store"`
 }
 
 // runningCommand is the name of the command this process is running,
@@ -144,6 +155,9 @@ type credentialSource struct {
 	DatabaseURL string
 	SinkSecret  string
 	PublicKey   string
+	// ObjectStore is the bucket the remote server holds for a files surface
+	// with no source on this host, or nil. Held in memory like the rest.
+	ObjectStore *dump.ObjectStoreSource
 }
 
 // resolveRuntimeCredentials fills in secrets the local config does not carry,
@@ -212,6 +226,10 @@ func resolveCredentials(ctx context.Context, cfg *config.CLIConfig, storageCfg *
 		storageCfg.SecretAccessKey = creds.Sink.SecretAccessKey
 		src.SinkSecret = "remote server"
 	}
+	if o := creds.ObjectStore; surface && cfg.DatabaseURL == "" && o != nil && o.Bucket != "" && o.SecretAccessKey != "" {
+		src.ObjectStore = &dump.ObjectStoreSource{Endpoint: o.Endpoint, Region: o.Region, Bucket: o.Bucket, Prefix: o.Prefix,
+			AccessKeyID: o.AccessKeyID, SecretAccessKey: o.SecretAccessKey}
+	}
 	if surface && cfg.Encryption.PublicKey == "" && creds.PublicKey != "" {
 		cfg.Encryption.PublicKey = creds.PublicKey
 		src.PublicKey = "remote server (SafeGrd-managed key)"
@@ -221,7 +239,11 @@ func resolveCredentials(ctx context.Context, cfg *config.CLIConfig, storageCfg *
 		// Only what SafeGrd supplied is news: "database=not configured"
 		// printed before every --database-url backup read like a fault.
 		var from []string
-		for _, f := range []struct{ name, src string }{{"database URL", src.DatabaseURL}, {"bucket key", src.SinkSecret}, {"public key", src.PublicKey}} {
+		bucketSrc := ""
+		if src.ObjectStore != nil {
+			bucketSrc = "remote server"
+		}
+		for _, f := range []struct{ name, src string }{{"database URL", src.DatabaseURL}, {"bucket key", src.SinkSecret}, {"source bucket key", bucketSrc}, {"public key", src.PublicKey}} {
 			if strings.HasPrefix(f.src, "remote server") {
 				from = append(from, f.name)
 			}

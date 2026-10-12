@@ -154,7 +154,14 @@ and never leaves this host.`,
 			// the provider is constructed: the sink secret is what the provider
 			// authenticates with, and before ValidateForBackup, which is what
 			// decides the config is incomplete.
-			resolveRuntimeCredentials(ctx, cfg, &storageCfg, !jsonOutput)
+			held := resolveRuntimeCredentials(ctx, cfg, &storageCfg, !jsonOutput)
+			// Nothing named here, and the remote server holds the bucket this
+			// node backs up: a files surface read over the S3 API.
+			var heldSource *dump.ObjectStoreSource
+			if held.ObjectStore != nil && filesPath == "" && dbURL == "" && cfg.DatabaseURL == "" && !emailMode && emailHost == "" {
+				heldSource = held.ObjectStore
+				filesPath = heldSource.Root()
+			}
 
 			// Initialize storage provider
 			storageProvider, err := openStorage(ctx, cfg, storageCfg)
@@ -199,7 +206,12 @@ and never leaves this host.`,
 					return err
 				}
 				var source *dump.ObjectStoreSource
-				if bucket, prefix, isBucket := dump.ParseObjectStoreRoot(filesPath); isBucket {
+				if heldSource != nil {
+					if cmd.Flags().Changed("format") && ff == formatRepo {
+						return fmt.Errorf("this node backs up the bucket %s, which is backed up as one archive per run; leave out --format repo", filesPath)
+					}
+					ff, source = formatTar, heldSource
+				} else if bucket, prefix, isBucket := dump.ParseObjectStoreRoot(filesPath); isBucket {
 					// A bucket is one archive per backup: the incremental
 					// repository walks a filesystem.
 					if cmd.Flags().Changed("format") && ff == formatRepo {

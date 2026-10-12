@@ -262,6 +262,9 @@ safegrd check --all
 # a bucket over the S3 API (Supabase Storage, or any S3-compatible store)
 safegrd backup --files s3://avatars --source-endpoint https://PROJECT.storage.supabase.co/storage/v1/s3 \
   --source-region eu-central-1 --source-access-key env:S3_KEY --source-secret-key env:S3_SECRET
+# and back into the bucket, each object with the content type it had
+safegrd restore --snapshot snap-20261012-01 --target s3://avatars --source-endpoint https://PROJECT.storage.supabase.co/storage/v1/s3 \
+  --source-region eu-central-1 --source-access-key env:S3_KEY --source-secret-key env:S3_SECRET
 ```
 
 `--format tar` keeps one archive per backup instead. What is locked, for how long, and

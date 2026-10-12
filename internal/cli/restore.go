@@ -35,6 +35,12 @@ func newRestoreCmd() *cobra.Command {
 		schemas    []string
 		dataOnly   []string
 		noOwner    bool
+
+		// A bucket to restore a files snapshot into, as backup reads one.
+		sourceEndpoint  string
+		sourceRegion    string
+		sourceAccessKey string
+		sourceSecretKey string
 	)
 
 	cmd := &cobra.Command{
@@ -64,8 +70,33 @@ incident: --schema public restores that schema's objects and rows, and
 --data-only-schema auth --data-only-schema storage loads only those schemas'
 rows into the tables the project already has. The chosen schemas' objects have
 to be absent from the target for --schema; everything else in the target is
-left alone, and the whole restore is still one transaction.`,
+left alone, and the whole restore is still one transaction.
+
+--target s3://bucket/prefix uploads a files snapshot into a bucket over the
+S3 API, with --source-endpoint, --source-region and the source keys as backup
+takes them: one object per file, at prefix/path, with the content type the
+backup recorded. Each file's hash is checked against the sealed manifest as it
+is uploaded, and a file that differs is not written. Objects already at a key
+are replaced. For Supabase Storage, restore the database rows first, then the
+files: each upload writes or updates the file's row in storage.objects.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			bucketTarget := false
+			var bucket *dump.ObjectStoreSource
+			if b, prefix, ok := dump.ParseObjectStoreRoot(targetURL); ok {
+				if targetDir != "" || toSQL != "" || len(paths) > 0 || len(tables) > 0 || version > 0 || len(schemas) > 0 || len(dataOnly) > 0 {
+					return fmt.Errorf("--target %s uploads a whole files snapshot into a bucket; leave out --target-dir, --to-sql, --path, --table, --version and the schema flags", targetURL)
+				}
+				if snapshotID == "" {
+					return fmt.Errorf("--target %s needs --snapshot <id> (from 'safegrd list')", targetURL)
+				}
+				src, err := objectStoreTargetFromFlags(b, prefix, sourceEndpoint, sourceRegion, sourceAccessKey, sourceSecretKey)
+				if err != nil {
+					return err
+				}
+				bucketTarget, bucket = true, src
+			} else if cmd.Flags().Changed("source-endpoint") || cmd.Flags().Changed("source-region") || cmd.Flags().Changed("source-access-key") || cmd.Flags().Changed("source-secret-key") {
+				return fmt.Errorf("--source-endpoint, --source-region, --source-access-key and --source-secret-key go with --target s3://bucket/prefix")
+			}
 			fromDir := ""
 			if fromPath != "" {
 				dir, id, err := resolveRestoreFrom(fromPath, snapshotID)
@@ -137,7 +168,7 @@ left alone, and the whole restore is still one transaction.`,
 				}
 			}
 
-			if targetURL != "" {
+			if targetURL != "" && !bucketTarget {
 				resolvedTarget, err := ResolveSecretRef("target", targetURL)
 				if err != nil {
 					return err
@@ -191,6 +222,9 @@ left alone, and the whole restore is still one transaction.`,
 					return fmt.Errorf("looking for %s in %s: %w", snapshotID, fromDir, err)
 				}
 				if rs != nil {
+					if bucketTarget {
+						return errRepoToBucket(snapshotID)
+					}
 					return restoreRepo(ctx, rs, resolvedKey, targetDir, targetURL, toSQL, paths, tables, noOwner)
 				}
 			}
@@ -247,6 +281,9 @@ left alone, and the whole restore is still one transaction.`,
 					fmt.Fprintf(os.Stderr, "Warning: could not look among the incremental repositories: %v\n", err)
 				}
 				if rs != nil {
+					if bucketTarget {
+						return errRepoToBucket(snapshotID)
+					}
 					return restoreRepo(ctx, rs, resolvedKey, targetDir, targetURL, toSQL, paths, tables, noOwner)
 				}
 				opened, err := openStorage(ctx, cfg, storageCfg)
@@ -293,7 +330,10 @@ left alone, and the whole restore is still one transaction.`,
 			if toSQL != "" && surface != model.SurfaceTypePostgres {
 				return fmt.Errorf("snapshot %s is a %s snapshot; --to-sql reads PostgreSQL snapshots only", snapshotID, surface)
 			}
-			if (surface == model.SurfaceTypeFiles || surface == model.SurfaceTypeEmail) && targetDir == "" {
+			if bucketTarget && surface != model.SurfaceTypeFiles {
+				return fmt.Errorf("snapshot %s is a %s snapshot; --target s3://… takes a files snapshot", snapshotID, surface)
+			}
+			if (surface == model.SurfaceTypeFiles || surface == model.SurfaceTypeEmail) && targetDir == "" && !bucketTarget {
 				return fmt.Errorf("snapshot %s is a %s snapshot; specify --target-dir to restore", snapshotID, surface)
 			}
 			if surface != model.SurfaceTypeWordPress && targetURL != "" && targetDir != "" {
@@ -312,7 +352,12 @@ left alone, and the whole restore is still one transaction.`,
 			if surface.IsDatabase() && toSQL == "" && dump.SurfaceTypeOfURL(targetURL) != surface && !(surface == "" && dump.SurfaceTypeOfURL(targetURL) == model.SurfaceTypePostgres) {
 				return fmt.Errorf("snapshot %s is a %s snapshot; --target must be a %s database", snapshotID, surface, surface)
 			}
-			if toSQL != "" {
+			if bucketTarget {
+				fmt.Printf("   Target:         %s\n", bucket.Root())
+				if bucket.Endpoint != "" {
+					fmt.Printf("   Endpoint:       %s\n", bucket.Endpoint)
+				}
+			} else if toSQL != "" {
 				fmt.Printf("   Target dir:     %s (SQL and COPY files)\n", toSQL)
 			} else if surface == model.SurfaceTypeWordPress {
 				fmt.Printf("   Target:         %s\n", dump.RedactURL(targetURL))
@@ -364,6 +409,7 @@ left alone, and the whole restore is still one transaction.`,
 				fileRes  *dump.FileExtractionResult
 				wpRes    *dump.WordPressRestoreResult
 				emailRes *dump.EmailExtractionResult
+				objRes   *dump.ObjectRestoreResult
 			)
 
 			switch {
@@ -376,6 +422,12 @@ left alone, and the whole restore is still one transaction.`,
 				// The tar reader stops at the archive's end marker; the rest
 				// of the stream has to be read for the digest to be whole.
 				_, _ = io.Copy(io.Discard, plainReader)
+			case bucketTarget:
+				objRes, err = dump.RestoreArchiveToObjectStore(ctx, plainReader, *bucket)
+				if err != nil {
+					return fmt.Errorf("restore into %s failed: %w", bucket.Root(), err)
+				}
+				_, _ = io.Copy(io.Discard, plainReader) // the rest of the stream, for the digest
 			case surface == model.SurfaceTypeFiles:
 				fileRestorer := dump.NewFileRestorer()
 				fileRes, err = fileRestorer.ExtractArchive(ctx, plainReader, targetDir)
@@ -452,6 +504,10 @@ left alone, and the whole restore is still one transaction.`,
 
 			fmt.Println("\nRestore complete")
 			fmt.Printf("   Duration:       %s\n", elapsed.Round(time.Millisecond))
+			if objRes != nil {
+				printObjectRestore(objRes)
+				return nil
+			}
 			switch surface {
 			case model.SurfaceTypeFiles:
 				if fileRes != nil {
@@ -507,7 +563,7 @@ left alone, and the whole restore is still one transaction.`,
 	}
 
 	cmd.Flags().StringVar(&snapshotID, "snapshot", "", "Snapshot ID to restore. Leave it out with one --path or --table to restore its newest version")
-	cmd.Flags().StringVar(&targetURL, "target", "", "Target database URL: postgres://… or mysql://… (an empty database), or sqlite:///path/to/new.db (a file that does not exist yet)")
+	cmd.Flags().StringVar(&targetURL, "target", "", "Target database URL: postgres://… or mysql://… (an empty database), sqlite:///path/to/new.db (a file that does not exist yet), or s3://bucket/prefix for a files snapshot")
 	cmd.Flags().StringVar(&targetDir, "target-dir", "", "Directory to restore a files, email or WordPress snapshot into")
 	cmd.Flags().StringVar(&toSQL, "to-sql", "", "Write a PostgreSQL snapshot into this new directory as SQL and COPY files that psql loads (load.sql)")
 	cmd.Flags().StringVar(&engineStr, "engine", "native", "Accepted for old scripts and ignored: there is one Postgres restore path")
@@ -521,9 +577,42 @@ left alone, and the whole restore is still one transaction.`,
 	cmd.Flags().StringArrayVar(&tables, "table", nil, "Restore only this table (schema.table) of a database run into --target: into an empty table of the same definition, or created as the run defined it when the target has none (repeatable)")
 	cmd.Flags().StringVar(&surfaceSel, "surface", "", "With --path or --table and no --snapshot: the surface whose repository holds it")
 	cmd.Flags().StringArrayVar(&paths, "path", nil, "Restore only this path of a repository snapshot, relative to / (repeatable; '*', '?' and '**' match)")
+	cmd.Flags().StringVar(&sourceEndpoint, "source-endpoint", "", "With --target s3://…: the store's S3 URL (Supabase Storage: https://PROJECT.storage.supabase.co/storage/v1/s3); empty means AWS S3")
+	cmd.Flags().StringVar(&sourceRegion, "source-region", "", "With --target s3://…: the bucket's region as the store shows it")
+	cmd.Flags().StringVar(&sourceAccessKey, "source-access-key", "", "With --target s3://…: the store's access key id, as env:VAR or file:/path")
+	cmd.Flags().StringVar(&sourceSecretKey, "source-secret-key", "", "With --target s3://…: the store's secret access key, as env:VAR or file:/path")
 	cmd.Flags().StringVar(&fromPath, "from", "", "Restore from an export: the directory 'safegrd export --to-dir' wrote, or one .safegrd file in it")
 
 	return cmd
+}
+
+// objectStoreTargetFromFlags is the bucket restore --target s3:// writes to,
+// with the keys resolved as backup resolves them.
+func objectStoreTargetFromFlags(bucket, prefix, endpoint, region, accessKey, secretKey string) (*dump.ObjectStoreSource, error) {
+	if accessKey == "" || secretKey == "" {
+		return nil, fmt.Errorf("--target s3://%s needs --source-access-key and --source-secret-key (env:VAR or file:/path)", bucket)
+	}
+	return objectStoreSourceFromFlags(bucket, prefix, endpoint, region, accessKey, secretKey)
+}
+
+// errRepoToBucket refuses a bucket target for a run of an incremental
+// repository, which restores to a directory.
+func errRepoToBucket(snapshotID string) error {
+	return fmt.Errorf("snapshot %s is a run of an incremental repository, which restores to a directory: restore it with --target-dir, "+
+		"then upload that directory. --target s3://… takes a files snapshot backed up as one archive", snapshotID)
+}
+
+// printObjectRestore says what a restore into a bucket wrote.
+func printObjectRestore(res *dump.ObjectRestoreResult) {
+	fmt.Printf("   Objects:        %d\n", res.ObjectsWritten)
+	fmt.Printf("   Bytes written:  %d\n", res.BytesWritten)
+	if res.ObjectsWritten > 0 {
+		fmt.Printf("   Content type:   %d of %d as recorded at backup\n", res.WithContentType, res.ObjectsWritten)
+	}
+	if res.Directories > 0 {
+		fmt.Printf("   Directories:    %d, implied by the keys (a bucket has no object for one)\n", res.Directories)
+	}
+	fmt.Printf("   Destination:    %s\n", res.Root)
 }
 
 // printCreatedRoles names the roles a restore created on the target because
