@@ -290,10 +290,9 @@ file:/path, which keeps the token out of 'ps' and shell history.`,
 					keyCustody = "local"
 				}
 				if keyExistedBeforeEnroll && keyCustody == "safegrd" {
-					return fmt.Errorf("refusing to send a key you supplied.\n" +
-						"  --key-custody=safegrd generates a new key and escrows it; it does not hand over an existing one.\n" +
-						"  The key already configured here stays yours. Remove it from the config first if you " +
-						"really want SafeGrd to hold a freshly generated one instead")
+					return fmt.Errorf("this host already has a key, and an existing key is never sent.\n"+
+						"  --key-custody=safegrd makes a new key and has SafeGrd hold it.\n"+
+						"  For that, move %s aside (keep it: backups taken with it need it), then run this again. Nothing was changed", cfg.Encryption.KeyPath)
 				}
 				escrowRequested := generatedNow && keyCustody != "local"
 
@@ -421,11 +420,10 @@ file:/path, which keeps the token out of 'ps' and shell history.`,
 				case keyExistedBeforeEnroll:
 					fmt.Printf("   Custody:     customer-managed key\n")
 					fmt.Printf("                Only you can decrypt these backups. SafeGrd has the public half.\n")
-					if adopted {
-						fmt.Printf("                It was already at %s, so it was not sent: a key we find on a host\n", cfg.Encryption.KeyPath)
-						fmt.Printf("                is yours. For a SafeGrd-managed key instead, move that file aside and\n")
-						fmt.Printf("                re-run with --key-custody=safegrd.\n")
-					}
+					fmt.Printf("                It was already at %s, so it was not sent: a key we find on a host\n", cfg.Encryption.KeyPath)
+					fmt.Printf("                is yours. For a SafeGrd-managed key instead, move that file aside and\n")
+					fmt.Printf("                run safegrd enroll --key-custody=safegrd. Keep the file: backups already\n")
+					fmt.Printf("                taken with it need it to restore.\n")
 				default:
 					fmt.Printf("   Custody:     customer-managed key (--key-custody=local)\n")
 					fmt.Printf("                Only you can decrypt these backups.\n")
@@ -462,6 +460,13 @@ file:/path, which keeps the token out of 'ps' and shell history.`,
 					fmt.Printf("   To restore the organization's backups on this host instead, it needs nothing more:\n")
 					fmt.Printf("     safegrd list\n")
 					fmt.Printf("     safegrd restore --snapshot <id> --target env:TARGET_URL\n")
+				} else if len(cfg.Surfaces) > 0 {
+					fmt.Printf("\n   Next: check every surface opens from this host:\n")
+					fmt.Printf("     safegrd doctor\n")
+					fmt.Printf("   Take the first backups now:\n")
+					fmt.Printf("     safegrd daemon run --once\n")
+					fmt.Printf("   Then keep it running as a service that starts at boot:\n")
+					fmt.Printf("     sudo safegrd daemon install\n")
 				}
 			}
 

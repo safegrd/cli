@@ -242,7 +242,8 @@ they are, so it can run after 'safegrd enroll'.`,
 				fmt.Println()
 				if cfg.Storage.Type == config.StorageTypeHosted {
 					fmt.Println("Hosted storage is leased from the remote server, so enrol this host before the first backup:")
-					fmt.Println("   safegrd enroll --token <your access token>")
+					fmt.Println("   safegrd login")
+					fmt.Println("   safegrd enroll")
 					return nil
 				}
 				printLaravelSchedule(dbSurface.ID, false)
@@ -254,19 +255,22 @@ they are, so it can run after 'safegrd enroll'.`,
 			if cfg.Storage.Type == config.StorageTypeHosted {
 				fmt.Println("   Hosted storage is leased from the remote server, so enrol this host before")
 				fmt.Println("   the first backup:")
-				fmt.Println("     safegrd enroll --token <your access token>")
+				fmt.Println("     safegrd login")
+				fmt.Println("     safegrd enroll")
 				return nil
 			}
 			if len(cfg.Surfaces) == 0 {
 				fmt.Println("   This config names nothing to back up yet. Back up a database or a directory once:")
 				fmt.Println("     safegrd backup --database-url env:DATABASE_URL")
 				fmt.Println("     safegrd backup --files /srv/app/uploads")
-				fmt.Println("   or add a surface under surfaces: in the config, or enrol and add one in the console:")
-				fmt.Println("     safegrd enroll --token <your access token>")
+				fmt.Println("   Or add a surface under surfaces: in the config, or enrol and add one in the console:")
+				fmt.Println("     safegrd login")
+				fmt.Println("     safegrd enroll")
 				return nil
 			}
-			fmt.Println("   To protect this surface from the console, enrol it:")
-			fmt.Println("     safegrd enroll --token <your access token>")
+			fmt.Println("   To manage this host from the console, enrol it:")
+			fmt.Println("     safegrd login")
+			fmt.Println("     safegrd enroll")
 			fmt.Println("   Or stay standalone and run a backup right now:")
 			fmt.Println("     safegrd backup")
 			return nil
@@ -329,6 +333,15 @@ func initDatabaseSurface(ref string) (config.SurfaceConfig, error) {
 	id = surfaceIDCleaner.ReplaceAllString(strings.ToLower(id), "-")
 	if id == "" || id == "-" {
 		id = "db"
+	}
+	// A literal URL is written to the config as typed, password and all.
+	if ref == resolved {
+		if u, err := url.Parse(resolved); err == nil && u.User != nil {
+			if _, has := u.User.Password(); has {
+				fmt.Fprintln(os.Stderr, "Warning: the config holds this URL's password. To keep it out, put the URL in an "+
+					"environment variable and pass --database-url env:DATABASE_URL.")
+			}
+		}
 	}
 	return config.SurfaceConfig{ID: id, Type: kind, Name: id, DatabaseURL: ref}, nil
 }

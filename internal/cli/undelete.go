@@ -213,7 +213,7 @@ func printRetentionLine(storageCfg config.StorageConfig, meta *model.SnapshotMet
 		fmt.Printf("                    A directory on this host has no Object Lock, so its owner can.\n")
 		return
 	}
-	fmt.Printf("   WORM Locked:     Immutable until %s\n", retainUntil.UTC().Format("2006-01-02 15:04:05 UTC"))
+	fmt.Printf("   Locked until:    %s\n", retainUntil.UTC().Format("2006-01-02 15:04:05 UTC"))
 }
 
 // warnIfManifestFailed reports a manifest that did not reach the sink.

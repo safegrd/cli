@@ -66,7 +66,7 @@ func TestARepoRunIsRecordedWithTheLockItsObjectsCarry(t *testing.T) {
 	}
 	var out bytes.Buffer
 	printRepoKept(&out, "[s]", res, true)
-	if !strings.Contains(out.String(), "Immutable until 2026-10-22") {
+	if !strings.Contains(out.String(), "Locked until 2026-10-22") {
 		t.Fatalf("closing line: %q", out.String())
 	}
 
@@ -119,5 +119,24 @@ func TestOnlyAMonthLongEpochSaysOnceThisMonth(t *testing.T) {
 	full.Reason = format.ReasonFull
 	if got := onceThisMonth(full); got != "" {
 		t.Errorf("an epoch opened for a full copy says %q", got)
+	}
+}
+
+// A 6-hour slot's locked copy was labelled "(daily copy)", and the unlocked
+// line said the project locks "the day's first backup", on a plan that locks
+// the first backup of every slot.
+func TestASlotCopyIsNamedByItsSlot(t *testing.T) {
+	for _, tc := range []struct{ slot, first, copy string }{
+		{"2026-10-12", "the day's first backup", "daily copy"},
+		{"2026-10-12T00", "the day's first backup", "daily copy"},
+		{"2026-10-12T18", "the first backup from 18:00 UTC", "the first backup from 18:00 UTC"},
+		{"", "the day's first backup", "daily copy"},
+	} {
+		if got := slotFirstWords(tc.slot); got != tc.first {
+			t.Errorf("slotFirstWords(%q) = %q, want %q", tc.slot, got, tc.first)
+		}
+		if got := slotCopyWords(tc.slot); got != tc.copy {
+			t.Errorf("slotCopyWords(%q) = %q, want %q", tc.slot, got, tc.copy)
+		}
 	}
 }

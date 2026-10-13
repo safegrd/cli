@@ -357,26 +357,53 @@ func printRepoKept(out io.Writer, label string, res *write.Result, locked bool) 
 			res.Decision.KeptUntil.UTC().Format("2006-01-02"))
 		return
 	case res.Decision.Known && !res.Decision.Locked:
-		fmt.Fprintf(out, "%s Snapshot %s complete. Kept until %s, not locked: this project locks the day's first backup and the weekly and monthly copies.\n",
-			label, snap.SnapshotID, until)
+		fmt.Fprintf(out, "%s Snapshot %s complete. Kept until %s, not locked: this project locks %s and the weekly and monthly copies.\n",
+			label, snap.SnapshotID, until, slotFirstWords(res.Decision.Slot))
 	case res.Decision.Known && res.Decision.Scheduled:
-		fmt.Fprintf(out, "%s Snapshot %s complete. Locked until %s (daily copy).\n", label, snap.SnapshotID, until)
+		fmt.Fprintf(out, "%s Snapshot %s complete. Locked until %s (%s).\n", label, snap.SnapshotID, until, slotCopyWords(res.Decision.Slot))
 	case !locked:
 		fmt.Fprintf(out, "%s Snapshot %s complete. Not locked: this storage applies no Object Lock; it is kept until %s.\n",
 			label, snap.SnapshotID, until)
 	case res.Class == format.ClassOpening && res.Epoch.OpeningTier == format.TierMonthly:
-		fmt.Fprintf(out, "%s Snapshot %s complete. Immutable until %s: the month's first backup is kept as its monthly copy. Later backups follow the surface's retention.\n",
+		fmt.Fprintf(out, "%s Snapshot %s complete. Locked until %s: the month's first backup is kept as its monthly copy. Later backups follow the surface's retention.\n",
 			label, snap.SnapshotID, until)
 	default:
-		fmt.Fprintf(out, "%s Snapshot %s complete. Immutable until %s.\n", label, snap.SnapshotID, until)
+		fmt.Fprintf(out, "%s Snapshot %s complete. Locked until %s.\n", label, snap.SnapshotID, until)
 	}
 	// A capped lock is said once, as the reason, not as a second date: "Kept
 	// until 2026-10-19, not 2027-01-04" named a date nobody chose on a
 	// trial's first backup (ADR-0041 ends a trial's hosted locks with the
 	// trial, which is what capped it).
 	if res.Capped {
-		fmt.Fprintf(out, "%s The lock ends with this repository's month of objects, or with a trial, whichever comes first.\n", label)
+		fmt.Fprintf(out, "%s That date is capped: a backup is locked no longer than the objects it is built from, and no longer than a trial runs.\n", label)
 	}
+}
+
+// slotStart is the UTC hour a slot of several hours starts at, such as
+// "18:00" for "2026-10-12T18", or "" for a slot of a whole day.
+func slotStart(slot string) string {
+	i := strings.IndexByte(slot, 'T')
+	if i < 0 || slot[i+1:] == "00" || len(slot[i+1:]) != 2 {
+		return ""
+	}
+	return slot[i+1:] + ":00"
+}
+
+// slotFirstWords names the backup a project that locks its kept copies
+// locks in this run's slot.
+func slotFirstWords(slot string) string {
+	if h := slotStart(slot); h != "" {
+		return "the first backup from " + h + " UTC"
+	}
+	return "the day's first backup"
+}
+
+// slotCopyWords names the locked copy this run is.
+func slotCopyWords(slot string) string {
+	if h := slotStart(slot); h != "" {
+		return "the first backup from " + h + " UTC"
+	}
+	return "daily copy"
 }
 
 // repoSnapshot is a repository snapshot found in storage.

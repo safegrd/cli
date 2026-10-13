@@ -227,7 +227,7 @@ func listRepoSnapshots(ctx context.Context, storageCfg config.StorageConfig) []r
 func printRepoTable(rows []repoSnapshot, storageCfg config.StorageConfig) {
 	fmt.Println()
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, "INCREMENTAL SNAPSHOT\tNODE\tSURFACE\tEPOCH\tCLASS\tCONTENTS\tLOGICAL\tNEW\tRETENTION\tSTATUS")
+	fmt.Fprintln(w, "SNAPSHOT\tNODE\tSURFACE\tEPOCH\tCLASS\tCONTENTS\tLOGICAL\tNEW\tRETENTION\tSTATUS")
 	for _, r := range rows {
 		m := r.Meta
 		status := string(m.Status)

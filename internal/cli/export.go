@@ -88,6 +88,18 @@ first run's objects carry.`,
 			if err != nil {
 				return fmt.Errorf("destination storage: %w", err)
 			}
+			// Checked once, before anything is copied: each epoch failed on
+			// its own with S3's "Bucket is missing ObjectLockConfiguration".
+			if lv, ok := dst.(interface{ VerifyBucketObjectLock(context.Context) error }); ok && toBucket != "" {
+				if err := lv.VerifyBucketObjectLock(ctx); err != nil {
+					why := err.Error()
+					if strings.Contains(why, "ObjectLockConfigurationNotFound") || strings.Contains(why, "does not have Object Lock enabled") {
+						why = "it has no Object Lock"
+					}
+					return fmt.Errorf("bucket %s cannot take locked copies: %s. Create it with Object Lock on, "+
+						"or pass --to-worm-mode NONE to copy without a lock. Nothing was exported", toBucket, why)
+				}
+			}
 
 			// Incremental repositories go first, whole epochs at a time: a
 			// snapshot needs every object of its epoch.
