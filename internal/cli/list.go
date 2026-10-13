@@ -81,7 +81,7 @@ other line to stderr, so the output can be piped to jq.`,
 			setNode, canSetNode := storageProvider.(interface{ SetNodeID(string) })
 
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-			fmt.Fprintln(w, "SNAPSHOT ID\tNODE\tSURFACE\tCONTENTS\tENC SIZE\tRETENTION\tSTATUS")
+			fmt.Fprintln(w, "SNAPSHOT\tNODE\tSURFACE\tCONTENTS\tENC SIZE\tRETENTION\tSTATUS")
 
 			var undescribed int
 			for _, snapID := range snapshots {
