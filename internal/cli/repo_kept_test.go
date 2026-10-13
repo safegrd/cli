@@ -140,3 +140,31 @@ func TestASlotCopyIsNamedByItsSlot(t *testing.T) {
 		}
 	}
 }
+
+// The cap line explains a date that moved. A daily copy locked for its full
+// 14 days, trimmed by seconds to the epoch's lock, printed "That date is
+// capped" under the date it asked for.
+func TestTheCapLineOnlyFollowsADateThatMoved(t *testing.T) {
+	created := time.Date(2026, 10, 13, 4, 17, 34, 0, time.UTC)
+	planned := created.AddDate(0, 0, 14)
+	for _, tc := range []struct {
+		name  string
+		lock  time.Time
+		wants bool
+	}{
+		{"trimmed by seconds", planned.Add(-30 * time.Second), false},
+		{"cut short by a day", planned.AddDate(0, 0, -1), true},
+	} {
+		res := &write.Result{
+			Snapshot: format.Snapshot{SnapshotID: "snap-c", CreatedAt: created, RetainUntil: tc.lock},
+			Epoch:    format.Epoch{EpochID: "e202610-00000003", OpeningRetainUntil: tc.lock, LaterRetainUntil: tc.lock},
+			Class:    format.ClassLater, Planned: planned, Capped: true,
+			Decision: sink.RunDecision{Known: true, Scheduled: true, Locked: true, LockUntil: tc.lock, KeptUntil: tc.lock},
+		}
+		var out bytes.Buffer
+		printRepoKept(&out, "[s]", res, true)
+		if got := strings.Contains(out.String(), "capped"); got != tc.wants {
+			t.Errorf("%s: cap line printed %v, want %v:\n%s", tc.name, got, tc.wants, out.String())
+		}
+	}
+}

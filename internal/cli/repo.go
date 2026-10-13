@@ -374,7 +374,9 @@ func printRepoKept(out io.Writer, label string, res *write.Result, locked bool) 
 	// until 2026-10-19, not 2027-01-04" named a date nobody chose on a
 	// trial's first backup (ADR-0041 ends a trial's hosted locks with the
 	// trial, which is what capped it).
-	if res.Capped {
+	// Only when the date shown moved: the epoch's lock trims a planned date
+	// by seconds too, and the line then explained a cap nobody could see.
+	if res.Capped && res.Planned.UTC().Format("2006-01-02") != until {
 		fmt.Fprintf(out, "%s That date is capped: a backup is locked no longer than the objects it is built from, and no longer than a trial runs.\n", label)
 	}
 }

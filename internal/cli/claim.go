@@ -114,8 +114,10 @@ func surfaceConfigFor(s claimSurface) config.SurfaceConfig {
 		sc.Host, sc.Port, sc.Username, sc.Folders = s.Config.Host, s.Config.Port, s.Config.Username, s.Config.Folders
 		sc.Credential = credential()
 	}
+	// Every kind the console offers a format for: a MySQL or MongoDB surface
+	// the customer set to full copies ran incremental when this list lagged.
 	switch s.SurfaceType {
-	case "postgres", "sqlite", "files":
+	case "postgres", "sqlite", "files", "mysql", "mongodb":
 		sc.Format = s.Config.Format
 	}
 	return sc
