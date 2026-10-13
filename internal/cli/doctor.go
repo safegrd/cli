@@ -212,6 +212,14 @@ func runValidationChecks(path string, c *config.CLIConfig) []CheckResult {
 			Status:  "PASS",
 			Message: "SafeGrd hosted storage (the remote server leases it for each run)",
 		})
+	} else if _, err := os.Stat(resolvedPath); err != nil {
+		// No config: the directory is a default nobody chose, and a PASS
+		// read as if backups had somewhere to go.
+		results = append(results, CheckResult{
+			Name:    "Storage Configuration",
+			Status:  "WARN",
+			Message: "no storage configured. Run 'safegrd init', or 'safegrd enroll' to use the project's storage",
+		})
 	} else {
 		results = append(results, CheckResult{
 			Name:    "Storage Configuration",
@@ -454,17 +462,17 @@ func runDoctorChecks(path string, c *config.CLIConfig) []CheckResult {
 		if locker, ok := stProvider.(interface {
 			VerifyBucketObjectLock(ctx context.Context) error
 		}); ok {
-			mode, _ := c.Storage.ResolveWORMMode()
+			mode, _ := stCfg.ResolveWORMMode()
 			switch err := locker.VerifyBucketObjectLock(ctx); {
 			case mode == config.WORMModeNone:
 				results = append(results, CheckResult{Name: "Object Lock", Status: "WARN",
 					Message: "worm_mode is NONE: snapshots in this bucket can be deleted by anyone with delete permission"})
 			case err != nil:
 				results = append(results, CheckResult{Name: "Object Lock", Status: "FAIL",
-					Message: fmt.Sprintf("bucket %s cannot be confirmed to lock: %v. %s", c.Storage.Bucket, err, objectLockAdvice(err))})
+					Message: fmt.Sprintf("bucket %s cannot be confirmed to lock: %v. %s", stCfg.Bucket, err, objectLockAdvice(err))})
 			default:
 				results = append(results, CheckResult{Name: "Object Lock", Status: "PASS",
-					Message: fmt.Sprintf("enabled on bucket %s", c.Storage.Bucket)})
+					Message: fmt.Sprintf("enabled on bucket %s", stCfg.Bucket)})
 			}
 		}
 		if c.Storage.Type == config.StorageTypeLocal {

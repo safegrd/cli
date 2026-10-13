@@ -158,10 +158,13 @@ first run's objects carry.`,
 				fmt.Printf("   %s exported\n", id)
 				copied++
 			}
-			copied, skipped, failed = copied+rCopied, skipped+rSkipped, failed+rFailed
-			fmt.Printf("\nExported %d, already there %d, failed %d.\n", copied, skipped, failed)
-			if failed > 0 {
-				return fmt.Errorf("%d snapshot(s) were not exported", failed)
+			// Counted by what was copied: an incremental repository goes an
+			// epoch at a time, a full copy a snapshot at a time. One total
+			// called both "snapshots".
+			fmt.Printf("\nExported %s. Already there: %s. Failed: %s.\n",
+				exportCount(rCopied, copied), exportCount(rSkipped, skipped), exportCount(rFailed, failed))
+			if failed+rFailed > 0 {
+				return fmt.Errorf("%s not exported", exportCount(rFailed, failed))
 			}
 			return nil
 		},
@@ -391,4 +394,22 @@ func exportEpoch(ctx context.Context, src sink.Backend, e sink.EpochInfo, dst *s
 		copied++
 	}
 	return copied, already, nil
+}
+
+// exportCount names epochs and full copies, leaving out a kind with none.
+func exportCount(epochs, copies int) string {
+	plural := func(n int, one, many string) string {
+		if n == 1 {
+			return "1 " + one
+		}
+		return fmt.Sprintf("%d %s", n, many)
+	}
+	switch {
+	case epochs > 0 && copies > 0:
+		return plural(epochs, "epoch", "epochs") + " and " + plural(copies, "full copy", "full copies")
+	case copies > 0:
+		return plural(copies, "full copy", "full copies")
+	default:
+		return plural(epochs, "epoch", "epochs")
+	}
 }
