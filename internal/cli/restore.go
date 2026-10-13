@@ -260,11 +260,14 @@ files: each upload writes or updates the file's row in storage.objects.`,
 				// A snapshot of an incremental repository has no single
 				// object to download; it is restored from its packs.
 				if version > 0 || newest {
-					id, fetched, err := resolveVersion(ctx, storageCfg, resolvedKey, surfaceSel, paths[0], version)
+					id, found, fetched, err := resolveVersion(ctx, storageCfg, resolvedKey, surfaceSel, paths[0], version)
 					if err != nil {
 						return err
 					}
 					snapshotID = id
+					if len(paths) > 0 && found != "" {
+						paths[0] = found
+					}
 					if fetched != "" {
 						resolvedKey = strings.TrimSpace(resolvedKey + "\n" + fetched)
 					}

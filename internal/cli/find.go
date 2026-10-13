@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"strings"
 	"text/tabwriter"
@@ -132,10 +133,17 @@ func epochRecipients(es []sink.EpochInfo, held map[string]bool) (missing []strin
 	return missing, any
 }
 
+// cleanPatterns makes patterns relative to /. One with no / at all matches
+// that name at any depth, as in .gitignore: a bare file name found nothing,
+// and it is the first thing anyone types.
 func cleanPatterns(in []string) []string {
 	out := make([]string, 0, len(in))
 	for _, p := range in {
-		out = append(out, strings.TrimPrefix(strings.TrimSpace(p), "/"))
+		p = strings.TrimSpace(p)
+		if p != "" && !strings.Contains(p, "/") {
+			p = "**/" + p
+		}
+		out = append(out, strings.TrimPrefix(p, "/"))
 	}
 	return out
 }
@@ -171,7 +179,8 @@ incremental (--format repo) backup holds: when each was first and last seen, its
 and SHA-256, and how many snapshots hold it.
 
 Patterns are paths relative to /, matched segment by segment: '*' and '?' within a
-segment, '**' across any number of them. A directory selects everything below it.
+segment, '**' across any number of them. A pattern with no / matches that name at
+any depth. A directory selects everything below it.
 --deleted lists only files the newest snapshot no longer holds.
 
 Without --surface, a host searches the surfaces it holds the key for and says how
@@ -266,32 +275,41 @@ or, for a table: safegrd restore --table <schema.table> --version <n> --target <
 // resolveVersion turns --path and --version into the newest snapshot that
 // holds that version of that path; n 0 is the newest version. fetched is the
 // keys the search asked the remote server for.
-func resolveVersion(ctx context.Context, storageCfg config.StorageConfig, key, surface, p string, n int) (snapshotID, fetched string, err error) {
+// A bare name (no /) is looked up at any depth, as find does, and path is
+// the one file it names; two files of that name are refused.
+func resolveVersion(ctx context.Context, storageCfg config.StorageConfig, key, surface, p string, n int) (snapshotID, path, fetched string, err error) {
 	res, fetched, err := searchRepos(ctx, storageCfg, key, surface, cleanPatterns([]string{p}), false)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	want := strings.Trim(strings.TrimPrefix(p, "/"), "/")
+	bare := !strings.Contains(want, "/")
 	var hits []findResult
 	for _, r := range res {
-		if r.Path == want {
+		if r.Path == want || (bare && pathpkg.Base(r.Path) == want) {
 			hits = append(hits, r)
 		}
 	}
-	switch len(hits) {
-	case 0:
-		return "", "", fmt.Errorf("no kept snapshot holds %s; run 'safegrd find %s'", want, want)
-	case 1:
-	default:
-		return "", "", fmt.Errorf("%s is in %d surfaces; name one with --surface", want, len(hits))
+	switch {
+	case len(hits) == 0:
+		return "", "", "", fmt.Errorf("no kept snapshot holds %s; run 'safegrd find %s'", want, want)
+	case len(hits) > 1 && bare:
+		paths := make([]string, 0, len(hits))
+		for _, h := range hits {
+			paths = append(paths, h.Path)
+		}
+		return "", "", "", fmt.Errorf("%d kept files are named %s: %s. Give the path of one", len(hits), want, strings.Join(paths, ", "))
+	case len(hits) > 1:
+		return "", "", "", fmt.Errorf("%s is in %d surfaces; name one with --surface", want, len(hits))
 	}
+	path = hits[0].Path
 	if vs := hits[0].Versions; n == 0 && len(vs) > 0 {
-		return vs[len(vs)-1].Last.SnapshotID, fetched, nil
+		return vs[len(vs)-1].Last.SnapshotID, path, fetched, nil
 	}
 	for _, v := range hits[0].Versions {
 		if v.N == n {
-			return v.Last.SnapshotID, fetched, nil
+			return v.Last.SnapshotID, path, fetched, nil
 		}
 	}
-	return "", "", fmt.Errorf("%s has %d kept versions, not %d; run 'safegrd find %s'", want, len(hits[0].Versions), n, want)
+	return "", "", "", fmt.Errorf("%s has %d kept versions, not %d; run 'safegrd find %s'", path, len(hits[0].Versions), n, path)
 }
