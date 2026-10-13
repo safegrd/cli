@@ -296,7 +296,7 @@ func serverStatusError(code int) error {
 	case http.StatusUnauthorized:
 		return fmt.Errorf("the remote server rejected this login (HTTP 401): it expired or was revoked. Run 'safegrd login'")
 	case http.StatusForbidden:
-		return fmt.Errorf("the remote server refused this (HTTP 403): this login is not allowed to. 'safegrd whoami' shows who you are signed in as")
+		return fmt.Errorf("the remote server refused this (HTTP 403): this login may not do that. 'safegrd whoami' shows who you are signed in as")
 	}
 	return fmt.Errorf("server returned status %d", code)
 }
