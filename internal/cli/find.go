@@ -133,6 +133,25 @@ func epochRecipients(es []sink.EpochInfo, held map[string]bool) (missing []strin
 	return missing, any
 }
 
+// shownPath is a path as the person typed it: a table's file in a
+// database run is named as schema.table.
+func shownPath(p string) string {
+	if rest, ok := strings.CutPrefix(p, "data/"); ok {
+		if t, ok := strings.CutSuffix(rest, ".copy"); ok && strings.Count(t, "/") == 1 {
+			return strings.Replace(t, "/", ".", 1)
+		}
+	}
+	return p
+}
+
+// findArgs is the find command that lists p's versions.
+func findArgs(p string) string {
+	if t := shownPath(p); t != p {
+		return "--table " + t
+	}
+	return p
+}
+
 // cleanPatterns makes patterns relative to /. One with no / at all matches
 // that name at any depth, as in .gitignore: a bare file name found nothing,
 // and it is the first thing anyone types.
@@ -292,7 +311,7 @@ func resolveVersion(ctx context.Context, storageCfg config.StorageConfig, key, s
 	}
 	switch {
 	case len(hits) == 0:
-		return "", "", "", fmt.Errorf("no kept snapshot holds %s; run 'safegrd find %s'", want, want)
+		return "", "", "", fmt.Errorf("no kept snapshot holds %s; run 'safegrd find %s'", shownPath(want), findArgs(want))
 	case len(hits) > 1 && bare:
 		paths := make([]string, 0, len(hits))
 		for _, h := range hits {
@@ -300,7 +319,11 @@ func resolveVersion(ctx context.Context, storageCfg config.StorageConfig, key, s
 		}
 		return "", "", "", fmt.Errorf("%d kept files are named %s: %s. Give the path of one", len(hits), want, strings.Join(paths, ", "))
 	case len(hits) > 1:
-		return "", "", "", fmt.Errorf("%s is in %d surfaces; name one with --surface", want, len(hits))
+		surfaces := make([]string, 0, len(hits))
+		for _, h := range hits {
+			surfaces = append(surfaces, h.Surface)
+		}
+		return "", "", "", fmt.Errorf("%s is in %d surfaces (%s); name one with --surface", shownPath(want), len(hits), strings.Join(surfaces, ", "))
 	}
 	path = hits[0].Path
 	if vs := hits[0].Versions; n == 0 && len(vs) > 0 {
