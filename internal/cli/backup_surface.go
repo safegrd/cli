@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/safegrd/cli/pkg/config"
 )
@@ -75,7 +76,8 @@ func backupNamedSurface(ctx context.Context, c *config.CLIConfig, surfaceID stri
 	fmt.Printf("Surface %s (%s): backing up now.\n", surface.ID, surface.Type)
 	fetchHeldSurfaceSecret(ctx, c, nodeID, surface)
 	attempted := sState.LastAttempt
-	if _, err := backupSurfaceNow(ctx, c, surface, sState, nodeID, lockDir, statePath, daemonState); err != nil {
+	meta, err := backupSurfaceNow(ctx, c, surface, sState, nodeID, lockDir, statePath, daemonState)
+	if err != nil {
 		return err
 	}
 	// backupSurfaceNow skips a surface whose lock is held and returns nil,
@@ -86,6 +88,16 @@ func backupNamedSurface(ctx context.Context, c *config.CLIConfig, surfaceID stri
 	}
 	if sState.LastSnapshotID != "" {
 		fmt.Printf("   Snapshot ID:     %s\n", sState.LastSnapshotID)
+	}
+	// A repository run says its lock on its own closing line; a full copy
+	// said nothing about it here.
+	if meta != nil && meta.EpochID == "" && !meta.WORMRetentionUntil.IsZero() {
+		until := meta.WORMRetentionUntil.UTC().Format("2006-01-02 15:04 UTC")
+		if locked, why := snapshotLocked(meta, time.Now()); locked {
+			fmt.Printf("   Locked until:    %s\n", until)
+		} else {
+			fmt.Printf("   Kept until:      %s, not locked: %s\n", until, why)
+		}
 	}
 	if sState.LastError != "" {
 		// The backup is taken; what follows is about its report or its hook.
