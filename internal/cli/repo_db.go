@@ -43,7 +43,21 @@ func repoDatabaseSurfaceID(databaseURL string) string {
 		}
 		key := databaseURL
 		if u, err := url.Parse(databaseURL); err == nil {
-			key = prefix + strings.ToLower(u.Host) + u.Path
+			// The same database whether or not the URL spells the default
+			// port, as SameMySQLDatabase and SameMongoDatabase take it.
+			host := strings.ToLower(u.Host)
+			defaultPort := ":3306"
+			if dump.IsMongoURL(databaseURL) {
+				defaultPort = ":27017"
+			}
+			var hosts []string
+			for _, h := range strings.Split(host, ",") {
+				if !strings.Contains(h, ":") {
+					h += defaultPort
+				}
+				hosts = append(hosts, h)
+			}
+			key = prefix + strings.Join(hosts, ",") + u.Path
 		}
 		sum := sha256.Sum256([]byte(key))
 		return prefix + hex.EncodeToString(sum[:])[:12]
