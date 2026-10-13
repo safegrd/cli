@@ -2,6 +2,7 @@ package dump
 
 import (
 	"archive/tar"
+	"bytes"
 	"regexp"
 	"strconv"
 	"strings"
@@ -99,7 +100,7 @@ func (w *mysqlSectionWriter) Write(p []byte) (int, error) {
 	}
 	n := len(p)
 	for len(p) > 0 {
-		i := strings.IndexByte(string(p), '\n')
+		i := bytes.IndexByte(p, '\n')
 		if i < 0 {
 			w.line = append(w.line, p...)
 			break

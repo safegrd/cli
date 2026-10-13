@@ -278,3 +278,46 @@ func TestAMongoRunRebuildsTheArchive(t *testing.T) {
 		t.Errorf("server version %q, want %q", got.ServerVersion, want.ServerVersion)
 	}
 }
+
+// Oracle's mysqldump 8.4 writes the same section comments MariaDB's dump
+// tool does, and the splitter cuts a dump it wrote (testdata/mysqldump-8.4.sql,
+// taken from mysql:8.4 with a table, a view, a table with a space in its
+// name, routines and events) into the head, one entry per object and the
+// tail. The suite's hosts run MariaDB's tool, so this is where Oracle's is
+// seen.
+func TestTheSplitterCutsAnOracleMySQLDump(t *testing.T) {
+	src, err := os.ReadFile("testdata/mysqldump-8.4.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	w := newMySQLSectionWriter(tw)
+	if _, err := w.Write(src); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	tw.Close()
+	var names []string
+	var joined bytes.Buffer
+	tr := tar.NewReader(&buf)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		names = append(names, hdr.Name)
+		io.Copy(&joined, tr)
+	}
+	if got, want := strings.Join(names, " "), "mysql/head.sql mysql/tables/t1.sql mysql/tables/v1.sql mysql/tables/we ird.sql mysql/tail.sql"; got != want {
+		t.Errorf("entries %q, want %q", got, want)
+	}
+	if !bytes.Equal(joined.Bytes(), src) {
+		t.Error("the sections do not concatenate to the dump")
+	}
+}

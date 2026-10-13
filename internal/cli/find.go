@@ -178,7 +178,7 @@ Without --surface, a host searches the surfaces it holds the key for and says ho
 many others it did not search. --surface names one, and fetches its key when the remote server
 holds it.
 
---table schema.table lists the versions of a table in incremental database backups.
+--table schema.table lists the versions of a table in incremental PostgreSQL backups.
 
 Restore a version with: safegrd restore --path <path> --version <n> --target-dir <dir>
 or, for a table: safegrd restore --table <schema.table> --version <n> --target <database URL>`,
@@ -255,7 +255,7 @@ or, for a table: safegrd restore --table <schema.table> --version <n> --target <
 		},
 	}
 	cmd.Flags().StringVar(&surface, "surface", "", "Search this surface only")
-	cmd.Flags().StringArrayVar(&tables, "table", nil, "List the versions of this table (schema.table) in incremental database backups (repeatable)")
+	cmd.Flags().StringArrayVar(&tables, "table", nil, "List the versions of this table (schema.table) in incremental PostgreSQL backups (repeatable)")
 	cmd.Flags().BoolVar(&deleted, "deleted", false, "List only files the newest snapshot no longer holds")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print the histories as JSON")
 	cmd.Flags().StringVar(&keyPath, "key-path", "", "Path to the age identity file")
