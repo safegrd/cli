@@ -139,3 +139,15 @@ func TestDescribeRetentionSaysAnUnlockedRunIsNotLocked(t *testing.T) {
 		t.Errorf("guard counts an unlocked run as locked: %s", why)
 	}
 }
+
+// A locked backup kept past its lock says both dates: on the free floor the
+// RETENTION column gave the lock's end only, a day, for a backup kept a week.
+func TestDescribeRetentionGivesTheKeepDatePastTheLock(t *testing.T) {
+	lock := time.Date(2026, 10, 14, 17, 35, 0, 0, time.UTC)
+	kept := lock.AddDate(0, 0, 6)
+	meta := &model.SnapshotMetadata{WORMMode: "COMPLIANCE", WORMRetentionUntil: lock, KeptUntil: &kept}
+	got := describeRetention(meta, config.StorageConfig{Type: config.StorageTypeHosted})
+	if got != "COMPLIANCE until 2026-10-14 17:35 UTC, kept until 2026-10-20 17:35 UTC" {
+		t.Fatalf("describeRetention = %q", got)
+	}
+}

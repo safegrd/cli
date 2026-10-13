@@ -234,6 +234,10 @@ type SnapshotMetadata struct {
 	// WORMRetentionUntil: a recent run of a project that locks only the
 	// copies it keeps. Never set on a snapshot the bucket holds a lock on.
 	Unlocked bool `json:"unlocked,omitempty" yaml:"unlocked,omitempty"`
+	// KeptUntil is when a locked snapshot is deleted, when that is later
+	// than its lock: the free floor locks a backup for its first day and
+	// keeps it a week. Nil when the two are the same.
+	KeptUntil *time.Time `json:"kept_until,omitempty" yaml:"kept_until,omitempty"`
 	// OutsideProjectStorage is decided by the remote server, never by the
 	// host: the report named a location other than the storage its project
 	// uses, so the project's storage does not hold this backup, and a restore

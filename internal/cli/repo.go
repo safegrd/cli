@@ -319,6 +319,7 @@ func runRepoBackup(ctx context.Context, p repoParams) (*model.SnapshotMetadata, 
 			}
 			recordRetention(meta, p.StorageCfg, repoKeptUntil(r, repoLocked(p.StorageCfg)))
 			meta.Unlocked = repoLocked(p.StorageCfg) && !repoRunLocked(r, true)
+			meta.KeptUntil = keptBeyondLock(r)
 			meta.CalculateTotals()
 			return json.MarshalIndent(meta, "", "  ")
 		},
@@ -391,6 +392,17 @@ func repoKeptUntil(res *write.Result, locked bool) time.Time {
 		}
 	}
 	return res.Snapshot.RetainUntil.UTC()
+}
+
+// keptBeyondLock is when a locked run is deleted, when the remote server
+// keeps it past its lock; nil otherwise.
+func keptBeyondLock(res *write.Result) *time.Time {
+	d := res.Decision
+	if !d.Known || !d.Locked || !d.KeptUntil.After(d.LockUntil) {
+		return nil
+	}
+	t := d.KeptUntil.UTC()
+	return &t
 }
 
 // repoRunLocked reports whether the run's objects are under a lock: the

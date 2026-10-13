@@ -172,7 +172,8 @@ type listedSnapshot struct {
 	// Locked is true while Object Lock still holds the snapshot.
 	Locked bool `json:"locked"`
 	// Unlocked marks a recent run of a project that locks only its kept
-	// copies: it carries no lock, and KeptUntil is when it is deleted.
+	// copies: it carries no lock. KeptUntil is when a snapshot is deleted,
+	// for an unlocked run and for a locked one kept past its lock.
 	Unlocked  bool   `json:"unlocked,omitempty"`
 	KeptUntil string `json:"kept_until,omitempty"`
 	Anomalous bool   `json:"anomalous"`
@@ -340,6 +341,9 @@ func listedSnapshots(ctx context.Context) ([]listedSnapshot, error) {
 		if e.WORMMode != string(config.WORMModeNone) && !meta.WORMRetentionUntil.IsZero() {
 			e.LockedUntil = meta.WORMRetentionUntil.UTC().Format(time.RFC3339)
 			e.Locked = meta.WORMRetentionUntil.After(now) && storageCfg.Type != config.StorageTypeLocal
+			if k := meta.KeptUntil; k != nil && k.After(meta.WORMRetentionUntil) {
+				e.KeptUntil = k.UTC().Format(time.RFC3339)
+			}
 		}
 		entries = append(entries, e)
 	}
@@ -363,6 +367,9 @@ func listedSnapshots(ctx context.Context) ([]listedSnapshot, error) {
 		} else if e.WORMMode != string(config.WORMModeNone) && !meta.WORMRetentionUntil.IsZero() {
 			e.LockedUntil = meta.WORMRetentionUntil.UTC().Format(time.RFC3339)
 			e.Locked = meta.WORMRetentionUntil.After(now) && storageCfg.Type != config.StorageTypeLocal
+			if k := meta.KeptUntil; k != nil && k.After(meta.WORMRetentionUntil) {
+				e.KeptUntil = k.UTC().Format(time.RFC3339)
+			}
 		}
 		entries = append(entries, e)
 	}
@@ -435,6 +442,9 @@ func describeRetention(meta *model.SnapshotMetadata, storageCfg config.StorageCo
 	}
 	if !recorded {
 		return until + " (mode not recorded)"
+	}
+	if k := meta.KeptUntil; k != nil && k.After(meta.WORMRetentionUntil) {
+		return mode + " until " + until + ", kept until " + k.UTC().Format("2006-01-02 15:04") + " UTC"
 	}
 	return mode + " until " + until
 }

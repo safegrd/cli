@@ -247,6 +247,7 @@ func runRepoLaravelBackup(ctx context.Context, p repoLaravelParams) (*model.Snap
 			m.Format, m.EpochID, m.ObjectClass = model.SnapshotFormatRepo, r.Epoch.EpochID, r.Class
 			recordRetention(&m, p.StorageCfg, repoKeptUntil(r, repoLocked(p.StorageCfg)))
 			m.Unlocked = repoLocked(p.StorageCfg) && !repoRunLocked(r, true)
+			m.KeptUntil = keptBeyondLock(r)
 			m.CalculateTotals()
 			meta = &m
 			return json.MarshalIndent(meta, "", "  ")
