@@ -93,8 +93,9 @@ func (s *S3) pinned(ctx context.Context, key string) string {
 // first real version. nil when the listing is refused.
 func (s *S3) listWritten(ctx context.Context, dir string) map[string]writtenVersion {
 	type seen struct {
-		v     writtenVersion
-		count int
+		v      writtenVersion
+		etags  []string
+		marker bool
 	}
 	keys := map[string]*seen{}
 	delim := "/"
@@ -113,25 +114,35 @@ func (s *S3) listWritten(ctx context.Context, dir string) map[string]writtenVers
 				e = &seen{}
 				keys[k] = e
 			}
-			e.count++
-			shadowed := e.v.shadowed || e.count > 1
-			e.v = writtenVersion{id: aws.ToString(v.VersionId), size: aws.ToInt64(v.Size), shadowed: shadowed}
+			e.etags = append(e.etags, aws.ToString(v.ETag))
+			e.v = writtenVersion{id: aws.ToString(v.VersionId), size: aws.ToInt64(v.Size)}
 		}
 		for _, m := range page.DeleteMarkers {
 			k := aws.ToString(m.Key)
-			e := keys[k]
-			if e == nil {
-				e = &seen{}
-				keys[k] = e
+			if keys[k] == nil {
+				keys[k] = &seen{}
 			}
-			e.v.shadowed = true
+			keys[k].marker = true
 		}
 	}
 	out := make(map[string]writtenVersion, len(keys))
 	for k, e := range keys {
-		if e.count > 0 {
-			out[k] = e.v
+		if len(e.etags) == 0 {
+			continue
 		}
+		// A retried PUT that the bucket had already stored leaves a second
+		// version with the same bytes; only different bytes, or a delete
+		// marker, are someone else's.
+		first := e.etags[len(e.etags)-1]
+		for _, t := range e.etags {
+			if t != first {
+				e.v.shadowed = true
+			}
+		}
+		if e.marker {
+			e.v.shadowed = true
+		}
+		out[k] = e.v
 	}
 	return out
 }
