@@ -448,6 +448,9 @@ func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, d pendingDrill
 		fmt.Printf("Surface %s: Fire Drill due: restoring snapshot %s in memory.\n", s.ID, snapshotID)
 		report, _, err = verifier.RunDryRestore(ctx, snapshotID, key)
 	}
+	if rs != nil {
+		noteDrillDamage(d.stateDir, s.ID, rs, report)
+	}
 	if report != nil && report.SandboxKept {
 		sayKeptSandbox(s, st, local, sandbox, verifier.CreatedRoles())
 	}

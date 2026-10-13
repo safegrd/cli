@@ -213,11 +213,12 @@ func runRepoLaravelBackup(ctx context.Context, p repoLaravelParams) (*model.Snap
 		Excludes: excludes,
 		OnStart: func(r *write.Result) {
 			if r.Opened {
-				fmt.Fprintf(out, "%s Epoch %s opened (%s). The database and every file are uploaded%s.\n", label, r.Epoch.EpochID, reasonText(r.Reason), onceThisMonth(r.Epoch))
+				fmt.Fprintf(out, "%s Epoch %s opened (%s). The database and every file are uploaded%s.\n", label, r.Epoch.EpochID, openedWhy(r), onceThisMonth(r.Epoch))
 			}
 			if r.Resumed {
-				fmt.Fprintf(out, "%s Resuming epoch %s: %d %s (%s) already uploaded are reused.\n", label, r.Epoch.EpochID,
-					r.AdoptedPacks, pluralWord(int64(r.AdoptedPacks), "pack", "packs"), formatBytes(r.AdoptedBytes))
+				fmt.Fprintf(out, "%s Resuming epoch %s: %d %s (%s) already uploaded %s reused.\n", label, r.Epoch.EpochID,
+					r.AdoptedPacks, pluralWord(int64(r.AdoptedPacks), "pack", "packs"), formatBytes(r.AdoptedBytes),
+					pluralWord(int64(r.AdoptedPacks), "is", "are"))
 			}
 			if !r.Opened && !r.Resumed {
 				fmt.Fprintf(out, "%s Incremental, in epoch %s: only what changed since the last run is uploaded.\n", label, r.Epoch.EpochID)

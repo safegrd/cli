@@ -712,3 +712,32 @@ func RemoveOthers(dir, keepEpochID string) error {
 	}
 	return firstErr
 }
+
+// damagedSuffix names the file that says a drill found an epoch's stored
+// objects damaged or missing. It sits beside the epoch's cache, so
+// RemoveOthers deletes it with that cache once a new epoch has opened.
+const damagedSuffix = ".db.damaged"
+
+// MarkDamaged records that a drill of a snapshot of epochID found objects of
+// the epoch damaged or missing. The cache would go on naming them as stored,
+// so every later run of the epoch would reference them; the next run opens a
+// new epoch instead.
+func MarkDamaged(dir, epochID, why string) error {
+	if !format.ValidEpochID(epochID) {
+		return fmt.Errorf("epoch id %q is malformed", epochID)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, epochID+damagedSuffix), []byte(strings.TrimSpace(why)+"\n"), 0o600)
+}
+
+// Damaged returns what a drill found wrong with epochID, if a drill marked
+// it damaged.
+func Damaged(dir, epochID string) (string, bool) {
+	b, err := os.ReadFile(filepath.Join(dir, epochID+damagedSuffix))
+	if err != nil {
+		return "", false
+	}
+	return strings.TrimSpace(string(b)), true
+}

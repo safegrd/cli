@@ -531,7 +531,7 @@ files: each upload writes or updates the file's row in storage.objects.`,
 				}
 				fmt.Printf("   Destination:    %s\n", targetDir)
 				if fileRes != nil {
-					printFileRestoreLimits(fileRes)
+					printFileRestoreLimits(fileRes, false)
 				}
 			case model.SurfaceTypeWordPress:
 				printWordPressRestore(wpRes, targetDir)
@@ -631,15 +631,24 @@ func printCreatedRoles(roles []string) {
 // printFileRestoreLimits says what a file restore did not bring back. A
 // restore that quietly loses metadata is the thing this product exists to be
 // the opposite of, so it is printed every time rather than left to the docs.
-func printFileRestoreLimits(res *dump.FileExtractionResult) {
+// specialBits says the snapshot kept setuid, setgid and the sticky bit: an
+// incremental one does, an archive does not.
+func printFileRestoreLimits(res *dump.FileExtractionResult, specialBits bool) {
 	if res.OwnershipRestored {
 		fmt.Printf("   Ownership:      restored from the sealed manifest\n")
 	} else if res.OwnershipNote != "" {
 		fmt.Printf("   Ownership:      not restored (%s)\n", res.OwnershipNote)
 	}
-	fmt.Printf("   Not preserved:  hard links (each comes back as its own copy), extended\n" +
-		"                   attributes and ACLs, setuid/setgid bits, and sparse regions\n" +
-		"                   (written out in full). See safegrd.dev/docs/surfaces/files.\n")
+	if specialBits {
+		fmt.Printf("   Not preserved:  hard links (each comes back as its own copy), extended\n" +
+			"                   attributes and ACLs, and sparse regions (written out in full).\n" +
+			"                   setuid and setgid come back only with their owners, as root.\n" +
+			"                   See safegrd.dev/docs/surfaces/files.\n")
+	} else {
+		fmt.Printf("   Not preserved:  hard links (each comes back as its own copy), extended\n" +
+			"                   attributes and ACLs, setuid/setgid/sticky bits, and sparse regions\n" +
+			"                   (written out in full). See safegrd.dev/docs/surfaces/files.\n")
+	}
 	if len(res.Skipped) > 0 {
 		fmt.Fprintf(os.Stderr, "\nWarning: %d archive entries were not restored, because this restore does not create them:\n", len(res.Skipped))
 		for _, s := range res.Skipped {

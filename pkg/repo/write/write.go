@@ -169,6 +169,9 @@ type Result struct {
 	// was last stored, so a Source may emit it with Carry; set before
 	// OnStart.
 	CanCarry func(path string) bool
+	// Damaged is what a drill found wrong with the epoch this host was
+	// writing into, when that is why this run opened a new one.
+	Damaged string
 	// StateSaved is set when the cache recorded this run with the state
 	// Options.State returned.
 	StateSaved bool
@@ -254,7 +257,15 @@ func Run(ctx context.Context, b sink.Backend, o Options) (*Result, error) {
 			lost = true
 		}
 	}
-	decision := policy.Decide(started, current, o.Retention, lost, o.NewEpoch, o.Recipient)
+	// A drill found objects of the current epoch damaged or missing: the
+	// cache names them as stored, so continuing would reference them again.
+	damaged := ""
+	if current != nil {
+		if why, ok := cache.Damaged(dir, current.Epoch.EpochID); ok {
+			damaged = why
+		}
+	}
+	decision := policy.Decide(started, current, o.Retention, lost, o.NewEpoch || damaged != "", o.Recipient)
 	tier := o.Tier
 	if !policy.ValidTier(tier) {
 		tier = format.TierBase
@@ -275,6 +286,9 @@ func Run(ctx context.Context, b sink.Backend, o Options) (*Result, error) {
 		return nil, err
 	}
 	res := &Result{Epoch: opened.Epoch, Opened: opened.New, Reason: opened.Epoch.Reason}
+	if damaged != "" && opened.New {
+		res.Damaged = damaged
+	}
 	if cur != nil {
 		// Kept across a new epoch: the source's state names who it is, not
 		// what this epoch holds.
@@ -322,6 +336,9 @@ func Run(ctx context.Context, b sink.Backend, o Options) (*Result, error) {
 
 	adopted, err := cur.Resume()
 	if err != nil {
+		if strings.Contains(err.Error(), "SQLITE_BUSY") {
+			return nil, fmt.Errorf("another backup of surface %s is using this host's cache (%s), or one was stopped a moment ago; run this again when it has finished", o.SurfaceID, dir)
+		}
 		return nil, fmt.Errorf("reading the local cache: %w", err)
 	}
 	if len(adopted) > 0 {
@@ -859,6 +876,23 @@ func (w *walker) synth(abs, rel string, n *rootNode, fi os.FileInfo) (format.ID,
 	return w.storeTree(t)
 }
 
+// unixMode is a file's permission bits with setuid, setgid and the sticky
+// bit, as the tree stores them (0o7777). Perm alone dropped the three, so a
+// restored shared directory (1777) came back without its sticky bit.
+func unixMode(m fs.FileMode) uint32 {
+	mode := uint32(m.Perm())
+	if m&fs.ModeSetuid != 0 {
+		mode |= 0o4000
+	}
+	if m&fs.ModeSetgid != 0 {
+		mode |= 0o2000
+	}
+	if m&fs.ModeSticky != 0 {
+		mode |= 0o1000
+	}
+	return mode
+}
+
 func joinRel(rel, name string) string {
 	if rel == "" {
 		return name
@@ -869,13 +903,13 @@ func joinRel(rel, name string) string {
 func (w *walker) dirNode(name string, fi os.FileInfo, sub format.ID) format.Node {
 	st := sysStat(fi)
 	w.dirs++
-	return format.Node{Name: name, Type: format.NodeDir, Mode: uint32(fi.Mode().Perm()), UID: st.uid, GID: st.gid,
+	return format.Node{Name: name, Type: format.NodeDir, Mode: unixMode(fi.Mode()), UID: st.uid, GID: st.gid,
 		ModTime: fi.ModTime().UTC(), Subtree: sub}
 }
 
 func (w *walker) entry(rel string, typ byte, value string, fi os.FileInfo, size int64) error {
 	return w.cache.AddEntry(cache.Entry{Path: rel, Type: typ, Value: value, Size: size,
-		MTimeNs: fi.ModTime().UnixNano(), Mode: uint32(fi.Mode().Perm())})
+		MTimeNs: fi.ModTime().UnixNano(), Mode: unixMode(fi.Mode())})
 }
 
 // excluded applies the exclude patterns. A pattern starting with "/" is
@@ -1083,7 +1117,7 @@ func sameStat(a, b os.FileInfo) bool {
 // every blob. ok is false when the file vanished before it could be read.
 func (w *walker) file(abs, rel string, fi os.FileInfo) (n format.Node, ok bool, err error) {
 	st := sysStat(fi)
-	n = format.Node{Name: path.Base(abs), Type: format.NodeFile, Mode: uint32(fi.Mode().Perm()), UID: st.uid, GID: st.gid,
+	n = format.Node{Name: path.Base(abs), Type: format.NodeFile, Mode: unixMode(fi.Mode()), UID: st.uid, GID: st.gid,
 		ModTime: fi.ModTime().UTC()}
 	if !w.rescan {
 		row, err := w.cache.File(rel)
@@ -1136,7 +1170,7 @@ func (w *walker) file(abs, rel string, fi os.FileInfo) (n format.Node, ok bool, 
 		}
 		n.Content, n.Size, n.SHA256 = content, size, sum
 		n.ModTime = pre.ModTime().UTC()
-		n.Mode = uint32(pre.Mode().Perm())
+		n.Mode = unixMode(pre.Mode())
 		if sameStat(pre, post) && post.Size() == size {
 			break
 		}

@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -30,6 +32,108 @@ type S3 struct {
 	Mode s3types.ObjectLockMode
 	// Now is the clock a lock date is checked against.
 	Now func() time.Time
+	// Warnf, when set, receives the line said about an object that was
+	// deleted or overwritten after it was written; nil prints it to stderr.
+	Warnf func(format string, args ...any)
+
+	mu sync.Mutex
+	// written is, per directory, each key's first version: the one a
+	// backup wrote, since a run never writes a key twice. Read under a lock
+	// only; a directory whose versions could not be listed maps to nil.
+	written map[string]map[string]writtenVersion
+	warned  map[string]bool
+}
+
+// writtenVersion is the version a backup wrote of a key, and whether a delete
+// marker or a later version has been put over it since.
+type writtenVersion struct {
+	id       string
+	size     int64
+	shadowed bool
+}
+
+// pinned returns the version of key a backup wrote, in a bucket under
+// Object Lock. Keys carry 128 random bits and are written once, so a later
+// version or a delete marker is someone else's: under Object Lock a DELETE
+// adds a marker and a PUT adds a version, and both hide the locked one from a
+// read by key alone. "" reads by key: a bucket with no lock, a key with no
+// version, or a credential that may not list versions.
+func (s *S3) pinned(ctx context.Context, key string) string {
+	if s.Mode == "" {
+		return ""
+	}
+	dir := path.Dir(key) + "/"
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.written == nil {
+		s.written = map[string]map[string]writtenVersion{}
+		s.warned = map[string]bool{}
+	}
+	byKey, listed := s.written[dir]
+	if !listed {
+		byKey = s.listWritten(ctx, dir)
+		s.written[dir] = byKey
+	}
+	v, ok := byKey[key]
+	if !ok {
+		return ""
+	}
+	if v.shadowed && !s.warned[key] {
+		s.warned[key] = true
+		warn := s.Warnf
+		if warn == nil {
+			warn = func(f string, a ...any) { fmt.Fprintf(os.Stderr, "Warning: "+f+"\n", a...) }
+		}
+		warn("s3://%s/%s was deleted or overwritten after the backup wrote it. Object Lock kept the version the backup wrote, and it is read instead. Find out which credential did it.", s.Bucket, key)
+	}
+	return v.id
+}
+
+// listWritten lists the versions directly under dir and returns each key's
+// first real version. nil when the listing is refused.
+func (s *S3) listWritten(ctx context.Context, dir string) map[string]writtenVersion {
+	type seen struct {
+		v     writtenVersion
+		count int
+	}
+	keys := map[string]*seen{}
+	delim := "/"
+	p := s3.NewListObjectVersionsPaginator(s.Client, &s3.ListObjectVersionsInput{Bucket: &s.Bucket, Prefix: &dir, Delimiter: &delim})
+	for p.HasMorePages() {
+		page, err := p.NextPage(ctx)
+		if err != nil {
+			return nil
+		}
+		// Versions come newest first for each key, so the last real one
+		// listed is the first written.
+		for _, v := range page.Versions {
+			k := aws.ToString(v.Key)
+			e := keys[k]
+			if e == nil {
+				e = &seen{}
+				keys[k] = e
+			}
+			e.count++
+			shadowed := e.v.shadowed || e.count > 1
+			e.v = writtenVersion{id: aws.ToString(v.VersionId), size: aws.ToInt64(v.Size), shadowed: shadowed}
+		}
+		for _, m := range page.DeleteMarkers {
+			k := aws.ToString(m.Key)
+			e := keys[k]
+			if e == nil {
+				e = &seen{}
+				keys[k] = e
+			}
+			e.v.shadowed = true
+		}
+	}
+	out := make(map[string]writtenVersion, len(keys))
+	for k, e := range keys {
+		if e.count > 0 {
+			out[k] = e.v
+		}
+	}
+	return out
 }
 
 func (s *S3) Root() string     { return strings.Trim(s.Prefix, "/") }
@@ -75,7 +179,11 @@ func notFound(err error) bool {
 }
 
 func (s *S3) Get(ctx context.Context, key string) (io.ReadCloser, error) {
-	out, err := s.Client.GetObject(ctx, &s3.GetObjectInput{Bucket: &s.Bucket, Key: &key})
+	in := &s3.GetObjectInput{Bucket: &s.Bucket, Key: &key}
+	if v := s.pinned(ctx, key); v != "" {
+		in.VersionId = aws.String(v)
+	}
+	out, err := s.Client.GetObject(ctx, in)
 	if err != nil {
 		if notFound(err) {
 			return nil, fmt.Errorf("s3://%s/%s: %w", s.Bucket, key, ErrNotFound)
@@ -90,7 +198,11 @@ func (s *S3) GetRange(ctx context.Context, key string, off, n int64) ([]byte, er
 		return nil, nil
 	}
 	rng := fmt.Sprintf("bytes=%d-%d", off, off+n-1)
-	out, err := s.Client.GetObject(ctx, &s3.GetObjectInput{Bucket: &s.Bucket, Key: &key, Range: &rng})
+	in := &s3.GetObjectInput{Bucket: &s.Bucket, Key: &key, Range: &rng}
+	if v := s.pinned(ctx, key); v != "" {
+		in.VersionId = aws.String(v)
+	}
+	out, err := s.Client.GetObject(ctx, in)
 	if err != nil {
 		if notFound(err) {
 			return nil, fmt.Errorf("s3://%s/%s: %w", s.Bucket, key, ErrNotFound)
@@ -106,6 +218,12 @@ func (s *S3) GetRange(ctx context.Context, key string, off, n int64) ([]byte, er
 }
 
 func (s *S3) List(ctx context.Context, prefix string) ([]ObjectInfo, error) {
+	if s.Mode != "" {
+		// A key behind a delete marker is still a backup's object.
+		if out, err := s.listByVersions(ctx, prefix); err == nil {
+			return out, nil
+		}
+	}
 	var out []ObjectInfo
 	p := s3.NewListObjectsV2Paginator(s.Client, &s3.ListObjectsV2Input{Bucket: &s.Bucket, Prefix: &prefix})
 	for p.HasMorePages() {
@@ -115,6 +233,30 @@ func (s *S3) List(ctx context.Context, prefix string) ([]ObjectInfo, error) {
 		}
 		for _, o := range page.Contents {
 			out = append(out, ObjectInfo{Key: aws.ToString(o.Key), Size: aws.ToInt64(o.Size)})
+		}
+	}
+	return out, nil
+}
+
+// listByVersions lists every key under prefix that holds a real version,
+// with its first version's size.
+func (s *S3) listByVersions(ctx context.Context, prefix string) ([]ObjectInfo, error) {
+	var out []ObjectInfo
+	idx := map[string]int{}
+	p := s3.NewListObjectVersionsPaginator(s.Client, &s3.ListObjectVersionsInput{Bucket: &s.Bucket, Prefix: &prefix})
+	for p.HasMorePages() {
+		page, err := p.NextPage(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, v := range page.Versions {
+			k := aws.ToString(v.Key)
+			if i, ok := idx[k]; ok {
+				out[i].Size = aws.ToInt64(v.Size) // older: closer to the first written
+				continue
+			}
+			idx[k] = len(out)
+			out = append(out, ObjectInfo{Key: k, Size: aws.ToInt64(v.Size)})
 		}
 	}
 	return out, nil
@@ -153,11 +295,16 @@ func (s *S3) Extend(ctx context.Context, key string, until time.Time) error {
 	if s.Mode == "" {
 		return nil
 	}
-	head, err := s.Client.HeadObject(ctx, &s3.HeadObjectInput{Bucket: &s.Bucket, Key: &key})
-	if err != nil {
-		return fmt.Errorf("s3://%s/%s: %w", s.Bucket, key, err)
+	// The version the backup wrote, not one put over it since: locking
+	// that would leave the backup's own version unlocked.
+	version := s.pinned(ctx, key)
+	if version == "" {
+		head, err := s.Client.HeadObject(ctx, &s3.HeadObjectInput{Bucket: &s.Bucket, Key: &key})
+		if err != nil {
+			return fmt.Errorf("s3://%s/%s: %w", s.Bucket, key, err)
+		}
+		version = aws.ToString(head.VersionId)
 	}
-	version := aws.ToString(head.VersionId)
 	cur, err := s.Retention(ctx, key, version)
 	if err != nil {
 		return err
@@ -203,6 +350,26 @@ func (s *S3) Children(ctx context.Context, prefix string) ([]string, error) {
 		prefix += "/"
 	}
 	delim := "/"
+	if s.Mode != "" {
+		// A directory whose objects are all behind delete markers is
+		// still there.
+		var out []string
+		p := s3.NewListObjectVersionsPaginator(s.Client, &s3.ListObjectVersionsInput{Bucket: &s.Bucket, Prefix: &prefix, Delimiter: &delim})
+		ok := true
+		for p.HasMorePages() {
+			page, err := p.NextPage(ctx)
+			if err != nil {
+				ok = false
+				break
+			}
+			for _, cp := range page.CommonPrefixes {
+				out = append(out, strings.TrimSuffix(strings.TrimPrefix(aws.ToString(cp.Prefix), prefix), "/"))
+			}
+		}
+		if ok {
+			return out, nil
+		}
+	}
 	var out []string
 	p := s3.NewListObjectsV2Paginator(s.Client, &s3.ListObjectsV2Input{Bucket: &s.Bucket, Prefix: &prefix, Delimiter: &delim})
 	for p.HasMorePages() {

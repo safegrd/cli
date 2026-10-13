@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"filippo.io/age"
+	"github.com/safegrd/cli/pkg/repo/cache"
 	"github.com/safegrd/cli/pkg/repo/catalog"
 	"github.com/safegrd/cli/pkg/repo/check"
 	"github.com/safegrd/cli/pkg/repo/format"
@@ -219,5 +220,36 @@ func TestAnEpochTheStoreDoesNotHoldIsNotContinued(t *testing.T) {
 	c := h.backup(nil)
 	if c.Epoch.EpochID != b.Epoch.EpochID || c.Opened {
 		t.Fatalf("the next run opened epoch %s; want it to continue %s", c.Epoch.EpochID, b.Epoch.EpochID)
+	}
+}
+
+// A drill that found the current epoch's objects damaged or missing marks
+// it, and the next run opens a new epoch and says why. The cache names the
+// damaged blobs as stored, so a run continuing the epoch referenced them
+// again: every backup until the month turned printed "complete" over a
+// snapshot that could not restore.
+func TestAnEpochADrillFoundDamagedIsNotContinued(t *testing.T) {
+	h := newHarness(t)
+	if err := os.WriteFile(filepath.Join(h.src, "f"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a := h.backup(nil)
+	dir := cache.Dir(h.state, a.Epoch.SurfaceID)
+	if err := cache.MarkDamaged(dir, a.Epoch.EpochID, "pack p: blob b does not authenticate"); err != nil {
+		t.Fatal(err)
+	}
+	b := h.backup(nil)
+	if b.Epoch.EpochID == a.Epoch.EpochID || !b.Opened || b.Class != format.ClassOpening {
+		t.Fatalf("after a drill found epoch %s damaged: epoch %s, opened %v, class %s", a.Epoch.EpochID, b.Epoch.EpochID, b.Opened, b.Class)
+	}
+	if !strings.Contains(b.Damaged, "does not authenticate") {
+		t.Fatalf("the run does not say why it opened a new epoch: %q", b.Damaged)
+	}
+	c := h.backup(nil)
+	if c.Epoch.EpochID != b.Epoch.EpochID || c.Damaged != "" {
+		t.Fatalf("the run after continues the new epoch: epoch %s (want %s), damaged %q", c.Epoch.EpochID, b.Epoch.EpochID, c.Damaged)
+	}
+	if _, ok := cache.Damaged(dir, a.Epoch.EpochID); ok {
+		t.Fatal("the mark outlived the damaged epoch's cache")
 	}
 }

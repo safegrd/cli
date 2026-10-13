@@ -205,9 +205,9 @@ exits at once.`,
 
 			// Singleton daemon process lock
 			daemonLockPath := filepath.Join(lockDir, "daemon.lock")
-			releaseDaemonLock, err := acquireLock(daemonLockPath, "daemon", "")
+			releaseDaemonLock, err := acquireLock(daemonLockPath, daemonLockID, "")
 			if err != nil {
-				return fmt.Errorf("daemon is already running: %w", err)
+				return err
 			}
 			defer releaseDaemonLock()
 
@@ -365,9 +365,36 @@ func isPIDAlive(pid int) bool {
 		return false
 	}
 	// Signal 0 checks process existence without killing it on Unix
-	err = proc.Signal(syscall.Signal(0))
-	return err == nil
+	if err := proc.Signal(syscall.Signal(0)); err != nil {
+		return false
+	}
+	// A zombie answers signal 0 too. In a container whose first process
+	// does not reap its children, a backup that was killed stays one.
+	return !pidZombie(pid)
 }
+
+// pidZombie reports whether /proc says pid has exited and is waiting to be
+// reaped. Where there is no /proc it says no.
+func pidZombie(pid int) bool {
+	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return false
+	}
+	// pid (comm) state …: comm may hold spaces and parentheses, so the
+	// state is the field after the last ')'.
+	i := bytes.LastIndexByte(b, ')')
+	if i < 0 || i+2 >= len(b) {
+		return false
+	}
+	return b[i+2] == 'Z'
+}
+
+// heldHere holds the paths of the locks this process has taken and not
+// released.
+var heldHere sync.Map
+
+// daemonLockID is the name the daemon's own lock is taken under.
+const daemonLockID = "daemon"
 
 func acquireLock(lockPath, surfaceID, snapshotID string) (func(), error) {
 	info := LockInfo{
@@ -392,7 +419,8 @@ func acquireLock(lockPath, surfaceID, snapshotID string) (func(), error) {
 				_ = os.Remove(lockPath) // best effort: we created it and could not fill it
 				return nil, fmt.Errorf("failed to write lockfile %s: %w", lockPath, werr)
 			}
-			return func() { releaseLockFile(lockPath, mine) }, nil
+			heldHere.Store(lockPath, true)
+			return func() { heldHere.Delete(lockPath); releaseLockFile(lockPath, mine) }, nil
 		}
 		if !os.IsExist(err) {
 			return nil, fmt.Errorf("failed to create lockfile %s: %w", lockPath, err)
@@ -425,7 +453,20 @@ func heldLock(lockPath, surfaceID string) ([]byte, error) {
 		}
 		return data, nil
 	}
-	if isPIDAlive(lock.PID) && time.Since(lock.StartTime) <= 2*time.Hour {
+	// A lock naming this process was left by an earlier process that had
+	// the same PID: the daemon is PID 1 in its container, and a container
+	// restarted after a crash finds its own PID in the lock it left.
+	// This process's own locks are in heldHere; one naming its PID that it
+	// does not hold is the earlier process's.
+	if _, mine := heldHere.Load(lockPath); (lock.PID == os.Getpid() && !mine) || !isPIDAlive(lock.PID) {
+		return data, nil
+	}
+	if surfaceID == daemonLockID {
+		// The daemon runs for as long as the host is up: its lock has no age
+		// limit.
+		return nil, fmt.Errorf("another daemon is running as PID %d (started %s)", lock.PID, lock.StartTime.Format(time.RFC3339))
+	}
+	if time.Since(lock.StartTime) <= 2*time.Hour {
 		return nil, fmt.Errorf("surface %s backup is already in-progress by PID %d (started %s)", surfaceID, lock.PID, lock.StartTime.Format(time.RFC3339))
 	}
 	return data, nil
@@ -447,7 +488,11 @@ func reclaimStaleLock(lockPath string, stale []byte, surfaceID string) error {
 	if err == nil && bytes.Equal(moved, stale) {
 		var lock LockInfo
 		if json.Unmarshal(stale, &lock) == nil {
-			fmt.Fprintf(os.Stderr, "Warning: reclaiming stale lock for surface %s (previous PID %d dead or timed out)\n", surfaceID, lock.PID)
+			if surfaceID == daemonLockID {
+				fmt.Fprintf(os.Stderr, "Warning: taking over the daemon lock an earlier daemon left (PID %d)\n", lock.PID)
+			} else {
+				fmt.Fprintf(os.Stderr, "Warning: reclaiming stale lock for surface %s (previous PID %d dead or timed out)\n", surfaceID, lock.PID)
+			}
 		}
 		return os.Remove(aside)
 	}

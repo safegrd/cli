@@ -289,12 +289,13 @@ func runRepoDatabaseBackup(ctx context.Context, p repoDBParams) (*model.Snapshot
 		OnStart: func(r *write.Result) {
 			priorRaw, canCarry = r.PriorState, r.CanCarry
 			if r.Opened {
-				fmt.Fprintf(out, "%s Epoch %s opened (%s). %s is uploaded%s.\n", label, r.Epoch.EpochID, reasonText(r.Reason),
+				fmt.Fprintf(out, "%s Epoch %s opened (%s). %s is uploaded%s.\n", label, r.Epoch.EpochID, openedWhy(r),
 					strings.ToUpper(everything[:1])+everything[1:], onceThisMonth(r.Epoch))
 			}
 			if r.Resumed {
-				fmt.Fprintf(out, "%s Resuming epoch %s: %d %s (%s) already uploaded are reused.\n", label, r.Epoch.EpochID,
-					r.AdoptedPacks, pluralWord(int64(r.AdoptedPacks), "pack", "packs"), formatBytes(r.AdoptedBytes))
+				fmt.Fprintf(out, "%s Resuming epoch %s: %d %s (%s) already uploaded %s reused.\n", label, r.Epoch.EpochID,
+					r.AdoptedPacks, pluralWord(int64(r.AdoptedPacks), "pack", "packs"), formatBytes(r.AdoptedBytes),
+					pluralWord(int64(r.AdoptedPacks), "is", "are"))
 			}
 			if !r.Opened && !r.Resumed {
 				// Said so: only a first run said anything about the epoch.
@@ -784,6 +785,17 @@ func restoreRepoDatabase(ctx context.Context, rs *repoSnapshot, privateKey, targ
 		len(got.TableStats), pluralWord(int64(len(got.TableStats)), "table", "tables"), formatNumber(rows), id,
 		shortDuration(time.Since(started)))
 	printCreatedRoles(restorer.CreatedRoles)
+	for _, t := range got.TableStats {
+		if t.Schema == "safegrd" {
+			// The change log came with the database: its trigger on every
+			// table goes on logging each write, and only a backup with the
+			// change log on clears the log.
+			fmt.Printf("   Change log:     restored with the database (schema safegrd and a trigger on each table).\n" +
+				"                   If this database will not be backed up with change_log: true, remove it:\n" +
+				"                   DROP SCHEMA safegrd CASCADE;\n")
+			break
+		}
+	}
 	return nil
 }
 
@@ -894,6 +906,7 @@ func verifyRepoDatabase(ctx context.Context, rs *repoSnapshot, privateKey, sandb
 	if err != nil {
 		return err
 	}
+	noteDrillDamage(resolveStateDir("", cfg), rs.SurfaceID, rs, report)
 	for _, a := range report.Assertions {
 		status := "PASS"
 		if !a.Passed {

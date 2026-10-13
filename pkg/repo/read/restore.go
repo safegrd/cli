@@ -102,7 +102,8 @@ func (r *Repo) Restore(ctx context.Context, s format.Snapshot, idx Index, o Rest
 		items = kept
 	}
 	if len(o.Paths) > 0 && len(items) == 0 {
-		return nil, fmt.Errorf("nothing in snapshot %s matches %s", s.SnapshotID, strings.Join(o.Paths, ", "))
+		return nil, fmt.Errorf("nothing in snapshot %s matches %s: a path is relative to /, and this snapshot holds %s (so %s/...)",
+			s.SnapshotID, strings.Join(o.Paths, ", "), strings.Join(s.Roots, ", "), strings.TrimPrefix(s.Roots[0], "/"))
 	}
 
 	target, created, err := prepareTarget(o.Target)
@@ -453,6 +454,23 @@ func checkFile(p string, n format.Node) error {
 	return nil
 }
 
+// restoredMode is the mode a restored entry gets: its permission bits and
+// the sticky bit, and setuid and setgid only when its owner was restored too.
+// A setuid file restored as the person running the restore would run as them.
+func restoredMode(n format.Node, owned bool) fs.FileMode {
+	m := fs.FileMode(n.Mode).Perm()
+	if n.Mode&0o1000 != 0 {
+		m |= fs.ModeSticky
+	}
+	if owned && n.Mode&0o4000 != 0 {
+		m |= fs.ModeSetuid
+	}
+	if owned && n.Mode&0o2000 != 0 {
+		m |= fs.ModeSetgid
+	}
+	return m
+}
+
 func applyMeta(p string, n format.Node, chown, times bool) error {
 	if chown && n.UID != nil && n.GID != nil {
 		if err := os.Lchown(p, int(*n.UID), int(*n.GID)); err != nil {
@@ -460,7 +478,7 @@ func applyMeta(p string, n format.Node, chown, times bool) error {
 		}
 	}
 	// After the owner: a chown may clear permission bits.
-	if err := os.Chmod(p, fs.FileMode(n.Mode).Perm()); err != nil {
+	if err := os.Chmod(p, restoredMode(n, chown && n.UID != nil && n.GID != nil)); err != nil {
 		return fmt.Errorf("setting the mode of %s: %w", p, err)
 	}
 	if times && !n.ModTime.IsZero() {

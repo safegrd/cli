@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -135,6 +136,43 @@ func TestDaemonLockingAndStaleRecovery(t *testing.T) {
 		t.Fatalf("expected stale lock to be reclaimed, got: %v", err)
 	}
 	release2()
+}
+
+// A lock that names this process's PID and that this process did not take
+// was left by an earlier process with the same PID: in a container the
+// daemon is PID 1, and after a crash the restarted daemon found its own PID
+// in the lock and refused to start for two hours. A zombie's PID answers
+// signal 0, so it counted as running too.
+func TestALockLeftUnderThisProcesssPIDIsStale(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "daemon.lock")
+	left, _ := json.Marshal(LockInfo{PID: os.Getpid(), StartTime: time.Now().UTC(), SurfaceID: daemonLockID})
+	if err := os.WriteFile(lockPath, left, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	release, err := acquireLock(lockPath, daemonLockID, "")
+	if err != nil {
+		t.Fatalf("a lock left under this PID by an earlier process was refused: %v", err)
+	}
+	// Held by this process now: a second take in the same process is refused.
+	if _, err := acquireLock(lockPath, daemonLockID, ""); err == nil {
+		t.Fatal("a lock this process holds was taken twice")
+	}
+	release()
+}
+
+// The daemon's lock has no age limit: a daemon runs for as long as the host
+// is up, and after two hours a second daemon took its lock over.
+func TestALiveDaemonsLockIsHeldPastTwoHours(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "daemon.lock")
+	parent := os.Getppid()
+	old, _ := json.Marshal(LockInfo{PID: parent, StartTime: time.Now().UTC().Add(-5 * time.Hour), SurfaceID: daemonLockID})
+	if err := os.WriteFile(lockPath, old, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := acquireLock(lockPath, daemonLockID, "")
+	if err == nil || !strings.Contains(err.Error(), "another daemon is running") {
+		t.Fatalf("a live daemon's lock from 5 hours ago: %v", err)
+	}
 }
 
 func TestDaemonStatePersistence(t *testing.T) {

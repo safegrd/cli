@@ -18,6 +18,7 @@ import (
 	"github.com/safegrd/cli/pkg/config"
 	"github.com/safegrd/cli/pkg/dump"
 	"github.com/safegrd/cli/pkg/model"
+	"github.com/safegrd/cli/pkg/repo/cache"
 	"github.com/safegrd/cli/pkg/repo/check"
 	"github.com/safegrd/cli/pkg/repo/format"
 	"github.com/safegrd/cli/pkg/repo/policy"
@@ -141,6 +142,62 @@ type repoParams struct {
 	Kept *sink.KeptRule
 }
 
+// openedWhy says why a run opened its epoch, for the line that says so.
+func openedWhy(r *write.Result) string {
+	if r.Damaged != "" {
+		why := r.Damaged
+		if len(why) > 100 {
+			why = why[:100] + "..."
+		}
+		return "the last drill found objects of the previous epoch damaged or missing: " + why
+	}
+	return reasonText(r.Reason)
+}
+
+// drillDamageMarks are what a drill's failure says when stored objects are
+// damaged or missing, as opposed to this host failing to restore them.
+var drillDamageMarks = []string{"does not authenticate", "is missing", "shorter than its index", "is in no index",
+	"not found", "No such object", "does not parse"}
+
+// drillFoundDamage returns the failed check of a repository drill that names
+// damaged or missing objects in storage.
+func drillFoundDamage(report *model.VerificationReport) (string, bool) {
+	if report == nil || report.Status == model.VerificationStatusPassed {
+		return "", false
+	}
+	for _, a := range report.Assertions {
+		if a.Passed {
+			continue
+		}
+		text := a.Actual + " " + a.Message
+		if a.Name == "RepositoryIntegrity" {
+			return strings.TrimSpace(a.Actual), true
+		}
+		for _, m := range drillDamageMarks {
+			if strings.Contains(text, m) {
+				return strings.TrimSpace(a.Actual), true
+			}
+		}
+	}
+	return "", false
+}
+
+// noteDrillDamage marks the drilled snapshot's epoch damaged when the drill
+// found its stored objects damaged or missing, so the surface's next backup
+// opens a new epoch instead of referencing them again. Every backup until
+// then would have printed "complete" over a snapshot that cannot restore.
+func noteDrillDamage(stateDir, surfaceID string, rs *repoSnapshot, report *model.VerificationReport) {
+	why, ok := drillFoundDamage(report)
+	if !ok || rs == nil {
+		return
+	}
+	if err := cache.MarkDamaged(cache.Dir(stateDir, surfaceID), rs.Epoch.Epoch.EpochID, why); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: %s: the drill found stored objects damaged or missing, and this host could not record it (%v). Run 'safegrd backup --surface %s --new-epoch' so the next backup uploads everything again.\n", surfaceID, err, surfaceID)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "Warning: %s: the drill found stored objects of epoch %s damaged or missing. The next backup starts a new epoch and uploads everything once.\n", surfaceID, rs.Epoch.Epoch.EpochID)
+}
+
 func reasonText(reason string) string {
 	switch reason {
 	case format.ReasonFirst:
@@ -229,11 +286,12 @@ func runRepoBackup(ctx context.Context, p repoParams) (*model.SnapshotMetadata, 
 		NewEpoch: p.NewEpoch, Rescan: p.Rescan, Host: host, SnapshotID: p.SnapshotID,
 		OnStart: func(r *write.Result) {
 			if r.Opened {
-				fmt.Fprintf(out, "%s Epoch %s opened (%s). Every file is uploaded%s.\n", label, r.Epoch.EpochID, reasonText(r.Reason), onceThisMonth(r.Epoch))
+				fmt.Fprintf(out, "%s Epoch %s opened (%s). Every file is uploaded%s.\n", label, r.Epoch.EpochID, openedWhy(r), onceThisMonth(r.Epoch))
 			}
 			if r.Resumed {
-				fmt.Fprintf(out, "%s Resuming epoch %s: %d %s (%s) already uploaded are reused.\n", label, r.Epoch.EpochID,
-					r.AdoptedPacks, pluralWord(int64(r.AdoptedPacks), "pack", "packs"), formatBytes(r.AdoptedBytes))
+				fmt.Fprintf(out, "%s Resuming epoch %s: %d %s (%s) already uploaded %s reused.\n", label, r.Epoch.EpochID,
+					r.AdoptedPacks, pluralWord(int64(r.AdoptedPacks), "pack", "packs"), formatBytes(r.AdoptedBytes),
+					pluralWord(int64(r.AdoptedPacks), "is", "are"))
 			}
 			if !r.Opened && !r.Resumed {
 				fmt.Fprintf(out, "%s Incremental, in epoch %s: only what changed since the last run is uploaded.\n", label, r.Epoch.EpochID)
@@ -547,7 +605,7 @@ func restoreRepoSnapshot(ctx context.Context, rs *repoSnapshot, privateKey, targ
 		fmt.Printf("   Also %d %s and %d %s.\n", res.Dirs, pluralWord(res.Dirs, "directory", "directories"), res.Symlinks, pluralWord(res.Symlinks, "symlink", "symlinks"))
 	}
 	fmt.Printf("   Destination:    %s\n", targetDir)
-	printFileRestoreLimits(&dump.FileExtractionResult{OwnershipRestored: res.OwnershipRestored, OwnershipNote: res.OwnershipNote})
+	printFileRestoreLimits(&dump.FileExtractionResult{OwnershipRestored: res.OwnershipRestored, OwnershipNote: res.OwnershipNote}, true)
 	return nil
 }
 
@@ -598,6 +656,7 @@ func verifyRepoSnapshot(ctx context.Context, rs *repoSnapshot, privateKey string
 	if err != nil {
 		return err
 	}
+	noteDrillDamage(resolveStateDir("", cfg), rs.SurfaceID, rs, report)
 	for _, a := range report.Assertions {
 		status := "PASS"
 		if !a.Passed {
