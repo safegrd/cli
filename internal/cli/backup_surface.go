@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -22,7 +23,7 @@ import (
 // write over what this run saved. The worst that does is a scheduled backup
 // sooner than it needed to be; the surface lock still keeps the two from
 // backing up the same surface at once.
-func backupNamedSurface(ctx context.Context, c *config.CLIConfig, surfaceID string, newEpoch, rescan bool) error {
+func backupNamedSurface(ctx context.Context, c *config.CLIConfig, surfaceID string, newEpoch, rescan, jsonOut bool) error {
 	var surface *config.SurfaceConfig
 	var ids []string
 	for i := range c.Surfaces {
@@ -73,6 +74,14 @@ func backupNamedSurface(ctx context.Context, c *config.CLIConfig, surfaceID stri
 	}
 	sState.newEpoch, sState.rescan = newEpoch, rescan
 
+	// With --json, stdout carries the snapshot's record and nothing else:
+	// the run's progress goes to stderr. A script could not read whether a
+	// scheduled backup was locked.
+	stdout := os.Stdout
+	if jsonOut {
+		os.Stdout = os.Stderr
+		defer func() { os.Stdout = stdout }()
+	}
 	fmt.Printf("Surface %s (%s): backing up now.\n", surface.ID, surface.Type)
 	fetchHeldSurfaceSecret(ctx, c, nodeID, surface)
 	attempted := sState.LastAttempt
@@ -102,6 +111,14 @@ func backupNamedSurface(ctx context.Context, c *config.CLIConfig, surfaceID stri
 	if sState.LastError != "" {
 		// The backup is taken; what follows is about its report or its hook.
 		fmt.Fprintf(os.Stderr, "Warning: Surface %s: %s %s\n", surface.ID, sState.BackupReason.Words(), sState.LastError)
+	}
+	if jsonOut {
+		if meta == nil {
+			return fmt.Errorf("surface %s: the backup recorded no snapshot", surface.ID)
+		}
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(meta)
 	}
 	return nil
 }

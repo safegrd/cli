@@ -82,7 +82,7 @@ and never leaves this host.`,
 			// database as a surface, and `safegrd backup` is the next step the
 			// docs give. With several, one has to be named.
 			oneOffFlag := ""
-			for _, f := range []string{"json", "tag", "retention-days", "s3-bucket", "s3-prefix", "s3-region", "s3-endpoint", "s3-access-key", "s3-secret-key", "format", "one-filesystem", "source-endpoint", "source-region", "source-access-key", "source-secret-key"} {
+			for _, f := range []string{"tag", "retention-days", "s3-bucket", "s3-prefix", "s3-region", "s3-endpoint", "s3-access-key", "s3-secret-key", "format", "one-filesystem", "source-endpoint", "source-region", "source-access-key", "source-secret-key"} {
 				if oneOffFlag == "" && cmd.Flags().Changed(f) {
 					oneOffFlag = f
 				}
@@ -109,19 +109,19 @@ and never leaves this host.`,
 				}
 			}
 			if surfaceID != "" {
-				for _, f := range []string{"database-url", "files", "email", "json", "tag", "retention-days", "s3-bucket", "s3-prefix", "s3-region", "s3-endpoint", "s3-access-key", "s3-secret-key", "format", "one-filesystem", "source-endpoint", "source-region", "source-access-key", "source-secret-key"} {
+				for _, f := range []string{"database-url", "files", "email", "tag", "retention-days", "s3-bucket", "s3-prefix", "s3-region", "s3-endpoint", "s3-access-key", "s3-secret-key", "format", "one-filesystem", "source-endpoint", "source-region", "source-access-key", "source-secret-key"} {
 					if cmd.Flags().Changed(f) {
 						return fmt.Errorf("--surface backs up the surface as the config defines it; leave out --%s", f)
 					}
 				}
-				return backupNamedSurface(ctx, cfg, surfaceID, newEpoch, rescan)
+				return backupNamedSurface(ctx, cfg, surfaceID, newEpoch, rescan, jsonOutput)
 			}
 			// The database a configured surface names is backed up as that
 			// surface: a one-off --database-url started a second history and a
 			// second console row for one database.
 			if s := surfaceForDatabaseURL(cfg, dbURL); s != nil && !jsonOutput && !cmd.Flags().Changed("format") {
 				fmt.Printf("This database is surface %s in the config, so it is backed up as that surface.\n", s.ID)
-				return backupNamedSurface(ctx, cfg, s.ID, newEpoch, rescan)
+				return backupNamedSurface(ctx, cfg, s.ID, newEpoch, rescan, false)
 			}
 
 			// Resolve storage according to the routing precedence rule:
