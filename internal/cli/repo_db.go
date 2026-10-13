@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -35,6 +36,18 @@ import (
 // the same repository, whatever password or options the URL carries, or
 // whichever path names a SQLite file.
 func repoDatabaseSurfaceID(databaseURL string) string {
+	if dump.IsMySQLURL(databaseURL) || dump.IsMongoURL(databaseURL) {
+		prefix := "mysql-"
+		if dump.IsMongoURL(databaseURL) {
+			prefix = "mongodb-"
+		}
+		key := databaseURL
+		if u, err := url.Parse(databaseURL); err == nil {
+			key = prefix + strings.ToLower(u.Host) + u.Path
+		}
+		sum := sha256.Sum256([]byte(key))
+		return prefix + hex.EncodeToString(sum[:])[:12]
+	}
 	if dump.IsSQLiteURL(databaseURL) {
 		key := databaseURL
 		if p, err := dump.SQLitePath(databaseURL); err == nil {
@@ -55,9 +68,22 @@ func repoDatabaseSurfaceID(databaseURL string) string {
 }
 
 // repoDatabaseKind reports whether a database backs up as a run of its
-// repository: PostgreSQL and SQLite do; MySQL and MongoDB are one archive.
+// repository: every engine does, PostgreSQL as one file per table, SQLite
+// as its file, MySQL as the dump cut per table, MongoDB as one file per
+// collection.
 func repoDatabaseKind(t model.SurfaceType) bool {
-	return t == model.SurfaceTypePostgres || t == model.SurfaceTypeSQLite
+	return t == model.SurfaceTypePostgres || t == model.SurfaceTypeSQLite || t == model.SurfaceTypeMySQL || t == model.SurfaceTypeMongoDB
+}
+
+// runUnit names what a run of kind is made of, for its output lines.
+func runUnit(kind model.SurfaceType) (everything, table, tables, rows string) {
+	switch kind {
+	case model.SurfaceTypeSQLite:
+		return "the whole database", "table", "tables", "rows"
+	case model.SurfaceTypeMongoDB:
+		return "every collection", "collection", "collections", "documents"
+	}
+	return "every table", "table", "tables", "rows"
 }
 
 // repoDBParams are one database backup into a repository.
@@ -94,7 +120,9 @@ type repoDBParams struct {
 // runRepoDatabaseBackup dumps a database into its repository as one
 // snapshot, and returns the metadata it recorded in the sidecar: PostgreSQL
 // as one file per section and per table, SQLite as its database file copied
-// page for page. Reporting it to the remote server is the caller's.
+// page for page, MySQL as the dump tool's stream cut per table, MongoDB as
+// mongodump's archive taken apart per collection. Reporting it to the
+// remote server is the caller's.
 func runRepoDatabaseBackup(ctx context.Context, p repoDBParams) (*model.SnapshotMetadata, *write.Result, error) {
 	out := p.Out
 	if out == nil {
@@ -102,15 +130,14 @@ func runRepoDatabaseBackup(ctx context.Context, p repoDBParams) (*model.Snapshot
 	}
 	kind := dump.SurfaceTypeOfURL(p.DatabaseURL)
 	if !repoDatabaseKind(kind) {
-		return nil, nil, fmt.Errorf("--format repo backs up PostgreSQL and SQLite databases and files; this database is backed up as one archive (leave out --format)")
+		return nil, nil, fmt.Errorf("--format repo backs up a PostgreSQL, MySQL, MongoDB or SQLite database, or files")
 	}
 	if p.ChangeLog && kind != model.SurfaceTypePostgres {
 		return nil, nil, fmt.Errorf("the change log applies to a PostgreSQL database")
 	}
 	// What a run that cannot reuse the epoch uploads again.
-	everything := "every table"
+	everything, tableWord, tablesWord, rowsWord := runUnit(kind)
 	if kind == model.SurfaceTypeSQLite {
-		everything = "the whole database"
 		// Before anything is opened in storage: a mistyped path opened an
 		// epoch on the remote server, and printed "Epoch opened", before
 		// the dump found no file.
@@ -141,11 +168,20 @@ func runRepoDatabaseBackup(ctx context.Context, p repoDBParams) (*model.Snapshot
 	var dumpMeta, meta *model.SnapshotMetadata
 	var source write.Source
 	var dumper *dump.NativeDumper
-	if kind == model.SurfaceTypeSQLite {
+	switch kind {
+	case model.SurfaceTypeSQLite:
 		sd := dump.NewSQLiteDumper(p.DatabaseURL)
 		sd.PageCopy = true
 		source = dbrun.Source(sd, "", &dumpMeta)
-	} else {
+	case model.SurfaceTypeMySQL:
+		md := dump.NewMySQLDumper(p.DatabaseURL)
+		md.PerTable = true
+		source = dbrun.Source(md, "", &dumpMeta)
+	case model.SurfaceTypeMongoDB:
+		md := dump.NewMongoDumper(p.DatabaseURL)
+		md.PerCollection = true
+		source = dbrun.Source(md, "", &dumpMeta)
+	default:
 		dumper = dump.NewNativeDumper(p.DatabaseURL)
 		dumper.RolesWithoutPasswords = p.RolesWithoutPasswords
 		source = dbrun.Source(dumper, "", &dumpMeta)
@@ -279,7 +315,7 @@ func runRepoDatabaseBackup(ctx context.Context, p repoDBParams) (*model.Snapshot
 			m.TableStats = append([]model.TableStat(nil), dumpMeta.TableStats...)
 			for i := range m.TableStats {
 				t := &m.TableStats[i]
-				if n, ok := r.NewBytes["data/"+t.Schema+"/"+t.TableName+".copy"]; ok {
+				if n, ok := r.NewBytes[dbrun.TablePath(kind, t.Schema, t.TableName)]; ok {
 					t.NewBytes = &n
 				}
 			}
@@ -300,8 +336,8 @@ func runRepoDatabaseBackup(ctx context.Context, p repoDBParams) (*model.Snapshot
 	if res.RecoveryWarning != "" {
 		fmt.Fprintf(os.Stderr, "Warning: %s %s\n", label, res.RecoveryWarning)
 	}
-	fmt.Fprintf(out, "%s %d %s, %s rows, %s read, %s stored in %d %s, %s.\n", label, meta.TotalTables,
-		pluralWord(int64(meta.TotalTables), "table", "tables"), formatNumber(meta.TotalRows), formatBytes(res.ReadBytes),
+	fmt.Fprintf(out, "%s %d %s, %s %s, %s read, %s stored in %d %s, %s.\n", label, meta.TotalTables,
+		pluralWord(int64(meta.TotalTables), tableWord, tablesWord), formatNumber(meta.TotalRows), rowsWord, formatBytes(res.ReadBytes),
 		formatBytes(res.WrittenBytes), res.Snapshot.Stats.NewPacks, pluralWord(res.Snapshot.Stats.NewPacks, "pack", "packs"),
 		shortDuration(time.Since(started)))
 	if p.ChangeLog && plan != nil {
@@ -351,6 +387,9 @@ func restoreRepo(ctx context.Context, rs *repoSnapshot, privateKey, targetDir, t
 		}
 		if rs.Meta.SurfaceType == model.SurfaceTypeSQLite {
 			return fmt.Errorf("snapshot %s is a SQLite snapshot; --to-sql reads PostgreSQL snapshots only. Restore it with --target sqlite:///path/new.db and open that file", id)
+		}
+		if kind := rs.Meta.SurfaceType; kind != "" && kind != model.SurfaceTypePostgres {
+			return fmt.Errorf("snapshot %s is a %s snapshot; --to-sql reads PostgreSQL snapshots only", id, kind)
 		}
 		if len(tables) > 0 || len(paths) > 0 {
 			return fmt.Errorf("--to-sql writes the whole snapshot; leave out --table and --path")
@@ -405,6 +444,16 @@ func restoreRepo(ctx context.Context, rs *repoSnapshot, privateKey, targetDir, t
 		}
 		fmt.Printf("Restoring %s (epoch %s, %s) into %s\n", id, rs.Epoch.Epoch.EpochID, rs.SurfaceID, dump.RedactURL(targetURL))
 		return restoreRepoSQLite(ctx, rs, privateKey, targetURL)
+	}
+	if kind := rs.Meta.SurfaceType; kind == model.SurfaceTypeMySQL || kind == model.SurfaceTypeMongoDB {
+		if len(tables) > 0 {
+			return fmt.Errorf("--table restores tables of a PostgreSQL snapshot; %s is a %s snapshot and restores whole", id, kind)
+		}
+		if dump.SurfaceTypeOfURL(targetURL) != kind {
+			return fmt.Errorf("snapshot %s is a %s snapshot; --target must be an empty %s database", id, kind, kind)
+		}
+		fmt.Printf("Restoring %s (epoch %s, %s) into %s\n", id, rs.Epoch.Epoch.EpochID, rs.SurfaceID, dump.RedactURL(targetURL))
+		return restoreRepoEngine(ctx, rs, privateKey, targetURL)
 	}
 	if dump.SurfaceTypeOfURL(targetURL) != model.SurfaceTypePostgres {
 		return fmt.Errorf("snapshot %s is a PostgreSQL snapshot; --target must be a PostgreSQL database", id)
@@ -770,6 +819,46 @@ func restoreRepoSQLite(ctx context.Context, rs *repoSnapshot, privateKey, target
 	return nil
 }
 
+// restoreRepoEngine loads a MySQL or MongoDB run into an empty database
+// through its engine's restorer, which reads the run as the archive it was
+// taken from: every file checked against its SHA-256 as it is read, and the
+// content root against the one recorded at backup time before any is.
+// MySQL commits each statement as it goes and mongorestore each document,
+// so a failure part way leaves what loaded in the target, which the
+// restorer's own error says.
+func restoreRepoEngine(ctx context.Context, rs *repoSnapshot, privateKey, targetURL string) error {
+	id := rs.Meta.SnapshotID
+	r, idx, files, err := openRun(ctx, rs, privateKey)
+	if err != nil {
+		return err
+	}
+	started := time.Now()
+	pr, pw := io.Pipe()
+	archived := make(chan error, 1)
+	go func() {
+		err := dbrun.Archive(ctx, r, idx, files, pw)
+		_ = pw.CloseWithError(err)
+		archived <- err
+	}()
+	got, err := dump.NewRestorer(dump.EngineTypeNative, targetURL).Restore(ctx, pr)
+	_, _ = io.Copy(io.Discard, pr) // the rest of the run, checked to its end
+	if aerr := <-archived; aerr != nil && err == nil {
+		err = fmt.Errorf("reading the snapshot back: %w", aerr)
+	}
+	if err != nil {
+		return fmt.Errorf("restore failed: %w", err)
+	}
+	_, tableWord, tablesWord, rowsWord := runUnit(rs.Meta.SurfaceType)
+	var rows int64
+	for _, t := range got.TableStats {
+		rows += t.RowCount
+	}
+	fmt.Printf("Restored %d %s, %s %s, from %s in %s. Every file matched its SHA-256, and every %s its count.\n",
+		len(got.TableStats), pluralWord(int64(len(got.TableStats)), tableWord, tablesWord), formatNumber(rows), rowsWord, id,
+		shortDuration(time.Since(started)), tableWord)
+	return nil
+}
+
 // verifyRepoDatabase drills one database run, in memory or into a sandbox,
 // and prints it the way verify prints every drill.
 func verifyRepoDatabase(ctx context.Context, rs *repoSnapshot, privateKey, sandboxURL string, checks []model.DrillCheck) error {
@@ -780,8 +869,9 @@ func verifyRepoDatabase(ctx context.Context, rs *repoSnapshot, privateKey, sandb
 	}
 	id := rs.Meta.SnapshotID
 	if sandboxURL == "" {
-		fmt.Printf("Verifying %s (epoch %s, %s): checking the packs, reading every table back, restoring it in memory.\n",
-			id, rs.Epoch.Epoch.EpochID, rs.SurfaceID)
+		everything, _, _, _ := runUnit(rs.Meta.SurfaceType)
+		fmt.Printf("Verifying %s (epoch %s, %s): checking the packs, reading %s back, restoring it in memory.\n",
+			id, rs.Epoch.Epoch.EpochID, rs.SurfaceID, everything)
 	} else {
 		fmt.Printf("Verifying %s (epoch %s, %s): checking the packs, restoring it into %s.\n",
 			id, rs.Epoch.Epoch.EpochID, rs.SurfaceID, dump.RedactURL(sandboxURL))

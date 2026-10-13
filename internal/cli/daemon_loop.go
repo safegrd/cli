@@ -368,11 +368,11 @@ func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, d pendingDrill
 	// A surface whose last snapshot is still an archive from before it was
 	// incremental takes the archive's drill.
 	var rs *repoSnapshot
-	// A PostgreSQL or SQLite surface is a run of its repository unless it
-	// says format: tar.
+	// A database or files surface is a run of its repository unless it says
+	// format: tar.
 	notTar := !strings.EqualFold(strings.TrimSpace(s.Format), formatTar)
 	// A Laravel app is always a run of its repository.
-	if strings.EqualFold(s.Type, "laravel") || notTar && (strings.EqualFold(s.Type, "files") || surfaceIsPostgres(s) || strings.EqualFold(s.Type, "sqlite") || strings.TrimSpace(s.Type) == "") {
+	if strings.EqualFold(s.Type, "laravel") || notTar && (strings.EqualFold(s.Type, "files") || surfaceIsDatabase(s) || strings.TrimSpace(s.Type) == "") {
 		rs = repoDrillTarget(ctx, c, storageCfg, snapshotID)
 	}
 	dbRun := rs != nil && runner.IsRepoDatabase(rs.Meta)
@@ -555,6 +555,12 @@ func recordedSnapshot(ctx context.Context, c *config.CLIConfig, snapshotID strin
 // surfaceIsPostgres reports whether s backs up a PostgreSQL database.
 func surfaceIsPostgres(s *config.SurfaceConfig) bool {
 	return model.SurfaceType(strings.ToLower(s.Type)) == model.SurfaceTypePostgres
+}
+
+// surfaceIsDatabase reports whether a surface is one of the database
+// engines a run of a repository holds.
+func surfaceIsDatabase(s *config.SurfaceConfig) bool {
+	return repoDatabaseKind(model.SurfaceType(strings.ToLower(s.Type)))
 }
 
 // startLocalSandbox starts a throwaway cluster for the snapshot's drill, or

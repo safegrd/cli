@@ -251,10 +251,19 @@ func (sh *mongoShape) columns() []model.ColumnStat {
 	return out
 }
 
+// mongoArchiveSink is handed the archive's parts as readMongoArchive walks
+// it: the prelude as one piece once it ends, each document with its
+// namespace, and each namespace's end. nil reads for the counts alone.
+type mongoArchiveSink interface {
+	prelude(raw []byte, collections, views []string) error
+	doc(ns string, raw []byte) error
+	end(ns string) error
+}
+
 // readMongoArchive reads a whole mongodump archive: the prelude, then the
 // interleaved namespace blocks, counting each collection's documents and
 // checking each namespace's CRC as it ends.
-func readMongoArchive(r io.Reader) (*mongoArchiveStats, error) {
+func readMongoArchive(r io.Reader, sink mongoArchiveSink) (*mongoArchiveStats, error) {
 	br := bufio.NewReaderSize(r, 1<<20)
 	st := &mongoArchiveStats{Docs: map[string]int64{}, DocBytes: map[string]int64{}, Shapes: map[string]*mongoShape{}, Ended: map[string]bool{}}
 	var magic [4]byte
@@ -301,6 +310,10 @@ func readMongoArchive(r io.Reader) (*mongoArchiveStats, error) {
 		return st, fmt.Errorf("the archive has no header")
 	}
 	st.ServerVersion, st.ToolVersion = str(header, "server_version"), str(header, "tool_version")
+	var preludeRaw []byte
+	if sink != nil {
+		preludeRaw = append(preludeRaw, header...)
+	}
 	for {
 		d, term, err := next()
 		if err != nil {
@@ -308,6 +321,9 @@ func readMongoArchive(r io.Reader) (*mongoArchiveStats, error) {
 		}
 		if term {
 			break
+		}
+		if sink != nil {
+			preludeRaw = append(preludeRaw, d...)
 		}
 		ns := str(d, "db") + "." + str(d, "collection")
 		meta := str(d, "metadata")
@@ -317,6 +333,11 @@ func readMongoArchive(r io.Reader) (*mongoArchiveStats, error) {
 		}
 		st.Collections = append(st.Collections, ns)
 		st.Docs[ns] = 0
+	}
+	if sink != nil {
+		if err := sink.prelude(preludeRaw, st.Collections, st.Views); err != nil {
+			return st, err
+		}
 	}
 
 	// Body: blocks of one namespace's documents, each opened by a header and
@@ -341,6 +362,11 @@ func readMongoArchive(r io.Reader) (*mongoArchiveStats, error) {
 			if c, ok := crcs[ns]; ok && int64(c.Sum64()) != want {
 				st.CRCFailed = append(st.CRCFailed, ns)
 			}
+			if sink != nil {
+				if err := sink.end(ns); err != nil {
+					return st, err
+				}
+			}
 			continue
 		}
 		if crcs[ns] == nil {
@@ -357,6 +383,11 @@ func readMongoArchive(r io.Reader) (*mongoArchiveStats, error) {
 			_, _ = crcs[ns].Write(d)
 			st.Docs[ns]++
 			st.DocBytes[ns] += int64(len(d))
+			if sink != nil {
+				if err := sink.doc(ns, d); err != nil {
+					return st, err
+				}
+			}
 			if st.Shapes[ns] == nil {
 				st.Shapes[ns] = &mongoShape{fields: map[string]*mongoField{}}
 			}
@@ -380,6 +411,9 @@ func (st *mongoArchiveStats) missingEnds() []string {
 type MongoDumper struct {
 	databaseURL string
 	Warn        func(string)
+	// PerCollection writes the dump as the entries of a run (mongo_run.go),
+	// one per collection, instead of one mongo/dump.archive stream.
+	PerCollection bool
 }
 
 // NewMongoDumper creates a dumper for a mongodb:// URL.
@@ -412,19 +446,36 @@ func (d *MongoDumper) Dump(ctx context.Context, databaseName string, dst io.Writ
 	// No --quiet: with it, mongodump exits 1 having written nothing on
 	// stderr, so a refused password reached the console as "exit status 1:"
 	// and no reason. Its progress lines are dropped on success below.
-	cmd := exec.CommandContext(ctx, tool.Path, "--config="+cfgPath, "--archive")
+	args := []string{"--config=" + cfgPath, "--archive"}
 	tw := tar.NewWriter(dst)
-	cw := &chunkWriter{tw: tw, name: mongoChunkName}
+	var sink mongoArchiveSink
+	var cw interface {
+		io.Writer
+		Close() error
+	} = &chunkWriter{tw: tw, name: mongoChunkName}
+	if d.PerCollection {
+		// One collection at a time, so each collection's parts are written
+		// one after another; a run's reader joins an entry's parts in order
+		// and refuses parts of two entries interleaved.
+		args = append(args, "--numParallelCollections=1")
+		rw := newMongoRunWriter(tw)
+		sink, cw = rw, rw
+	}
+	cmd := exec.CommandContext(ctx, tool.Path, args...)
 	pr, pw := io.Pipe()
 	statsCh := make(chan *mongoArchiveStats, 1)
 	parseErrCh := make(chan error, 1)
 	go func() {
-		st, err := readMongoArchive(pr)
+		st, err := readMongoArchive(pr, sink)
 		_, _ = io.Copy(io.Discard, pr)
 		statsCh <- st
 		parseErrCh <- err
 	}()
-	stderr, runErr := runDumpTool(cmd, tool, io.MultiWriter(cw, pw))
+	out := io.Writer(pw)
+	if !d.PerCollection {
+		out = io.MultiWriter(cw, pw)
+	}
+	stderr, runErr := runDumpTool(cmd, tool, out)
 	_ = pw.Close() // ends the parser's input; it has no error to give
 	st, parseErr := <-statsCh, <-parseErrCh
 	if runErr != nil {
@@ -535,7 +586,7 @@ func InspectMongoArchive(ctx context.Context, src io.Reader) (*DryRestoreResult,
 	var st *mongoArchiveStats
 	var readErr error
 	manifest, saw, err := mongoArchive(src, func(r io.Reader) error {
-		st, readErr = readMongoArchive(r)
+		st, readErr = readMongoArchive(r, nil)
 		_, _ = io.Copy(io.Discard, r)
 		return nil
 	})
@@ -648,7 +699,7 @@ func (r *MongoRestorer) Restore(ctx context.Context, src io.Reader) (*model.Snap
 		pr, pw := io.Pipe()
 		statsCh := make(chan *mongoArchiveStats, 1)
 		go func() {
-			s, _ := readMongoArchive(pr)
+			s, _ := readMongoArchive(pr, nil)
 			_, _ = io.Copy(io.Discard, pr)
 			statsCh <- s
 		}()

@@ -339,6 +339,9 @@ func mysqlServer(ctx context.Context, db *sql.DB) (version string, mariaDB bool,
 type MySQLDumper struct {
 	databaseURL string
 	Warn        func(string)
+	// PerTable writes the dump as the sections of a run (mysql_run.go)
+	// instead of one mysql/dump.sql stream.
+	PerTable bool
 }
 
 // NewMySQLDumper creates a dumper for a mysql:// URL.
@@ -470,7 +473,13 @@ func (d *MySQLDumper) Dump(ctx context.Context, databaseName string, dst io.Writ
 	}
 	cmd := exec.CommandContext(ctx, tool.Path, append(args, target.Database)...)
 	tw := tar.NewWriter(dst)
-	cw := &chunkWriter{tw: tw, name: mysqlChunkName}
+	var cw interface {
+		io.Writer
+		Close() error
+	} = &chunkWriter{tw: tw, name: mysqlChunkName}
+	if d.PerTable {
+		cw = newMySQLSectionWriter(tw)
+	}
 	counter := newMySQLDumpCounter()
 	stderr, err := runDumpTool(cmd, tool, io.MultiWriter(cw, counter))
 	if err != nil {

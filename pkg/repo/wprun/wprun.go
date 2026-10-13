@@ -1,7 +1,7 @@
 // Package wprun reads a WordPress site's snapshot back from a repository. The
 // snapshot's files are the site archive's entries:
 //
-//	mysql/dump.sql, mysql/dump.sql.1, ...  the dump: a header, one part per table, a footer
+//	mysql/dump.sql, mysql/dump.sql.1, ...  the dump, in parts of 16 MiB
 //	files/<path>                           wp-config.php, .htaccess and the content directory
 //	manifest.json                          the snapshot's metadata
 //

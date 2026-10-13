@@ -19,6 +19,16 @@
 //	manifest.json
 //
 // so a page no write touched stores no new chunk.
+//
+// A MySQL run holds the dump tool's stream cut per table, and a MongoDB run
+// mongodump's archive taken apart per collection (pkg/dump, mysql_run.go
+// and mongo_run.go):
+//
+//	mysql/head.sql  mysql/tables/<table>.sql ...  mysql/tail.sql  manifest.json
+//	mongo/prelude.bson  mongo/collections/<collection>.bson ...  manifest.json
+//
+// Archive puts each back together as the one-stream archive its engine's
+// restorer and inspector read.
 package dbrun
 
 import (
@@ -104,34 +114,96 @@ const (
 	// SQLiteDatabase is a SQLite run's database file.
 	SQLiteDatabase = "sqlite/database.sqlite"
 	sqliteDir      = "sqlite"
+	mysqlDir       = "mysql"
+	mongoDir       = "mongo"
+	// mysqlDump and mongoDump are the one-stream entries a rebuilt archive
+	// holds, the names the engines' archive readers expect.
+	mysqlDump = "mysql/dump.sql"
+	mongoDump = "mongo/dump.archive"
 )
+
+// TablePath is the file a run keeps a table's or collection's data in, for
+// the engine of kind: a PostgreSQL table's COPY stream, a MySQL table's
+// section of the dump, a MongoDB collection's documents. "" for SQLite,
+// whose run has no per-table file.
+func TablePath(kind model.SurfaceType, schema, table string) string {
+	switch kind {
+	case model.SurfaceTypeMySQL:
+		return dump.MySQLTableEntry(table)
+	case model.SurfaceTypeMongoDB:
+		return dump.MongoCollectionEntry(table)
+	case model.SurfaceTypeSQLite:
+		return ""
+	}
+	return dump.TablePath(schema, table)
+}
+
+// Shape is which engine's files a run holds.
+type Shape int
+
+const (
+	ShapePostgres Shape = iota
+	ShapeSQLite
+	ShapeMySQL
+	ShapeMongo
+)
+
+// ShapeOf is the shape of a run from the files Files returned.
+func ShapeOf(files []read.Item) Shape {
+	for _, it := range files {
+		switch {
+		case it.Path == SQLiteDatabase:
+			return ShapeSQLite
+		case strings.HasPrefix(it.Path, mysqlDir+"/"):
+			return ShapeMySQL
+		case strings.HasPrefix(it.Path, mongoDir+"/"):
+			return ShapeMongo
+		}
+	}
+	return ShapePostgres
+}
 
 // Files lists the files of a database run in archive order: the tables left
 // out, the schema,
 // every table's rows, the post-data section, the sequences and the manifest;
-// or, for SQLite, the database file and the manifest. It refuses a snapshot
-// holding anything else, or both shapes at once, which is not a database run.
+// or, for SQLite, the database file and the manifest; or a MySQL dump's head,
+// its tables by name and its tail; or a MongoDB prelude and its collections
+// by name. It refuses a snapshot holding anything else, or two shapes at
+// once, which is not a database run.
 func Files(ctx context.Context, r *read.Repo, idx read.Index, s format.Snapshot) ([]read.Item, error) {
 	root, err := format.ParseID(s.RootTree)
 	if err != nil {
 		return nil, err
 	}
 	var sections = map[string]read.Item{}
-	var tables []read.Item
-	var sqliteDB *read.Item
+	var tables, mysqlTables, mongoColls []read.Item
+	var sqliteDB, mysqlHead, mysqlTail, prelude *read.Item
+	shapes := map[Shape]bool{}
 	err = r.Walk(ctx, idx, root, func(it read.Item) error {
 		switch {
 		case it.Node.Type == format.NodeDir && (it.Path == "data" || strings.HasPrefix(it.Path, dataDir)):
 			return nil
-		case it.Node.Type == format.NodeDir && it.Path == sqliteDir:
+		case it.Node.Type == format.NodeDir && (it.Path == sqliteDir || it.Path == mysqlDir || it.Path+"/" == dump.MySQLTablesDir || it.Path == mongoDir || it.Path+"/" == dump.MongoCollectionsDir):
 			return nil
-		case it.Node.Type == format.NodeFile && it.Path == SQLiteDatabase:
-			sqliteDB = &it
 		case it.Node.Type != format.NodeFile:
 			return fmt.Errorf("snapshot %s holds %s, which is not part of a database dump", s.SnapshotID, it.Path)
+		case it.Path == SQLiteDatabase:
+			sqliteDB, shapes[ShapeSQLite] = &it, true
+		case it.Path == dump.MySQLHeadEntry:
+			mysqlHead, shapes[ShapeMySQL] = &it, true
+		case it.Path == dump.MySQLTailEntry:
+			mysqlTail, shapes[ShapeMySQL] = &it, true
+		case dump.MySQLRunTable(it.Path) != "" && strings.HasSuffix(it.Path, ".sql"):
+			mysqlTables, shapes[ShapeMySQL] = append(mysqlTables, it), true
+		case it.Path == dump.MongoPreludeEntry:
+			prelude, shapes[ShapeMongo] = &it, true
+		case dump.MongoRunCollection(it.Path) != "" && strings.HasSuffix(it.Path, ".bson"):
+			mongoColls, shapes[ShapeMongo] = append(mongoColls, it), true
 		case strings.HasPrefix(it.Path, dataDir) && strings.HasSuffix(it.Path, ".copy"):
-			tables = append(tables, it)
-		case it.Path == LeftOut || it.Path == Roles || it.Path == PreData || it.Path == Schema || it.Path == PostData || it.Path == Sequences || it.Path == Manifest:
+			tables, shapes[ShapePostgres] = append(tables, it), true
+		case it.Path == LeftOut || it.Path == Roles || it.Path == PreData || it.Path == Schema || it.Path == PostData || it.Path == Sequences:
+			sections[it.Path], shapes[ShapePostgres] = it, true
+		case it.Path == Manifest:
 			sections[it.Path] = it
 		default:
 			return fmt.Errorf("snapshot %s holds %s, which is not part of a database dump", s.SnapshotID, it.Path)
@@ -145,11 +217,33 @@ func Files(ctx context.Context, r *read.Repo, idx read.Index, s format.Snapshot)
 	if !ok {
 		return nil, fmt.Errorf("snapshot %s has no %s: it is not a database run", s.SnapshotID, Manifest)
 	}
+	if len(shapes) > 1 {
+		return nil, fmt.Errorf("snapshot %s holds the files of two database engines: it is not one database run", s.SnapshotID)
+	}
 	if sqliteDB != nil {
-		if len(sections) > 1 || len(tables) > 0 {
-			return nil, fmt.Errorf("snapshot %s holds a SQLite database and PostgreSQL sections: it is not one database run", s.SnapshotID)
-		}
 		return []read.Item{*sqliteDB, manifest}, nil
+	}
+	if shapes[ShapeMySQL] {
+		if mysqlHead == nil {
+			return nil, fmt.Errorf("snapshot %s has no %s: it is not a MySQL run", s.SnapshotID, dump.MySQLHeadEntry)
+		}
+		// The dump tool writes tables in name order, so the sections
+		// concatenate to the dump it wrote.
+		sort.Slice(mysqlTables, func(i, j int) bool {
+			return dump.MySQLRunTable(mysqlTables[i].Path) < dump.MySQLRunTable(mysqlTables[j].Path)
+		})
+		out := append([]read.Item{*mysqlHead}, mysqlTables...)
+		if mysqlTail != nil {
+			out = append(out, *mysqlTail)
+		}
+		return append(out, manifest), nil
+	}
+	if shapes[ShapeMongo] {
+		if prelude == nil {
+			return nil, fmt.Errorf("snapshot %s has no %s: it is not a MongoDB run", s.SnapshotID, dump.MongoPreludeEntry)
+		}
+		sort.Slice(mongoColls, func(i, j int) bool { return mongoColls[i].Path < mongoColls[j].Path })
+		return append(append([]read.Item{*prelude}, mongoColls...), manifest), nil
 	}
 	_, pre := sections[PreData]
 	_, schema := sections[Schema]
@@ -174,9 +268,58 @@ func Files(ctx context.Context, r *read.Repo, idx read.Index, s format.Snapshot)
 
 // Archive writes a database run to w as the tar archive a backup in archive
 // format would have been, each file checked against its SHA-256 as it is
-// read. A table is one entry however large it is.
+// read. A table is one entry however large it is. A MySQL run's sections are
+// concatenated into the one mysql/dump.sql entry, and a MongoDB run's
+// prelude and collections framed back into the one mongo/dump.archive
+// entry, so each engine's archive readers read a run unchanged.
 func Archive(ctx context.Context, r *read.Repo, idx read.Index, files []read.Item, w io.Writer) error {
 	tw := tar.NewWriter(w)
+	switch ShapeOf(files) {
+	case ShapeMySQL:
+		var size int64
+		for _, it := range files {
+			if it.Path != Manifest {
+				size += it.Node.Size
+			}
+		}
+		if err := tw.WriteHeader(&tar.Header{Name: mysqlDump, Mode: 0o600, Size: size, ModTime: files[0].Node.ModTime.Truncate(time.Second), Format: tar.FormatPAX}); err != nil {
+			return err
+		}
+		for _, it := range files {
+			if it.Path == Manifest {
+				continue
+			}
+			if err := r.Cat(ctx, idx, it.Node, tw); err != nil {
+				return err
+			}
+		}
+		files = files[len(files)-1:]
+	case ShapeMongo:
+		var prelude bytes.Buffer
+		if err := r.Cat(ctx, idx, files[0].Node, &prelude); err != nil {
+			return err
+		}
+		var parts []dump.MongoRunPart
+		for _, it := range files[1:] {
+			if it.Path == Manifest {
+				continue
+			}
+			node := it.Node
+			parts = append(parts, dump.MongoRunPart{Collection: dump.MongoRunCollection(it.Path), Size: it.Node.Size,
+				Open: func(w io.Writer) error { return r.Cat(ctx, idx, node, w) }})
+		}
+		size, err := dump.MongoRunArchiveSize(prelude.Bytes(), parts)
+		if err != nil {
+			return err
+		}
+		if err := tw.WriteHeader(&tar.Header{Name: mongoDump, Mode: 0o600, Size: size, ModTime: files[0].Node.ModTime.Truncate(time.Second), Format: tar.FormatPAX}); err != nil {
+			return err
+		}
+		if err := dump.WriteMongoRunArchive(prelude.Bytes(), parts, tw); err != nil {
+			return err
+		}
+		files = files[len(files)-1:]
+	}
 	for _, it := range files {
 		if err := tw.WriteHeader(&tar.Header{Name: it.Path, Mode: 0o600, Size: it.Node.Size,
 			ModTime: it.Node.ModTime.Truncate(time.Second), Format: tar.FormatPAX}); err != nil {

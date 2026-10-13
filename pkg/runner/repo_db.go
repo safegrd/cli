@@ -31,14 +31,15 @@ func IsRepoDatabase(meta *model.SnapshotMetadata) bool {
 //     checked against its SHA-256 on the way;
 //  4. that archive is restored: in memory when sandboxURL is empty, or into
 //     the empty database sandboxURL names, and held to the manifest's tables
-//     and row counts. A SQLite run's database is written out and opened by
-//     the SQLite engine either way, as an archive's drill does.
+//     and row counts, by the engine's own inspector and restorer. A SQLite
+//     run's database is written out and opened by the SQLite engine either
+//     way, as an archive's drill does.
 func (v *Verifier) RunRepoDatabaseDrill(ctx context.Context, d RepoDrill, privateKey, sandboxURL string) (*model.VerificationReport, error) {
 	started := time.Now()
 	v.sandboxDrill = sandboxURL != ""
 	meta := d.Meta
 	kind := meta.SurfaceType
-	if kind != model.SurfaceTypeSQLite {
+	if kind == "" || !kind.IsDatabase() {
 		kind = model.SurfaceTypePostgres
 	}
 	if sandboxURL != "" {
@@ -69,7 +70,7 @@ func (v *Verifier) RunRepoDatabaseDrill(ctx context.Context, d RepoDrill, privat
 	}
 	if sandboxURL != "" {
 		report.VerificationID = "verif-" + uuid.New().String()[:8]
-		report.SandboxEngine = "ephemeral-" + string(kind) + "-sandbox"
+		report.SandboxEngine = sandboxEngineName(kind, meta)
 	}
 	fail := func(name, expected, actual, msg string) (*model.VerificationReport, error) {
 		report.Assertions = append(report.Assertions, model.AssertionResult{Name: name, Passed: false, Expected: expected, Actual: actual, Message: msg})
@@ -150,9 +151,14 @@ func (v *Verifier) RunRepoDatabaseDrill(ctx context.Context, d RepoDrill, privat
 	if sandboxURL == "" {
 		var res *dump.DryRestoreResult
 		var inspectErr error
-		if kind == model.SurfaceTypeSQLite {
+		switch kind {
+		case model.SurfaceTypeSQLite:
 			res, inspectErr = dump.InspectSQLiteArchive(ctx, pr)
-		} else {
+		case model.SurfaceTypeMySQL:
+			res, inspectErr = dump.InspectMySQLArchive(ctx, pr)
+		case model.SurfaceTypeMongoDB:
+			res, inspectErr = dump.InspectMongoArchive(ctx, pr)
+		default:
 			res, inspectErr = dump.NewDryRestorer().InspectArchive(ctx, pr)
 		}
 		if err := drain(); err != nil {
@@ -185,11 +191,16 @@ func (v *Verifier) RunRepoDatabaseDrill(ctx context.Context, d RepoDrill, privat
 
 	var archiveErr, restoreErr error
 	drained := false
-	if kind == model.SurfaceTypeSQLite {
+	switch kind {
+	case model.SurfaceTypeSQLite:
 		// The SQLite restorer reads the archive to its end before it puts
 		// the file in place.
 		_, restoreErr = dump.NewSQLiteRestorer(sandboxURL).Restore(ctx, pr)
-	} else {
+	case model.SurfaceTypeMySQL, model.SurfaceTypeMongoDB:
+		// Each reads the whole archive, loading as it goes, and counts the
+		// target against the manifest.
+		_, restoreErr = dump.NewRestorer(dump.EngineTypeNative, sandboxURL).Restore(ctx, pr)
+	default:
 		restorer := dump.NewNativeRestorer(sandboxURL)
 		restorer.BeforeCommit = func() error {
 			drained = true

@@ -545,9 +545,8 @@ and never leaves this host.`,
 				}
 			}
 
-			// A PostgreSQL or SQLite database is a run of its repository
-			// unless --format tar asks for one archive; MySQL and MongoDB are
-			// one archive.
+			// A database is a run of its repository unless --format tar asks
+			// for one archive.
 			dbFormat := formatTar
 			if repoDatabaseKind(dbSurface) {
 				dbFormat = formatRepo

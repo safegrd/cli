@@ -94,6 +94,12 @@ func Execute() {
 	// told not to, which put every failure on the screen twice with the usage
 	// block between the copies.
 	RootCmd.SilenceErrors = true
+	// A mistyped flag is one line and where to look, not the whole usage
+	// block with the error under it.
+	RootCmd.SetFlagErrorFunc(func(c *cobra.Command, err error) error {
+		c.SilenceUsage = true
+		return fmt.Errorf("%w. Run '%s --help' for its flags", err, c.CommandPath())
+	})
 
 	// One context for every command, cancelled by Ctrl-C or SIGTERM, so a
 	// backup, restore or upload stops where it is and cleans up instead of

@@ -169,17 +169,88 @@ func (s *tableStreams) Run(tr *tar.Reader) error {
 	}
 }
 
-// ArchiveEntries reads a Postgres snapshot archive in order and hands fn
-// each entry as one stream, one at a time: a table's rows under
-// data/<schema>/<table>.copy however many parts the archive holds them in,
-// and every other entry as it is. fn must read its reader to the end or
-// return an error.
+// ArchiveEntries reads a database snapshot archive in order and hands fn
+// each entry as one stream, one at a time: an entry written in parts
+// (a table's rows under data/<schema>/<table>.copy, a MySQL dump's sections
+// under mysql/, a MongoDB collection under mongo/collections/) however many
+// parts the archive holds it in, and every other entry as it is. fn must
+// read its reader to the end or return an error.
 func ArchiveEntries(r io.Reader, fn func(name string, r io.Reader) error) error {
 	s := &tableStreams{
-		consume: func(schema, table string, r io.Reader) error { return fn(copyEntryName(schema, table, 0), r) },
+		parse: func(name string) (string, string, int, bool) {
+			base, part, ok := parseChunkedEntry(name)
+			return "", base, part, ok
+		},
+		consume: func(_, base string, r io.Reader) error { return fn(base, r) },
 		other:   func(hdr *tar.Header, r io.Reader) error { return fn(hdr.Name, r) },
 	}
 	return s.Run(tar.NewReader(r))
+}
+
+// chunkedExtensions are the entries a dumper writes in parts of
+// copyChunkSize: "<base>" then "<base>.1", "<base>.2" and so on.
+var chunkedExtensions = []string{".copy", ".sql", ".bson", ".archive"}
+
+// parseChunkedEntry names the stream an archive entry belongs to and which
+// part of it the entry is. An entry whose name, with any trailing ".N"
+// removed, ends in one of chunkedExtensions is part N of that stream; a name
+// that ends in the extension itself is part 0.
+func parseChunkedEntry(name string) (base string, part int, ok bool) {
+	for _, ext := range chunkedExtensions {
+		if strings.HasSuffix(name, ext) {
+			return name, 0, true
+		}
+	}
+	i := strings.LastIndexByte(name, '.')
+	if i <= 0 {
+		return "", 0, false
+	}
+	n, err := strconv.Atoi(name[i+1:])
+	if err != nil || n < 1 {
+		return "", 0, false
+	}
+	for _, ext := range chunkedExtensions {
+		if strings.HasSuffix(name[:i], ext) {
+			return name[:i], n, true
+		}
+	}
+	return "", 0, false
+}
+
+// runEntryName makes a table's or collection's name safe as one path
+// element of an archive entry: '%', '/', '\' and control characters are
+// percent-encoded, and so is a leading '.', so no name is "..", starts a
+// hidden file or leaves its directory.
+func runEntryName(name string) string {
+	var b strings.Builder
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if c == '%' || c == '/' || c == '\\' || c < 0x20 || c == 0x7f || (c == '.' && i == 0) {
+			fmt.Fprintf(&b, "%%%02X", c)
+			continue
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
+}
+
+// unescapeRunEntryName undoes runEntryName.
+func unescapeRunEntryName(s string) string {
+	if !strings.Contains(s, "%") {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '%' && i+2 < len(s) {
+			if v, err := strconv.ParseUint(s[i+1:i+3], 16, 8); err == nil {
+				b.WriteByte(byte(v))
+				i += 2
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
 }
 
 func (s *tableStreams) start(schema, table string) {

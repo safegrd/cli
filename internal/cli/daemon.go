@@ -1314,10 +1314,17 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 			return nil, plan, err
 		}
 		if dbURL == "" {
+			if s.FromSafeGrd() {
+				// The held credential did not come back: the warning above
+				// says why, usually an unreachable remote server.
+				return nil, plan, stageErr(model.BackupReasonConfig, fmt.Errorf("surface %s has no connection string: the remote server "+
+					"holds it and did not release it. The next run asks again. To back up while the server is down, keep the "+
+					"credential on this host (credential: {from: env, name: VAR})", s.ID))
+			}
 			return nil, plan, stageErr(model.BackupReasonConfig, fmt.Errorf("database URL unresolved for surface %s", s.ID))
 		}
-		// A PostgreSQL or SQLite surface is a run of its repository unless
-		// it says format: tar; MySQL and MongoDB are one archive.
+		// A database surface is a run of its repository unless it says
+		// format: tar.
 		dbFormat := strings.ToLower(strings.TrimSpace(s.Format))
 		if dbFormat == "" && repoDatabaseKind(dump.SurfaceTypeOfURL(dbURL)) {
 			dbFormat = formatRepo
@@ -1326,7 +1333,7 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 		case "", formatTar:
 		case formatRepo:
 			if !repoDatabaseKind(dump.SurfaceTypeOfURL(dbURL)) {
-				return nil, plan, stageErr(model.BackupReasonConfig, fmt.Errorf("surface %s: format: repo takes a PostgreSQL or SQLite database; leave format out for this one", s.ID))
+				return nil, plan, stageErr(model.BackupReasonConfig, fmt.Errorf("surface %s: format: repo takes a database; leave format out for this one", s.ID))
 			}
 			if storageCfg.NodeID == "" {
 				storageCfg.NodeID = nodeID

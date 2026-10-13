@@ -19,7 +19,7 @@ func TestReadMongoArchive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	st, err := readMongoArchive(bytes.NewReader(raw))
+	st, err := readMongoArchive(bytes.NewReader(raw), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func TestReadMongoArchive(t *testing.T) {
 	}
 
 	// Cut short: the namespaces that did not finish are named.
-	cut, _ := readMongoArchive(bytes.NewReader(raw[:1300]))
+	cut, _ := readMongoArchive(bytes.NewReader(raw[:1300]), nil)
 	if cut == nil || len(cut.missingEnds()) == 0 {
 		t.Error("a truncated archive looked complete")
 	}
@@ -101,7 +101,7 @@ func TestReadMongoArchive(t *testing.T) {
 		t.Fatal("fixture changed")
 	}
 	bad[i+3] = 9
-	st, err = readMongoArchive(bytes.NewReader(bad))
+	st, err = readMongoArchive(bytes.NewReader(bad), nil)
 	if err != nil || strings.Join(st.CRCFailed, ",") != "shop.orders" {
 		t.Errorf("a changed document passed its CRC: %v %v", st.CRCFailed, err)
 	}
