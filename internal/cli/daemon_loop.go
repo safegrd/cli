@@ -553,29 +553,37 @@ func recordedNodeID(ctx context.Context, c *config.CLIConfig, snapshotID string)
 // recordedSnapshot is the remote server's record of a snapshot, or nil when
 // this host cannot ask or the server has none.
 func recordedSnapshot(ctx context.Context, c *config.CLIConfig, snapshotID string) *model.SnapshotMetadata {
-	if !canReport(c) {
-		return nil
+	rec, _ := fetchRecordedSnapshot(ctx, c, snapshotID)
+	return rec
+}
+
+// fetchRecordedSnapshot is recordedSnapshot, with an error when the remote
+// server could not be reached at all, so a caller asking about many
+// snapshots stops after the first.
+func fetchRecordedSnapshot(ctx context.Context, c *config.CLIConfig, snapshotID string) (*model.SnapshotMetadata, error) {
+	if c == nil || !canReport(c) {
+		return nil, nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(c.ServerURL, "/")+"/api/v1/snapshots/"+url.PathEscape(snapshotID), nil)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.ServerToken)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil
+		return nil, nil
 	}
 	var rec model.SnapshotMetadata
 	if json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&rec) != nil || rec.SnapshotID != snapshotID {
-		return nil
+		return nil, nil
 	}
-	return &rec
+	return &rec, nil
 }
 
 // surfaceIsPostgres reports whether s backs up a PostgreSQL database.

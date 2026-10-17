@@ -156,3 +156,35 @@ func TestDescribeRetentionGivesTheKeepDatePastTheLock(t *testing.T) {
 		t.Fatalf("describeRetention = %q", got)
 	}
 }
+
+// A recent run kept as the weekly copy is locked for weeks, and its sidecar
+// still says what the run was written as. The remote server's record is
+// what list shows when it has one; without one, the sidecar stands.
+func TestListShowsTheLockTheRemoteServerRecorded(t *testing.T) {
+	hosted := config.StorageConfig{Type: config.StorageTypeHosted}
+	keptTo := time.Date(2026, 10, 14, 17, 43, 0, 0, time.UTC)
+	weekly := time.Date(2026, 11, 30, 1, 0, 0, 0, time.UTC)
+	sidecar := &model.SnapshotMetadata{SnapshotID: "snap-c", WORMMode: "COMPLIANCE", WORMRetentionUntil: keptTo, Unlocked: true}
+
+	got := withRecordedLock(sidecar, &model.SnapshotMetadata{SnapshotID: "snap-c", WORMMode: "COMPLIANCE", WORMRetentionUntil: weekly})
+	if want := "COMPLIANCE until 2026-11-30 01:00 UTC"; describeRetention(got, hosted) != want {
+		t.Errorf("a kept copy: %q, want %q", describeRetention(got, hosted), want)
+	}
+	if !sidecar.Unlocked || !sidecar.WORMRetentionUntil.Equal(keptTo) {
+		t.Errorf("the sidecar was changed in place: %+v", sidecar)
+	}
+	// A lock shorter than the date the run was kept to: both are said.
+	short := keptTo.Add(-48 * time.Hour)
+	got = withRecordedLock(sidecar, &model.SnapshotMetadata{SnapshotID: "snap-c", WORMMode: "COMPLIANCE", WORMRetentionUntil: short})
+	if want := "COMPLIANCE until 2026-10-12 17:43 UTC, kept until 2026-10-14 17:43 UTC"; describeRetention(got, hosted) != want {
+		t.Errorf("a lock shorter than the keep: %q, want %q", describeRetention(got, hosted), want)
+	}
+	for name, rec := range map[string]*model.SnapshotMetadata{
+		"no record":         nil,
+		"recorded unlocked": {SnapshotID: "snap-c", WORMRetentionUntil: keptTo, Unlocked: true},
+	} {
+		if got := describeRetention(withRecordedLock(sidecar, rec), hosted); got != "kept until 2026-10-14 17:43 UTC, not locked" {
+			t.Errorf("%s: %q", name, got)
+		}
+	}
+}

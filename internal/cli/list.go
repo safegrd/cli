@@ -220,7 +220,40 @@ func listRepoSnapshots(ctx context.Context, storageCfg config.StorageConfig) []r
 		}
 		return out[i].Meta.CreatedAt.Before(out[j].Meta.CreatedAt)
 	})
+	// A run written unlocked may since have been kept as the weekly or
+	// monthly copy and locked for weeks, which its sidecar, written at
+	// backup time, cannot say. The remote server's record can.
+	for i := range out {
+		if !out[i].Meta.Unlocked {
+			continue
+		}
+		rec, err := fetchRecordedSnapshot(ctx, cfg, out[i].Meta.SnapshotID)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not reach the remote server (%v). Each recent run's lock is shown as it was written; one kept as a weekly or monthly copy since is locked longer.\n", err)
+			break
+		}
+		out[i].Meta = withRecordedLock(out[i].Meta, rec)
+	}
 	return out
+}
+
+// withRecordedLock is meta with the lock the remote server recorded for it,
+// when the server says it is locked. The date the run was kept to stays as
+// KeptUntil when it is later than the lock.
+func withRecordedLock(meta, rec *model.SnapshotMetadata) *model.SnapshotMetadata {
+	if rec == nil || rec.Unlocked || rec.WORMRetentionUntil.IsZero() {
+		return meta
+	}
+	m := *meta
+	m.Unlocked = false
+	m.WORMRetentionUntil = rec.WORMRetentionUntil
+	if rec.WORMMode != "" {
+		m.WORMMode = rec.WORMMode
+	}
+	if kept := meta.WORMRetentionUntil; kept.After(rec.WORMRetentionUntil) {
+		m.KeptUntil = &kept
+	}
+	return &m
 }
 
 // printRepoTable lists repository snapshots: new is what each run uploaded,
