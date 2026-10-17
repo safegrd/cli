@@ -829,7 +829,7 @@ func deliverSnapshotRecord(ctx context.Context, serverURL, token string, meta *m
 	// node_id is not alone proof of enrolment.
 	if token == "" {
 		warn("not reported: no server.token in this config, so this host is standalone.\n" +
-			"                    The backup is stored; run 'safegrd enroll' to report it to the console.")
+			"                    Run 'safegrd enroll' to report this host's backups to the console.")
 		return "", false
 	}
 	if meta.NodeID == "" {

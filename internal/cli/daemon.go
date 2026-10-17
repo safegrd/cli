@@ -408,8 +408,16 @@ func pidZombie(pid int) bool {
 }
 
 // heldHere holds the paths of the locks this process has taken and not
-// released.
-var heldHere sync.Map
+// released. lockMu makes creating a lock file and recording it here one
+// step for this process: between the two, another goroutine read the file,
+// saw this process's PID on a lock heldHere did not name, took it for one
+// an earlier daemon with the same PID left, and reclaimed it, so two
+// goroutines held one lock (TestDaemonLockHasOneWinnerUnderContention failed
+// about one run in eight).
+var (
+	heldHere sync.Map
+	lockMu   sync.Mutex
+)
 
 // daemonLockID is the name the daemon's own lock is taken under.
 const daemonLockID = "daemon"
@@ -422,6 +430,8 @@ func acquireLock(lockPath, surfaceID, snapshotID string) (func(), error) {
 		SurfaceID:  surfaceID,
 	}
 	mine, _ := json.Marshal(info)
+	lockMu.Lock()
+	defer lockMu.Unlock()
 
 	// O_EXCL makes taking the lock one step. Reading, checking and then
 	// writing let two daemons that started together both proceed.
@@ -438,7 +448,12 @@ func acquireLock(lockPath, surfaceID, snapshotID string) (func(), error) {
 				return nil, fmt.Errorf("failed to write lockfile %s: %w", lockPath, werr)
 			}
 			heldHere.Store(lockPath, true)
-			return func() { heldHere.Delete(lockPath); releaseLockFile(lockPath, mine) }, nil
+			return func() {
+				lockMu.Lock()
+				defer lockMu.Unlock()
+				heldHere.Delete(lockPath)
+				releaseLockFile(lockPath, mine)
+			}, nil
 		}
 		if !os.IsExist(err) {
 			return nil, fmt.Errorf("failed to create lockfile %s: %w", lockPath, err)
