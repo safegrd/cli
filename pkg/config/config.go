@@ -166,6 +166,14 @@ type SurfaceConfig struct {
 	// attempt, successful or not. Both are shell commands, run as the daemon.
 	PreBackup  string `yaml:"pre_backup,omitempty" json:"pre_backup,omitempty"`
 	PostBackup string `yaml:"post_backup,omitempty" json:"post_backup,omitempty"`
+	// PreBackupOnError is what a failed pre_backup means: "skip" (the
+	// default) takes no backup, "continue" takes it anyway and says the
+	// hook failed, and "retry" runs the hook again, twice more with a
+	// growing wait, before skipping.
+	PreBackupOnError string `yaml:"pre_backup_on_error,omitempty" json:"pre_backup_on_error,omitempty"`
+	// PostDrill runs after each of the daemon's Fire Drills of this surface,
+	// told the outcome. Its failure is reported and changes nothing else.
+	PostDrill string `yaml:"post_drill,omitempty" json:"post_drill,omitempty"`
 
 	// Postgres fields
 	DatabaseURL string `yaml:"database_url,omitempty" json:"database_url,omitempty"`

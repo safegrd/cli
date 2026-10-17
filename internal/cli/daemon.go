@@ -949,11 +949,10 @@ func backupSurfaceNow(ctx context.Context, c *config.CLIConfig, surface *config.
 	)
 	// pre_backup must succeed for the backup to run: a hook that was meant to
 	// quiesce the application and did not would make a backup of a moving
-	// target, which is the thing the hook exists to prevent.
+	// target, which is the thing the hook exists to prevent. The surface may
+	// say otherwise (pre_backup_on_error).
 	if surface.PreBackup != "" {
-		if err := runHook(ctx, surface, "pre_backup", surface.PreBackup); err != nil {
-			backupErr = stageErr(model.BackupReasonPreBackupHook, fmt.Errorf("not backed up: %w", err))
-		}
+		backupErr = runPreBackup(ctx, surface)
 	}
 	if backupErr == nil {
 		sState.notRecorded = ""

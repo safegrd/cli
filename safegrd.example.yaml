@@ -127,6 +127,11 @@ encryption:
 #     # runs, with SAFEGRD_BACKUP_STATUS=success|failed.
 #     # pre_backup: "psql \"$APP_DB\" -c 'CHECKPOINT'"
 #     # post_backup: "logger safegrd backup $SAFEGRD_BACKUP_STATUS"
+#     # When pre_backup fails: skip (the default), retry (twice more, after
+#     # 10 and 20 seconds) or continue (back up anyway, with a warning).
+#     # pre_backup_on_error: retry
+#     # Run after each of the daemon's drills, with SAFEGRD_DRILL_STATUS.
+#     # post_drill: "logger safegrd drill $SAFEGRD_DRILL_STATUS"
 #     # A scratch database for Fire Drills: the drill restores the snapshot into
 #     # it and counts what came back. It must hold nothing and be used for
 #     # nothing else: the daemon refuses one with tables in it, refuses the

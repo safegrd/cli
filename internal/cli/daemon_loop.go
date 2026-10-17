@@ -492,6 +492,26 @@ func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, d pendingDrill
 		st.LastDrillSnapshotID = snapshotID
 		fmt.Printf("Surface %s: Fire Drill passed (%s of %s, certificate %s).\n", s.ID, how, snapshotID, report.CertificateHash)
 	}
+	if s.PostDrill != "" {
+		// The sandbox's URL only while it still holds the restore: a
+		// throwaway cluster is stopped after this returns, and a kept
+		// sandbox stays for a day. A drill.sandbox_url database is emptied
+		// already unless it was kept.
+		held := ""
+		switch {
+		case local != nil:
+			held = local.URL
+		case report != nil && report.SandboxKept:
+			held = sandbox
+		}
+		env := []string{"SAFEGRD_DRILL_STATUS=" + string(st.DrillStatus), "SAFEGRD_SNAPSHOT_ID=" + snapshotID}
+		if held != "" {
+			env = append(env, "SAFEGRD_SANDBOX_URL="+held)
+		}
+		if err := runHook(ctx, s, "post_drill", s.PostDrill, env...); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: Surface %s: %v\n", s.ID, err)
+		}
+	}
 }
 
 // keptSandboxFor is how long a failed drill's sandbox is kept.
