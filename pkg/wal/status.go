@@ -95,8 +95,16 @@ func (a *Archive) Status(ctx context.Context) (Status, error) {
 	}
 
 	segSize := st.Bases[len(st.Bases)-1].SegmentSize
-	// Per timeline, the archived segment numbers.
+	// Per timeline, the archived segment numbers, and where each timeline
+	// begins: its first archived segment. After a promotion PostgreSQL
+	// writes the new timeline from the segment holding the switch, and a
+	// replay reads each segment from the newest timeline that has begun by
+	// then, as restore_command's recovery_target_timeline = 'latest' does.
+	// That is read from the names alone, so it needs no key; a timeline that
+	// forked from an older one than its predecessor is read as linear.
 	byTLI := map[uint32]map[uint64]time.Time{}
+	begin := map[uint32]uint64{}
+	var top uint64
 	for n, t := range when {
 		tli, seg, err := parseSegName(n, segSize)
 		if err != nil {
@@ -106,77 +114,78 @@ func (a *Archive) Status(ctx context.Context) (Status, error) {
 			byTLI[tli] = map[uint64]time.Time{}
 		}
 		byTLI[tli][seg] = t
-	}
-	// From each timeline's oldest base start to its newest segment, every
-	// missing run is a gap.
-	starts := map[uint32]uint64{}
-	for _, b := range st.Bases {
-		tli, seg, err := parseSegName(b.StartWAL, segSize)
-		if err != nil {
-			continue
+		if b, ok := begin[tli]; !ok || seg < b {
+			begin[tli] = seg
 		}
-		if s, ok := starts[tli]; !ok || seg < s {
-			starts[tli] = seg
+		if seg > top {
+			top = seg
 		}
 	}
-	for tli, from := range starts {
-		segs := byTLI[tli]
-		var top uint64
-		for s := range segs {
-			if s > top {
-				top = s
-			}
-		}
-		var gap *Gap
-		for s := from; s <= top; s++ {
-			if _, ok := segs[s]; ok {
-				if gap != nil {
-					st.Gaps = append(st.Gaps, *gap)
-					gap = nil
-				}
-				continue
-			}
-			if gap == nil {
-				gap = &Gap{Timeline: tli, First: segName(tli, s, segSize)}
-			}
-			gap.Last = segName(tli, s, segSize)
-		}
+	var tlis []uint32
+	for t := range begin {
+		tlis = append(tlis, t)
 	}
-	sort.Slice(st.Gaps, func(i, j int) bool { return st.Gaps[i].First < st.Gaps[j].First })
+	sort.Slice(tlis, func(i, j int) bool { return tlis[i] > tlis[j] })
+	// expected is the timeline a replay that started on from reads seg on.
+	expected := func(seg uint64, from uint32) uint32 {
+		for _, t := range tlis {
+			if t >= from && begin[t] <= seg {
+				return t
+			}
+		}
+		return from
+	}
 
 	// Each base replays from its first segment until the first one missing.
 	// The window ends where the longest replay ends, and starts at the end
 	// of the oldest base that replays that far.
+	gaps := map[string]*Gap{}
 	for _, b := range st.Bases {
 		tli, seg, err := parseSegName(b.StartWAL, segSize)
 		if err != nil {
 			continue
 		}
 		_, endSeg, _ := parseSegName(b.EndWAL, segSize)
-		segs := byTLI[tli]
-		last, ok := uint64(0), false
-		for s := seg; ; s++ {
-			if _, have := segs[s]; !have {
+		var to time.Time
+		reached := false
+		for s := seg; s <= top; s++ {
+			t := expected(s, tli)
+			if at, have := byTLI[t][s]; have {
+				to, reached = at, s >= endSeg
+				continue
+			}
+			// The replay stops here. A gap another base met first is
+			// reported once, with every base it breaks.
+			name := segName(t, s, segSize)
+			if g, ok := gaps[name]; ok {
+				g.Breaks = append(g.Breaks, b.BaseID)
 				break
 			}
-			last, ok = s, true
-		}
-		for i := range st.Gaps {
-			g := st.Gaps[i]
-			_, gs, _ := parseSegName(g.First, segSize)
-			if g.Timeline == tli && ((ok && gs == last+1) || (!ok && gs == seg)) {
-				st.Gaps[i].Breaks = append(st.Gaps[i].Breaks, b.BaseID)
+			g := &Gap{Timeline: t, First: name, Last: name, Breaks: []string{b.BaseID}}
+			for s2 := s + 1; s2 <= top; s2++ {
+				t2 := expected(s2, tli)
+				if _, ok := byTLI[t2][s2]; ok {
+					break
+				}
+				g.Last = segName(t2, s2, segSize)
 			}
+			gaps[name] = g
+			break
 		}
-		if !ok || last < endSeg {
+		if !reached {
 			continue // the base never becomes consistent
 		}
-		to := segs[last]
 		if !st.HasWindow || to.After(st.WindowTo) {
 			st.HasWindow, st.WindowFrom, st.WindowTo = true, b.EndedAt, to
 		} else if to.Equal(st.WindowTo) && b.EndedAt.Before(st.WindowFrom) {
 			st.WindowFrom = b.EndedAt
 		}
 	}
+	// Each gap is the first a replay meets; one after it, with no base in
+	// between, shows once the first is filled.
+	for _, g := range gaps {
+		st.Gaps = append(st.Gaps, *g)
+	}
+	sort.Slice(st.Gaps, func(i, j int) bool { return st.Gaps[i].First < st.Gaps[j].First })
 	return st, nil
 }

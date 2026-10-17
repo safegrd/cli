@@ -172,6 +172,16 @@ type Node struct {
 	ProbeFailures     int        `json:"probe_failures,omitempty" yaml:"probe_failures,omitempty"`
 	ProbeError        string     `json:"probe_error,omitempty" yaml:"probe_error,omitempty"`
 	ProbeFailingSince *time.Time `json:"probe_failing_since,omitempty" yaml:"probe_failing_since,omitempty"`
+	// BlackoutSeconds is the sum of the surface's blackout windows, as its
+	// daemon reported: a backup may start that much later than its schedule,
+	// and Overdue waits for it.
+	BlackoutSeconds int `json:"blackout_seconds,omitempty" yaml:"blackout_seconds,omitempty"`
+	// CheckedUnchangedAt is when the daemon last found nothing changed and
+	// wrote no backup (skip_if_unchanged). Overdue counts from the later of
+	// it and LastBackupAt: the newest backup is still current.
+	CheckedUnchangedAt *time.Time `json:"checked_unchanged_at,omitempty" yaml:"checked_unchanged_at,omitempty"`
+	// WAL is what the daemon last said about the surface's WAL archive.
+	WAL *WALStatus `json:"wal,omitempty" yaml:"wal,omitempty"`
 }
 
 // Unreachable reports whether the probe has failed often enough in a row
@@ -337,6 +347,17 @@ type HeartbeatRequest struct {
 	// without it leaves the probe's count where it was.
 	Probed     bool   `json:"probed,omitempty"`
 	ProbeError string `json:"probe_error,omitempty"`
+	// BlackoutSeconds is the sum of the surface's blackout windows, so the
+	// remote server waits that much longer before it says Overdue. A daemon
+	// always sends it, zero included; nil is a heartbeat that does not know
+	// (one from enroll), which leaves the recorded value alone.
+	BlackoutSeconds *int `json:"blackout_seconds,omitempty"`
+	// CheckedUnchangedAt is when the daemon last found nothing changed and
+	// wrote no backup.
+	CheckedUnchangedAt *time.Time `json:"checked_unchanged_at,omitempty"`
+	// WAL is the surface's WAL archive, from a daemon that keeps one. Nil
+	// from a surface without one leaves the record alone.
+	WAL *WALStatus `json:"wal,omitempty"`
 }
 
 // HeartbeatResponse instructs the node on next actions.

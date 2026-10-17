@@ -12,6 +12,7 @@
 //	  segments/<name>-<unix>-<sha16>.zst.age
 //	  bundles/<bundle-id>.bundle
 //	  bundles/<bundle-id>.json
+//	  points/<restore-point>.json
 package wal
 
 import (
@@ -32,6 +33,7 @@ var (
 	partialRe = regexp.MustCompile(`^[0-9A-F]{24}\.partial$`)
 	baseIDRe  = regexp.MustCompile(`^b-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}$`)
 	bundleRe  = regexp.MustCompile(`^w-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}$`)
+	pointRe   = regexp.MustCompile(`^r-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}$`)
 )
 
 // ValidName refuses anything PostgreSQL would not archive: a segment, a

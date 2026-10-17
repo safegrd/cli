@@ -679,7 +679,29 @@ func warnAboutSchedules(c *config.CLIConfig) {
 			fmt.Fprintf(os.Stderr, "Warning: Surface %s: %v.\n   Backing it up every %s instead. Fix the schedule and run 'safegrd config validate'.\n",
 				s.ID, err, model.ShortDuration(interval))
 		}
+		if _, err := model.ParseBlackout(s.Blackout); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: Surface %s: %v.\n   Backing it up with no blackout window. Fix it and run 'safegrd config validate'.\n", s.ID, err)
+		}
 	}
+}
+
+// blackoutSaid is, per surface, the end of the last window the daemon said
+// held its backup.
+var blackoutSaid sync.Map
+
+func blackoutNotSaid(surfaceID string, until time.Time) bool {
+	prev, seen := blackoutSaid.Swap(surfaceID, until)
+	return !seen || !prev.(time.Time).Equal(until)
+}
+
+// surfaceBlackout is a surface's blackout windows, none when they do not
+// parse (warnAboutSchedules says so once).
+func surfaceBlackout(s *config.SurfaceConfig) []model.BlackoutWindow {
+	ws, err := model.ParseBlackout(s.Blackout)
+	if err != nil {
+		return nil
+	}
+	return ws
 }
 
 // warnIfStateUnsaved says out loud that the daemon could not record what it did.
@@ -883,6 +905,14 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 			retry.ConsecutiveFailures = 0
 			due, nextDue = isSurfaceDue(&surface, &retry, now)
 		}
+		// A blackout window holds a scheduled backup until it ends. A console
+		// request is someone asking now, so it is not held.
+		var heldBy model.BlackoutWindow
+		if due {
+			if w, until, in := model.BlackoutAt(surfaceBlackout(&surface), now); in {
+				due, nextDue, heldBy = false, until, w
+			}
+		}
 		sState.NextDue = nextDue
 
 		// A console "back up now" is run once, by its id. TriggerBackup is
@@ -894,7 +924,12 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 			sState.LastBackupRequestID = hb.BackupRequestID
 		}
 
-		if !due && !requested && tick == 0 {
+		if !due && !requested && heldBy.Text != "" && blackoutNotSaid(surface.ID, nextDue) {
+			// Said once per window, and on every single pass: a backup that
+			// is due and not taking place is news to whoever reads the log.
+			fmt.Printf("Surface %s (%s): due, held by its blackout window %s UTC. It backs up at %s.\n",
+				surface.ID, surface.Type, heldBy.Text, nextDue.UTC().Format("2006-01-02 15:04 UTC"))
+		} else if !due && !requested && tick == 0 {
 			// A single pass that does nothing must say why, or it looks
 			// like a run that hung or lost its output.
 			sayNotDue(&surface, sState, now)
@@ -960,7 +995,7 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 		if surface.WAL == nil || st == nil || st.Retired != "" || (surface.Type != "" && !surfaceIsPostgres(&surface)) {
 			continue
 		}
-		archiving := checkWALArchiver(ctx, c, &surface)
+		archiving := checkWALArchiver(ctx, c, &surface, st)
 		if !runWALWork(ctx, c, &surface, st, lockDir, time.Now().UTC()) || !archiving {
 			walFailed = append(walFailed, surface.ID)
 		}

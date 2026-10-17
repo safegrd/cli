@@ -13,7 +13,7 @@ func TestRestoreCommandQuotesForTheShellAndNeverCarriesTheKey(t *testing.T) {
 	cfgFile = "/etc/safe grd/config.yaml"
 	defer func() { cfgFile = old }()
 	a := &wal.Archive{SurfaceID: "appdb", SystemID: "7697520923061272610"}
-	cmd, err := walFetchCommand(a, "", "AGE-SECRET-KEY-1EXAMPLE")
+	cmd, err := walFetchCommand(a, "", "AGE-SECRET-KEY-1EXAMPLE", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -23,7 +23,7 @@ func TestRestoreCommandQuotesForTheShellAndNeverCarriesTheKey(t *testing.T) {
 	if strings.Contains(cmd, "AGE-SECRET-KEY") {
 		t.Fatalf("restore_command carries the key itself: %q", cmd)
 	}
-	cmd, err = walFetchCommand(a, "", "env:PGKEY")
+	cmd, err = walFetchCommand(a, "", "env:PGKEY", "")
 	if err != nil {
 		t.Fatal(err)
 	}

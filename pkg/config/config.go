@@ -165,6 +165,10 @@ type SurfaceConfig struct {
 	KeepDaily     int    `yaml:"keep_daily,omitempty" json:"keep_daily,omitempty"`
 	KeepWeekly    int    `yaml:"keep_weekly,omitempty" json:"keep_weekly,omitempty"`
 	KeepMonthly   int    `yaml:"keep_monthly,omitempty" json:"keep_monthly,omitempty"`
+	// Blackout is the times of day, in UTC, inside which the daemon starts no
+	// scheduled backup of this surface: ["22:00-02:00"]. A due backup waits
+	// for the window to end; a backup asked for from the console does not.
+	Blackout []string `yaml:"blackout,omitempty" json:"blackout,omitempty"`
 
 	// PreBackup runs before each of the daemon's backups of this surface and
 	// must succeed for the backup to happen; PostBackup runs after every
@@ -224,8 +228,10 @@ type SurfaceConfig struct {
 	Port     int      `yaml:"port,omitempty" json:"port,omitempty"`
 	Username string   `yaml:"username,omitempty" json:"username,omitempty"`
 	Folders  []string `yaml:"folders,omitempty" json:"folders,omitempty"`
-	// CAFile is a PEM bundle trusted for this mailbox's TLS certificate, on
-	// top of the system roots: a mail server behind a private CA.
+	// CAFile is a PEM bundle the server's certificate is checked against: a
+	// mailbox's on top of the system roots, a database's in place of them
+	// (sslrootcert, ssl-ca or tlsCAFile in its URL, with verification on),
+	// for a database its provider signs with a CA of its own (Aiven, RDS).
 	CAFile string `yaml:"ca_file,omitempty" json:"ca_file,omitempty"`
 
 	// Credential is where this surface's credential comes from: a

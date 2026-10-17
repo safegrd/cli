@@ -167,7 +167,7 @@ func writeBase(t *testing.T, a *Archive, b BaseInfo) {
 	body := []byte(`{"version":1,"base_id":"` + b.BaseID + `","surface_id":"db","system_id":"` + b.SystemID +
 		`","started_at":"` + b.StartedAt.Format(time.RFC3339) + `","ended_at":"` + b.EndedAt.Format(time.RFC3339) +
 		`","server_version_num":160004,"wal_segment_size":16777216,"timeline":1,"start_wal":"` + b.StartWAL + `","end_wal":"` + b.EndWAL + `"}`)
-	if err := a.Store.Put(context.Background(), a.baseKey(b.BaseID, "base.json"), bytes.NewReader(body), time.Time{}); err != nil {
+	if _, err := a.Store.Put(context.Background(), a.baseKey(b.BaseID, "base.json"), bytes.NewReader(body), time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -258,5 +258,54 @@ func TestAFetchReadsABundleIndexFromTheCache(t *testing.T) {
 	a.IndexCache = ""
 	if err := a.Fetch(ctx, n, &bytes.Buffer{}); err == nil {
 		t.Fatal("without the cache the bad index was not read: the test proves nothing")
+	}
+}
+
+// After a promotion the replay reads timeline 2 from the segment holding the
+// switch. The window follows it; the old timeline's last segment, left
+// partial, is not a gap.
+func TestTheWindowFollowsATimelineSwitch(t *testing.T) {
+	ctx := context.Background()
+	a, now := testArchive(t)
+	base := BaseInfo{Version: 1, BaseID: "b-20261017T120000Z-0000abcd", SurfaceID: "db", SystemID: a.SystemID,
+		StartedAt: *now, EndedAt: now.Add(time.Minute), ServerVersionNum: 160004, SegmentSize: seg16, Timeline: 1,
+		StartWAL: "000000010000000000000002", EndWAL: "000000010000000000000002"}
+	writeBase(t, a, base)
+	for _, n := range []string{"000000010000000000000002", "000000010000000000000003", "000000010000000000000004.partial",
+		"00000002.history", "000000020000000000000004", "000000020000000000000005"} {
+		*now = now.Add(time.Minute)
+		if err := a.Push(ctx, n, bytes.NewReader([]byte(n))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	st, err := a.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(st.Gaps) != 0 {
+		t.Fatalf("gaps across a timeline switch: %+v", st.Gaps)
+	}
+	if want := time.Date(2026, 10, 17, 12, 6, 0, 0, time.UTC); !st.HasWindow || !st.WindowTo.Equal(want) {
+		t.Fatalf("window ends %s (%v), want %s on timeline 2", st.WindowTo, st.HasWindow, want)
+	}
+	// Timeline 2's first segment goes missing: that is the gap.
+	pushed, _ := a.Pushed(ctx)
+	for _, p := range pushed {
+		if p.Name == "000000020000000000000005" {
+			if err := a.Store.Delete(ctx, p.Key); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	*now = now.Add(time.Minute)
+	if err := a.Push(ctx, "000000020000000000000006", bytes.NewReader([]byte("6"))); err != nil {
+		t.Fatal(err)
+	}
+	st, err = a.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(st.Gaps) != 1 || st.Gaps[0].First != "000000020000000000000005" {
+		t.Fatalf("gaps %+v, want timeline 2 segment 5", st.Gaps)
 	}
 }

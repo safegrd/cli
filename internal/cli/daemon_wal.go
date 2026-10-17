@@ -31,16 +31,42 @@ var (
 	// and when it ends.
 	walArchiverSaid = map[string]string{}
 	walSizeChecked  = map[string]time.Time{}
+	// walHeldChecked is when the archiver of a surface whose credential the
+	// remote server holds, or a command prints, was last read. Each read
+	// fetches the credential, which the remote server audits, so it is read
+	// hourly and not on every tick.
+	walHeldChecked = map[string]time.Time{}
 )
 
+// walHeldEvery is how often such a surface's archiver is read.
+const walHeldEvery = time.Hour
+
 // checkWALArchiver reads pg_stat_archiver and says when archive_command
-// starts or stops failing, and returns false while it fails. Only a
-// database the probe may open is read; the probe already says when one does
-// not answer.
-func checkWALArchiver(ctx context.Context, c *config.CLIConfig, s *config.SurfaceConfig) bool {
+// starts or stops failing, and returns false while it fails. A database
+// that does not answer is the probe's to report.
+func checkWALArchiver(ctx context.Context, c *config.CLIConfig, s *config.SurfaceConfig, st *SurfaceState) bool {
 	dbURL, ok := probeDatabaseURL(ctx, c, s)
 	if !ok {
-		return true
+		switch s.CredentialFrom() {
+		case config.CredentialFromSafeGrd, config.CredentialFromCommand:
+		default:
+			return true
+		}
+		if time.Since(walHeldChecked[s.ID]) < walHeldEvery {
+			return walArchiverSaid[s.ID] == ""
+		}
+		walHeldChecked[s.ID] = time.Now()
+		held := *s
+		node := s.ID
+		if st != nil && st.ServerNodeID != "" {
+			node = st.ServerNodeID
+		}
+		fetchHeldSurfaceSecret(ctx, c, node, &held)
+		u, err := resolveSurfaceDatabaseURLAsGiven(ctx, c, &held)
+		if err != nil || u == "" {
+			return walArchiverSaid[s.ID] == ""
+		}
+		dbURL, _ = cleanPostgresURL(u)
 	}
 	pctx, cancel := context.WithTimeout(ctx, probeTimeout)
 	ar, err := wal.ReadArchiver(pctx, dbURL)

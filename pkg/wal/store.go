@@ -40,8 +40,10 @@ type Object struct {
 // them is how a bundle retires them.
 type Store interface {
 	// Put streams body to key, locked until lockUntil, or unlocked when it
-	// is zero. It fails rather than overwrite.
-	Put(ctx context.Context, key string, body io.Reader, lockUntil time.Time) error
+	// is zero. It fails rather than overwrite, and returns the lock the
+	// object got: zero in a store that locks nothing, and on hosted storage
+	// the date the remote server chose.
+	Put(ctx context.Context, key string, body io.Reader, lockUntil time.Time) (time.Time, error)
 	Get(ctx context.Context, key string) (io.ReadCloser, error)
 	GetRange(ctx context.Context, key string, off, n int64) ([]byte, error)
 	List(ctx context.Context, prefix string) ([]Object, error)
@@ -57,6 +59,13 @@ type Store interface {
 	Describe() string
 	// Locks says whether a lock date is applied at all.
 	Locks() bool
+}
+
+// Retirer is a store that deletes bundled WAL files itself, given their
+// keys: hosted storage, where the remote server checks each is in a bundle
+// before it deletes it.
+type Retirer interface {
+	Retire(ctx context.Context, keys []string) (int, error)
 }
 
 // S3Store is an archive in a bucket the host holds a credential for.
@@ -82,7 +91,7 @@ func (s *S3Store) Root() string     { return strings.Trim(s.Prefix, "/") }
 func (s *S3Store) Describe() string { return "s3://" + path.Join(s.Bucket, s.Root()) }
 func (s *S3Store) Locks() bool      { return s.Mode != "" }
 
-func (s *S3Store) Put(ctx context.Context, key string, body io.Reader, lockUntil time.Time) error {
+func (s *S3Store) Put(ctx context.Context, key string, body io.Reader, lockUntil time.Time) (time.Time, error) {
 	in := &s3.PutObjectInput{
 		Bucket:      &s.Bucket,
 		Key:         &key,
@@ -95,7 +104,7 @@ func (s *S3Store) Put(ctx context.Context, key string, body io.Reader, lockUntil
 			now = s.Now
 		}
 		if !lockUntil.After(now()) {
-			return fmt.Errorf("%s: the lock date %s is not in the future", key, lockUntil.UTC().Format(time.RFC3339))
+			return time.Time{}, fmt.Errorf("%s: the lock date %s is not in the future", key, lockUntil.UTC().Format(time.RFC3339))
 		}
 		in.ObjectLockMode = s.Mode
 		in.ObjectLockRetainUntilDate = aws.Time(lockUntil.UTC())
@@ -105,9 +114,12 @@ func (s *S3Store) Put(ctx context.Context, key string, body io.Reader, lockUntil
 		u.Concurrency = 4
 	})
 	if _, err := up.Upload(ctx, in); err != nil {
-		return fmt.Errorf("writing s3://%s/%s: %w", s.Bucket, key, err)
+		return time.Time{}, fmt.Errorf("writing s3://%s/%s: %w", s.Bucket, key, err)
 	}
-	return nil
+	if s.Mode == "" {
+		return time.Time{}, nil
+	}
+	return lockUntil, nil
 }
 
 func (s *S3Store) Get(ctx context.Context, key string) (io.ReadCloser, error) {
@@ -257,7 +269,11 @@ func (d *DirStore) path(key string) (string, error) {
 	return filepath.Join(d.base, filepath.FromSlash(clean[1:])), nil
 }
 
-func (d *DirStore) Put(_ context.Context, key string, body io.Reader, _ time.Time) error {
+func (d *DirStore) Put(_ context.Context, key string, body io.Reader, _ time.Time) (time.Time, error) {
+	return time.Time{}, d.put(key, body)
+}
+
+func (d *DirStore) put(key string, body io.Reader) error {
 	p, err := d.path(key)
 	if err != nil {
 		return err

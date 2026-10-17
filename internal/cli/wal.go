@@ -65,13 +65,50 @@ func walSurface(c *config.CLIConfig, id string) (*config.SurfaceConfig, error) {
 	return nil, fmt.Errorf("--surface %s: no surface with that id in this config. It has: %s", id, strings.Join(ids, ", "))
 }
 
-// walStore opens the surface's storage from the config alone. archive_command
-// runs once per WAL file, and a push that waited on the remote server would
-// make PostgreSQL keep WAL on its own disk whenever the server is away.
-func walStore(ctx context.Context, c *config.CLIConfig, s *config.SurfaceConfig) (wal.Store, error) {
+// walStorageConfig is where the surface's WAL goes. A host whose config
+// names its bucket and key never asks the remote server: archive_command
+// runs once per WAL file. One that relies on the bucket or key the remote
+// server holds asks for them, and fails when it gets no answer instead of
+// writing to the config's own storage, which would split the archive.
+// PostgreSQL then keeps the file and tries again.
+func walStorageConfig(ctx context.Context, c *config.CLIConfig, s *config.SurfaceConfig) (config.StorageConfig, error) {
 	sc := c.Storage
 	if s.Storage != nil {
 		sc = *s.Storage
+	}
+	enrolled := c.ServerURL != "" && c.NodeID != "" && c.ServerToken != ""
+	if !enrolled || sc.Type == config.StorageTypeHosted {
+		return sc, nil
+	}
+	if s.Storage == nil && !(sc.Type == config.StorageTypeS3 && sc.Bucket != "" && sc.SecretAccessKey != "") {
+		resp, err := fetchNodeSink(ctx, c.ServerURL, c.NodeID, c.ServerToken)
+		if err != nil {
+			return sc, serverFailure(fmt.Errorf("could not ask the remote server where this project's backups go: %w", err))
+		}
+		if resp.Configured && resp.Sink != nil && resp.Sink.Bucket != "" {
+			if err := secondOrigin(resp, &sc); err != nil {
+				return sc, err
+			}
+			applyProjectSink(resp, &sc)
+		}
+	}
+	if sc.Type == config.StorageTypeS3 && sc.SecretAccessKey == "" {
+		creds, err := fetchNodeCredentials(ctx, c.ServerURL, c.NodeID, c.ServerToken)
+		if err != nil {
+			return sc, serverFailure(fmt.Errorf("could not fetch the bucket key the remote server holds: %w", err))
+		}
+		if creds.Sink != nil && creds.Sink.SecretAccessKey != "" {
+			sc.AccessKeyID, sc.SecretAccessKey = creds.Sink.AccessKeyID, creds.Sink.SecretAccessKey
+		}
+	}
+	return sc, nil
+}
+
+// walStore opens the surface's WAL storage.
+func walStore(ctx context.Context, c *config.CLIConfig, s *config.SurfaceConfig) (wal.Store, error) {
+	sc, err := walStorageConfig(ctx, c, s)
+	if err != nil {
+		return nil, err
 	}
 	switch sc.Type {
 	case config.StorageTypeLocal, "":
@@ -91,7 +128,7 @@ func walStore(ctx context.Context, c *config.CLIConfig, s *config.SurfaceConfig)
 		client, bucket, prefix, mode := prov.ObjectStore()
 		return wal.NewS3Store(client, bucket, prefix, mode), nil
 	case config.StorageTypeHosted:
-		return nil, errors.New("hosted storage does not take WAL yet. Give the surface a storage: block naming your own bucket to archive its WAL")
+		return newWALHostedStore(c, s)
 	}
 	return nil, fmt.Errorf("storage type %q holds no WAL archive", sc.Type)
 }
@@ -115,6 +152,21 @@ func walArchive(ctx context.Context, c *config.CLIConfig, surfaceID, systemID st
 		a.Recipient = s.Encryption.PublicKey
 	}
 	return a, s, nil
+}
+
+// walReadFrom points a read at another host's archive on hosted storage,
+// where each host's WAL is filed under its own node: a host that replaces
+// a lost one restores from the old one's archive.
+func walReadFrom(a *wal.Archive, node string) error {
+	if node == "" {
+		return nil
+	}
+	h, ok := a.Store.(*walHostedStore)
+	if !ok {
+		return errors.New("--node reads another host's archive on hosted storage. In your own bucket, give this host the same storage settings as the one that archived")
+	}
+	h.readNode = node
+	return nil
 }
 
 func walDays(n int) time.Duration {
@@ -213,7 +265,7 @@ current directory, which is the data directory when PostgreSQL runs it.`,
 }
 
 func newWALFetchCmd() *cobra.Command {
-	var surfaceID, systemID, keyPath, privKey string
+	var surfaceID, systemID, keyPath, privKey, node string
 	cmd := &cobra.Command{
 		Use:   "fetch <name> <path>",
 		Short: "Write one archived WAL file to a path (PostgreSQL's restore_command)",
@@ -225,6 +277,9 @@ replayed all there is. 'safegrd wal restore' writes the restore_command.`,
 			ctx := cmd.Context()
 			a, _, err := walArchive(ctx, cfg, surfaceID, "")
 			if err != nil {
+				return err
+			}
+			if err := walReadFrom(a, node); err != nil {
 				return err
 			}
 			if a.SystemID, err = oneSystem(ctx, a, systemID); err != nil {
@@ -256,6 +311,7 @@ replayed all there is. 'safegrd wal restore' writes the restore_command.`,
 	cmd.Flags().StringVar(&systemID, "system", "", "The cluster's system identifier, when the archive holds more than one")
 	cmd.Flags().StringVar(&keyPath, "key-path", "", "Path to the age identity (default encryption.key_path)")
 	cmd.Flags().StringVar(&privKey, "private-key", "", "The age identity, as env:VAR or file:/path")
+	cmd.Flags().StringVar(&node, "node", "", "On hosted storage, read the archive another host of the organization wrote")
 	return cmd
 }
 
@@ -387,7 +443,7 @@ func walBundleAll(ctx context.Context, a *wal.Archive, systems []string) error {
 }
 
 func newWALStatusCmd() *cobra.Command {
-	var surfaceID, systemID string
+	var surfaceID, systemID, node string
 	var jsonOut bool
 	cmd := &cobra.Command{
 		Use:   "status",
@@ -400,6 +456,9 @@ WAL file is missing.`,
 			ctx := cmd.Context()
 			a, _, err := walArchive(ctx, cfg, surfaceID, "")
 			if err != nil {
+				return err
+			}
+			if err := walReadFrom(a, node); err != nil {
 				return err
 			}
 			systems, err := walSystems(ctx, a, systemID)
@@ -441,6 +500,7 @@ WAL file is missing.`,
 	cmd.Flags().StringVar(&surfaceID, "surface", "", "Surface id from the config (required)")
 	cmd.Flags().StringVar(&systemID, "system", "", "Show only this cluster's archive")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print the status as JSON")
+	cmd.Flags().StringVar(&node, "node", "", "On hosted storage, show the archive another host of the organization wrote")
 	return cmd
 }
 
@@ -488,7 +548,7 @@ func printWALStatus(a *wal.Archive, st wal.Status) {
 }
 
 func newWALRestoreCmd() *cobra.Command {
-	var surfaceID, systemID, to, pgdata, keyPath, privKey string
+	var surfaceID, systemID, to, pgdata, keyPath, privKey, node string
 	cmd := &cobra.Command{
 		Use:   "restore",
 		Short: "Restore a PostgreSQL surface to a point in time into an empty data directory",
@@ -515,6 +575,9 @@ with the same config and key. Archiving is turned off on the restored cluster.
 			if err != nil {
 				return err
 			}
+			if err := walReadFrom(a, node); err != nil {
+				return err
+			}
 			if a.SystemID, err = oneSystem(ctx, a, systemID); err != nil {
 				return err
 			}
@@ -525,7 +588,7 @@ with the same config and key. Archiving is turned off on the restored cluster.
 			if err != nil {
 				return err
 			}
-			fetch, err := walFetchCommand(a, keyPath, privKey)
+			fetch, err := walFetchCommand(a, keyPath, privKey, node)
 			if err != nil {
 				return err
 			}
@@ -554,6 +617,7 @@ with the same config and key. Archiving is turned off on the restored cluster.
 	cmd.Flags().StringVar(&pgdata, "pgdata", "", "An empty directory to restore into (required)")
 	cmd.Flags().StringVar(&keyPath, "key-path", "", "Path to the age identity (default encryption.key_path)")
 	cmd.Flags().StringVar(&privKey, "private-key", "", "The age identity, as env:VAR or file:/path")
+	cmd.Flags().StringVar(&node, "node", "", "On hosted storage, restore from the archive another host of the organization wrote (a host that replaces a lost one)")
 	return cmd
 }
 
@@ -571,7 +635,7 @@ func parseWALTarget(s string) (time.Time, error) {
 
 // walFetchCommand is the restore_command a restored cluster calls: this
 // binary, this config and this key.
-func walFetchCommand(a *wal.Archive, keyPath, privKey string) (string, error) {
+func walFetchCommand(a *wal.Archive, keyPath, privKey, node string) (string, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return "", err
@@ -586,6 +650,9 @@ func walFetchCommand(a *wal.Archive, keyPath, privKey string) (string, error) {
 		parts = append(parts, "--config", q(abs))
 	}
 	parts = append(parts, "wal", "fetch", "--surface", q(a.SurfaceID), "--system", a.SystemID)
+	if node != "" {
+		parts = append(parts, "--node", q(node))
+	}
 	if keyPath != "" {
 		abs, err := filepath.Abs(keyPath)
 		if err != nil {

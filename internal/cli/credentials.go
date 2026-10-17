@@ -11,11 +11,13 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/safegrd/cli/pkg/config"
 	"github.com/safegrd/cli/pkg/crypto"
+	"github.com/safegrd/cli/pkg/dbca"
 	"github.com/safegrd/cli/pkg/dump"
 )
 
@@ -37,7 +39,10 @@ type nodeCredentialsResponse struct {
 	// then a role the customer cannot change from here.
 	CredentialVia string `json:"credential_via"`
 	Password      string `json:"password"`
-	Sink          *struct {
+	// CACert is the PEM of the CA the database's certificate is checked
+	// against, set beside the credential on the remote server. Not secret.
+	CACert string `json:"ca_cert"`
+	Sink   *struct {
 		AccessKeyID     string `json:"access_key_id"`
 		SecretAccessKey string `json:"secret_access_key"`
 	} `json:"sink"`
@@ -166,6 +171,11 @@ type credentialSource struct {
 	// ObjectStore is the bucket the remote server holds for a files surface
 	// with no source on this host, or nil. Held in memory like the rest.
 	ObjectStore *dump.ObjectStoreSource
+	// CAFile is where the CA the remote server holds beside DatabaseURL was
+	// written, and CAErr why it could not be used. A URL whose CA did not
+	// apply is not used unverified: the command stops on CAErr.
+	CAFile string
+	CAErr  error
 }
 
 // resolveRuntimeCredentials fills in secrets the local config does not carry,
@@ -229,6 +239,9 @@ func resolveCredentials(ctx context.Context, cfg *config.CLIConfig, storageCfg *
 		cfg.DatabaseURL = creds.DatabaseURL
 		src.DatabaseURL = "remote server"
 		src.DatabaseVia = creds.CredentialVia
+		if creds.CACert != "" {
+			cfg.DatabaseURL, src.CAFile, src.CAErr = applyHeldCA(cfg.DatabaseURL, creds.CACert)
+		}
 	}
 	if storageCfg.SecretAccessKey == "" && !hosted && creds.Sink != nil && creds.Sink.SecretAccessKey != "" {
 		storageCfg.AccessKeyID = creds.Sink.AccessKeyID
@@ -474,5 +487,42 @@ func fetchHeldSurfaceSecret(ctx context.Context, c *config.CLIConfig, nodeID str
 	}
 	if s.HeldSecret == "" {
 		fmt.Fprintf(os.Stderr, "Warning: Surface %s: the remote server holds no credential for it. Set one in the console, or name a variable on this host.\n", s.ID)
+		return
 	}
+	// The host's own ca_file wins: it is the one this host's config names.
+	if creds.CACert != "" && s.CAFile == "" {
+		path, err := writeHeldCA(creds.CACert)
+		if err != nil {
+			// Not connected unverified: without the credential the backup
+			// stops and says so.
+			fmt.Fprintf(os.Stderr, "Error: Surface %s: the CA certificate the remote server holds for it could not be written: %v\n", s.ID, err)
+			s.HeldSecret = ""
+			return
+		}
+		s.CAFile = path
+	}
+}
+
+// writeHeldCA writes a CA the remote server holds to this host's config
+// directory and returns its path.
+func writeHeldCA(bundle string) (string, error) {
+	dir, err := config.DefaultConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return dbca.WriteFile(filepath.Join(dir, "ca"), bundle)
+}
+
+// applyHeldCA writes a held CA and points the URL at it. On an error the URL
+// comes back as it was, with the error the command stops on.
+func applyHeldCA(raw, bundle string) (string, string, error) {
+	path, err := writeHeldCA(bundle)
+	if err != nil {
+		return raw, "", fmt.Errorf("the CA certificate the remote server holds could not be written: %w", err)
+	}
+	u, err := dbca.Apply(raw, path)
+	if err != nil {
+		return raw, "", fmt.Errorf("the CA certificate the remote server holds could not be used: %w", err)
+	}
+	return u, path, nil
 }

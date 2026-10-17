@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/safegrd/cli/pkg/config"
 	"github.com/safegrd/cli/pkg/crypto"
+	"github.com/safegrd/cli/pkg/dbca"
 	"github.com/safegrd/cli/pkg/dump"
 	"github.com/safegrd/cli/pkg/model"
 	"github.com/spf13/cobra"
@@ -240,6 +241,15 @@ func runValidationChecks(path string, c *config.CLIConfig) []CheckResult {
 		if strings.TrimSpace(s.Schedule) != "" {
 			results = append(results, scheduleCheck(fmt.Sprintf("Surface %s schedule", surfaceLabel(s)), s.Schedule))
 		}
+		if len(s.Blackout) > 0 {
+			name := fmt.Sprintf("Surface %s blackout", surfaceLabel(s))
+			if ws, err := model.ParseBlackout(s.Blackout); err != nil {
+				results = append(results, CheckResult{Name: name, Status: "FAIL", Message: err.Error()})
+			} else {
+				results = append(results, CheckResult{Name: name, Status: "PASS",
+					Message: fmt.Sprintf("no scheduled backup starts in %s UTC (%s a day)", blackoutList(ws), model.ShortDuration(model.BlackoutTotal(ws)))})
+			}
+		}
 	}
 
 	// 4. Surfaces check
@@ -328,6 +338,15 @@ func runValidationChecks(path string, c *config.CLIConfig) []CheckResult {
 	}
 
 	return results
+}
+
+// blackoutList is a surface's windows as the CLI prints them.
+func blackoutList(ws []model.BlackoutWindow) string {
+	texts := make([]string, len(ws))
+	for i, w := range ws {
+		texts[i] = w.Text
+	}
+	return strings.Join(texts, ", ")
 }
 
 func scheduleCheck(name, schedule string) CheckResult {
@@ -673,6 +692,12 @@ func credentialProvenanceCheck(c *config.CLIConfig) []CheckResult {
 	if len(c.Surfaces) == 0 || c.DatabaseURL != "" {
 		out = append([]CheckResult{{Name: "Database Credential Source", Status: status(src.DatabaseURL), Message: src.DatabaseURL}}, out...)
 	}
+	switch {
+	case src.CAErr != nil:
+		out = append(out, CheckResult{Name: "Database CA Certificate", Status: "FAIL", Message: src.CAErr.Error()})
+	case src.CAFile != "":
+		out = append(out, CheckResult{Name: "Database CA Certificate", Status: "PASS", Message: "set on the remote server, written to " + src.CAFile})
+	}
 	// Local WORM storage has no credential to have a source, so reporting one
 	// missing would be a warning about something that is not wrong.
 	if storageCfg.Type == config.StorageTypeS3 {
@@ -956,7 +981,13 @@ func pgDumpChecks(c *config.CLIConfig) []CheckResult {
 		if r, err := resolveConfigSecret("database_url", u); err == nil && r != "" && (strings.HasPrefix(u, "env:") || strings.HasPrefix(u, "file:")) {
 			u = r
 		}
-		if w := databaseTLSWarning(u); w != "" {
+		if ca := dbca.CAFileOf(u); ca != "" {
+			if n, err := dbca.CheckFile(ca); err != nil {
+				results = append(results, CheckResult{Name: "TLS to " + name, Status: "FAIL", Message: "the CA certificate " + ca + " could not be read: " + err.Error()})
+			} else {
+				results = append(results, CheckResult{Name: "TLS to " + name, Status: "PASS", Message: fmt.Sprintf("the server's certificate is checked against %s (%d certificates)", ca, n)})
+			}
+		} else if w := databaseTLSWarning(u); w != "" {
 			results = append(results, CheckResult{Name: "TLS to " + name, Status: "WARN", Message: strings.TrimPrefix(w, "its connection URL ")})
 		}
 		if dump.IsSQLiteURL(u) {

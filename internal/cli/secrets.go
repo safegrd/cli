@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/safegrd/cli/pkg/config"
+	"github.com/safegrd/cli/pkg/dbca"
 )
 
 // ResolveSecretRef resolves a secret flag: a reference ("env:VAR_NAME" or
@@ -222,6 +223,11 @@ func resolveSurfaceDatabaseURL(ctx context.Context, c *config.CLIConfig, s *conf
 	}
 	u, dropped := cleanPostgresURL(u)
 	sayDroppedURLParams("Surface "+s.ID, dropped)
+	if s.CAFile != "" && u != "" {
+		if u, err = dbca.Apply(u, s.CAFile); err != nil {
+			return "", fmt.Errorf("surface %s: ca_file %s: %w", s.ID, s.CAFile, err)
+		}
+	}
 	sayDatabaseTLS("Surface "+s.ID, u)
 	return u, nil
 }

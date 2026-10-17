@@ -155,6 +155,9 @@ and never leaves this host.`,
 			// authenticates with, and before ValidateForBackup, which is what
 			// decides the config is incomplete.
 			held := resolveRuntimeCredentials(ctx, cfg, &storageCfg, !jsonOutput)
+			if held.CAErr != nil {
+				return held.CAErr
+			}
 			// Nothing named here, and the remote server holds the bucket this
 			// node backs up: a files surface read over the S3 API.
 			var heldSource *dump.ObjectStoreSource

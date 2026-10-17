@@ -17,8 +17,13 @@ import (
 
 // RestoreOptions are one point-in-time restore.
 type RestoreOptions struct {
+	// Target is the moment to replay to. With TargetName set it only picks
+	// the base backup: the newest one that ended before it. With neither,
+	// the replay runs to the end of the archive and the newest base is used.
 	Target time.Time
-	PGData string
+	// TargetName is a restore point to replay to.
+	TargetName string
+	PGData     string
 	// FetchCommand is restore_command, with %f and %p for PostgreSQL to
 	// fill in.
 	FetchCommand string
@@ -48,7 +53,7 @@ func (a *Archive) Restore(ctx context.Context, o RestoreOptions) (RestoreResult,
 	}
 	var pick *BaseInfo
 	for i := range bases {
-		if bases[i].EndedAt.Before(o.Target) {
+		if o.Target.IsZero() || bases[i].EndedAt.Before(o.Target) {
 			pick = &bases[i]
 		}
 	}
@@ -66,7 +71,7 @@ func (a *Archive) Restore(ctx context.Context, o RestoreOptions) (RestoreResult,
 	}
 	// Push times are whole seconds; a target within the last push's second
 	// is still inside the archive.
-	if o.Target.After(res.ArchiveEnd.Add(time.Second)) {
+	if o.TargetName == "" && !o.Target.IsZero() && o.Target.After(res.ArchiveEnd.Add(time.Second)) {
 		return res, fmt.Errorf("the archive reaches %s, and %s is after it: the WAL since then is not archived yet. Restore to a time before it", stamp(res.ArchiveEnd), stamp(o.Target))
 	}
 	if err := emptyDir(o.PGData); err != nil {
@@ -75,7 +80,7 @@ func (a *Archive) Restore(ctx context.Context, o RestoreOptions) (RestoreResult,
 	if err := a.unpackBase(ctx, *pick, o.PGData); err != nil {
 		return res, err
 	}
-	if err := writeRecovery(o.PGData, o.FetchCommand, o.Target); err != nil {
+	if err := writeRecovery(o.PGData, o.FetchCommand, o); err != nil {
 		return res, err
 	}
 	res.Base = *pick
@@ -188,7 +193,7 @@ func untar(r io.Reader, dir string) error {
 // writeRecovery sets the unpacked cluster up to replay the archive to the
 // target and promote. Archiving is turned off on it: a restored cluster
 // that archived would push a new timeline into the archive it came from.
-func writeRecovery(dir, fetch string, target time.Time) error {
+func writeRecovery(dir, fetch string, o RestoreOptions) error {
 	if err := os.WriteFile(filepath.Join(dir, "recovery.signal"), nil, 0o600); err != nil {
 		return err
 	}
@@ -196,8 +201,15 @@ func writeRecovery(dir, fetch string, target time.Time) error {
 	if err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(f, "\n# Written by safegrd wal restore\nrestore_command = %s\nrecovery_target_time = %s\nrecovery_target_action = 'promote'\narchive_mode = 'off'\n",
-		confQuote(fetch), confQuote(target.UTC().Format("2006-01-02 15:04:05.999999")+"+00"))
+	target := ""
+	switch {
+	case o.TargetName != "":
+		target = "recovery_target_name = " + confQuote(o.TargetName) + "\n"
+	case !o.Target.IsZero():
+		target = "recovery_target_time = " + confQuote(o.Target.UTC().Format("2006-01-02 15:04:05.999999")+"+00") + "\n"
+	}
+	_, err = fmt.Fprintf(f, "\n# Written by safegrd wal restore\nrestore_command = %s\n%srecovery_target_action = 'promote'\narchive_mode = 'off'\n",
+		confQuote(fetch), target)
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}

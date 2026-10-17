@@ -185,18 +185,24 @@ func (a *Archive) Base(ctx context.Context, o BaseOptions) (BaseInfo, error) {
 		scanned <- f
 	}()
 	upR, upW := io.Pipe()
-	put := make(chan error, 1)
+	type putResult struct {
+		lock time.Time
+		err  error
+	}
+	put := make(chan putResult, 1)
 	go func() {
-		err := a.Store.Put(ctx, a.baseKey(info.BaseID, "base.tar.zst.age"), upR, info.LockedUntil)
+		lock, err := a.Store.Put(ctx, a.baseKey(info.BaseID, "base.tar.zst.age"), upR, info.LockedUntil)
 		upR.CloseWithError(io.ErrClosedPipe)
-		put <- err
+		put <- putResult{lock, err}
 	}()
 	stored := &countWriter{w: upW}
 	m, encErr := crypto.EncryptStream(io.TeeReader(tarStream, scanW), stored, a.Recipient)
 	scanW.Close()
 	upW.CloseWithError(encErr)
 	waitErr := cmd.Wait()
-	putErr := <-put
+	pr := <-put
+	putErr := pr.err
+	info.LockedUntil = pr.lock
 	facts := <-scanned
 	switch {
 	case waitErr != nil:
@@ -250,7 +256,7 @@ func (a *Archive) Base(ctx context.Context, o BaseOptions) (BaseInfo, error) {
 	if err != nil {
 		return info, err
 	}
-	if err := a.Store.Put(ctx, a.baseKey(info.BaseID, "base.json"), bytes.NewReader(body), info.LockedUntil); err != nil {
+	if _, err := a.Store.Put(ctx, a.baseKey(info.BaseID, "base.json"), bytes.NewReader(body), info.LockedUntil); err != nil {
 		return info, fmt.Errorf("writing base %s's record: %w", info.BaseID, err)
 	}
 	return info, nil

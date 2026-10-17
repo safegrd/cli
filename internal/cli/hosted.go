@@ -370,8 +370,18 @@ func (p *hostedProvider) upload(ctx context.Context, name string, r io.Reader, r
 	}, &up); err != nil {
 		return "", time.Time{}, time.Time{}, false, err
 	}
+	uri, err = p.sendUpload(ctx, up, name, r)
+	if err != nil {
+		return "", time.Time{}, time.Time{}, false, err
+	}
+	return uri, up.RetainUntil, up.KeptUntil, up.Locked == nil || *up.Locked, nil
+}
+
+// sendUpload streams r into an upload the remote server started, in parts,
+// and completes it. A failure aborts the upload.
+func (p *hostedProvider) sendUpload(ctx context.Context, up hostedUpload, name string, r io.Reader) (string, error) {
 	if up.PartSize <= 0 {
-		return "", time.Time{}, time.Time{}, false, fmt.Errorf("hosted storage: the remote server gave no part size")
+		return "", fmt.Errorf("hosted storage: the remote server gave no part size")
 	}
 	concurrency := int(hostedBufferBudget / up.PartSize)
 	if concurrency < 1 {
@@ -432,19 +442,19 @@ func (p *hostedProvider) upload(ctx context.Context, name string, r io.Reader, r
 	}
 	if firstErr != nil {
 		p.abort(up.UploadID)
-		return "", time.Time{}, time.Time{}, false, firstErr
+		return "", firstErr
 	}
 	var done struct {
 		StorageURI string `json:"storage_uri"`
 		Bytes      int64  `json:"bytes"`
 	}
 	if err := p.client.call(context.WithoutCancel(ctx), http.MethodPost, "/uploads/"+up.UploadID+"/complete", nil, &done); err != nil {
-		return "", time.Time{}, time.Time{}, false, err
+		return "", err
 	}
 	if done.Bytes != total {
-		return "", time.Time{}, time.Time{}, false, fmt.Errorf("hosted storage: %s was stored as %d bytes, %d were sent", name, done.Bytes, total)
+		return "", fmt.Errorf("hosted storage: %s was stored as %d bytes, %d were sent", name, done.Bytes, total)
 	}
-	return done.StorageURI, up.RetainUntil, up.KeptUntil, up.Locked == nil || *up.Locked, nil
+	return done.StorageURI, nil
 }
 
 // abort tells the remote server to abandon an upload. Said out loud when it

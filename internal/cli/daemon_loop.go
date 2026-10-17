@@ -183,6 +183,7 @@ func sendHeartbeat(ctx context.Context, c *config.CLIConfig, nodeID string, st *
 		DrillDetail:         st.DrillDetail,
 		Schedule:            s.Schedule,
 		RetentionDays:       s.RetentionDays,
+		BlackoutSeconds:     blackoutSeconds(s),
 	}, &resp)
 	if status == http.StatusNotFound && st.ServerNodeID != "" && st.ServerNodeID == nodeID && nodeID != c.NodeID {
 		// The surface's node is gone: retired in the console while this
@@ -683,4 +684,11 @@ func repoDrillTarget(ctx context.Context, c *config.CLIConfig, storageCfg config
 		return nil
 	}
 	return rs
+}
+
+// blackoutSeconds is the sum of the surface's blackout windows, for the
+// heartbeat: sent even when zero, so removing a window is heard too.
+func blackoutSeconds(s *config.SurfaceConfig) *int {
+	n := int(model.BlackoutTotal(surfaceBlackout(s)) / time.Second)
+	return &n
 }

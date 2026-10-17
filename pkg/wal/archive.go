@@ -99,7 +99,8 @@ func (a *Archive) Push(ctx context.Context, name string, src io.Reader) error {
 	if _, err := crypto.EncryptStream(bytes.NewReader(plain), &buf, a.Recipient); err != nil {
 		return fmt.Errorf("encrypting %s: %w", name, err)
 	}
-	return a.Store.Put(ctx, segmentKey(a.prefix(), name, a.now(), sha), &buf, time.Time{})
+	_, err = a.Store.Put(ctx, segmentKey(a.prefix(), name, a.now(), sha), &buf, time.Time{})
+	return err
 }
 
 // Pushed lists the WAL files that sit unlocked in the archive, by name and
@@ -310,10 +311,11 @@ func (a *Archive) Bundle(ctx context.Context) (BundleResult, error) {
 				ix.LockedUntil = now.Add(lockSlack)
 			}
 		}
-		files, n, err := a.writeBundle(ctx, id, take, ix.LockedUntil)
+		files, n, lock, err := a.writeBundle(ctx, id, take, ix.LockedUntil)
 		if err != nil {
 			return res, err
 		}
+		ix.LockedUntil = lock
 		ix.Files, ix.Bytes = files, n
 		if err := a.verifyBundle(ctx, id, files); err != nil {
 			return res, err
@@ -322,13 +324,29 @@ func (a *Archive) Bundle(ctx context.Context) (BundleResult, error) {
 		if err != nil {
 			return res, err
 		}
-		if err := a.Store.Put(ctx, a.indexKey(id), bytes.NewReader(body), ix.LockedUntil); err != nil {
+		if _, err := a.Store.Put(ctx, a.indexKey(id), bytes.NewReader(body), ix.LockedUntil); err != nil {
 			return res, fmt.Errorf("writing the index of bundle %s: %w", id, err)
 		}
 		res.BundleID, res.Files, res.Bytes, res.LockedUntil = id, len(files), n, ix.LockedUntil
 		retire = append(take, retire...)
 	}
 
+	if r, ok := a.Store.(Retirer); ok {
+		for start := 0; start < len(retire); start += 64 {
+			end := min(start+64, len(retire))
+			keys := make([]string, 0, end-start)
+			for _, p := range retire[start:end] {
+				keys = append(keys, p.Key)
+			}
+			n, err := r.Retire(ctx, keys)
+			res.Deleted += n
+			if err != nil {
+				res.Kept, res.KeptWhy = len(retire)-res.Deleted, err
+				break
+			}
+		}
+		return res, nil
+	}
 	for i, p := range retire {
 		// ErrDeleteDenied, or any other failure: the rest stay unlocked
 		// beside the bundle, and the next run tries again.
@@ -342,7 +360,7 @@ func (a *Archive) Bundle(ctx context.Context) (BundleResult, error) {
 }
 
 // writeBundle streams the files' ciphertext into one object, in order.
-func (a *Archive) writeBundle(ctx context.Context, id string, take []Pushed, lockUntil time.Time) ([]BundledFile, int64, error) {
+func (a *Archive) writeBundle(ctx context.Context, id string, take []Pushed, lockUntil time.Time) ([]BundledFile, int64, time.Time, error) {
 	pr, pw := io.Pipe()
 	files := make([]BundledFile, 0, len(take))
 	var off int64
@@ -363,15 +381,15 @@ func (a *Archive) writeBundle(ctx context.Context, id string, take []Pushed, loc
 		}
 		pw.Close()
 	}()
-	err := a.Store.Put(ctx, a.bundleKey(id), pr, lockUntil)
+	lock, err := a.Store.Put(ctx, a.bundleKey(id), pr, lockUntil)
 	pr.CloseWithError(io.ErrClosedPipe)
 	if err != nil {
-		return nil, 0, fmt.Errorf("writing bundle %s: %w", id, err)
+		return nil, 0, lock, fmt.Errorf("writing bundle %s: %w", id, err)
 	}
 	if len(files) != len(take) {
-		return nil, 0, fmt.Errorf("bundle %s holds %d of %d WAL files", id, len(files), len(take))
+		return nil, 0, lock, fmt.Errorf("bundle %s holds %d of %d WAL files", id, len(files), len(take))
 	}
-	return files, off, nil
+	return files, off, lock, nil
 }
 
 func (a *Archive) readCurrent(ctx context.Context, key string) ([]byte, error) {

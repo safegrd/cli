@@ -147,6 +147,16 @@ func routeProjectSink(ctx context.Context, cfg *config.CLIConfig, storageCfg *co
 	if err := secondOrigin(sinkResp, storageCfg); err != nil {
 		return err
 	}
+	applyProjectSink(sinkResp, storageCfg)
+	if verbose {
+		fmt.Printf("   Storage:         project '%s' -> s3://%s\n", sinkResp.ProjectName, storageCfg.Bucket)
+	}
+	return nil
+}
+
+// applyProjectSink points storageCfg at the bucket the remote server holds
+// for this host's project.
+func applyProjectSink(sinkResp *nodeSinkResponse, storageCfg *config.StorageConfig) {
 	storageCfg.Type = config.StorageTypeS3
 	storageCfg.Bucket = sinkResp.Sink.Bucket
 	if sinkResp.Sink.Region != "" {
@@ -169,10 +179,6 @@ func routeProjectSink(ctx context.Context, cfg *config.CLIConfig, storageCfg *co
 	if sinkResp.Sink.RetentionDays > 0 {
 		storageCfg.RetentionDays = sinkResp.Sink.RetentionDays
 	}
-	if verbose {
-		fmt.Printf("   Storage:         project '%s' -> s3://%s\n", sinkResp.ProjectName, storageCfg.Bucket)
-	}
-	return nil
 }
 
 // secondOrigin refuses a host's own storage that would be a second origin for

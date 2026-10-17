@@ -1065,7 +1065,7 @@ func mysqlTLSAdvice(err error) error {
 	var invalid x509.CertificateInvalidError
 	if errors.As(err, &verify) || errors.As(err, &unknown) || errors.As(err, &host) || errors.As(err, &invalid) ||
 		strings.Contains(err.Error(), "failed to verify certificate") {
-		return fmt.Errorf("%w. The server's certificate did not verify: add ssl-ca=/path/ca.pem to the URL to check it against your own CA, or tls=skip-verify to encrypt without checking it", err)
+		return fmt.Errorf("%w. The server's certificate did not verify: add ssl-ca=/path/ca.pem to the URL (or set the surface's CA certificate on the remote server) to check it against its own CA, or tls=skip-verify to encrypt without checking it", err)
 	}
 	return err
 }
