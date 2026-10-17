@@ -107,6 +107,14 @@ type SurfaceState struct {
 	// ConsoleDrillChecks are the drill checks the console holds for this
 	// surface, run beside the config's own. Kept for the same reason.
 	ConsoleDrillChecks []model.DrillCheck `json:"console_drill_checks,omitempty"`
+
+	// For a surface with a wal: block: when the daemon last took a base
+	// backup and bundled the WAL, and when an attempt at either last failed,
+	// so a failure is retried an hour later and not on every tick.
+	WALLastBase       time.Time `json:"wal_last_base,omitempty"`
+	WALLastBundle     time.Time `json:"wal_last_bundle,omitempty"`
+	WALBaseFailedAt   time.Time `json:"wal_base_failed_at,omitempty"`
+	WALBundleFailedAt time.Time `json:"wal_bundle_failed_at,omitempty"`
 }
 
 // setDrill records how the last drill went. The three always change
@@ -938,6 +946,27 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 		})
 	}
 
+	// WAL archives: base backups and bundles, after every backup and drill
+	// for the same reason drills wait. A base backup of a large database
+	// takes hours. Each failure says itself, once; it fails a single pass,
+	// and a resident daemon does not repeat it as a failed backup on every
+	// tick.
+	var walFailed []string
+	for _, surface := range c.Surfaces {
+		if ctx.Err() != nil {
+			break
+		}
+		st := daemonState.Surfaces[surface.ID]
+		if surface.WAL == nil || st == nil || st.Retired != "" || (surface.Type != "" && !surfaceIsPostgres(&surface)) {
+			continue
+		}
+		archiving := checkWALArchiver(ctx, c, &surface)
+		if !runWALWork(ctx, c, &surface, st, lockDir, time.Now().UTC()) || !archiving {
+			walFailed = append(walFailed, surface.ID)
+		}
+		warnIfStateUnsaved(saveDaemonState(statePath, daemonState), statePath)
+	}
+
 	// Expiry in the customer's own bucket, when they opted in: once a day.
 	// A failure is said and retried tomorrow; it never fails the backups.
 	if c.Storage.ExpireAfterLock && c.Storage.Type == config.StorageTypeS3 && time.Since(daemonState.LastPrune) >= pruneEvery {
@@ -953,6 +982,9 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 
 	if hasErrors {
 		return fmt.Errorf("one or more surface backups failed during reconciliation")
+	}
+	if len(walFailed) > 0 && tick == 0 {
+		return fmt.Errorf("WAL archiving failed for %s", strings.Join(walFailed, ", "))
 	}
 	return nil
 }

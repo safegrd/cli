@@ -191,6 +191,7 @@ func init() {
 	RootCmd.AddCommand(newKeepCmd())
 	RootCmd.AddCommand(newMCPCmd())
 	RootCmd.AddCommand(newGuardCmd())
+	RootCmd.AddCommand(newWALCmd())
 }
 
 func newVersionCmd() *cobra.Command {

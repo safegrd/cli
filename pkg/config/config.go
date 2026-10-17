@@ -242,6 +242,25 @@ type SurfaceConfig struct {
 
 	// Drill configures how the daemon proves this surface restores.
 	Drill *DrillConfig `yaml:"drill,omitempty" json:"drill,omitempty"`
+
+	// WAL archives a PostgreSQL surface's write-ahead log, so it restores
+	// to any moment inside the window and not only to its last backup.
+	WAL *WALConfig `yaml:"wal,omitempty" json:"wal,omitempty"`
+}
+
+// WALConfig is a PostgreSQL surface's WAL archive. PostgreSQL pushes each WAL
+// file with archive_command = 'safegrd wal push --surface <id> %p'; the
+// daemon takes the base backups and bundles the WAL into locked objects.
+type WALConfig struct {
+	// WindowDays is how far back a restore can reach. Zero means 7.
+	WindowDays int `yaml:"window_days,omitempty" json:"window_days,omitempty"`
+	// BaseEveryDays is how often the daemon takes a base backup. A restore
+	// replays every WAL file since its base, so a busy database wants them
+	// more often. Zero means 7.
+	BaseEveryDays int `yaml:"base_every_days,omitempty" json:"base_every_days,omitempty"`
+	// BundleMB bundles the unlocked WAL as soon as it passes this size, as
+	// well as once a day. Zero means 1024.
+	BundleMB int `yaml:"bundle_mb,omitempty" json:"bundle_mb,omitempty"`
 }
 
 // ObjectStoreSourceConfig is where a files surface's bucket is and how to
@@ -328,7 +347,7 @@ var unknownFieldRe = regexp.MustCompile(`line (\d+): field (\S+) not found in ty
 // line number says which.
 var sectionOfType = map[string]string{
 	"CLIConfig": "", "RemoteServerConfig": "server.", "NodeIdentity": "node.", "StorageConfig": "storage.", "EncryptionConfig": "encryption.",
-	"DaemonConfig": "daemon.", "DefaultsConfig": "defaults.", "SurfaceConfig": "surfaces[].", "DrillConfig": "surfaces[].drill.",
+	"DaemonConfig": "daemon.", "DefaultsConfig": "defaults.", "SurfaceConfig": "surfaces[].", "DrillConfig": "surfaces[].drill.", "WALConfig": "surfaces[].wal.",
 }
 
 // unknownKeys decodes the file again, strictly, and names every key the
