@@ -527,12 +527,8 @@ func openRun(ctx context.Context, rs *repoSnapshot, privateKey string) (*read.Re
 }
 
 // restoreRepoTables loads chosen tables of one run into tables of the same
-// definition that are empty in the target, in one transaction. A table the
-// target does not have (dropped, the case guard is for) is first created from
-// the run's own schema sections, with its sequences, constraints and indexes,
-// and its sequences are set to where the backup left them. They are
-// consistent with each other, as of the run; the target's other tables are
-// as the target has them, and it says which ones these point at.
+// definition that are empty in the target, in one transaction
+// (tableRestore).
 func restoreRepoTables(ctx context.Context, rs *repoSnapshot, privateKey, targetURL string, tables []string) error {
 	id := rs.Meta.SnapshotID
 	r, idx, files, err := openRun(ctx, rs, privateKey)
@@ -547,153 +543,39 @@ func restoreRepoTables(ctx context.Context, rs *repoSnapshot, privateKey, target
 	for _, f := range files {
 		byPath[f.Path] = f
 	}
-	type pick struct {
-		name string
-		stat model.TableStat
-		file read.Item
+	tr := &tableRestore{id: id, asOf: rs.Meta.CreatedAt, sections: func() (map[string]string, error) {
+		return readRunSections(ctx, r, idx, byPath)
+	}}
+	if err := tr.pick(manifest.TableStats, tables, func(path string) bool { _, ok := byPath[path]; return ok }); err != nil {
+		return err
 	}
-	var picks []pick
-	chosen := map[string]bool{}
-	for _, name := range tables {
-		p, err := tablePath(name)
-		if err != nil {
-			return err
-		}
-		f, ok := byPath[p]
-		if !ok {
-			return fmt.Errorf("snapshot %s holds no table %s", id, name)
-		}
-		var stat *model.TableStat
-		for i := range manifest.TableStats {
-			t := &manifest.TableStats[i]
-			if "data/"+t.Schema+"/"+t.TableName+".copy" == p {
-				stat = t
-			}
-		}
-		if stat == nil {
-			return fmt.Errorf("the manifest of %s does not list %s", id, name)
-		}
-		if chosen[p] {
-			return fmt.Errorf("--table %s is given twice", name)
-		}
-		chosen[p] = true
-		picks = append(picks, pick{name: stat.Schema + "." + stat.TableName, stat: *stat, file: f})
-	}
-
-	cc, err := pgx.ParseConfig(targetURL)
-	if err != nil {
-		return fmt.Errorf("the restore target's URL: %w", err)
-	}
-	if cc.ConnectTimeout == 0 {
-		cc.ConnectTimeout = 30 * time.Second
-	}
-	conn, err := pgx.ConnectConfig(ctx, cc)
-	if err != nil {
-		return fmt.Errorf("could not connect to the restore target: %w", err)
-	}
-	defer conn.Close(context.Background())
-	tx, err := conn.Begin(ctx)
+	tx, done, err := tr.begin(ctx, targetURL)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = tx.Rollback(context.Background()) }()
-	started := time.Now()
-	var rows int64
-	var sections map[string]string
-	created := map[string]dump.TableDDL{}
-	for _, p := range picks {
-		ident := pgx.Identifier{p.stat.Schema, p.stat.TableName}.Sanitize()
-		hash, ok, err := dump.TableSchemaHash(ctx, tx, p.stat.Schema, p.stat.TableName)
-		if err != nil {
-			return fmt.Errorf("reading the definition of %s in the target: %w", p.name, err)
-		}
-		if !ok {
-			if sections == nil {
-				if sections, err = readRunSections(ctx, r, idx, byPath); err != nil {
-					return err
-				}
-			}
-			ddl, found := dump.TableDefinition(sections[dbrun.PreData], sections[dbrun.PostData], sections[dbrun.Sequences],
-				p.stat.Schema, p.stat.TableName, p.stat.OwnedSequences)
-			if !found {
-				return fmt.Errorf("the target has no table %s, and %s holds no definition of it to create it from. Restore the whole snapshot into an empty database", p.name, id)
-			}
-			if _, err := tx.Exec(ctx, ddl.Create); err != nil {
-				return fmt.Errorf("creating %s as %s defines it: %w; nothing was restored", p.name, id, err)
-			}
-			created[p.name] = ddl
-			if hash, ok, err = dump.TableSchemaHash(ctx, tx, p.stat.Schema, p.stat.TableName); err != nil || !ok {
-				return fmt.Errorf("reading the definition of %s after creating it: %v; nothing was restored", p.name, err)
-			}
-		}
-		if p.stat.SchemaHash == "" {
-			return fmt.Errorf("snapshot %s records no definition of %s to compare the target's with; restore the whole snapshot into an empty database instead", id, p.name)
-		}
-		if hash != p.stat.SchemaHash {
-			return fmt.Errorf("%s in the target is not defined as it was in %s (columns, types, defaults or constraints differ); nothing was restored", p.name, id)
-		}
-		var held bool
-		if err := tx.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM "+ident+")").Scan(&held); err != nil {
-			return err
-		}
-		if held {
-			return fmt.Errorf("%s in the target holds rows; a restore never writes over data. Empty it, or restore into another database", p.name)
-		}
+	defer done()
+	if err := tr.prepare(ctx, tx); err != nil {
+		return err
+	}
+	for _, p := range tr.picks {
+		f := byPath[p.path]
 		pr, pw := io.Pipe()
 		cat := make(chan error, 1)
 		go func() {
-			err := r.Cat(ctx, idx, p.file.Node, pw)
+			err := r.Cat(ctx, idx, f.Node, pw)
 			_ = pw.CloseWithError(err)
 			cat <- err
 		}()
-		tag, copyErr := tx.Conn().PgConn().CopyFrom(ctx, pr, "COPY "+ident+" FROM STDIN (FORMAT binary)")
+		copyErr := tr.load(ctx, tx, p, pr)
 		_ = pr.CloseWithError(fmt.Errorf("the load stopped"))
-		catErr := <-cat
-		if catErr != nil {
+		if catErr := <-cat; catErr != nil {
 			return fmt.Errorf("reading %s from %s: %w; nothing was restored", p.name, id, catErr)
 		}
 		if copyErr != nil {
-			return fmt.Errorf("loading %s: %w; nothing was restored", p.name, copyErr)
-		}
-		if tag.RowsAffected() != p.stat.RowCount {
-			return fmt.Errorf("%s loaded %d rows, the backup recorded %d; nothing was restored", p.name, tag.RowsAffected(), p.stat.RowCount)
-		}
-		rows += p.stat.RowCount
-		if ddl, ok := created[p.name]; ok && ddl.Setvals != "" {
-			if _, err := tx.Exec(ctx, ddl.Setvals); err != nil {
-				return fmt.Errorf("setting the sequences of %s: %w; nothing was restored", p.name, err)
-			}
+			return copyErr
 		}
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("committing the restore: %w", err)
-	}
-	fmt.Printf("Restored %d %s, %s rows, from %s in %s. Every table matched its SHA-256 and its row count.\n", len(picks),
-		pluralWord(int64(len(picks)), "table", "tables"), formatNumber(rows), id, shortDuration(time.Since(started)))
-	fmt.Printf("   As of %s. The target's other tables are as they were, and are not consistent with it.\n", rs.Meta.CreatedAt.UTC().Format("2006-01-02 15:04:05 UTC"))
-	for _, p := range picks {
-		if ddl, ok := created[p.name]; ok {
-			fmt.Printf("   Created %s as it was defined in %s (%d %s: the table, its sequences, constraints and indexes).\n",
-				p.name, id, ddl.Objects, pluralWord(int64(ddl.Objects), "object", "objects"))
-		}
-		var notLoaded []string
-		for _, ref := range p.stat.References {
-			if !chosen["data/"+strings.Replace(ref, ".", "/", 1)+".copy"] {
-				notLoaded = append(notLoaded, ref)
-			}
-		}
-		if len(notLoaded) > 0 {
-			fmt.Printf("   %s points at %s, which this restore did not load.\n", p.name, strings.Join(notLoaded, ", "))
-		}
-		if len(p.stat.OwnedSequences) > 0 {
-			if ddl, ok := created[p.name]; ok && ddl.Setvals != "" {
-				fmt.Printf("   %s set to where the backup left %s.\n", strings.Join(p.stat.OwnedSequences, ", "), pluralWord(int64(len(p.stat.OwnedSequences)), "it", "them"))
-			} else {
-				fmt.Printf("   %s owns %s, which this restore did not move.\n", p.name, strings.Join(p.stat.OwnedSequences, ", "))
-			}
-		}
-	}
-	return nil
+	return tr.commit(ctx, tx)
 }
 
 // readRunSections reads a run's schema and sequence sections, the ones it has.

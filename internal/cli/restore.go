@@ -301,7 +301,11 @@ files: each upload writes or updates the file's row in storage.objects.`,
 				return fmt.Errorf("--path restores part of an incremental (--format repo) snapshot; %s is one archive, so restore it whole", snapshotID)
 			}
 			if len(tables) > 0 {
-				return fmt.Errorf("--table restores tables from a run of an incremental database backup (--format repo); %s is one archive, so restore it whole", snapshotID)
+				meta, metaErr := storageProvider.DownloadMetadata(ctx, snapshotID)
+				if metaErr != nil {
+					fmt.Fprintf(os.Stderr, "Warning: could not read the metadata for %s: %v\n", snapshotID, metaErr)
+				}
+				return restoreArchiveTables(ctx, storageProvider, meta, snapshotID, resolvedKey, targetURL, tables)
 			}
 			// Not where this config looks: a recovery machine rebuilding a lost
 			// host does not know the node id its backups were filed under.
@@ -579,7 +583,7 @@ files: each upload writes or updates the file's row in storage.objects.`,
 	cmd.Flags().StringArrayVar(&schemas, "schema", nil, "Restore only this schema of a PostgreSQL snapshot, objects and rows, into a database that has other schemas (repeatable)")
 	cmd.Flags().StringArrayVar(&dataOnly, "data-only-schema", nil, "Load only this schema's rows into tables the target already has (repeatable)")
 	cmd.Flags().BoolVar(&noOwner, "no-owner", false, "PostgreSQL: restore without ownership and privileges, so every object belongs to the restoring role. The roles the schema names are still created")
-	cmd.Flags().StringArrayVar(&tables, "table", nil, "Restore only this table (schema.table) of a database run into --target: into an empty table of the same definition, or created as the run defined it when the target has none (repeatable)")
+	cmd.Flags().StringArrayVar(&tables, "table", nil, "Restore only this table (schema.table) of a PostgreSQL snapshot into --target: into an empty table of the same definition, or created as the snapshot defined it when the target has none (repeatable)")
 	cmd.Flags().StringVar(&surfaceSel, "surface", "", "With --path or --table and no --snapshot: the surface whose repository holds it")
 	cmd.Flags().StringArrayVar(&paths, "path", nil, "Restore only this path of a repository snapshot, relative to / (repeatable; '*', '?' and '**' match)")
 	cmd.Flags().StringVar(&sourceEndpoint, "source-endpoint", "", "With --target s3://…: the store's S3 URL (Supabase Storage: https://PROJECT.storage.supabase.co/storage/v1/s3); empty means AWS S3")

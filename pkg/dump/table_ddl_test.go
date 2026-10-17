@@ -22,7 +22,8 @@ func TestTableDefinitionPicksOneTablesObjects(t *testing.T) {
 	post := entry("order order_pkey", "CONSTRAINT", "public", `ALTER TABLE ONLY public."order" ADD CONSTRAINT order_pkey PRIMARY KEY (id);`) +
 		entry("order_items_pkey", "CONSTRAINT", "public", `ALTER TABLE ONLY public.order_items ADD CONSTRAINT order_items_pkey PRIMARY KEY (id);`) +
 		entry("order_by_day", "INDEX", "public", `CREATE INDEX order_by_day ON public."order" USING btree (id);`) +
-		entry("order_items_by_id", "INDEX", "public", `CREATE INDEX order_items_by_id ON public.order_items USING btree (id);`)
+		entry("order_items_by_id", "INDEX", "public", `CREATE INDEX order_items_by_id ON public.order_items USING btree (id);`) +
+		entry("order order_customer_fkey", "FK CONSTRAINT", "public", `ALTER TABLE ONLY public."order" ADD CONSTRAINT order_customer_fkey FOREIGN KEY (id) REFERENCES public.customers(id);`)
 	seqs := "-- Sequence positions\nSELECT pg_catalog.setval('\"public\".\"order_id_seq\"', 42, true);\nSELECT pg_catalog.setval('\"public\".\"order_items_id_seq\"', 7, true);\n"
 
 	ddl, ok := TableDefinition(pre, post, seqs, "public", "order", []string{"public.order_id_seq"})
@@ -39,7 +40,11 @@ func TestTableDefinitionPicksOneTablesObjects(t *testing.T) {
 			t.Errorf("took %q, which is not public.order's:\n%s", not, ddl.Create)
 		}
 	}
-	if ddl.Objects != 6 || ddl.Setvals != "SELECT pg_catalog.setval('\"public\".\"order_id_seq\"', 42, true);\n" {
+	// Its foreign keys come apart from Create, to run after the rows.
+	if strings.Contains(ddl.Create, "order_customer_fkey") || !strings.Contains(ddl.ForeignKeys, "order_customer_fkey") {
+		t.Errorf("the foreign key is not held apart:\nCreate:\n%s\nForeignKeys:\n%s", ddl.Create, ddl.ForeignKeys)
+	}
+	if ddl.Objects != 7 || ddl.Setvals != "SELECT pg_catalog.setval('\"public\".\"order_id_seq\"', 42, true);\n" {
 		t.Errorf("objects %d, setvals %q", ddl.Objects, ddl.Setvals)
 	}
 	if _, ok := TableDefinition(pre, post, seqs, "public", "gone", nil); ok {

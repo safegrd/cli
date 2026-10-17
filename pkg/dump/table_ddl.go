@@ -8,11 +8,14 @@ import (
 // TableDDL is what a schema-only pg_dump holds for one table: the table and
 // the sequences it owns, then its constraints, indexes, policies and triggers.
 // A restore of one table into a database that no longer has it runs Create,
-// loads the rows, then runs Setvals.
+// loads the rows, then runs ForeignKeys and Setvals.
 type TableDDL struct {
-	Create  string // pre-data and post-data objects of the table, in dump order
-	Setvals string // sequences.sql lines for the sequences the table owns
-	Objects int    // how many dump objects Create holds
+	Create string // pre-data and post-data objects of the table, in dump order, but its foreign keys
+	// ForeignKeys are the table's FK constraints, added after the rows are
+	// in: a table restored with the one it points at may be loaded first.
+	ForeignKeys string
+	Setvals     string // sequences.sql lines for the sequences the table owns
+	Objects     int    // how many dump objects Create and ForeignKeys hold
 }
 
 // TableDefinition picks the objects of schema.table, and of the sequences it
@@ -26,7 +29,7 @@ func TableDefinition(preData, postData, sequences, schema, table string, owned [
 		s, n := splitQualified(o)
 		ownedSeq[s+"\x00"+n] = true
 	}
-	var b strings.Builder
+	var b, fk strings.Builder
 	for _, section := range []string{preData, postData} {
 		matches := tocHeaderRe.FindAllStringSubmatchIndex(section, -1)
 		for i, m := range matches {
@@ -42,14 +45,18 @@ func TableDefinition(preData, postData, sequences, schema, table string, owned [
 			if typ == "TABLE" {
 				ok = true
 			}
-			b.WriteString(section[m[0]:end])
+			if typ == "FK CONSTRAINT" {
+				fk.WriteString(section[m[0]:end])
+			} else {
+				b.WriteString(section[m[0]:end])
+			}
 			ddl.Objects++
 		}
 	}
 	if !ok {
 		return TableDDL{}, false
 	}
-	ddl.Create = b.String()
+	ddl.Create, ddl.ForeignKeys = b.String(), fk.String()
 	// sequences.sql names a sequence fully quoted ('"public"."orders_id_seq"');
 	// pg_dump's own setval does not quote what needs none.
 	var forms []string
