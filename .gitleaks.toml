@@ -1,0 +1,22 @@
+# gitleaks runs in the pre-commit and pre-push hooks
+# (git config core.hooksPath .githooks installs them).
+[extend]
+useDefault = true
+
+# The repository-format fixtures carry a throwaway Age identity on purpose.
+[allowlist]
+description = "Test fixtures"
+paths = ['''^pkg/repo/testdata/''']
+
+# The default rules want more entropy than a short hex password has. This rule
+# matches on the key's name instead, and lets through a value that says it is
+# fake.
+[[rules]]
+id = "quoted-credential"
+description = "A password, token, API key or SMTP username written in as a literal"
+regex = '''(?i)\b(?:password|passwd|secret|token|api_?key|access_?key|username)["']?\s*[:=]\s*["']([A-Za-z0-9+/_.\-]{10,})["']'''
+secretGroup = 1
+
+[[rules.allowlists]]
+regexTarget = "secret"
+regexes = ['''(?i)(test|example|fake|dummy|change|placeholder|redacted|sample|secret|passw|pass$|token|local|demo|xxx|your|wrong|bad|canary|horse|standin|e2e|^whsec_|^sg_tok_)''']

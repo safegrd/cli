@@ -1,0 +1,16 @@
+#!/bin/sh
+# Refuses a commit whose staged changes carry a secret. Installed by
+# `make hooks`. pre-push scans the pushed commits again, but a secret caught
+# here never enters history, so nothing has to be rewritten.
+set -eu
+cd "$(git rev-parse --show-toplevel)"
+
+if ! command -v gitleaks >/dev/null; then
+	echo "Error: gitleaks is not installed, so the commit was not scanned for secrets: brew install gitleaks" >&2
+	exit 1
+fi
+if ! out=$(gitleaks git --pre-commit --staged --no-banner --redact -v --exit-code 1 . 2>&1); then
+	printf '%s\n' "$out" | grep -E "^(Finding|RuleID|File|Line):" >&2 || true
+	echo "Error: gitleaks found a secret in the staged changes. Take it out. A test's fake value can say so (test, example, fake): .gitleaks.toml lists the words." >&2
+	exit 1
+fi
