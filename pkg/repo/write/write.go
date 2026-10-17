@@ -160,6 +160,10 @@ type Result struct {
 	ReadBytes    int64
 	WrittenBytes int64
 	ChangedFiles int64
+	// ReReadFiles counts the files read again whose content the epoch
+	// already held: a renamed or moved file, or one touched and not
+	// written. ChangedFiles does not count them.
+	ReReadFiles int64
 	// Excluded counts the entries the exclude patterns left out, each
 	// directory once with everything in it.
 	Excluded  int64
@@ -468,6 +472,7 @@ func Run(ctx context.Context, b sink.Backend, o Options) (*Result, error) {
 	}
 	res.ReadBytes = w.readBytes
 	res.ChangedFiles = w.changed
+	res.ReReadFiles = w.reread
 	res.Excluded = w.excludedN
 	res.NewBytes = w.newBytes
 
@@ -848,6 +853,7 @@ type walker struct {
 	logical      int64
 	readBytes    int64
 	changed      int64
+	reread       int64
 	skipped      []format.Skipped
 	inconsistent []format.RawPath
 	newBytes     map[string]int64
@@ -1208,11 +1214,14 @@ func (w *walker) file(abs, rel string, fi os.FileInfo) (n format.Node, ok bool, 
 	}
 
 	var pre, post os.FileInfo
+	added := false
 	for attempt := 0; attempt < 2; attempt++ {
 		var content []format.ID
 		var size int64
 		var sum string
-		content, size, sum, pre, post, err = w.read(abs)
+		var stored bool
+		content, size, sum, pre, post, stored, err = w.read(abs)
+		added = added || stored
 		if errors.Is(err, fs.ErrNotExist) {
 			return n, false, nil
 		}
@@ -1231,7 +1240,13 @@ func (w *walker) file(abs, rel string, fi os.FileInfo) (n format.Node, ok bool, 
 			w.inconsistent = append(w.inconsistent, format.RawPath(rel))
 		}
 	}
-	w.changed++
+	// The cache is by path, so a renamed file is read again; it changed only
+	// if it stored something the epoch did not hold.
+	if added {
+		w.changed++
+	} else {
+		w.reread++
+	}
 	pst := sysStat(pre)
 	if !n.Inconsistent {
 		row := cache.FileRow{Path: rel, Dev: pst.dev, Ino: pst.ino, Size: pre.Size(), MTimeNs: pre.ModTime().UnixNano(),
@@ -1255,34 +1270,36 @@ func (w *walker) counted(rel string, n format.Node, fi os.FileInfo) error {
 
 // read chunks one file, storing every chunk the epoch lacks, and returns the
 // file's stat before and after the read.
-func (w *walker) read(abs string) (content []format.ID, size int64, sum string, pre, post os.FileInfo, err error) {
+// read chunks and stores one file. added is whether any chunk was new to
+// the epoch.
+func (w *walker) read(abs string) (content []format.ID, size int64, sum string, pre, post os.FileInfo, added bool, err error) {
 	f, err := openNoFollow(abs)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return nil, 0, "", nil, nil, err
+			return nil, 0, "", nil, nil, false, err
 		}
-		return nil, 0, "", nil, nil, fmt.Errorf("opening %s: %w", abs, err)
+		return nil, 0, "", nil, nil, false, fmt.Errorf("opening %s: %w", abs, err)
 	}
 	defer f.Close()
 	pre, err = f.Stat()
 	if err != nil {
-		return nil, 0, "", nil, nil, err
+		return nil, 0, "", nil, nil, false, err
 	}
 	if !pre.Mode().IsRegular() {
-		return nil, 0, "", nil, nil, fmt.Errorf("%s stopped being a regular file during the backup", abs)
+		return nil, 0, "", nil, nil, false, fmt.Errorf("%s stopped being a regular file during the backup", abs)
 	}
 	h := sha256.New()
 	w.ch.Reset(f)
 	for {
 		if err := w.ctx.Err(); err != nil {
-			return nil, 0, "", nil, nil, err
+			return nil, 0, "", nil, nil, false, err
 		}
 		b, err := w.ch.Next()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
-			return nil, 0, "", nil, nil, fmt.Errorf("reading %s: %w", abs, err)
+			return nil, 0, "", nil, nil, false, fmt.Errorf("reading %s: %w", abs, err)
 		}
 		h.Write(b)
 		size += int64(len(b))
@@ -1290,13 +1307,15 @@ func (w *walker) read(abs string) (content []format.ID, size int64, sum string, 
 		id := format.Hash(b)
 		content = append(content, id)
 		// Sealing copies the bytes before the chunker reuses its buffer.
-		if err := w.store(w.data, id, b); err != nil {
-			return nil, 0, "", nil, nil, err
+		isNew, err := w.storeNew(w.data, id, b)
+		if err != nil {
+			return nil, 0, "", nil, nil, false, err
 		}
+		added = added || isNew
 	}
 	post, err = f.Stat()
 	if err != nil {
-		return nil, 0, "", nil, nil, err
+		return nil, 0, "", nil, nil, false, err
 	}
-	return content, size, hex.EncodeToString(h.Sum(nil)), pre, post, nil
+	return content, size, hex.EncodeToString(h.Sum(nil)), pre, post, added, nil
 }

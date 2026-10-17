@@ -643,3 +643,31 @@ func TestARunWithNothingChangedWritesNothingWhenAskedTo(t *testing.T) {
 		t.Fatal("the run after a skipped one does not restore as the source")
 	}
 }
+
+// A renamed directory is read again, since the cache is by path, and its
+// files store nothing new: they are counted as read again, not changed. A
+// file written in the same run is counted as changed.
+func TestARenamedDirectoryIsReadAgainNotChanged(t *testing.T) {
+	h := newHarness(t)
+	dir := filepath.Join(h.src, "reports")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 5; i++ {
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("r%d.txt", i)), bytes.Repeat([]byte{byte('a' + i)}, 4096), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.backup(nil)
+	if err := os.Rename(dir, filepath.Join(h.src, "archive")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(h.src, "new.txt"), []byte("written after the first run"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	second := h.backup(nil)
+	if second.ChangedFiles != 1 || second.ReReadFiles != 5 {
+		t.Fatalf("after renaming a directory of 5 files and writing one: %d changed, %d read again; want 1 and 5",
+			second.ChangedFiles, second.ReReadFiles)
+	}
+}

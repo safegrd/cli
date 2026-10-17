@@ -868,3 +868,19 @@ func mongoNotable(stderr string) string {
 	}
 	return strings.Join(keep, "; ")
 }
+
+// CheckDumpTool says whether the tool that dumps a database of kind is on
+// this host, without connecting to the database: MySQL's or MariaDB's dump
+// tool (either; the dump itself prefers the server's own) or mongodump.
+// PostgreSQL and SQLite are dumped in-process and need none.
+func CheckDumpTool(ctx context.Context, kind model.SurfaceType) error {
+	switch kind {
+	case model.SurfaceTypeMySQL:
+		_, err := findMySQLTool(ctx, "dump", false)
+		return err
+	case model.SurfaceTypeMongoDB:
+		_, err := findMongoTool(ctx, "mongodump")
+		return err
+	}
+	return nil
+}

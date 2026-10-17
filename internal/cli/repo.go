@@ -359,8 +359,13 @@ func runRepoBackup(ctx context.Context, p repoParams) (*model.SnapshotMetadata, 
 		fmt.Fprintf(out, "%s %s files, %s read, %s stored in %d %s, %s.\n", label, formatNumber(snap.Stats.Files),
 			formatBytes(res.ReadBytes), formatBytes(res.WrittenBytes), snap.Stats.NewPacks, pluralWord(snap.Stats.NewPacks, "pack", "packs"), took)
 	} else {
-		fmt.Fprintf(out, "%s %s files, %s changed, %s read, %s stored in %d %s, %s.\n", label, formatNumber(snap.Stats.Files),
-			formatNumber(res.ChangedFiles), formatBytes(res.ReadBytes), formatBytes(res.WrittenBytes), snap.Stats.NewPacks,
+		// A renamed or touched file is read again and stores nothing new.
+		reread := ""
+		if res.ReReadFiles > 0 {
+			reread = ", " + formatNumber(res.ReReadFiles) + " read again with no new content"
+		}
+		fmt.Fprintf(out, "%s %s files, %s changed%s, %s read, %s stored in %d %s, %s.\n", label, formatNumber(snap.Stats.Files),
+			formatNumber(res.ChangedFiles), reread, formatBytes(res.ReadBytes), formatBytes(res.WrittenBytes), snap.Stats.NewPacks,
 			pluralWord(snap.Stats.NewPacks, "pack", "packs"), took)
 	}
 	printRepoKept(out, label, res, locked)

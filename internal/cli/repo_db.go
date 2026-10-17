@@ -161,6 +161,11 @@ func runRepoDatabaseBackup(ctx context.Context, p repoDBParams) (*model.Snapshot
 			return nil, nil, classed(exitSource, err)
 		}
 	}
+	// The same for a dump tool the host lacks: the epoch it opened made the
+	// next run read as an increment over its first complete one.
+	if err := dump.CheckDumpTool(ctx, kind); err != nil {
+		return nil, nil, classed(exitSource, err)
+	}
 	b, err := repoBackend(ctx, cfg, p.StorageCfg)
 	if err != nil {
 		return nil, nil, storageFailure(err)
