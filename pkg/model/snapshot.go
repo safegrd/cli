@@ -255,6 +255,10 @@ type SnapshotMetadata struct {
 	// types. Empty on snapshots taken before it existed, which
 	// were all native.
 	SchemaSource string `json:"schema_source,omitempty" yaml:"schema_source,omitempty"`
+	// Replica is set when a PostgreSQL backup was read from a standby, and
+	// says how far behind the primary it had replayed when the backup's
+	// snapshot was taken.
+	Replica *ReplicaRead `json:"replica,omitempty" yaml:"replica,omitempty"`
 	// RolesNamed are the roles a Postgres snapshot's schema names (owners,
 	// grantees, the roles policies apply to), sorted. RolesSource says how
 	// roles.sql carried them: "pg_dumpall 16.4", with ", no passwords" when
@@ -406,4 +410,15 @@ func (m *SnapshotMetadata) CalculateTotals() {
 		m.TotalItems = m.EmailStats.TotalEmails
 		m.TotalContainers = m.EmailStats.TotalFolders
 	}
+}
+
+// ReplicaRead is what a backup read from a standby knew about its lag.
+type ReplicaRead struct {
+	// ReplayedAt is when the newest transaction the standby had replayed
+	// committed on the primary; nil when it had replayed none since it
+	// started.
+	ReplayedAt *time.Time `json:"replayed_at,omitempty" yaml:"replayed_at,omitempty"`
+	// LagSeconds is the backup's snapshot time less ReplayedAt. On a primary
+	// with no writes it grows while nothing is behind.
+	LagSeconds float64 `json:"lag_seconds" yaml:"lag_seconds"`
 }

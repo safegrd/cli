@@ -703,6 +703,21 @@ func schemaSourceLabel(source string) string {
 	}
 }
 
+// replicaLine says where a PostgreSQL backup was read from when it was a
+// standby, and how far behind: "a standby, 12s behind the primary". Empty for
+// a primary.
+func replicaLine(r *model.ReplicaRead) string {
+	switch {
+	case r == nil:
+		return ""
+	case r.ReplayedAt == nil:
+		return "a standby that had replayed nothing since it started"
+	default:
+		return fmt.Sprintf("a standby, its newest transaction committed %s before the backup on the primary",
+			model.ShortDuration(time.Duration(r.LagSeconds*float64(time.Second)).Round(time.Second)))
+	}
+}
+
 // checkRestoreDigest holds a restored stream to the digest recorded at backup
 // time: the remote server's record when it can be asked, the sidecar when not.
 func checkRestoreDigest(ctx context.Context, meta *model.SnapshotMetadata, snapshotID string, decMetrics *crypto.StreamMetrics) error {

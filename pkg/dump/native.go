@@ -278,6 +278,9 @@ func (d *NativeDumper) Dump(ctx context.Context, databaseName string, dst io.Wri
 		meta.DatabaseName = currentDB
 	}
 	meta.PostgresVersion = strings.TrimSpace(meta.PostgresVersion)
+	if meta.Replica, err = replicaRead(ctx, tx); err != nil {
+		return nil, err
+	}
 	if meta.Extensions, err = queryStrings(ctx, tx, "SELECT extname FROM pg_extension WHERE extname <> 'plpgsql' ORDER BY extname"); err != nil {
 		return nil, fmt.Errorf("failed to list extensions: %w", err)
 	}
@@ -1455,4 +1458,32 @@ func postgresConnConfig(url string) (*pgx.ConnConfig, error) {
 		cfg.ConnectTimeout = defaultConnectTimeout
 	}
 	return cfg, nil
+}
+
+// replicaRead says how far behind its primary a standby had replayed, read
+// in the backup's own snapshot, or nil on a primary. A backup from a read
+// replica is as old as the last transaction the replica replayed, which is
+// what a person restoring it needs to know.
+func replicaRead(ctx context.Context, tx pgx.Tx) (*model.ReplicaRead, error) {
+	var standby bool
+	if err := tx.QueryRow(ctx, "SELECT pg_is_in_recovery()").Scan(&standby); err != nil {
+		return nil, fmt.Errorf("failed to ask whether the server is a standby: %w", err)
+	}
+	if !standby {
+		return nil, nil
+	}
+	var replayed *time.Time
+	var lag *float64
+	if err := tx.QueryRow(ctx, "SELECT pg_last_xact_replay_timestamp(), extract(epoch FROM now() - pg_last_xact_replay_timestamp())::float8").Scan(&replayed, &lag); err != nil {
+		return nil, fmt.Errorf("failed to read how far the standby has replayed: %w", err)
+	}
+	r := &model.ReplicaRead{}
+	if replayed != nil {
+		t := replayed.UTC()
+		r.ReplayedAt = &t
+	}
+	if lag != nil && *lag > 0 {
+		r.LagSeconds = *lag
+	}
+	return r, nil
 }

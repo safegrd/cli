@@ -595,6 +595,9 @@ and never leaves this host.`,
 				}
 				fmt.Printf("   Snapshot ID:     %s\n", meta.SnapshotID)
 				fmt.Printf("   Schema:          %s\n", schemaSourceLabel(meta.SchemaSource))
+				if line := replicaLine(meta.Replica); line != "" {
+					fmt.Printf("   Read from:       %s\n", line)
+				}
 				warnIfThreatShieldFroze(meta)
 				if cfg.ServerToken != "" && cmd.Flags().Changed("database-url") {
 					// The docs lead with this command, and it schedules
@@ -712,6 +715,9 @@ and never leaves this host.`,
 			fmt.Printf("   Tables Dumped:   %d\n", dumpMeta.TotalTables)
 			fmt.Printf("   Total Rows:      %d\n", dumpMeta.TotalRows)
 			fmt.Printf("   Schema:          %s\n", schemaSourceLabel(dumpMeta.SchemaSource))
+			if line := replicaLine(dumpMeta.Replica); line != "" {
+				fmt.Printf("   Read from:       %s\n", line)
+			}
 			fmt.Printf("   Raw Size:        %.2f MB\n", float64(dumpMeta.RawSizeBytes)/(1024*1024))
 			fmt.Printf("   Encrypted Size:  %.2f MB (%.1fx compression)\n", float64(dumpMeta.EncryptedSizeBytes)/(1024*1024), cryptoMetrics.CompressionRatio)
 			printRetentionLine(storageCfg, dumpMeta)
