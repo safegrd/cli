@@ -16,8 +16,8 @@ import (
 )
 
 // readOnlyRoleFix is the read-only role from
-// safegrd.dev/docs/surfaces/databases#role, with what it costs.
-const readOnlyRoleFix = dbrole.ReadOnlyRole + " Then point the surface at it (PostgreSQL 13 and older: safegrd.dev/docs/surfaces/databases#role). " +
+// safegrd.dev/docs/surfaces/postgres#role, with what it costs.
+const readOnlyRoleFix = dbrole.ReadOnlyRole + " Then point the surface at it (PostgreSQL 13 and older: safegrd.dev/docs/surfaces/postgres#role). " +
 	"A role that is not a superuser cannot read password hashes, so roles are backed up without their passwords."
 
 func inspectRole(ctx context.Context, databaseURL string) (dbrole.Facts, error) {
