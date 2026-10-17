@@ -172,10 +172,12 @@ func TestIgnoredConfigKeysAreNamed(t *testing.T) {
 	c.Daemon.MetricsAddr = "127.0.0.1:9847"
 	c.Defaults.Timezone = "Asia/Kolkata"
 	got := strings.Join(ignoredConfigKeys(c), "\n")
-	for _, want := range []string{"daemon.metrics_addr", "defaults.timezone"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("%s not named:\n%s", want, got)
-		}
+	if !strings.Contains(got, "defaults.timezone") {
+		t.Errorf("defaults.timezone not named:\n%s", got)
+	}
+	// Served since the metrics endpoint landed: no longer ignored.
+	if strings.Contains(got, "metrics_addr") {
+		t.Errorf("daemon.metrics_addr is named as ignored:\n%s", got)
 	}
 }
 

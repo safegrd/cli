@@ -940,8 +940,8 @@ func reportDoctorChecks(c *config.CLIConfig, results []CheckResult, jsonOut bool
 
 // ignoredConfigKeys names each key this config sets that the daemon accepts and
 // does not yet act on. The config reference says so too, but a person who set
-// metrics_addr believes something serves metrics there, and only a message at
-// the moment it matters corrects that.
+// one believes it does something, and only a message at the moment it matters
+// corrects that.
 func ignoredConfigKeys(c *config.CLIConfig) []string {
 	var out []string
 	add := func(set bool, key, what string) {
@@ -949,7 +949,6 @@ func ignoredConfigKeys(c *config.CLIConfig) []string {
 			out = append(out, key+" is not acted on yet: "+what)
 		}
 	}
-	add(c.Daemon.MetricsAddr != "", "daemon.metrics_addr", "there is no metrics endpoint")
 	add(c.Defaults.Timezone != "" && !strings.EqualFold(c.Defaults.Timezone, "UTC"), "defaults.timezone",
 		"schedules are intervals from the last success, not wall-clock times")
 	return out

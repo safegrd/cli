@@ -38,6 +38,10 @@ type SurfaceState struct {
 	LastAttempt    time.Time `json:"last_attempt,omitempty"`
 	LastSuccess    time.Time `json:"last_success,omitempty"`
 	LastSnapshotID string    `json:"last_snapshot_id,omitempty"`
+	// LastDurationMs and LastSizeBytes are the last successful backup's
+	// time and encrypted size, for the metrics endpoint.
+	LastDurationMs int64 `json:"last_duration_ms,omitempty"`
+	LastSizeBytes  int64 `json:"last_size_bytes,omitempty"`
 	// LastUnchanged is when a run last found nothing changed and wrote no
 	// backup (skip_if_unchanged).
 	LastUnchanged       time.Time `json:"last_unchanged,omitempty"`
@@ -292,15 +296,25 @@ exits at once.`,
 				if intervalStr != "" {
 					tick = interval
 				}
-				return reconcileSurfaces(ctx, cfg, resolvedStateDir, tick, registered)
+				err := reconcileSurfaces(ctx, cfg, resolvedStateDir, tick, registered)
+				pingPass(ctx, cfg, resolvedStateDir, err)
+				return err
+			}
+			if cfg.Daemon.MetricsAddr != "" {
+				if err := startMetricsServer(ctx, cfg.Daemon.MetricsAddr, filepath.Join(resolvedStateDir, "daemon_state.json")); err != nil {
+					return err
+				}
+				fmt.Printf("   Metrics:             http://%s/metrics\n", cfg.Daemon.MetricsAddr)
 			}
 
 			fmt.Printf("   Poll interval:       %s (±10%% jitter)\n\n", interval)
 
 			// Initial pass immediately
-			if err := reconcileSurfaces(ctx, cfg, resolvedStateDir, interval, registered); err != nil {
+			err = reconcileSurfaces(ctx, cfg, resolvedStateDir, interval, registered)
+			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error: first pass over the surfaces: %v\n", err)
 			}
+			pingPass(ctx, cfg, resolvedStateDir, err)
 
 			for {
 				// Apply ±10% jitter to avoid thundering herd against remote server / storage
@@ -317,9 +331,11 @@ exits at once.`,
 					if step := clockStep(slept, time.Now(), interval); step != 0 {
 						sayClockStep(step)
 					}
-					if err := reconcileSurfaces(ctx, cfg, resolvedStateDir, interval, registered); err != nil {
+					err := reconcileSurfaces(ctx, cfg, resolvedStateDir, interval, registered)
+					if err != nil {
 						fmt.Fprintf(os.Stderr, "Error: pass over the surfaces: %v\n", err)
 					}
+					pingPass(ctx, cfg, resolvedStateDir, err)
 				}
 			}
 		},
@@ -331,6 +347,27 @@ exits at once.`,
 	cmd.Flags().StringVar(&stateDir, "state-dir", "", "Directory for daemon state and locks")
 
 	return cmd
+}
+
+// pingPass pings daemon.ping_url after a pass: the URL when the pass ran,
+// URL/fail when it could not, with how many surfaces are failing.
+func pingPass(ctx context.Context, c *config.CLIConfig, stateDir string, passErr error) {
+	if c.Daemon.PingURL == "" || ctx.Err() != nil {
+		return
+	}
+	if passErr != nil {
+		warnPing("", ping(ctx, "daemon.ping_url", c.Daemon.PingURL, "/fail", "The pass over the surfaces failed: "+passErr.Error()))
+		return
+	}
+	st := loadDaemonState(filepath.Join(stateDir, "daemon_state.json"))
+	failing := 0
+	for _, s := range c.Surfaces {
+		if ss := st.Surfaces[s.ID]; ss != nil && ss.ConsecutiveFailures > 0 {
+			failing++
+		}
+	}
+	warnPing("", ping(ctx, "daemon.ping_url", c.Daemon.PingURL, "",
+		fmt.Sprintf("%d %s, %d failing", len(c.Surfaces), pluralWord(int64(len(c.Surfaces)), "surface", "surfaces"), failing)))
 }
 
 func resolveStateDir(explicit string, c *config.CLIConfig) string {
@@ -1124,6 +1161,7 @@ func backupSurfaceNow(ctx context.Context, c *config.CLIConfig, surface *config.
 	}
 
 	sState.LastAttempt = now
+	warnPing(surface.ID, ping(ctx, "surfaces["+surface.ID+"].ping_url", surface.PingURL, "/start", ""))
 	var (
 		meta      *model.SnapshotMetadata
 		plan      retentionPlan
@@ -1194,6 +1232,7 @@ func backupSurfaceNow(ctx context.Context, c *config.CLIConfig, surface *config.
 			sState.LastSuccess = time.Now().UTC()
 			if meta != nil {
 				sState.LastSnapshotID = meta.SnapshotID
+				sState.LastDurationMs, sState.LastSizeBytes = meta.DurationMs, meta.EncryptedSizeBytes
 			}
 			plan.record(sState)
 			fmt.Printf("Backed up surface %s\n", surface.ID)
@@ -1204,6 +1243,19 @@ func backupSurfaceNow(ctx context.Context, c *config.CLIConfig, surface *config.
 	_, sState.NextDue = isSurfaceDue(surface, sState, time.Now().UTC())
 
 	warnIfStateUnsaved(saveDaemonState(statePath, daemonState), statePath)
+	// The check hears what the console shows: a backup that was taken and
+	// not recorded, or whose post_backup failed, is a failure there too.
+	suffix, body := "", "Backed up "+surface.ID
+	switch {
+	case sState.LastError != "":
+		suffix, body = "/fail", "Surface "+surface.ID+": "+sState.LastError
+	case unchanged:
+		body = "Surface " + surface.ID + ": nothing changed since " + sState.LastSnapshotID
+	case meta != nil:
+		body = fmt.Sprintf("Backed up %s: %s (%s, %s)", surface.ID, meta.SnapshotID, formatBytes(meta.EncryptedSizeBytes),
+			shortDuration(time.Duration(meta.DurationMs)*time.Millisecond))
+	}
+	warnPing(surface.ID, ping(ctx, "surfaces["+surface.ID+"].ping_url", surface.PingURL, suffix, body))
 	if backupErr != nil {
 		return nil, backupErr
 	}

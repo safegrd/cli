@@ -98,9 +98,15 @@ type EncryptionConfig struct {
 
 // DaemonConfig configures the resident unattended daemon.
 type DaemonConfig struct {
-	Interval    string `yaml:"interval,omitempty" json:"interval,omitempty"`         // Poll interval, default "5m"
-	StateDir    string `yaml:"state_dir,omitempty" json:"state_dir,omitempty"`       // Directory for state & locks
-	MetricsAddr string `yaml:"metrics_addr,omitempty" json:"metrics_addr,omitempty"` // e.g. "127.0.0.1:9847"
+	Interval string `yaml:"interval,omitempty" json:"interval,omitempty"`   // Poll interval, default "5m"
+	StateDir string `yaml:"state_dir,omitempty" json:"state_dir,omitempty"` // Directory for state & locks
+	// MetricsAddr is where the resident daemon serves Prometheus metrics,
+	// at /metrics: "127.0.0.1:9847". Empty serves none.
+	MetricsAddr string `yaml:"metrics_addr,omitempty" json:"metrics_addr,omitempty"`
+	// PingURL is pinged after every pass over the surfaces, a Healthchecks.io
+	// style check URL: the URL itself after a pass, URL/fail after one that
+	// could not run. env:VAR or file:/path read it from elsewhere.
+	PingURL string `yaml:"ping_url,omitempty" json:"ping_url,omitempty"`
 }
 
 // DefaultsConfig defines fallback values inherited by surfaces.
@@ -192,6 +198,12 @@ type SurfaceConfig struct {
 	// PostDrill runs after each of the daemon's Fire Drills of this surface,
 	// told the outcome. Its failure is reported and changes nothing else.
 	PostDrill string `yaml:"post_drill,omitempty" json:"post_drill,omitempty"`
+	// PingURL is pinged around every backup of this surface (the daemon's,
+	// backup --surface and guard), as Healthchecks.io and Cronitor take
+	// them: URL/start before, URL after a backup, URL/fail after a failed
+	// one, with one line of what happened as the body. env:VAR or
+	// file:/path read it from elsewhere.
+	PingURL string `yaml:"ping_url,omitempty" json:"ping_url,omitempty"`
 
 	// Postgres fields
 	DatabaseURL string `yaml:"database_url,omitempty" json:"database_url,omitempty"`
