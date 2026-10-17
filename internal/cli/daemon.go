@@ -308,6 +308,10 @@ exits at once.`,
 			}
 
 			fmt.Printf("   Poll interval:       %s (±10%% jitter)\n\n", interval)
+			// A changed config, from `safegrd claim` or by hand, is read at
+			// the start of each pass. The metrics address, the interval and
+			// SQLite followers keep what they started with until a restart.
+			watch := newConfigWatch()
 
 			// Initial pass immediately
 			err = reconcileSurfaces(ctx, cfg, resolvedStateDir, interval, registered)
@@ -331,6 +335,7 @@ exits at once.`,
 					if step := clockStep(slept, time.Now(), interval); step != 0 {
 						sayClockStep(step)
 					}
+					watch.reload()
 					err := reconcileSurfaces(ctx, cfg, resolvedStateDir, interval, registered)
 					if err != nil {
 						fmt.Fprintf(os.Stderr, "Error: pass over the surfaces: %v\n", err)

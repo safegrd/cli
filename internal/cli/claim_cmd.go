@@ -40,7 +40,7 @@ func newClaimCmd() *cobra.Command {
 this runs, and it only adds: a surface the config already has is left as it is.
 The previous config is kept as config.yaml.bak.
 
-The daemon reads its config when it starts, so restart it afterwards.
+A running daemon reads the changed config at the start of its next pass.
 
 A new host enrolls with a claim code instead: safegrd enroll --claim <code>.`,
 		Args: cobra.NoArgs,
@@ -109,7 +109,7 @@ A new host enrolls with a claim code instead: safegrd enroll --claim <code>.`,
 // host: a restart where its service is installed, an install where none is.
 func daemonNextStep() string {
 	if daemonServiceInstalled() {
-		return "The daemon reads its config when it starts. Restart it: safegrd daemon restart"
+		return "The daemon reads the changed config at the start of its next pass and backs the new surfaces up then."
 	}
 	return "No daemon service is installed on this host. Install it, and it backs up on schedule: safegrd daemon install"
 }
