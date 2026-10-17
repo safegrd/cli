@@ -210,6 +210,11 @@ func (v *Verifier) RunRepoDatabaseDrill(ctx context.Context, d RepoDrill, privat
 		v.createdRoles = nil
 		_, restoreErr = restorer.Restore(ctx, pr)
 		v.createdRoles = restorer.CreatedRoles
+		if restorer.ChangeLogRemoved {
+			// The sandbox is held to what a restore brings back, which
+			// leaves the change log out.
+			meta = dump.WithoutChangeLog(meta)
+		}
 	}
 	if !drained {
 		archiveErr = drain()

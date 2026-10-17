@@ -835,6 +835,91 @@ type NativeRestorer struct {
 	// checks the stream's digest there, so a snapshot that fails it never
 	// becomes a database.
 	BeforeCommit func() error
+	// ChangeLogRemoved is set when the backup brought the change log
+	// (changelog.go) and the restore dropped it: its trigger on every table
+	// would go on logging each write, and only a backup with the change log
+	// on clears the log. The manifest still lists safegrd's two tables;
+	// WithoutChangeLog leaves them out.
+	ChangeLogRemoved bool
+}
+
+// dropChangeLog removes the change log a backup brought with the database,
+// inside the restore's transaction: the trigger on each table, the function
+// and the two tables, by name, then the schema if nothing else is in it. A
+// schema called safegrd that is not the change log is left alone, and so is
+// a change log the restoring role cannot drop, which Warn names with the
+// statement that removes it.
+func (r *NativeRestorer) dropChangeLog(ctx context.Context, conn *pgx.Conn, exec func(what, sqlText string) error) error {
+	var present bool
+	if err := conn.QueryRow(ctx, `SELECT to_regclass('safegrd.changes') IS NOT NULL AND to_regclass('safegrd.consumers') IS NOT NULL
+		AND to_regprocedure('safegrd.log_change()') IS NOT NULL`).Scan(&present); err != nil {
+		return fmt.Errorf("checking for the change log: %w", err)
+	}
+	if !present {
+		return nil
+	}
+	rows, err := conn.Query(ctx, `SELECT tgrelid::regclass::text FROM pg_trigger
+		WHERE tgname = $1 AND tgfoid = 'safegrd.log_change()'::regprocedure ORDER BY 1`, changeLogTrigger)
+	if err != nil {
+		return fmt.Errorf("listing the change log's triggers: %w", err)
+	}
+	var drop strings.Builder
+	for rows.Next() {
+		var rel string
+		if err := rows.Scan(&rel); err != nil {
+			rows.Close()
+			return fmt.Errorf("listing the change log's triggers: %w", err)
+		}
+		fmt.Fprintf(&drop, "DROP TRIGGER %s ON %s;\n", changeLogTrigger, rel)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("listing the change log's triggers: %w", err)
+	}
+	drop.WriteString("DROP FUNCTION safegrd.log_change();\nDROP TABLE safegrd.changes, safegrd.consumers;\n")
+	if err := exec("saving", "SAVEPOINT safegrd_change_log"); err != nil {
+		return err
+	}
+	if _, err := conn.PgConn().Exec(ctx, drop.String()).ReadAll(); err != nil {
+		if err := exec("rolling back", "ROLLBACK TO SAVEPOINT safegrd_change_log; RELEASE SAVEPOINT safegrd_change_log"); err != nil {
+			return err
+		}
+		r.Warn(fmt.Sprintf("the change log came with the database and could not be removed (%v).\n"+
+			"   Its trigger on each table goes on logging every write. If this database will not be backed up\n"+
+			"   with change_log: true, remove it: DROP SCHEMA safegrd CASCADE;", err))
+		return nil
+	}
+	if err := exec("releasing", "RELEASE SAVEPOINT safegrd_change_log"); err != nil {
+		return err
+	}
+	if err := exec("saving", "SAVEPOINT safegrd_change_log_schema"); err != nil {
+		return err
+	}
+	if _, err := conn.PgConn().Exec(ctx, "DROP SCHEMA safegrd").ReadAll(); err != nil {
+		// Something else is in it: the schema stays with what it holds.
+		if err := exec("rolling back", "ROLLBACK TO SAVEPOINT safegrd_change_log_schema"); err != nil {
+			return err
+		}
+	}
+	if err := exec("releasing", "RELEASE SAVEPOINT safegrd_change_log_schema"); err != nil {
+		return err
+	}
+	r.ChangeLogRemoved = true
+	return nil
+}
+
+// WithoutChangeLog is meta without the change log's tables, with its totals
+// counted again: what a restore that dropped the change log brings back.
+func WithoutChangeLog(meta *model.SnapshotMetadata) *model.SnapshotMetadata {
+	out := *meta
+	out.TableStats = nil
+	for _, t := range meta.TableStats {
+		if t.Schema != changeLogSchema {
+			out.TableStats = append(out.TableStats, t)
+		}
+	}
+	out.CalculateTotals()
+	return &out
 }
 
 // NewNativeRestorer creates a restorer for targetURL.
@@ -1069,6 +1154,9 @@ func (r *NativeRestorer) Restore(ctx context.Context, src io.Reader) (*model.Sna
 				return nil, fmt.Errorf("%s.%s loaded %d rows; the snapshot recorded %d", t.Schema, t.TableName, got, t.RowCount)
 			}
 		}
+	}
+	if err := r.dropChangeLog(ctx, conn, exec); err != nil {
+		return nil, err
 	}
 	if r.BeforeCommit != nil {
 		if err := r.BeforeCommit(); err != nil {

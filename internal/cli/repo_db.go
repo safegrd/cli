@@ -666,6 +666,9 @@ func restoreRepoDatabase(ctx context.Context, rs *repoSnapshot, privateKey, targ
 	if err != nil {
 		return fmt.Errorf("restore failed, and the target was rolled back: %w", err)
 	}
+	if restorer.ChangeLogRemoved {
+		got = dump.WithoutChangeLog(got)
+	}
 	var rows int64
 	for _, t := range got.TableStats {
 		rows += t.RowCount
@@ -674,16 +677,8 @@ func restoreRepoDatabase(ctx context.Context, rs *repoSnapshot, privateKey, targ
 		len(got.TableStats), pluralWord(int64(len(got.TableStats)), "table", "tables"), formatNumber(rows), id,
 		shortDuration(time.Since(started)))
 	printCreatedRoles(restorer.CreatedRoles)
-	for _, t := range got.TableStats {
-		if t.Schema == "safegrd" {
-			// The change log came with the database: its trigger on every
-			// table goes on logging each write, and only a backup with the
-			// change log on clears the log.
-			fmt.Printf("   Change log:     restored with the database (schema safegrd and a trigger on each table).\n" +
-				"                   If this database will not be backed up with change_log: true, remove it:\n" +
-				"                   DROP SCHEMA safegrd CASCADE;\n")
-			break
-		}
+	if restorer.ChangeLogRemoved {
+		fmt.Printf("   Change log:     not restored. A backup with change_log: true puts it back.\n")
 	}
 	return nil
 }

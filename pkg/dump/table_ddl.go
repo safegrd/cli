@@ -87,7 +87,11 @@ func tableObject(name, typ, objSchema, body, schema, table string, quals []strin
 		return name == table
 	case "SEQUENCE", "SEQUENCE OWNED BY":
 		return ownedSeq[schema+"\x00"+name]
-	case "DEFAULT", "CONSTRAINT", "FK CONSTRAINT", "TRIGGER", "POLICY":
+	case "TRIGGER":
+		// The change log's trigger calls a function in the safegrd schema,
+		// which a table restored on its own does not bring.
+		return strings.HasPrefix(name, table+" ") && name != table+" "+changeLogTrigger
+	case "DEFAULT", "CONSTRAINT", "FK CONSTRAINT", "POLICY":
 		return strings.HasPrefix(name, table+" ")
 	case "COMMENT":
 		return name == "TABLE "+table || strings.HasPrefix(name, "COLUMN "+table+".")

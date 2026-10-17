@@ -394,6 +394,9 @@ func restoreRepoLaravel(ctx context.Context, rs *repoSnapshot, privateKey, targe
 			return <-archived
 		}
 		got, err = restorer.Restore(ctx, pr)
+		if err == nil && restorer.ChangeLogRemoved {
+			got = dump.WithoutChangeLog(got)
+		}
 	}
 	_ = pr.CloseWithError(fmt.Errorf("the restore stopped"))
 	var aerr error
