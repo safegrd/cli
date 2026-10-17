@@ -283,6 +283,7 @@ exits at once.`,
 				// Apply ±10% jitter to avoid thundering herd against remote server / storage
 				jitterFactor := 0.9 + rand.Float64()*0.2
 				sleepDur := time.Duration(float64(interval) * jitterFactor)
+				slept := time.Now()
 
 				select {
 				case <-ctx.Done():
@@ -290,6 +291,9 @@ exits at once.`,
 					fmt.Println("Daemon stopped.")
 					return nil
 				case <-time.After(sleepDur):
+					if step := clockStep(slept, time.Now(), interval); step != 0 {
+						sayClockStep(step)
+					}
 					if err := reconcileSurfaces(ctx, cfg, resolvedStateDir, interval, registered); err != nil {
 						fmt.Fprintf(os.Stderr, "Error: pass over the surfaces: %v\n", err)
 					}
@@ -745,6 +749,35 @@ func sayNotDue(s *config.SurfaceConfig, state *SurfaceState, now time.Time) {
 
 // clockWentBackwards reports whether a surface's recorded times are ahead of
 // this host's clock.
+// clockStep is how far the wall clock moved beyond the time that passed
+// between from and to, when that is more than tick: a clock set by hand or
+// by NTP, a VM restored from an image, or a machine that was suspended.
+// Go's monotonic reading, which a step does not move, is the time that
+// passed. Zero otherwise.
+func clockStep(from, to time.Time, tick time.Duration) time.Duration {
+	return stepBeyond(to.Round(0).Sub(from.Round(0)), to.Sub(from), tick)
+}
+
+func stepBeyond(wall, elapsed, tick time.Duration) time.Duration {
+	if d := wall - elapsed; d > tick || -d > tick {
+		return d
+	}
+	return 0
+}
+
+// sayClockStep logs a step of the wall clock. Every surface's next backup and
+// drill is reckoned from the clock each tick, so nothing waits on the old
+// time: a backup recorded in what is now the future makes its surface due
+// now (isSurfaceDue), and so does a drill.
+func sayClockStep(step time.Duration) {
+	dir := "forward"
+	if step < 0 {
+		dir, step = "back", -step
+	}
+	fmt.Fprintf(os.Stderr, "Warning: this host's clock moved %s by %s between two passes (a clock change, a restored VM, or a suspend). "+
+		"Every surface's next backup and drill is reckoned from the new time. Check NTP if this was not a suspend.\n", dir, step.Round(time.Second))
+}
+
 func clockWentBackwards(state *SurfaceState, now time.Time) bool {
 	return now.Before(state.LastAttempt) || now.Before(state.LastSuccess)
 }
