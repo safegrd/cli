@@ -1,7 +1,7 @@
 package cli
 
-// The role check: what the role a PostgreSQL surface connects as may do
-// beyond reading. A backup only reads, so a credential that can write is one
+// The role check: what the role or account a PostgreSQL, MySQL or MongoDB
+// surface connects as may do beyond reading. A backup only reads, so a credential that can write is one
 // that, leaked, can change or delete the data it backs up. Said by doctor and
 // by claim, with the read-only role to use instead.
 
@@ -9,10 +9,15 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/safegrd/cli/pkg/config"
 	"github.com/safegrd/cli/pkg/dbrole"
+	"github.com/safegrd/cli/pkg/dump"
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 // readOnlyRoleFix is the read-only role from
@@ -45,14 +50,15 @@ func roleChecks(surfaceID string, f dbrole.Facts) []CheckResult {
 	return out
 }
 
-// surfaceRoleChecks runs the role check for every PostgreSQL surface this
-// host can open. A surface whose URL does not resolve has been reported by
-// the credential checks already.
+// surfaceRoleChecks runs the role check for every PostgreSQL, MySQL and
+// MongoDB surface this host can open. A surface whose URL does not resolve
+// has been reported by the credential checks already.
 func surfaceRoleChecks(c *config.CLIConfig, only map[string]bool) []CheckResult {
 	var results []CheckResult
 	for i := range c.Surfaces {
 		s := &c.Surfaces[i]
-		if strings.ToLower(s.Type) != "postgres" || (only != nil && !only[s.ID]) {
+		kind := strings.ToLower(s.Type)
+		if (kind != "postgres" && kind != "mysql" && kind != "mongodb") || (only != nil && !only[s.ID]) {
 			continue
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), credentialCommandTimeout)
@@ -61,16 +67,105 @@ func surfaceRoleChecks(c *config.CLIConfig, only map[string]bool) []CheckResult 
 			cancel()
 			continue
 		}
-		u, _ = cleanPostgresURL(u)
-		f, err := inspectRole(ctx, u)
-		cancel()
-		if err != nil {
-			// The connection check says why it would not open.
-			continue
+		switch kind {
+		case "mysql":
+			if r, ok := mysqlAccountCheck(ctx, s.ID, u); ok {
+				results = append(results, r)
+			}
+		case "mongodb":
+			if r, ok := mongoAccountCheck(ctx, s.ID, u); ok {
+				results = append(results, r)
+			}
+		default:
+			u, _ = cleanPostgresURL(u)
+			if f, err := inspectRole(ctx, u); err == nil {
+				// On an error the connection check says why it would not open.
+				results = append(results, roleChecks(s.ID, f)...)
+			}
 		}
-		results = append(results, roleChecks(s.ID, f)...)
+		cancel()
 	}
 	return results
+}
+
+// mysqlReadOnlyFix is the account a MySQL surface backs up as, from
+// safegrd.dev/docs/surfaces/mysql#grants.
+const mysqlReadOnlyFix = "Back up as an account that only reads: CREATE USER 'safegrd_backup'@'%' IDENTIFIED BY '...'; " +
+	"GRANT SELECT, SHOW VIEW, TRIGGER, LOCK TABLES, EVENT ON <database>.* TO 'safegrd_backup'@'%'; " +
+	"and on MySQL 8.0.20 and newer GRANT SHOW_ROUTINE ON *.* TO 'safegrd_backup'@'%' (safegrd.dev/docs/surfaces/mysql#grants)."
+
+// mongoReadOnlyFix is the user a MongoDB surface backs up as, from
+// safegrd.dev/docs/surfaces/mongodb#grants.
+const mongoReadOnlyFix = `Back up as a user that only reads: db.getSiblingDB("admin").createUser({user: "safegrd_backup", ` +
+	`pwd: passwordPrompt(), roles: [{role: "read", db: "<database>"}]}) (safegrd.dev/docs/surfaces/mongodb#grants).`
+
+// mysqlAccountCheck says what a MySQL surface's account may change, from its
+// own SHOW GRANTS. false when it does not connect: the connection check says
+// why.
+func mysqlAccountCheck(ctx context.Context, surfaceID, databaseURL string) (CheckResult, bool) {
+	db, err := dump.OpenMySQL(databaseURL)
+	if err != nil {
+		return CheckResult{}, false
+	}
+	defer db.Close()
+	var user string
+	if err := db.QueryRowContext(ctx, "SELECT CURRENT_USER()").Scan(&user); err != nil {
+		return CheckResult{}, false
+	}
+	rows, err := db.QueryContext(ctx, "SHOW GRANTS")
+	if err != nil {
+		return CheckResult{}, false
+	}
+	defer rows.Close()
+	var grants []string
+	for rows.Next() {
+		var g string
+		if rows.Scan(&g) == nil {
+			grants = append(grants, g)
+		}
+	}
+	name := fmt.Sprintf("Surface %s account", surfaceID)
+	if w := dbrole.MySQLWrites(grants); len(w) > 0 {
+		return CheckResult{Name: name, Status: "WARN", Message: fmt.Sprintf("%s can write: %s; an account that only reads is enough",
+			user, dbrole.Some(w)), Fix: mysqlReadOnlyFix}, true
+	}
+	return CheckResult{Name: name, Status: "PASS", Message: user + " changes nothing"}, true
+}
+
+// mongoAccountCheck says which of a MongoDB surface's user's built-in roles
+// can change something, from connectionStatus.
+func mongoAccountCheck(ctx context.Context, surfaceID, databaseURL string) (CheckResult, bool) {
+	client, err := mongo.Connect(options.Client().ApplyURI(databaseURL).SetServerSelectionTimeout(10 * time.Second))
+	if err != nil {
+		return CheckResult{}, false
+	}
+	defer func() { _ = client.Disconnect(context.Background()) }()
+	var status struct {
+		AuthInfo struct {
+			Users []struct {
+				User string `bson:"user"`
+				DB   string `bson:"db"`
+			} `bson:"authenticatedUsers"`
+			Roles []dbrole.MongoRole `bson:"authenticatedUserRoles"`
+		} `bson:"authInfo"`
+	}
+	if err := client.Database("admin").RunCommand(ctx, bson.D{{Key: "connectionStatus", Value: 1}}).Decode(&status); err != nil {
+		return CheckResult{}, false
+	}
+	user := "the connection"
+	if u := status.AuthInfo.Users; len(u) > 0 {
+		user = u[0].User
+	}
+	name := fmt.Sprintf("Surface %s account", surfaceID)
+	if len(status.AuthInfo.Users) == 0 {
+		return CheckResult{Name: name, Status: "WARN", Message: "the connection signs in as no user, so it is whatever the server allows an unauthenticated client",
+			Fix: mongoReadOnlyFix}, true
+	}
+	if w := dbrole.MongoWrites(status.AuthInfo.Roles); len(w) > 0 {
+		return CheckResult{Name: name, Status: "WARN", Message: fmt.Sprintf("%s can write: %s; a user with the read role is enough",
+			user, dbrole.Some(w)), Fix: mongoReadOnlyFix}, true
+	}
+	return CheckResult{Name: name, Status: "PASS", Message: user + " holds no role that writes"}, true
 }
 
 // refuseHiddenRows is the backup's check of a role a sign-in made, before any
