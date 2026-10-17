@@ -137,6 +137,10 @@ func TestAConcurrentWriterLosesNothingAcrossCheckpoints(t *testing.T) {
 				done <- err
 				return
 			}
+			// A writer that never lets go of the lock starves the follower's
+			// checkpoint, which then waits for the next step; a pause this
+			// short still lands commits inside every checkpoint.
+			time.Sleep(time.Millisecond)
 		}
 	}()
 	restarts, salt := 0, f.cur.Header.Salt1
