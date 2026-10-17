@@ -43,6 +43,10 @@ storage:
   # under COMPLIANCE an object cannot be deleted before retention_days expires,
   # by anyone. Lowercase "governance" is an error, not a synonym.
   worm_mode: "COMPLIANCE"
+  # S3 storage class of each archive: STANDARD (the default), STANDARD_IA or
+  # GLACIER_IR. Colder classes cost less to hold and charge for each GB a
+  # drill reads back.
+  # storage_class: "STANDARD_IA"
   local_path: "./safegrd-storage" # Used if type: local
 
 # Encryption: every backup is encrypted on this host with age (X25519)

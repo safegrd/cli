@@ -56,6 +56,11 @@ type StorageConfig struct {
 	Prefix        string      `yaml:"prefix" json:"prefix"`
 	RetentionDays int         `yaml:"retention_days" json:"retention_days"`
 	WORMMode      WORMMode    `yaml:"worm_mode" json:"worm_mode"`
+	// StorageClass is the S3 storage class of each archive: STANDARD (the
+	// default), STANDARD_IA or GLACIER_IR. A colder class costs less to hold
+	// and charges a retrieval fee on every drill. The manifest beside the
+	// archive stays STANDARD, since every list and drill reads it.
+	StorageClass string `yaml:"storage_class,omitempty" json:"storage_class,omitempty"`
 	// ExpireAfterLock lets the daemon delete snapshots from this bucket once
 	// their Object Lock has ended (a day of grace, by the bucket's clock),
 	// never the newest of a surface and never one the remote server keeps as
@@ -715,6 +720,21 @@ func (c *StorageConfig) ResolveWORMMode() (WORMMode, error) {
 				"Object Lock on the CLI side, and objects written under compliance mode cannot be deleted "+
 				"before their retention expires, by anyone",
 			string(c.WORMMode), string(WORMModeCompliance), string(WORMModeGovernance), string(WORMModeNone), string(WORMModeCompliance))
+	}
+}
+
+// ResolveStorageClass is storage_class as S3 spells it, "" for STANDARD or
+// unset, or an error naming the classes a drill can read back at once.
+func (c *StorageConfig) ResolveStorageClass() (string, error) {
+	switch v := strings.ToUpper(strings.TrimSpace(c.StorageClass)); v {
+	case "", "STANDARD":
+		return "", nil
+	case "STANDARD_IA", "GLACIER_IR":
+		return v, nil
+	case "GLACIER", "DEEP_ARCHIVE", "GLACIER_FLEXIBLE_RETRIEVAL":
+		return "", fmt.Errorf("storage.storage_class %s takes hours to read back, so a Fire Drill could not restore from it: use STANDARD, STANDARD_IA or GLACIER_IR", c.StorageClass)
+	default:
+		return "", fmt.Errorf("storage.storage_class %q is not recognised: use STANDARD, STANDARD_IA or GLACIER_IR", c.StorageClass)
 	}
 }
 

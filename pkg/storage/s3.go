@@ -32,6 +32,8 @@ type S3StorageProvider struct {
 	nodeID        string
 	wormMode      s3types.ObjectLockMode
 	retentionDays int
+	// storageClass is set on each archive, never on its manifest.
+	storageClass s3types.StorageClass
 
 	// lockDisabled records an explicit worm_mode: NONE. It is a separate flag
 	// rather than an empty wormMode because an empty wormMode means
@@ -97,6 +99,11 @@ func NewS3Storage(ctx context.Context, cfg config.StorageConfig) (*S3StorageProv
 		mode = s3types.ObjectLockModeCompliance
 	}
 
+	class, err := cfg.ResolveStorageClass()
+	if err != nil {
+		return nil, err
+	}
+
 	retention := cfg.RetentionDays
 	if retention <= 0 {
 		retention = 14
@@ -115,6 +122,7 @@ func NewS3Storage(ctx context.Context, cfg config.StorageConfig) (*S3StorageProv
 		wormMode:      mode,
 		retentionDays: retention,
 		lockDisabled:  lockDisabled,
+		storageClass:  s3types.StorageClass(class),
 	}, nil
 }
 
@@ -166,6 +174,9 @@ func (s *S3StorageProvider) UploadSnapshot(ctx context.Context, snapshotID strin
 		Key:         &key,
 		Body:        stream,
 		ContentType: ptr("application/octet-stream"),
+	}
+	if s.storageClass != "" {
+		putInput.StorageClass = s.storageClass
 	}
 
 	effectiveRetention := retentionUntil
