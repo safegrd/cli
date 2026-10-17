@@ -12,7 +12,7 @@ import (
 func TestTheWriterCannotDecrypt(t *testing.T) {
 	out, err := exec.Command("go", "list", "-deps", "github.com/safegrd/cli/pkg/repo/write").CombinedOutput()
 	if err != nil {
-		t.Skipf("go list: %v %s", err, out)
+		t.Fatalf("go list: %v %s", err, out)
 	}
 	for _, forbidden := range []string{"/pkg/repo/unseal", "/pkg/repo/read", "/pkg/repo/check", "/pkg/repo/catalog"} {
 		for _, dep := range strings.Fields(string(out)) {

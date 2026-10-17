@@ -830,7 +830,9 @@ func restoreRepoSQLite(ctx context.Context, rs *repoSnapshot, privateKey, target
 	if aerr := <-archived; aerr != nil && err == nil {
 		// The restorer reads the archive to its end before it renames the
 		// file into place, so only closing the archive can fail after that.
-		_ = dump.SQLiteResetDatabase(target)
+		if rerr := dump.SQLiteResetDatabase(target); rerr != nil {
+			return fmt.Errorf("restore failed (%w), and %s could not be removed (%v). Delete it by hand: it may not match the backup", aerr, target, rerr)
+		}
 		err = aerr
 	}
 	if err != nil {
