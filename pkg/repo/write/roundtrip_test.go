@@ -621,6 +621,11 @@ func TestARunWithNothingChangedWritesNothingWhenAskedTo(t *testing.T) {
 		t.Fatal("the opening run of an epoch was skipped")
 	}
 	before := count()
+	// A file written next to the root moves its parent's time, which is
+	// not part of the backup.
+	if err := os.WriteFile(filepath.Join(filepath.Dir(h.src), "sibling"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	second := h.backup(skip)
 	if !second.Skipped {
 		t.Fatalf("an unchanged tree was not skipped: %d new packs", second.Snapshot.Stats.NewPacks)

@@ -875,8 +875,11 @@ func (w *walker) walkRoots(roots []string) (format.ID, error) {
 	return w.synth("/", "", top, fi)
 }
 
-// synth stores a directory on the way to a root: its own mode, owner and
-// time, holding only the entries that lead to roots.
+// synth stores a directory on the way to a root: its own mode and owner,
+// holding only the entries that lead to roots. A root keeps its time; the
+// directories above one get none, since their time moves with entries the
+// backup leaves out, and a sibling written next to a root would otherwise
+// make an unchanged backup look changed.
 func (w *walker) synth(abs, rel string, n *rootNode, fi os.FileInfo) (format.ID, error) {
 	if n.isRoot {
 		w.root = abs
@@ -899,11 +902,17 @@ func (w *walker) synth(abs, rel string, n *rootNode, fi os.FileInfo) (format.ID,
 		if err != nil {
 			return format.ID{}, err
 		}
-		t.Entries = append(t.Entries, w.dirNode(name, cfi, sub))
+		node := w.dirNode(name, cfi, sub)
+		mtimeNs := cfi.ModTime().UnixNano()
+		if !n.children[name].isRoot {
+			node.ModTime, mtimeNs = time.Time{}, 0
+		}
+		t.Entries = append(t.Entries, node)
 		// The roots and the directories above them are not counted: the
 		// count is what lies below the roots, as a restore reports it.
 		w.dirs--
-		if err := w.entry(childRel, format.ContentDir, "-", cfi, 0); err != nil {
+		if err := w.cache.AddEntry(cache.Entry{Path: childRel, Type: format.ContentDir, Value: "-",
+			MTimeNs: mtimeNs, Mode: unixMode(cfi.Mode())}); err != nil {
 			return format.ID{}, err
 		}
 	}
