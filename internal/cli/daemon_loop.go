@@ -184,6 +184,7 @@ func sendHeartbeat(ctx context.Context, c *config.CLIConfig, nodeID string, st *
 		Schedule:            s.Schedule,
 		RetentionDays:       s.RetentionDays,
 		BlackoutSeconds:     blackoutSeconds(s),
+		WAL:                 walReport(s, st),
 	}, &resp)
 	if status == http.StatusNotFound && st.ServerNodeID != "" && st.ServerNodeID == nodeID && nodeID != c.NodeID {
 		// The surface's node is gone: retired in the console while this

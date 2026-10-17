@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/safegrd/cli/pkg/config"
+	"github.com/safegrd/cli/pkg/model"
 	"github.com/safegrd/cli/pkg/wal"
 )
 
@@ -56,17 +57,11 @@ func checkWALArchiver(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 			return walArchiverSaid[s.ID] == ""
 		}
 		walHeldChecked[s.ID] = time.Now()
-		held := *s
-		node := s.ID
-		if st != nil && st.ServerNodeID != "" {
-			node = st.ServerNodeID
-		}
-		fetchHeldSurfaceSecret(ctx, c, node, &held)
-		u, err := resolveSurfaceDatabaseURLAsGiven(ctx, c, &held)
-		if err != nil || u == "" {
+		u, err := walDBURL(ctx, c, s, st)
+		if err != nil {
 			return walArchiverSaid[s.ID] == ""
 		}
-		dbURL, _ = cleanPostgresURL(u)
+		dbURL = u
 	}
 	pctx, cancel := context.WithTimeout(ctx, probeTimeout)
 	ar, err := wal.ReadArchiver(pctx, dbURL)
@@ -77,6 +72,13 @@ func checkWALArchiver(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 	now, before := "", walArchiverSaid[s.ID]
 	if ar.Failing() {
 		now = ar.LastFailed
+	}
+	if st != nil {
+		w := walState(st)
+		w.ArchiverFailing, w.ArchiverFailures = now, 0
+		if now != "" {
+			w.ArchiverFailures = ar.FailedCount
+		}
 	}
 	if now != before {
 		walArchiverSaid[s.ID] = now
@@ -102,7 +104,9 @@ func runWALWork(ctx context.Context, c *config.CLIConfig, s *config.SurfaceConfi
 	baseEvery := walDays(s.WAL.BaseEveryDays)
 	baseDue := now.Sub(st.WALLastBase) >= baseEvery && now.Sub(st.WALBaseFailedAt) >= walRetry
 	bundleDue := now.Sub(st.WALLastBundle) >= walBundleEvery && now.Sub(st.WALBundleFailedAt) >= walRetry
-	if !baseDue && !bundleDue && now.Sub(walSizeChecked[s.ID]) < walSizeEvery {
+	drillDue := walDrillDue(s, st, now)
+	statusDue := now.Sub(st.WALCheckedAt) >= walStatusEvery
+	if !baseDue && !bundleDue && !drillDue && !statusDue && now.Sub(walSizeChecked[s.ID]) < walSizeEvery {
 		return true
 	}
 	release, err := acquireLock(filepath.Join(lockDir, s.ID+".wal.lock"), s.ID, "")
@@ -125,6 +129,7 @@ func runWALWork(ctx context.Context, c *config.CLIConfig, s *config.SurfaceConfi
 		bundleDue = walUnlockedBytes(ctx, a) >= int64(walBundleMB(s))<<20 && now.Sub(st.WALBundleFailedAt) >= walRetry
 	}
 	if bundleDue {
+		walDaemonPoint(ctx, c, a, s, st)
 		if err := walDaemonBundle(ctx, a); err != nil {
 			st.WALBundleFailedAt = now
 			fmt.Fprintf(os.Stderr, "Error: Surface %s: bundling WAL: %v. The daemon tries again in an hour.\n", s.ID, err)
@@ -140,7 +145,104 @@ func runWALWork(ctx context.Context, c *config.CLIConfig, s *config.SurfaceConfi
 			ok = false
 		}
 	}
+	if drillDue {
+		if sys, err := newestSystem(ctx, a); err == nil {
+			a.SystemID = sys
+			st.WALLastDrill = now
+			fmt.Printf("Surface %s: point-in-time drill.\n", s.ID)
+			d := runWALDrill(ctx, c, a, s, st, resolveStateDir("", c))
+			walState(st).Drill = d
+			sayWALDrill(s, d)
+			if !d.Passed && d.Blocked == "" {
+				ok = false
+			}
+		}
+	}
+	if bundleDue || baseDue || drillDue || statusDue {
+		walRefreshStatus(ctx, a, st, now)
+	}
 	return ok
+}
+
+// walStatusEvery is how often the daemon reads the archive's window for the
+// heartbeat when nothing else made it read the archive.
+const walStatusEvery = time.Hour
+
+// walState is the surface's WAL report, made when first needed.
+func walState(st *SurfaceState) *model.WALStatus {
+	if st.WAL == nil {
+		st.WAL = &model.WALStatus{}
+	}
+	return st.WAL
+}
+
+// walReport is what the heartbeat says about the archive: nothing for a
+// surface without one.
+func walReport(s *config.SurfaceConfig, st *SurfaceState) *model.WALStatus {
+	if s.WAL == nil || st == nil {
+		return nil
+	}
+	return st.WAL
+}
+
+// walDrillDue says a point-in-time drill is due: every drill_every_days, and
+// a day after one that failed or could not run.
+func walDrillDue(s *config.SurfaceConfig, st *SurfaceState, now time.Time) bool {
+	every := walDays(s.WAL.DrillEveryDays)
+	if st.WAL != nil && st.WAL.Drill != nil && !st.WAL.Drill.Passed && every > 24*time.Hour {
+		every = 24 * time.Hour
+	}
+	return now.Sub(st.WALLastDrill) >= every
+}
+
+// walRefreshStatus reads the newest cluster's window into the report.
+func walRefreshStatus(ctx context.Context, a *wal.Archive, st *SurfaceState, now time.Time) {
+	sys, err := newestSystem(ctx, a)
+	if err != nil {
+		return
+	}
+	a.SystemID = sys
+	status, err := a.Status(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: Surface %s: could not read the WAL archive's window: %v\n", a.SurfaceID, err)
+		return
+	}
+	st.WALCheckedAt = now
+	w := walState(st)
+	w.CheckedAt, w.WindowFrom, w.WindowTo, w.LockedTo, w.Gap = now, nil, nil, nil, ""
+	if status.HasWindow {
+		from, to := status.WindowFrom, status.WindowTo
+		w.WindowFrom, w.WindowTo = &from, &to
+	}
+	if !status.LockedTo.IsZero() {
+		locked := status.LockedTo
+		w.LockedTo = &locked
+	}
+	if len(status.Gaps) > 0 {
+		w.Gap = status.Gaps[0].First
+	}
+}
+
+// walDaemonPoint marks a restore point before a bundle, so the bundle holds
+// the WAL a drill replays to it. A role that may not create one is said
+// once a day, with the grant, and the bundle goes ahead.
+func walDaemonPoint(ctx context.Context, c *config.CLIConfig, a *wal.Archive, s *config.SurfaceConfig, st *SurfaceState) {
+	sys, err := newestSystem(ctx, a)
+	if err != nil {
+		return
+	}
+	a.SystemID = sys
+	dbURL, err := walDBURL(ctx, c, s, st)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: Surface %s: no restore point before the bundle: %v\n", s.ID, err)
+		return
+	}
+	rp, err := a.CreateRestorePoint(ctx, dbURL)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: Surface %s: no restore point before the bundle: %v\n", s.ID, err)
+		return
+	}
+	fmt.Printf("Surface %s: restore point %s, %d tables counted.\n", s.ID, rp.Name, len(rp.Tables))
 }
 
 func walBundleMB(s *config.SurfaceConfig) int {

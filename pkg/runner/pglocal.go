@@ -184,6 +184,9 @@ type LocalPostgres struct {
 	exited  chan struct{}
 	waitErr error
 	log     *boundedBuffer
+	// extra are directories removed with the cluster: a point-in-time
+	// drill's WAL staging.
+	extra []string
 }
 
 // sandboxSettings keep the cluster small and fast. Nothing in it outlives the
@@ -377,6 +380,12 @@ func (lp *LocalPostgres) Stop() {
 		_ = os.RemoveAll(lp.sockDir)
 		lp.sockDir = ""
 	}
+	for _, d := range lp.extra {
+		if err := os.RemoveAll(d); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not delete %s: %v. Delete it by hand to free the disk.\n", d, err)
+		}
+	}
+	lp.extra = nil
 }
 
 // keptMarker is the file a kept sandbox's data directory holds: until when

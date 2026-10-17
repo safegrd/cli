@@ -309,3 +309,22 @@ func TestTheWindowFollowsATimelineSwitch(t *testing.T) {
 		t.Fatalf("gaps %+v, want timeline 2 segment 5", st.Gaps)
 	}
 }
+
+// A table nobody wrote around the restore point must come back with exactly
+// its count; one that moved, between its two counts; a missing one fails.
+func TestARestoreIsCheckedAgainstTheRestorePointsCounts(t *testing.T) {
+	rp := RestorePoint{Tables: []TableCount{
+		{Table: "public.quiet", Before: 400, After: 400},
+		{Table: "public.busy", Before: 1000, After: 1010},
+		{Table: "public.gone", Before: 5, After: 5},
+	}}
+	exact, wrong := rp.CheckCounts(map[string]int64{"public.quiet": 400, "public.busy": 1004})
+	if exact != 1 || len(wrong) != 1 || !strings.Contains(wrong[0], "public.gone is missing") {
+		t.Fatalf("exact %d, wrong %v", exact, wrong)
+	}
+	_, wrong = rp.CheckCounts(map[string]int64{"public.quiet": 500, "public.busy": 1011, "public.gone": 5})
+	if len(wrong) != 2 || !strings.Contains(wrong[0], "public.quiet has 500 rows, the restore point recorded 400") ||
+		!strings.Contains(wrong[1], "recorded 1000 to 1010") {
+		t.Fatalf("wrong %v", wrong)
+	}
+}

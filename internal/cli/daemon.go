@@ -115,6 +115,12 @@ type SurfaceState struct {
 	WALLastBundle     time.Time `json:"wal_last_bundle,omitempty"`
 	WALBaseFailedAt   time.Time `json:"wal_base_failed_at,omitempty"`
 	WALBundleFailedAt time.Time `json:"wal_bundle_failed_at,omitempty"`
+	// WALLastDrill is when the daemon last tried a point-in-time drill, and
+	// WALCheckedAt when it last read the archive's window. WAL is what the
+	// heartbeat tells the remote server about the archive.
+	WALLastDrill time.Time        `json:"wal_last_drill,omitempty"`
+	WALCheckedAt time.Time        `json:"wal_checked_at,omitempty"`
+	WAL          *model.WALStatus `json:"wal,omitempty"`
 }
 
 // setDrill records how the last drill went. The three always change
@@ -1474,7 +1480,11 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 			dbFormat = formatRepo
 		}
 		switch dbFormat {
-		case "", formatTar:
+		case "":
+		case formatTar:
+			if repoDatabaseKind(dump.SurfaceTypeOfURL(dbURL)) {
+				fmt.Fprintf(os.Stderr, "Warning: Surface %s: format: tar on a database is deprecated. The next release backs it up incrementally whatever the config says; remove the line.\n", s.ID)
+			}
 		case formatRepo:
 			if !repoDatabaseKind(dump.SurfaceTypeOfURL(dbURL)) {
 				return nil, plan, stageErr(model.BackupReasonConfig, fmt.Errorf("surface %s: format: repo takes a database; leave format out for this one", s.ID))

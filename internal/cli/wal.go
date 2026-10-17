@@ -35,7 +35,7 @@ joins them into one locked object and deletes the unlocked ones.
 'safegrd wal base' takes the base backup a restore starts from (the daemon
 takes one a week).`,
 	}
-	cmd.AddCommand(newWALPushCmd(), newWALFetchCmd(), newWALBaseCmd(), newWALBundleCmd(), newWALStatusCmd(), newWALRestoreCmd())
+	cmd.AddCommand(newWALPushCmd(), newWALFetchCmd(), newWALBaseCmd(), newWALBundleCmd(), newWALStatusCmd(), newWALRestoreCmd(), newWALPointCmd(), newWALDrillCmd())
 	return cmd
 }
 
@@ -548,7 +548,7 @@ func printWALStatus(a *wal.Archive, st wal.Status) {
 }
 
 func newWALRestoreCmd() *cobra.Command {
-	var surfaceID, systemID, to, pgdata, keyPath, privKey, node string
+	var surfaceID, systemID, to, toPoint, pgdata, keyPath, privKey, node string
 	cmd := &cobra.Command{
 		Use:   "restore",
 		Short: "Restore a PostgreSQL surface to a point in time into an empty data directory",
@@ -567,9 +567,15 @@ with the same config and key. Archiving is turned off on the restored cluster.
 			if pgdata == "" {
 				return errors.New("--pgdata is required: an empty directory to restore into")
 			}
-			target, err := parseWALTarget(to)
-			if err != nil {
-				return err
+			var target time.Time
+			var err error
+			switch {
+			case to != "" && toPoint != "":
+				return errors.New("--to and --to-point are two targets; give one")
+			case toPoint == "":
+				if target, err = parseWALTarget(to); err != nil {
+					return err
+				}
 			}
 			a, _, err := walArchive(ctx, cfg, surfaceID, "")
 			if err != nil {
@@ -592,12 +598,32 @@ with the same config and key. Archiving is turned off on the restored cluster.
 			if err != nil {
 				return err
 			}
-			res, err := a.Restore(ctx, wal.RestoreOptions{Target: target, PGData: dir, FetchCommand: fetch})
+			o := wal.RestoreOptions{Target: target, PGData: dir, FetchCommand: fetch}
+			if toPoint != "" {
+				points, err := a.RestorePoints(ctx)
+				if err != nil {
+					return storageFailure(err)
+				}
+				for _, p := range points {
+					if p.Name == toPoint {
+						o.Target, o.TargetName = p.At, p.Name
+					}
+				}
+				if o.TargetName == "" {
+					return fmt.Errorf("the archive records no restore point %s. 'safegrd wal point' makes one", toPoint)
+				}
+				target = o.Target
+			}
+			res, err := a.Restore(ctx, o)
 			if err != nil {
 				return err
 			}
 			fmt.Printf("Restored base %s (PostgreSQL %d) into %s\n", res.Base.BaseID, res.Base.Major(), dir)
-			fmt.Printf("   Replays WAL to %s and promotes, when PostgreSQL %d starts on it:\n", target.UTC().Format("2006-01-02 15:04:05 UTC"), res.Base.Major())
+			goal := target.UTC().Format("2006-01-02 15:04:05 UTC")
+			if toPoint != "" {
+				goal = "restore point " + toPoint
+			}
+			fmt.Printf("   Replays WAL to %s and promotes, when PostgreSQL %d starts on it:\n", goal, res.Base.Major())
 			if res.NoConf {
 				// Debian and Ubuntu keep the configuration in /etc, and
 				// their postgresql.conf names the original data_directory:
@@ -613,7 +639,8 @@ with the same config and key. Archiving is turned off on the restored cluster.
 	}
 	cmd.Flags().StringVar(&surfaceID, "surface", "", "Surface id from the config (required)")
 	cmd.Flags().StringVar(&systemID, "system", "", "The cluster's system identifier, when the archive holds more than one")
-	cmd.Flags().StringVar(&to, "to", "", "The moment to restore to (required)")
+	cmd.Flags().StringVar(&to, "to", "", "The moment to restore to")
+	cmd.Flags().StringVar(&toPoint, "to-point", "", "A restore point to restore to, as 'safegrd wal point' named it")
 	cmd.Flags().StringVar(&pgdata, "pgdata", "", "An empty directory to restore into (required)")
 	cmd.Flags().StringVar(&keyPath, "key-path", "", "Path to the age identity (default encryption.key_path)")
 	cmd.Flags().StringVar(&privKey, "private-key", "", "The age identity, as env:VAR or file:/path")
@@ -623,7 +650,7 @@ with the same config and key. Archiving is turned off on the restored cluster.
 
 func parseWALTarget(s string) (time.Time, error) {
 	if s == "" {
-		return time.Time{}, errors.New("--to is required: the moment to restore to")
+		return time.Time{}, errors.New("--to or --to-point is required: the moment or the restore point to restore to")
 	}
 	for _, layout := range []string{time.RFC3339Nano, "2006-01-02 15:04:05", "2006-01-02T15:04:05", "2006-01-02 15:04"} {
 		if t, err := time.Parse(layout, strings.TrimSpace(s)); err == nil {

@@ -43,4 +43,7 @@ type WALDrill struct {
 	ReachedEnd bool `json:"reached_end"`
 	// Detail is why it failed, or what it could not check.
 	Detail string `json:"detail,omitempty"`
+	// Blocked is why the host could not run the drill at all (no server of
+	// the base's major version, no key). It says nothing about the archive.
+	Blocked string `json:"blocked,omitempty"`
 }

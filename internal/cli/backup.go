@@ -558,6 +558,9 @@ and never leaves this host.`,
 				if dbFormat, err = fileFormat(fileFmt); err != nil {
 					return err
 				}
+				if dbFormat == formatTar && repoDatabaseKind(dbSurface) {
+					fmt.Fprintln(os.Stderr, "Warning: --format tar on a database is deprecated. The next release backs a database up incrementally whatever this says; leave the flag out.")
+				}
 			}
 			if changeLog && (dbFormat != formatRepo || dbSurface != model.SurfaceTypePostgres) {
 				return fmt.Errorf("--change-log applies to a PostgreSQL backup in repo format")
@@ -736,7 +739,7 @@ and never leaves this host.`,
 	cmd.Flags().StringVar(&sourceAccessKey, "source-access-key", "", "With --files s3://…: the store's access key id, as env:VAR or file:/path")
 	cmd.Flags().StringVar(&sourceSecretKey, "source-secret-key", "", "With --files s3://…: the store's secret access key, as env:VAR or file:/path")
 	cmd.Flags().StringSliceVar(&excludes, "exclude", nil, "Glob patterns to leave out of --files (e.g. '*.tmp,node_modules/*')")
-	cmd.Flags().StringVar(&fileFmt, "format", formatRepo, "How the backup is stored: repo (incremental: each run uploads only what changed) or tar (one archive per backup). Repo is the default for --files and a PostgreSQL or SQLite database; MySQL and MongoDB are one archive")
+	cmd.Flags().StringVar(&fileFmt, "format", formatRepo, "How the backup is stored: repo (incremental: each run uploads only what changed) or tar (one archive per backup). Repo is the default; tar on a database is deprecated and goes in the next release")
 	cmd.Flags().BoolVar(&newEpoch, "new-epoch", false, "With --format repo, or --surface of a repo surface: start a new epoch now, uploading everything once")
 	cmd.Flags().BoolVar(&rescan, "rescan", false, "With --format repo, or --surface of a repo surface: read every file, not only those whose size or times changed")
 	cmd.Flags().BoolVar(&noRolePw, "roles-without-passwords", false, "PostgreSQL: leave role passwords out of the backup. By default the roles the schema names travel with their password hashes, sealed like everything else")
