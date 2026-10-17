@@ -403,8 +403,11 @@ func runRepoDatabaseBackup(ctx context.Context, p repoDBParams) (*model.Snapshot
 
 // restoreRepo restores a repository snapshot: a files snapshot into a
 // directory, a database run into an empty database.
-func restoreRepo(ctx context.Context, rs *repoSnapshot, privateKey, targetDir, targetURL, toSQL string, paths, tables []string, noOwner bool) error {
+func restoreRepo(ctx context.Context, rs *repoSnapshot, privateKey, targetDir, targetURL, toSQL string, paths, tables []string, noOwner, salvage bool) error {
 	id := rs.Meta.SnapshotID
+	if salvage && (runner.IsRepoDatabase(rs.Meta) || runner.IsRepoLaravel(rs.Meta) || runner.IsRepoWordPress(rs.Meta) || toSQL != "") {
+		return fmt.Errorf("--salvage restores what verifies of a files snapshot; %s restores whole, in one transaction", id)
+	}
 	if len(tables) > 0 && !runner.IsRepoDatabase(rs.Meta) {
 		return fmt.Errorf("--table restores tables of a database snapshot; %s is a files snapshot", id)
 	}
@@ -454,7 +457,7 @@ func restoreRepo(ctx context.Context, rs *repoSnapshot, privateKey, targetDir, t
 			return fmt.Errorf("snapshot %s is a files snapshot; specify --target-dir to restore", id)
 		}
 		fmt.Printf("Restoring %s (epoch %s, %s) into %s\n", id, rs.Epoch.Epoch.EpochID, rs.SurfaceID, targetDir)
-		return restoreRepoSnapshot(ctx, rs, privateKey, targetDir, paths)
+		return restoreRepoSnapshot(ctx, rs, privateKey, targetDir, paths, salvage)
 	}
 	if targetURL == "" {
 		return fmt.Errorf("snapshot %s is a %s snapshot; pass --target with the URL of an empty database", id, rs.Meta.SurfaceType)

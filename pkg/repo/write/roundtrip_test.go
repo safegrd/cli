@@ -671,3 +671,83 @@ func TestARenamedDirectoryIsReadAgainNotChanged(t *testing.T) {
 			second.ChangedFiles, second.ReReadFiles)
 	}
 }
+
+// A salvage restore brings back every file that verifies when one pack is
+// altered or gone, leaves the rest out of the target, and names each with
+// its reason. Without it the same restore writes nothing.
+func TestASalvageRestoreKeepsWhatVerifiesAndNamesTheRest(t *testing.T) {
+	h := newHarness(t)
+	rng := rand.New(rand.NewSource(11))
+	want := map[string][]byte{}
+	for i := 0; i < 12; i++ {
+		b := make([]byte, 3<<20)
+		rng.Read(b)
+		rel := fmt.Sprintf("d%02d/f.bin", i)
+		_ = os.MkdirAll(filepath.Join(h.src, filepath.Dir(rel)), 0o755)
+		if err := os.WriteFile(filepath.Join(h.src, rel), b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		want[rel] = b
+	}
+	res := h.backup(nil)
+	e := h.epoch(res.Epoch.EpochID)
+	objs, _ := h.b.List(context.Background(), e, "packs")
+	if len(objs) < 3 {
+		t.Fatalf("%d packs; the tree is sized for two data packs and a tree pack", len(objs))
+	}
+	sort.Slice(objs, func(i, j int) bool { return objs[i].Size > objs[j].Size })
+	p, _ := h.store.Path(objs[0].Key)
+	_ = os.Chmod(p, 0o600)
+	b, _ := os.ReadFile(p)
+	b[len(b)/2] ^= 1
+	if err := os.WriteFile(p, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	r := read.Open(h.b, e, h.ids)
+	snap, _ := r.Snapshot(context.Background(), res.Snapshot.SnapshotID)
+	idx, _ := r.LoadIndex(context.Background(), snap)
+	base := strings.TrimPrefix(h.src, "/")
+	salvage := func(what string) {
+		t.Helper()
+		target := filepath.Join(t.TempDir(), "out")
+		rr, err := r.Restore(context.Background(), snap, idx, read.RestoreOptions{Target: target, Base: base, Salvage: true})
+		if err != nil {
+			t.Fatalf("%s: a salvage restore failed: %v", what, err)
+		}
+		if len(rr.Damaged) == 0 || len(rr.Damaged) >= len(want) || int(rr.Files)+len(rr.Damaged) != len(want) {
+			t.Fatalf("%s: restored %d and left out %d of %d files", what, rr.Files, len(rr.Damaged), len(want))
+		}
+		left := map[string]bool{}
+		for _, d := range rr.Damaged {
+			left[d.Path] = true
+			if !strings.Contains(d.Reason, "pack ") {
+				t.Errorf("%s: %s left out for %q, which names no pack", what, d.Path, d.Reason)
+			}
+		}
+		for rel, content := range want {
+			got, err := os.ReadFile(filepath.Join(target, rel))
+			switch {
+			case left[rel] && err == nil:
+				t.Errorf("%s: %s was left out and is in the target", what, rel)
+			case !left[rel] && (err != nil || !bytes.Equal(got, content)):
+				t.Errorf("%s: %s did not come back whole: %v", what, rel, err)
+			}
+		}
+		if leftovers, _ := filepath.Glob(filepath.Join(target, ".safegrd-restore-*")); len(leftovers) != 0 {
+			t.Errorf("%s: the staging directory was left: %v", what, leftovers)
+		}
+	}
+	salvage("a flipped byte")
+
+	target := filepath.Join(t.TempDir(), "plain")
+	if _, err := r.Restore(context.Background(), snap, idx, read.RestoreOptions{Target: target, Base: base}); err == nil {
+		t.Fatal("a restore without salvage succeeded over a flipped byte")
+	}
+	if left, _ := os.ReadDir(target); len(left) != 0 {
+		t.Fatalf("a failed restore left %d entries", len(left))
+	}
+
+	_ = os.Remove(p)
+	salvage("a missing pack")
+}

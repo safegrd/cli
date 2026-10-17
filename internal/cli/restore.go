@@ -35,6 +35,7 @@ func newRestoreCmd() *cobra.Command {
 		schemas    []string
 		dataOnly   []string
 		noOwner    bool
+		salvage    bool
 
 		// A bucket to restore a files snapshot into, as backup reads one.
 		sourceEndpoint  string
@@ -227,8 +228,13 @@ files: each upload writes or updates the file's row in storage.objects.`,
 					if bucketTarget {
 						return errRepoToBucket(snapshotID)
 					}
-					return restoreRepo(ctx, rs, resolvedKey, targetDir, targetURL, toSQL, paths, tables, noOwner)
+					return restoreRepo(ctx, rs, resolvedKey, targetDir, targetURL, toSQL, paths, tables, noOwner, salvage)
 				}
+			}
+			if salvage && fromDir != "" {
+				// Past this point the export's snapshot is an archive, which
+				// is one stream: a damaged byte stops what follows it.
+				return fmt.Errorf("--salvage restores what verifies of an incremental files snapshot; %s is not one", snapshotID)
 			}
 			if fromDir != "" {
 				local, err := storage.NewLocalStorage(fromDir)
@@ -289,7 +295,10 @@ files: each upload writes or updates the file's row in storage.objects.`,
 					if bucketTarget {
 						return errRepoToBucket(snapshotID)
 					}
-					return restoreRepo(ctx, rs, resolvedKey, targetDir, targetURL, toSQL, paths, tables, noOwner)
+					return restoreRepo(ctx, rs, resolvedKey, targetDir, targetURL, toSQL, paths, tables, noOwner, salvage)
+				}
+				if salvage {
+					return fmt.Errorf("--salvage restores what verifies of an incremental files snapshot; %s is not one", snapshotID)
 				}
 				opened, err := openStorage(ctx, cfg, storageCfg)
 				if err != nil {
@@ -582,6 +591,7 @@ files: each upload writes or updates the file's row in storage.objects.`,
 	cmd.Flags().IntVar(&version, "version", 0, "With one --path or --table: restore that version, as 'safegrd find' numbers them")
 	cmd.Flags().StringArrayVar(&schemas, "schema", nil, "Restore only this schema of a PostgreSQL snapshot, objects and rows, into a database that has other schemas (repeatable)")
 	cmd.Flags().StringArrayVar(&dataOnly, "data-only-schema", nil, "Load only this schema's rows into tables the target already has (repeatable)")
+	cmd.Flags().BoolVar(&salvage, "salvage", false, "Incremental files snapshot: restore every file that verifies and list the ones a damaged or missing pack leaves out, instead of restoring nothing. Exits non-zero when any is left out")
 	cmd.Flags().BoolVar(&noOwner, "no-owner", false, "PostgreSQL: restore without ownership and privileges, so every object belongs to the restoring role. The roles the schema names are still created")
 	cmd.Flags().StringArrayVar(&tables, "table", nil, "Restore only this table (schema.table) of a PostgreSQL snapshot into --target: into an empty table of the same definition, or created as the snapshot defined it when the target has none (repeatable)")
 	cmd.Flags().StringVar(&surfaceSel, "surface", "", "With --path or --table and no --snapshot: the surface whose repository holds it")

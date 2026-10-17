@@ -36,6 +36,11 @@ type RestoreOptions struct {
 	// target, and nothing outside it is restored. Empty restores the whole
 	// tree at its paths from /.
 	Base string
+	// Salvage restores every file that verifies and leaves out the ones a
+	// damaged or missing blob, pack or index stops, naming each in
+	// RestoreResult.Damaged, instead of restoring nothing. A failure of the
+	// target's own disk still stops the restore.
+	Salvage bool
 }
 
 // MaxInFlightBytes bounds the range bodies held in memory at once. A whole
@@ -54,6 +59,30 @@ type RestoreResult struct {
 	// OwnershipRestored is set when owners were reapplied, which needs root.
 	OwnershipRestored bool
 	OwnershipNote     string
+	// Damaged are the files a salvage restore left out, and why.
+	Damaged []DamagedFile
+}
+
+// DamagedFile is a file a salvage restore could not bring back.
+type DamagedFile struct {
+	Path   string
+	Reason string
+}
+
+// salvaged collects the blobs a salvage restore could not read.
+type salvaged struct {
+	mu    sync.Mutex
+	blobs map[format.ID]string
+}
+
+func (s *salvaged) mark(ids []format.ID, why string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, id := range ids {
+		if _, ok := s.blobs[id]; !ok {
+			s.blobs[id] = why
+		}
+	}
 }
 
 type occurrence struct {
@@ -124,6 +153,12 @@ func (r *Repo) Restore(ctx context.Context, s format.Snapshot, idx Index, o Rest
 	}()
 
 	res = &RestoreResult{}
+	var sv *salvaged
+	if o.Salvage {
+		sv = &salvaged{blobs: map[format.ID]string{}}
+	}
+	// lost are the files a salvage restore leaves out, by path.
+	lost := map[string]string{}
 	var files []Item
 	occ := map[format.ID][]occurrence{}
 	for _, it := range items {
@@ -149,19 +184,35 @@ func (r *Repo) Restore(ctx context.Context, s format.Snapshot, idx Index, o Rest
 				return nil, fmt.Errorf("creating %s: %w", it.Path, terr)
 			}
 			var off int64
+			var planErr error
+			var mine []format.ID
 			for _, id := range it.Node.Content {
 				loc, ok := idx[id]
 				if !ok {
-					return nil, fmt.Errorf("%s: blob %s is in no index the snapshot lists", it.Path, id)
+					planErr = fmt.Errorf("blob %s is in no index the snapshot lists", id)
+					break
 				}
 				if format.BlobKind(loc.Entry.Type) != format.BlobData {
-					return nil, fmt.Errorf("%s: blob %s is a tree, not data", it.Path, id)
+					planErr = fmt.Errorf("blob %s is a tree, not data", id)
+					break
 				}
-				occ[id] = append(occ[id], occurrence{file: len(files), off: off})
+				mine = append(mine, id)
 				off += loc.Entry.RawLength
 			}
-			if off != it.Node.Size {
-				return nil, fmt.Errorf("%s: its blobs hold %d bytes, the tree says %d", it.Path, off, it.Node.Size)
+			if planErr == nil && off != it.Node.Size {
+				planErr = fmt.Errorf("its blobs hold %d bytes, the tree says %d", off, it.Node.Size)
+			}
+			if planErr != nil {
+				if sv == nil {
+					return nil, fmt.Errorf("%s: %w", it.Path, planErr)
+				}
+				lost[it.Path] = planErr.Error()
+				continue
+			}
+			off = 0
+			for _, id := range mine {
+				occ[id] = append(occ[id], occurrence{file: len(files), off: off})
+				off += idx[id].Entry.RawLength
 			}
 			files = append(files, it)
 		}
@@ -204,18 +255,42 @@ func (r *Repo) Restore(ctx context.Context, s format.Snapshot, idx Index, o Rest
 	if largest > 0 {
 		workers = max(2, min(workers, int(MaxInFlightBytes/largest)))
 	}
-	if err := r.fetch(ctx, plan, idx, occ, files, stage, workers, res); err != nil {
+	if err := r.fetch(ctx, plan, idx, occ, files, stage, workers, res, sv); err != nil {
 		return nil, err
+	}
+	if sv != nil {
+		for id, why := range sv.blobs {
+			for _, oc := range occ[id] {
+				if _, ok := lost[files[oc.file].Path]; !ok {
+					lost[files[oc.file].Path] = why
+				}
+			}
+		}
 	}
 
 	// Every file must match its SHA-256 before anything takes its place.
 	for _, it := range files {
+		if _, ok := lost[it.Path]; ok {
+			continue
+		}
 		if err := checkFile(filepath.Join(stage, filepath.FromSlash(it.Path)), it.Node); err != nil {
-			return nil, fmt.Errorf("%s: %w", it.Path, err)
+			if sv == nil {
+				return nil, fmt.Errorf("%s: %w", it.Path, err)
+			}
+			lost[it.Path] = err.Error()
+			continue
 		}
 		res.Files++
 		res.Bytes += it.Node.Size
 	}
+	// A salvage restore leaves out what did not verify, and says so.
+	for p, why := range lost {
+		if err := os.Remove(filepath.Join(stage, filepath.FromSlash(p))); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("removing %s, which did not restore: %w", p, err)
+		}
+		res.Damaged = append(res.Damaged, DamagedFile{Path: p, Reason: why})
+	}
+	sort.Slice(res.Damaged, func(i, j int) bool { return res.Damaged[i].Path < res.Damaged[j].Path })
 	for _, it := range items {
 		if it.Node.Type != format.NodeSymlink {
 			continue
@@ -259,6 +334,9 @@ func (r *Repo) Restore(ctx context.Context, s format.Snapshot, idx Index, o Rest
 		case format.NodeDir:
 			dirs = append(dirs, it)
 		case format.NodeFile:
+			if _, left := lost[it.Path]; left {
+				continue
+			}
 			if err := applyMeta(dst, it.Node, chown, true); err != nil {
 				return res, err
 			}
@@ -344,7 +422,7 @@ func prepareTarget(t string) (string, bool, error) {
 }
 
 func (r *Repo) fetch(ctx context.Context, plan []rangeFetch, idx Index, occ map[format.ID][]occurrence, files []Item,
-	stage string, n int, res *RestoreResult) error {
+	stage string, n int, res *RestoreResult, sv *salvaged) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	jobs := make(chan rangeFetch)
@@ -367,7 +445,7 @@ func (r *Repo) fetch(ctx context.Context, plan []rangeFetch, idx Index, occ map[
 				if ctx.Err() != nil {
 					continue
 				}
-				if err := r.fetchOne(ctx, rf, idx, occ, files, stage, res, &mu); err != nil {
+				if err := r.fetchOne(ctx, rf, idx, occ, files, stage, res, &mu, sv); err != nil {
 					fail(err)
 				}
 			}
@@ -388,30 +466,43 @@ func (r *Repo) fetch(ctx context.Context, plan []rangeFetch, idx Index, occ map[
 }
 
 func (r *Repo) fetchOne(ctx context.Context, rf rangeFetch, idx Index, occ map[format.ID][]occurrence, files []Item,
-	stage string, res *RestoreResult, mu *sync.Mutex) error {
+	stage string, res *RestoreResult, mu *sync.Mutex, sv *salvaged) error {
+	// What the store gave wrong is the pack's fault: a salvage restore
+	// leaves its files out and goes on. A cancelled restore is not.
+	storeFault := func(err error, ids []format.ID) error {
+		if sv == nil || ctx.Err() != nil {
+			return err
+		}
+		sv.mark(ids, err.Error())
+		return nil
+	}
 	o, hdr, err := r.opener(ctx, rf.pack)
 	if err != nil {
-		return err
+		return storeFault(err, rf.blobs)
 	}
 	if rf.start < int64(hdr) {
-		return fmt.Errorf("pack %s: a blob starts inside the header", rf.pack)
+		return storeFault(fmt.Errorf("pack %s: a blob starts inside the header", rf.pack), rf.blobs)
 	}
 	data, err := r.B.GetRange(ctx, r.key(sink.KindPack, rf.pack), rf.start, rf.end-rf.start)
 	if err != nil {
-		return fmt.Errorf("pack %s: %w", rf.pack, err)
+		return storeFault(fmt.Errorf("pack %s: %w", rf.pack, err), rf.blobs)
 	}
 	mu.Lock()
 	res.Fetches++
 	res.FetchedBytes += int64(len(data))
 	mu.Unlock()
 	if int64(len(data)) != rf.end-rf.start {
-		return fmt.Errorf("pack %s is shorter than its index says (%d of %d bytes at %d)", rf.pack, len(data), rf.end-rf.start, rf.start)
+		return storeFault(fmt.Errorf("pack %s is shorter than its index says (%d of %d bytes at %d)", rf.pack, len(data), rf.end-rf.start, rf.start), rf.blobs)
 	}
 	for _, id := range rf.blobs {
 		e := idx[id].Entry
 		rec := data[e.Offset-rf.start : e.Offset-rf.start+e.Length]
 		plain, err := o.Blob(rec, e)
 		if err != nil {
+			if sv != nil {
+				sv.mark([]format.ID{id}, fmt.Sprintf("pack %s: %v", rf.pack, err))
+				continue
+			}
 			it := files[occ[id][0].file]
 			return fmt.Errorf("%s: pack %s: %w", it.Path, rf.pack, err)
 		}

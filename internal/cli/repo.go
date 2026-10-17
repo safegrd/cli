@@ -556,7 +556,7 @@ func repoSnapshots(ctx context.Context, b sink.Backend) ([]repoSnapshot, error) 
 // selected. The content root recomputed from the snapshot's trees is held to
 // the one recorded at backup time before anything is written, and every file
 // to its SHA-256 in the tree before it takes its place.
-func restoreRepoSnapshot(ctx context.Context, rs *repoSnapshot, privateKey, targetDir string, paths []string) error {
+func restoreRepoSnapshot(ctx context.Context, rs *repoSnapshot, privateKey, targetDir string, paths []string, salvage bool) error {
 	ids, err := unseal.Identities(privateKey)
 	if err != nil {
 		return err
@@ -586,8 +586,11 @@ func restoreRepoSnapshot(ctx context.Context, rs *repoSnapshot, privateKey, targ
 	if len(snap.Roots) == 1 && snap.Roots[0] != "/" {
 		base = strings.TrimPrefix(snap.Roots[0], "/")
 	}
-	res, err := r.Restore(ctx, snap, idx, read.RestoreOptions{Target: targetDir, Paths: paths, Base: base})
+	res, err := r.Restore(ctx, snap, idx, read.RestoreOptions{Target: targetDir, Paths: paths, Base: base, Salvage: salvage})
 	if err != nil {
+		if !salvage && repoDamageErr(err) {
+			return fmt.Errorf("restore failed, and %s is as it was: %w\n   Run it again with --salvage to restore every file that verifies and list the rest", targetDir, err)
+		}
 		return fmt.Errorf("restore failed, and %s is as it was: %w", targetDir, err)
 	}
 	switch {
@@ -596,14 +599,41 @@ func restoreRepoSnapshot(ctx context.Context, rs *repoSnapshot, privateKey, targ
 	case base != "":
 		fmt.Printf("   Restored the contents of %s into %s.\n", snap.Roots[0], targetDir)
 	}
-	fmt.Printf("Restored %s %s (%s) from %s in %s. Every file matched its SHA-256.\n", formatNumber(res.Files),
-		pluralWord(res.Files, "file", "files"), formatBytes(res.Bytes), snapshotID, shortDuration(time.Since(started)))
+	if len(res.Damaged) > 0 {
+		fmt.Printf("Restored %s %s (%s) from %s in %s. Each matched its SHA-256.\n", formatNumber(res.Files),
+			pluralWord(res.Files, "file", "files"), formatBytes(res.Bytes), snapshotID, shortDuration(time.Since(started)))
+	} else {
+		fmt.Printf("Restored %s %s (%s) from %s in %s. Every file matched its SHA-256.\n", formatNumber(res.Files),
+			pluralWord(res.Files, "file", "files"), formatBytes(res.Bytes), snapshotID, shortDuration(time.Since(started)))
+	}
 	if res.Symlinks > 0 || res.Dirs > 0 {
 		fmt.Printf("   Also %d %s and %d %s.\n", res.Dirs, pluralWord(res.Dirs, "directory", "directories"), res.Symlinks, pluralWord(res.Symlinks, "symlink", "symlinks"))
 	}
 	fmt.Printf("   Destination:    %s\n", targetDir)
 	printFileRestoreLimits(&dump.FileExtractionResult{OwnershipRestored: res.OwnershipRestored, OwnershipNote: res.OwnershipNote}, true)
+	if n := len(res.Damaged); n > 0 {
+		fmt.Fprintf(os.Stderr, "Error: %s %s could not be restored and %s left out of %s:\n", formatNumber(int64(n)),
+			pluralWord(int64(n), "file", "files"), pluralWord(int64(n), "is", "are"), targetDir)
+		for _, d := range res.Damaged {
+			fmt.Fprintf(os.Stderr, "   %s: %s\n", d.Path, d.Reason)
+		}
+		fmt.Fprintf(os.Stderr, "   An earlier snapshot may still hold them: safegrd list, then restore --path with its id.\n")
+		return classed(exitStorage, fmt.Errorf("the restore of %s is incomplete: %d %s left out", snapshotID, n, pluralWord(int64(n), "file", "files")))
+	}
 	return nil
+}
+
+// repoDamageErr reports whether a restore stopped on what storage gave it
+// (a pack missing, short or altered; a blob no index names), which a
+// salvage restore goes past, rather than on this host.
+func repoDamageErr(err error) bool {
+	msg := err.Error()
+	for _, m := range []string{"is in no index", "does not authenticate", "is shorter than its index", "pack ", "SHA-256 is"} {
+		if strings.Contains(msg, m) {
+			return true
+		}
+	}
+	return false
 }
 
 // checkRepoContentRoot holds a repository snapshot's content root to the one
