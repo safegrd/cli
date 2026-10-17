@@ -312,6 +312,9 @@ exits at once.`,
 			// the start of each pass. The metrics address, the interval and
 			// SQLite followers keep what they started with until a restart.
 			watch := newConfigWatch()
+			// An upgrade replaces the binary under a running daemon, which
+			// goes on running the old one until it is restarted.
+			binary := newBinaryWatch()
 
 			// Initial pass immediately
 			err = reconcileSurfaces(ctx, cfg, resolvedStateDir, interval, registered)
@@ -336,6 +339,7 @@ exits at once.`,
 						sayClockStep(step)
 					}
 					watch.reload()
+					binary.check()
 					err := reconcileSurfaces(ctx, cfg, resolvedStateDir, interval, registered)
 					if err != nil {
 						fmt.Fprintf(os.Stderr, "Error: pass over the surfaces: %v\n", err)

@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -95,4 +96,53 @@ func surfaceChanges(prev, next *config.CLIConfig) (added, removed []string) {
 	sort.Strings(added)
 	sort.Strings(removed)
 	return added, removed
+}
+
+// binaryWatch notices when the safegrd binary this daemon runs is replaced,
+// as an upgrade does, and says once that the daemon still runs the old one.
+// Nothing restarts it from here: the service manager owns the process.
+type binaryWatch struct {
+	path     string // as started, a symlink included
+	resolved string // the file it pointed at
+	modTime  time.Time
+	size     int64
+	said     bool
+}
+
+func newBinaryWatch() *binaryWatch {
+	path, err := os.Executable()
+	if err != nil {
+		return nil
+	}
+	w := &binaryWatch{path: path, resolved: path}
+	if r, err := filepath.EvalSymlinks(path); err == nil {
+		w.resolved = r
+	}
+	fi, err := os.Stat(w.resolved)
+	if err != nil {
+		return nil
+	}
+	w.modTime, w.size = fi.ModTime(), fi.Size()
+	return w
+}
+
+// replaced reports whether the binary changed since the daemon started: the
+// file rewritten, removed (Homebrew removes the old version's directory), or
+// the path now pointing at another file.
+func (w *binaryWatch) replaced() bool {
+	fi, err := os.Stat(w.resolved)
+	if err != nil || !fi.ModTime().Equal(w.modTime) || fi.Size() != w.size {
+		return true
+	}
+	r, err := filepath.EvalSymlinks(w.path)
+	return err == nil && r != w.resolved
+}
+
+func (w *binaryWatch) check() {
+	if w == nil || w.said || !w.replaced() {
+		return
+	}
+	w.said = true
+	fmt.Fprintf(os.Stderr, "Warning: the safegrd binary at %s was replaced after this daemon started, and the daemon still runs %s. "+
+		"Run 'safegrd daemon restart' to run the new one.\n", w.path, Version)
 }
