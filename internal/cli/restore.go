@@ -407,8 +407,14 @@ files: each upload writes or updates the file's row in storage.objects.`,
 
 			decryptErrChan := make(chan error, 1)
 			var decMetrics *crypto.StreamMetrics
+			// A stream that inflates past the size the record gives is not
+			// this snapshot, and stops before it fills the disk.
+			var rawCeiling int64
+			if meta != nil {
+				rawCeiling = meta.RawSizeBytes
+			}
 			go func() {
-				metrics, err := crypto.DecryptStream(cipherStream, plainWriter, resolvedKey)
+				metrics, err := crypto.DecryptStreamLimit(cipherStream, plainWriter, resolvedKey, rawCeiling)
 				decMetrics = metrics
 				if err != nil {
 					_ = plainWriter.CloseWithError(err)

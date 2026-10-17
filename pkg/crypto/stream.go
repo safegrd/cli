@@ -3,6 +3,7 @@ package crypto
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"hash"
 	"io"
@@ -136,6 +137,20 @@ func EncryptStream(src io.Reader, dst io.Writer, publicKey string) (*StreamMetri
 // and writes plaintext to dst. privateKey may hold several identities, one per
 // line; age uses whichever one the snapshot was sealed to.
 func DecryptStream(src io.Reader, dst io.Writer, privateKey string) (*StreamMetrics, error) {
+	return DecryptStreamLimit(src, dst, privateKey, 0)
+}
+
+// ErrLargerThanRecorded is returned when a stream decompresses past the size
+// its snapshot's record gives: it is not the snapshot that was backed up,
+// and a stream built to fill the disk stops here instead.
+var ErrLargerThanRecorded = errors.New("the snapshot decompresses to more than the size recorded at backup")
+
+// DecryptStreamLimit is DecryptStream that stops once more than maxRaw
+// plaintext bytes have come out; zero is no limit.
+func DecryptStreamLimit(src io.Reader, dst io.Writer, privateKey string, maxRaw int64) (*StreamMetrics, error) {
+	if maxRaw > 0 {
+		dst = &limitWriter{w: dst, left: maxRaw}
+	}
 	identities, err := ParseIdentities(privateKey)
 	if err != nil {
 		return nil, fmt.Errorf("invalid identity key: %w", err)
@@ -177,4 +192,19 @@ func DecryptStream(src io.Reader, dst io.Writer, privateKey string) (*StreamMetr
 		EncryptedSha256:  cipherCountingReader.SumHex(),
 		CompressionRatio: ratio,
 	}, nil
+}
+
+// limitWriter passes at most left bytes to w.
+type limitWriter struct {
+	w    io.Writer
+	left int64
+}
+
+func (l *limitWriter) Write(p []byte) (int, error) {
+	if int64(len(p)) > l.left {
+		return 0, ErrLargerThanRecorded
+	}
+	n, err := l.w.Write(p)
+	l.left -= int64(n)
+	return n, err
 }

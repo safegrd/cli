@@ -3,6 +3,7 @@ package crypto
 import (
 	"bytes"
 	"crypto/rand"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -197,5 +198,29 @@ func TestLargeStreamIntegrity(t *testing.T) {
 	}
 	if !bytes.Equal(plainBuf.Bytes(), payload) {
 		t.Fatal("decrypted payload differs from original random bytes")
+	}
+}
+
+// A stream that inflates past the size its record gives stops there: four
+// megabytes of zeros compress to almost nothing, which is how a stream
+// built to fill the disk looks. At the recorded size it decrypts whole.
+func TestDecryptStopsPastTheRecordedSize(t *testing.T) {
+	kp, err := GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain := make([]byte, 4<<20)
+	var sealed bytes.Buffer
+	if _, err := EncryptStream(bytes.NewReader(plain), &sealed, kp.PublicKey); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if m, err := DecryptStreamLimit(bytes.NewReader(sealed.Bytes()), &out, kp.PrivateKey, int64(len(plain))); err != nil || m.RawBytes != int64(len(plain)) {
+		t.Fatalf("at the recorded size: %v, %+v", err, m)
+	}
+	out.Reset()
+	_, err = DecryptStreamLimit(bytes.NewReader(sealed.Bytes()), &out, kp.PrivateKey, int64(len(plain))-1)
+	if !errors.Is(err, ErrLargerThanRecorded) || out.Len() >= len(plain) {
+		t.Fatalf("one byte under the recorded size: %v, %d bytes written", err, out.Len())
 	}
 }

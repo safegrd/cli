@@ -133,7 +133,7 @@ func (v *Verifier) RunFireDrill(ctx context.Context, snapshotID, privateKey, san
 	var decMetrics *crypto.StreamMetrics
 
 	go func() {
-		metrics, err := crypto.DecryptStream(cipherStream, plainWriter, privateKey)
+		metrics, err := crypto.DecryptStreamLimit(cipherStream, plainWriter, privateKey, meta.RawSizeBytes)
 		decMetrics = metrics
 		if err != nil {
 			_ = plainWriter.CloseWithError(err)
@@ -342,7 +342,7 @@ func (v *Verifier) RunDryRestore(ctx context.Context, snapshotID, privateKey str
 	var decMetrics *crypto.StreamMetrics
 
 	go func() {
-		metrics, err := crypto.DecryptStream(cipherStream, plainWriter, privateKey)
+		metrics, err := crypto.DecryptStreamLimit(cipherStream, plainWriter, privateKey, meta.RawSizeBytes)
 		decMetrics = metrics
 		if err != nil {
 			_ = plainWriter.CloseWithError(err)
