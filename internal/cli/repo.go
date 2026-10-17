@@ -156,40 +156,12 @@ func openedWhy(r *write.Result) string {
 	return reasonText(r.Reason)
 }
 
-// drillDamageMarks are what a drill's failure says when stored objects are
-// damaged or missing, as opposed to this host failing to restore them.
-var drillDamageMarks = []string{"does not authenticate", "is missing", "shorter than its index", "is in no index",
-	"not found", "No such object", "does not parse"}
-
-// drillFoundDamage returns the failed check of a repository drill that names
-// damaged or missing objects in storage.
-func drillFoundDamage(report *model.VerificationReport) (string, bool) {
-	if report == nil || report.Status == model.VerificationStatusPassed {
-		return "", false
-	}
-	for _, a := range report.Assertions {
-		if a.Passed {
-			continue
-		}
-		text := a.Actual + " " + a.Message
-		if a.Name == "RepositoryIntegrity" {
-			return strings.TrimSpace(a.Actual), true
-		}
-		for _, m := range drillDamageMarks {
-			if strings.Contains(text, m) {
-				return strings.TrimSpace(a.Actual), true
-			}
-		}
-	}
-	return "", false
-}
-
 // noteDrillDamage marks the drilled snapshot's epoch damaged when the drill
 // found its stored objects damaged or missing, so the surface's next backup
 // opens a new epoch instead of referencing them again. Every backup until
 // then would have printed "complete" over a snapshot that cannot restore.
 func noteDrillDamage(stateDir, surfaceID string, rs *repoSnapshot, report *model.VerificationReport) {
-	why, ok := drillFoundDamage(report)
+	why, ok := report.StoredObjectsDamaged()
 	if !ok || rs == nil {
 		return
 	}
@@ -220,6 +192,8 @@ func reasonText(reason string) string {
 		return "this month's changes outgrew the first backup"
 	case format.ReasonFull:
 		return "hosted storage keeps each backup on its own"
+	case format.ReasonDamaged:
+		return "a drill found stored objects of the last epoch damaged or missing"
 	}
 	return reason
 }

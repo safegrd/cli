@@ -27,7 +27,7 @@ func TestOnlyStorageDamageMarksAnEpoch(t *testing.T) {
 		{&model.VerificationReport{Status: model.VerificationStatusPassed}, false},
 		{nil, false},
 	} {
-		if _, got := drillFoundDamage(c.report); got != c.want {
+		if _, got := c.report.StoredObjectsDamaged(); got != c.want {
 			t.Errorf("%+v: damage %v, want %v", c.report, got, c.want)
 		}
 	}

@@ -32,6 +32,9 @@ const (
 	// ReasonFull is the remote server's: every backup is written on its own
 	// epoch, so each can be deleted when its own retention ends.
 	ReasonFull = "full"
+	// ReasonDamaged is the remote server's: a drill it ran found objects of
+	// the last epoch damaged or missing, so nothing is referenced again.
+	ReasonDamaged = "damaged"
 )
 
 // Retention tiers an opening snapshot can be declared at.

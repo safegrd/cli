@@ -2,6 +2,7 @@ package model
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -87,4 +88,33 @@ func (v *VerificationReport) CanonicalBytes() []byte {
 		v.CertificateHash,
 		v.PrevHash,
 	))
+}
+
+// storedDamageMarks are what a drill's failure says when stored objects are
+// damaged or missing, as opposed to the drill's host failing to restore them.
+var storedDamageMarks = []string{"does not authenticate", "is missing", "shorter than its index", "is in no index",
+	"not found", "No such object", "does not parse"}
+
+// StoredObjectsDamaged returns the failed check of a repository drill that
+// names damaged or missing objects in storage. A backup that went on writing
+// into the same set of objects would reference them again.
+func (v *VerificationReport) StoredObjectsDamaged() (string, bool) {
+	if v == nil || v.Status == VerificationStatusPassed {
+		return "", false
+	}
+	for _, a := range v.Assertions {
+		if a.Passed {
+			continue
+		}
+		text := a.Actual + " " + a.Message
+		if a.Name == "RepositoryIntegrity" {
+			return strings.TrimSpace(a.Actual), true
+		}
+		for _, m := range storedDamageMarks {
+			if strings.Contains(text, m) {
+				return strings.TrimSpace(a.Actual), true
+			}
+		}
+	}
+	return "", false
 }
