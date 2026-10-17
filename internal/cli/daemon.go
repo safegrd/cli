@@ -1565,11 +1565,7 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 			dbFormat = formatRepo
 		}
 		switch dbFormat {
-		case "":
-		case formatTar:
-			if repoDatabaseKind(dump.SurfaceTypeOfURL(dbURL)) {
-				fmt.Fprintf(os.Stderr, "Warning: Surface %s: format: tar on a database is deprecated. The next release backs it up incrementally whatever the config says; remove the line.\n", s.ID)
-			}
+		case "", formatTar:
 		case formatRepo:
 			if !repoDatabaseKind(dump.SurfaceTypeOfURL(dbURL)) {
 				return nil, plan, stageErr(model.BackupReasonConfig, fmt.Errorf("surface %s: format: repo takes a database; leave format out for this one", s.ID))

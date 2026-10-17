@@ -241,13 +241,6 @@ func runValidationChecks(path string, c *config.CLIConfig) []CheckResult {
 		if strings.TrimSpace(s.Schedule) != "" {
 			results = append(results, scheduleCheck(fmt.Sprintf("Surface %s schedule", surfaceLabel(s)), s.Schedule))
 		}
-		switch strings.ToLower(s.Type) {
-		case "postgres", "mysql", "mongodb", "sqlite":
-			if strings.EqualFold(strings.TrimSpace(s.Format), formatTar) {
-				results = append(results, CheckResult{Name: fmt.Sprintf("Surface %s format", surfaceLabel(s)), Status: "WARN",
-					Message: "format: tar on a database is deprecated. The next release backs a database up incrementally whatever this says; remove the line"})
-			}
-		}
 		if len(s.Blackout) > 0 {
 			name := fmt.Sprintf("Surface %s blackout", surfaceLabel(s))
 			if ws, err := model.ParseBlackout(s.Blackout); err != nil {
