@@ -203,15 +203,25 @@ func (t *mysqlTarget) defaultsFile() (path string, cleanup func(), err error) {
 	// mysql client can read back (its default is 16 MB). The server's own
 	// max_allowed_packet still applies, and is the customer's to set.
 	b.WriteString("loose-max-allowed-packet=1G\n")
+	// MySQL's clients take ssl-mode; MariaDB's take ssl, ssl-verify-server-cert
+	// and skip-ssl, which MySQL 8.0 removed and warns about even written
+	// loose-. Only MariaDB's clients read [client-mariadb].
+	mariadb := ""
 	switch {
 	case t.CAFile != "":
-		fmt.Fprintf(&b, "loose-ssl-ca=%q\nloose-ssl-mode=VERIFY_IDENTITY\nloose-ssl=1\nloose-ssl-verify-server-cert=1\n", t.CAFile)
+		fmt.Fprintf(&b, "loose-ssl-ca=%q\nloose-ssl-mode=VERIFY_IDENTITY\n", t.CAFile)
+		mariadb = "loose-ssl=1\nloose-ssl-verify-server-cert=1\n"
 	case t.TLS == "true", t.TLS == "skip-verify":
-		b.WriteString("loose-ssl-mode=REQUIRED\nloose-ssl=1\n")
+		b.WriteString("loose-ssl-mode=REQUIRED\n")
+		mariadb = "loose-ssl=1\n"
 	case t.TLS == "preferred":
 		b.WriteString("loose-ssl-mode=PREFERRED\n")
 	case t.TLS == "false":
-		b.WriteString("loose-ssl-mode=DISABLED\nloose-skip-ssl=1\n")
+		b.WriteString("loose-ssl-mode=DISABLED\n")
+		mariadb = "loose-skip-ssl=1\n"
+	}
+	if mariadb != "" {
+		b.WriteString("[client-mariadb]\n" + mariadb)
 	}
 	// MySQL's mysqldump: no GTID_PURGED line a restore into a server with
 	// GTIDs would refuse, and no column statistics MariaDB does not have.

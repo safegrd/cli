@@ -411,6 +411,12 @@ func describeContents(meta *model.SnapshotMetadata) string {
 // The column was previously printed unconditionally. A snapshot written
 // at worm_mode NONE has no WORM lock applied.
 func describeRetention(meta *model.SnapshotMetadata, storageCfg config.StorageConfig) string {
+	if storageCfg.Type == config.StorageTypeLocal && !meta.WORMRetentionUntil.IsZero() {
+		// A directory enforces nothing, whatever the sidecar says (older
+		// ones say COMPLIANCE, the config's default; newer ones NONE): the
+		// date is only safegrd's own refusal to delete before it.
+		return "kept until " + meta.WORMRetentionUntil.UTC().Format("2006-01-02 15:04") + " UTC (no Object Lock)"
+	}
 	mode := meta.WORMMode
 	recorded := mode != ""
 	if !recorded {
@@ -434,11 +440,6 @@ func describeRetention(meta *model.SnapshotMetadata, storageCfg config.StorageCo
 		// A recent run of a project that locks only its kept copies: the
 		// date is when it is deleted, and nothing holds it before then.
 		return "kept until " + until + ", not locked"
-	}
-	if storageCfg.Type == config.StorageTypeLocal {
-		// The sidecar may say COMPLIANCE (the config's default mode), but a
-		// directory enforces nothing: only safegrd's own refusal to delete.
-		return "kept until " + until + " (no Object Lock)"
 	}
 	if !recorded {
 		return until + " (mode not recorded)"

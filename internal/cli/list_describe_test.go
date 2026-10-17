@@ -119,6 +119,11 @@ func TestDescribeRetentionOnLocalStorageNamesNoLock(t *testing.T) {
 	if want := "kept until 2026-10-21 16:01 UTC (no Object Lock)"; got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
+	// A sidecar written now records NONE; the keep date is still shown.
+	meta.WORMMode = "NONE"
+	if got, want := describeRetention(meta, local), "kept until 2026-10-21 16:01 UTC (no Object Lock)"; got != want {
+		t.Errorf("a NONE sidecar in a directory: got %q, want %q", got, want)
+	}
 	if label := wormLabel(local); strings.Contains(label, "WORM Object Lock") {
 		t.Errorf("wormLabel for a local directory = %q, which claims a lock it does not have", label)
 	}

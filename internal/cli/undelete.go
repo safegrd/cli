@@ -187,6 +187,12 @@ func wormLabel(storageCfg config.StorageConfig) string {
 // earlier, that nothing did.
 func recordRetention(meta *model.SnapshotMetadata, storageCfg config.StorageConfig, retainUntil time.Time) {
 	meta.WORMRetentionUntil = retainUntil
+	// A directory on the host has no Object Lock, whatever worm_mode says:
+	// the date is when safegrd may delete it, and nothing stops its owner.
+	if storageCfg.Type == config.StorageTypeLocal {
+		meta.WORMMode = string(config.WORMModeNone)
+		return
+	}
 	if mode, err := storageCfg.ResolveWORMMode(); err == nil {
 		meta.WORMMode = string(mode)
 	}

@@ -187,3 +187,63 @@ func TestSkipMaskingPoliciesOnlyWhereTheServerHasNone(t *testing.T) {
 		}
 	}
 }
+
+// The options file is read by MySQL's tools and MariaDB's alike. MySQL 8.0
+// removed ssl, ssl-verify-server-cert and skip-ssl, and warns on every run
+// when it meets one even written loose-, so those are written only in the
+// group MariaDB's tools alone read.
+func TestTheMySQLOptionsFileGivesEachClientOnlyItsOwnTLSOptions(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		target        mysqlTarget
+		mysql         []string
+		mariadbOnly   []string
+		noMariaDBPart bool
+	}{
+		{"ca", mysqlTarget{CAFile: "/ca/db.pem"}, []string{`loose-ssl-ca="/ca/db.pem"`, "loose-ssl-mode=VERIFY_IDENTITY"},
+			[]string{"loose-ssl=1", "loose-ssl-verify-server-cert=1"}, false},
+		{"required", mysqlTarget{TLS: "true"}, []string{"loose-ssl-mode=REQUIRED"}, []string{"loose-ssl=1"}, false},
+		{"skip-verify", mysqlTarget{TLS: "skip-verify"}, []string{"loose-ssl-mode=REQUIRED"}, []string{"loose-ssl=1"}, false},
+		{"preferred", mysqlTarget{TLS: "preferred"}, []string{"loose-ssl-mode=PREFERRED"}, nil, true},
+		{"disabled", mysqlTarget{TLS: "false"}, []string{"loose-ssl-mode=DISABLED"}, []string{"loose-skip-ssl=1"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.target.User, tc.target.Host, tc.target.Port = "backup", "db.example.com", 3306
+			path, cleanup, err := tc.target.defaultsFile()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer cleanup()
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			groups := map[string][]string{}
+			group := ""
+			for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+				if strings.HasPrefix(line, "[") {
+					group = strings.Trim(line, "[]")
+					continue
+				}
+				groups[group] = append(groups[group], line)
+			}
+			read := strings.Join(groups["client"], "\n") + "\n" + strings.Join(groups["mysqldump"], "\n")
+			for _, want := range tc.mysql {
+				if !strings.Contains(read, want) {
+					t.Errorf("[client] lacks %s:\n%s", want, raw)
+				}
+			}
+			for _, removed := range []string{"loose-ssl=", "loose-ssl-verify-server-cert", "loose-skip-ssl"} {
+				if strings.Contains(read, removed) {
+					t.Errorf("a group MySQL's tools read has %s, which MySQL 8.0 warns about:\n%s", removed, raw)
+				}
+			}
+			if got := strings.Join(groups["client-mariadb"], "\n"); got != strings.Join(tc.mariadbOnly, "\n") {
+				t.Errorf("[client-mariadb] = %q, want %q", got, tc.mariadbOnly)
+			}
+			if _, ok := groups["client-mariadb"]; ok == tc.noMariaDBPart {
+				t.Errorf("[client-mariadb] present = %t:\n%s", ok, raw)
+			}
+		})
+	}
+}

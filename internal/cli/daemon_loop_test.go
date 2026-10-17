@@ -113,6 +113,26 @@ func TestTheDaemonIgnoresTriggerBackupAndRunsARequestOnce(t *testing.T) {
 	if got := fake.backups(); got != 1 {
 		t.Fatalf("first tick backed up %d times, want 1", got)
 	}
+	// The sidecar records no lock: worm_mode defaults to COMPLIANCE, and a
+	// directory on the host has no Object Lock to apply it.
+	prov, err := openStorage(context.Background(), c, c.Storage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, err := prov.ListSnapshots(context.Background())
+	if err != nil || len(ids) != 1 {
+		t.Fatalf("snapshots in the directory: %v, %v", ids, err)
+	}
+	if s, ok := prov.(interface{ SetNodeID(string) }); ok {
+		s.SetNodeID("host-1--docs") // the surface's own node, as the fake registers it
+	}
+	meta, err := prov.DownloadMetadata(context.Background(), ids[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.WORMMode != string(config.WORMModeNone) || meta.WORMRetentionUntil.IsZero() {
+		t.Fatalf("a snapshot in a directory recorded worm_mode %q until %s, want NONE with its keep date", meta.WORMMode, meta.WORMRetentionUntil)
+	}
 
 	fake.set(true, "") // the remote server thinks it is overdue
 	tick()
