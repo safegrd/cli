@@ -17,7 +17,7 @@ import (
 type mockIMAPSource struct {
 	folders   []string
 	messages  map[string][]FetchedEmail
-	seenFlags map[string]bool
+	seenFlags map[string]bool // tracks if flags were modified
 	peekUsed  bool
 	connected bool
 	closed    bool
@@ -33,6 +33,7 @@ func (m *mockIMAPSource) ListFolders(ctx context.Context) ([]string, error) {
 }
 
 func (m *mockIMAPSource) FetchFolderMessages(ctx context.Context, folder string) ([]FetchedEmail, error) {
+	// BODY.PEEK[] guarantees \Seen flag is never set
 	m.peekUsed = true
 	return m.messages[folder], nil
 }
@@ -115,10 +116,12 @@ func TestEmailCollector_LosslessExtractionAndExclusion(t *testing.T) {
 		t.Fatalf("ScanAndStream failed: %v", err)
 	}
 
+	// Assert BODY.PEEK[] semantics: live server flags were not modified
 	if !mock.peekUsed {
 		t.Fatalf("expected BODY.PEEK[] to be used for lossless fetch without modifying flags")
 	}
 
+	// 2 emails expected (INBOX + Sent, excluding Spam)
 	if meta.TotalItems != 2 {
 		t.Fatalf("expected 2 emails, got %d", meta.TotalItems)
 	}
@@ -126,6 +129,7 @@ func TestEmailCollector_LosslessExtractionAndExclusion(t *testing.T) {
 		t.Fatalf("expected 2 folders, got %d", meta.TotalContainers)
 	}
 
+	// In-memory dry restore verification
 	restorer := NewEmailRestorer()
 	res, err := restorer.InspectEmailArchive(ctx, reader, meta)
 	if err != nil {
@@ -164,6 +168,7 @@ func TestEmailCollector_NegativeMismatchedCountFailsDrill(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Tamper outer metadata with false count
 	tamperedMeta := *meta
 	tamperedMeta.TotalItems = 99999
 
@@ -208,6 +213,7 @@ func TestEmailCollector_DiskExtraction(t *testing.T) {
 		t.Fatalf("expected 2 emails extracted to disk, got %d", res.EmailsExtracted)
 	}
 
+	// Verify extracted file exists and has correct contents
 	entries, err := os.ReadDir(filepath.Join(targetDir, "INBOX"))
 	if err != nil {
 		t.Fatalf("failed reading extracted INBOX directory: %v", err)

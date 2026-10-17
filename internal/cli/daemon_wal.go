@@ -102,7 +102,8 @@ func checkWALArchiver(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 // is said, and tried again an hour later.
 func runWALWork(ctx context.Context, c *config.CLIConfig, s *config.SurfaceConfig, st *SurfaceState, lockDir string, now time.Time) bool {
 	baseEvery := walDays(s.WAL.BaseEveryDays)
-	baseDue := now.Sub(st.WALLastBase) >= baseEvery && now.Sub(st.WALBaseFailedAt) >= walRetry
+	// A SQLite database's follower takes its own bases and points.
+	baseDue := !walIsSQLite(s) && now.Sub(st.WALLastBase) >= baseEvery && now.Sub(st.WALBaseFailedAt) >= walRetry
 	bundleDue := now.Sub(st.WALLastBundle) >= walBundleEvery && now.Sub(st.WALBundleFailedAt) >= walRetry
 	drillDue := walDrillDue(s, st, now)
 	statusDue := now.Sub(st.WALCheckedAt) >= walStatusEvery
@@ -128,8 +129,10 @@ func runWALWork(ctx context.Context, c *config.CLIConfig, s *config.SurfaceConfi
 		walSizeChecked[s.ID] = now
 		bundleDue = walUnlockedBytes(ctx, a) >= int64(walBundleMB(s))<<20 && now.Sub(st.WALBundleFailedAt) >= walRetry
 	}
-	if bundleDue {
+	if bundleDue && !walIsSQLite(s) {
 		walDaemonPoint(ctx, c, a, s, st)
+	}
+	if bundleDue {
 		if err := walDaemonBundle(ctx, a); err != nil {
 			st.WALBundleFailedAt = now
 			fmt.Fprintf(os.Stderr, "Error: Surface %s: bundling WAL: %v. The daemon tries again in an hour.\n", s.ID, err)
@@ -150,7 +153,12 @@ func runWALWork(ctx context.Context, c *config.CLIConfig, s *config.SurfaceConfi
 			a.SystemID = sys
 			st.WALLastDrill = now
 			fmt.Printf("Surface %s: point-in-time drill.\n", s.ID)
-			d := runWALDrill(ctx, c, a, s, st, resolveStateDir("", c))
+			var d *model.WALDrill
+			if walIsSQLite(s) {
+				d = runSQLiteDrill(ctx, c, a, resolveStateDir("", c))
+			} else {
+				d = runWALDrill(ctx, c, a, s, st, resolveStateDir("", c))
+			}
 			walState(st).Drill = d
 			sayWALDrill(s, d)
 			if !d.Passed && d.Blocked == "" {
@@ -159,7 +167,7 @@ func runWALWork(ctx context.Context, c *config.CLIConfig, s *config.SurfaceConfi
 		}
 	}
 	if bundleDue || baseDue || drillDue || statusDue {
-		walRefreshStatus(ctx, a, st, now)
+		walRefreshStatus(ctx, a, s, st, now)
 	}
 	return ok
 }
@@ -197,13 +205,17 @@ func walDrillDue(s *config.SurfaceConfig, st *SurfaceState, now time.Time) bool 
 }
 
 // walRefreshStatus reads the newest cluster's window into the report.
-func walRefreshStatus(ctx context.Context, a *wal.Archive, st *SurfaceState, now time.Time) {
+func walRefreshStatus(ctx context.Context, a *wal.Archive, s *config.SurfaceConfig, st *SurfaceState, now time.Time) {
 	sys, err := newestSystem(ctx, a)
 	if err != nil {
 		return
 	}
 	a.SystemID = sys
-	status, err := a.Status(ctx)
+	read := a.Status
+	if walIsSQLite(s) {
+		read = a.SQLiteStatus
+	}
+	status, err := read(ctx)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: Surface %s: could not read the WAL archive's window: %v\n", a.SurfaceID, err)
 		return

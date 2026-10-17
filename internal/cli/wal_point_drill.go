@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/safegrd/cli/pkg/model"
 	"github.com/safegrd/cli/pkg/wal"
 )
 
@@ -29,6 +30,9 @@ The surface's role needs: GRANT EXECUTE ON FUNCTION pg_create_restore_point(text
 			ctx := cmd.Context()
 			a, s, err := walArchive(ctx, cfg, surfaceID, "")
 			if err != nil {
+				return err
+			}
+			if err := refuseSQLite(s, "it records a restore point every day, under its write lock, where the counts are exact"); err != nil {
 				return err
 			}
 			connURL, srv, err := walServer(ctx, cfg, s)
@@ -75,7 +79,12 @@ the drill fails or cannot run.`,
 			}
 			a.SystemID = sys
 			st := loadDaemonState(filepath.Join(resolveStateDir("", cfg), "daemon_state.json")).Surfaces[s.ID]
-			d := runWALDrill(ctx, cfg, a, s, st, resolveStateDir("", cfg))
+			var d *model.WALDrill
+			if walIsSQLite(s) {
+				d = runSQLiteDrill(ctx, cfg, a, resolveStateDir("", cfg))
+			} else {
+				d = runWALDrill(ctx, cfg, a, s, st, resolveStateDir("", cfg))
+			}
 			sayWALDrill(s, d)
 			switch {
 			case d.Blocked != "":

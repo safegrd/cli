@@ -280,6 +280,12 @@ type WALConfig struct {
 	// throwaway cluster to prove it: to a restore point, and to the end.
 	// Zero means 7.
 	DrillEveryDays int `yaml:"drill_every_days,omitempty" json:"drill_every_days,omitempty"`
+	// IntervalSeconds is how often the daemon copies a SQLite database's
+	// newly committed WAL frames. Zero means 1.
+	IntervalSeconds int `yaml:"interval_seconds,omitempty" json:"interval_seconds,omitempty"`
+	// CheckpointMB is the size a SQLite database's WAL reaches before the
+	// daemon checkpoints it. Zero means 4.
+	CheckpointMB int `yaml:"checkpoint_mb,omitempty" json:"checkpoint_mb,omitempty"`
 }
 
 // ObjectStoreSourceConfig is where a files surface's bucket is and how to

@@ -43,7 +43,8 @@ func GenerateKeyPair() (*KeyPair, error) {
 // same for any config whose public_key was empty.
 //
 // After that, every snapshot ever written was sealed to a recipient nothing on
-// the machine could open, and the loss only surfaced at restore.
+// the machine could open, and nothing said so — the next backup succeeded, the
+// console stayed green, and the loss only surfaced at the restore.
 //
 // Callers that genuinely mean to replace an identity call OverwritePrivateKey
 // and say so to the operator first.
@@ -162,9 +163,10 @@ func ParseIdentities(privateKeys string) ([]age.Identity, error) {
 //
 //	SG:a1b2c3d4:e5f6a7b8
 //
-// Its job is comparison, not secrecy: an Age recipient is public by
-// construction. It exists so a person can verify whether a key on a host matches
-// the key that sealed a snapshot.
+// Its job is comparison, not secrecy — an Age recipient is public by
+// construction. It exists so a person can answer "is the key on this host the
+// same one that sealed that snapshot?" by eye, before a restore fails rather
+// than after, and so the console can name a key it does not hold.
 //
 // Sixteen hex characters of a SHA-256 is 64 bits. That is far too little for a
 // security decision and entirely adequate for telling a handful of keys apart,

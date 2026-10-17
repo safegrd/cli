@@ -71,7 +71,7 @@ type FileCollector struct {
 }
 
 // Skipped lists what the last scan left out because it is not a file, a
-// directory or a symlink (FIFOs, sockets and device nodes) as
+// directory or a symlink — FIFOs, sockets and device nodes — as
 // "path (kind)". A backup that leaves something out must say so; the caller
 // prints it.
 func (fc *FileCollector) Skipped() []string {
@@ -474,8 +474,8 @@ func (fc *FileCollector) scanLocal(ctx context.Context) (string, []collectedItem
 			linkDest = dest
 			// A symlink is recorded, never followed, so it cannot form a
 			// loop. The check that stood here failed the whole backup for any
-			// link to a directory already walked ("latest -> releases/42",
-			// or a link back to the root), which is an ordinary tree.
+			// link to a directory already walked — "latest -> releases/42",
+			// or a link back to the root — which is an ordinary tree.
 		}
 
 		if d.IsDir() {

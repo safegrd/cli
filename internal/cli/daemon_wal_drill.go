@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -179,4 +180,57 @@ func sayWALDrill(s *config.SurfaceConfig, d *model.WALDrill) {
 	default:
 		fmt.Fprintf(os.Stderr, "Error: Surface %s: point-in-time drill failed: %s\n", s.ID, d.Detail)
 	}
+}
+
+// runSQLiteDrill restores a SQLite archive into files under the state
+// directory: to the newest restore point, where every table must come back
+// with exactly the count the follower took under its write lock, and to the
+// end of the archive. Both have to pass PRAGMA integrity_check, which the
+// restore runs.
+func runSQLiteDrill(ctx context.Context, c *config.CLIConfig, a *wal.Archive, stateDir string) *model.WALDrill {
+	d := &model.WALDrill{At: time.Now().UTC()}
+	if a.Identity = daemonPrivateKey(ctx, c); a.Identity == "" {
+		d.Blocked = "this host holds no private key to decrypt the archive"
+		return d
+	}
+	dir, err := os.MkdirTemp(stateDir, "sqlite-drill-")
+	if err != nil {
+		d.Blocked = err.Error()
+		return d
+	}
+	defer os.RemoveAll(dir)
+	points, err := a.RestorePoints(ctx)
+	if err != nil {
+		d.Detail = "reading the restore points: " + err.Error()
+		return d
+	}
+	if n := len(points); n > 0 {
+		p := points[n-1]
+		d.RestorePoint, d.PointAt = p.Name, p.At
+		out := filepath.Join(dir, "at-point.db")
+		if _, err := a.RestoreSQLite(ctx, wal.SQLiteRestoreOptions{Point: &p, Out: out}); err != nil {
+			d.Detail = "restoring to restore point " + p.Name + ": " + err.Error()
+			return d
+		}
+		got, err := wal.SQLiteCounts(ctx, out)
+		if err != nil {
+			d.Detail = "counting the restored tables: " + err.Error()
+			return d
+		}
+		exact, wrong := p.CheckCounts(got)
+		d.Tables, d.Exact = len(p.Tables), exact
+		if len(wrong) > 0 {
+			d.Detail = strings.Join(wrong, "; ")
+			return d
+		}
+	}
+	if _, err := a.RestoreSQLite(ctx, wal.SQLiteRestoreOptions{Out: filepath.Join(dir, "end.db")}); err != nil {
+		d.Detail = "restoring to the end of the archive: " + err.Error()
+		return d
+	}
+	d.ReachedEnd, d.Passed = true, true
+	if len(points) == 0 {
+		d.Detail = "no restore point to drill to yet; the restore to the end was drilled"
+	}
+	return d
 }

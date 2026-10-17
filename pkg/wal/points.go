@@ -40,6 +40,10 @@ type RestorePoint struct {
 	// Tables are the counted tables; Skipped those too large to count.
 	Tables  []TableCount `json:"tables"`
 	Skipped []string     `json:"skipped,omitempty"`
+	// For SQLite: the frame the counts are exact at, in its generation.
+	Generation string `json:"generation,omitempty"`
+	WALSalt1   uint32 `json:"wal_salt1,omitempty"`
+	WALOffset  int64  `json:"wal_offset,omitempty"`
 }
 
 func (a *Archive) pointKey(name string) string { return path.Join(a.prefix(), "points", name+".json") }

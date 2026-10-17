@@ -42,7 +42,7 @@ takes one a week).`,
 // walSurface finds a surface that archives its WAL.
 func walSurface(c *config.CLIConfig, id string) (*config.SurfaceConfig, error) {
 	if id == "" {
-		return nil, errors.New("--surface is required: the id of a PostgreSQL surface in the config")
+		return nil, errors.New("--surface is required: the id of a PostgreSQL or SQLite surface in the config")
 	}
 	var ids []string
 	for i := range c.Surfaces {
@@ -51,8 +51,8 @@ func walSurface(c *config.CLIConfig, id string) (*config.SurfaceConfig, error) {
 		if s.ID != id {
 			continue
 		}
-		if s.Type != "" && !strings.EqualFold(s.Type, "postgres") {
-			return nil, fmt.Errorf("surface %s is %s; WAL archiving is for a PostgreSQL surface", id, s.Type)
+		if s.Type != "" && !strings.EqualFold(s.Type, "postgres") && !strings.EqualFold(s.Type, "sqlite") {
+			return nil, fmt.Errorf("surface %s is %s; WAL archiving is for a PostgreSQL or SQLite surface", id, s.Type)
 		}
 		if s.WAL == nil {
 			return nil, fmt.Errorf("surface %s has no wal: block. Add one (wal: {} keeps the defaults) to archive its WAL", id)
@@ -234,8 +234,11 @@ The cluster's system identifier is read from global/pg_control under the
 current directory, which is the data directory when PostgreSQL runs it.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			a, _, err := walArchive(cmd.Context(), cfg, surfaceID, "")
+			a, s, err := walArchive(cmd.Context(), cfg, surfaceID, "")
 			if err != nil {
+				return err
+			}
+			if err := refuseSQLite(s, "there is no archive_command to set"); err != nil {
 				return err
 			}
 			if a.Recipient == "" {
@@ -331,6 +334,9 @@ The surface's role needs the REPLICATION attribute, and pg_hba.conf a
 			ctx := cmd.Context()
 			a, s, err := walArchive(ctx, cfg, surfaceID, "")
 			if err != nil {
+				return err
+			}
+			if err := refuseSQLite(s, "it takes a new base itself every wal.base_every_days"); err != nil {
 				return err
 			}
 			if a.Recipient == "" {
@@ -454,7 +460,7 @@ WAL file is missing.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
-			a, _, err := walArchive(ctx, cfg, surfaceID, "")
+			a, s, err := walArchive(ctx, cfg, surfaceID, "")
 			if err != nil {
 				return err
 			}
@@ -467,9 +473,14 @@ WAL file is missing.`,
 			}
 			var all []wal.Status
 			var problems []string
+			sqlite := walIsSQLite(s)
 			for _, sys := range systems {
 				a.SystemID = sys
-				st, err := a.Status(ctx)
+				status := a.Status
+				if sqlite {
+					status = a.SQLiteStatus
+				}
+				st, err := status(ctx)
 				if err != nil {
 					return storageFailure(err)
 				}
@@ -525,7 +536,11 @@ func printWALStatus(a *wal.Archive, st wal.Status) {
 	fmt.Printf("   Base backups:  %d", len(st.Bases))
 	if n := len(st.Bases); n > 0 {
 		b := st.Bases[n-1]
-		fmt.Printf(", newest %s ended %s (PostgreSQL %d)", b.BaseID, ts(b.EndedAt), b.Major())
+		if b.Kind == "sqlite" {
+			fmt.Printf(", newest %s ended %s (generation %s)", b.BaseID, ts(b.EndedAt), b.Generation)
+		} else {
+			fmt.Printf(", newest %s ended %s (PostgreSQL %d)", b.BaseID, ts(b.EndedAt), b.Major())
+		}
 	}
 	fmt.Println()
 	for _, id := range st.Incomplete {
@@ -548,7 +563,7 @@ func printWALStatus(a *wal.Archive, st wal.Status) {
 }
 
 func newWALRestoreCmd() *cobra.Command {
-	var surfaceID, systemID, to, toPoint, pgdata, keyPath, privKey, node string
+	var surfaceID, systemID, to, toPoint, pgdata, out, keyPath, privKey, node string
 	cmd := &cobra.Command{
 		Use:   "restore",
 		Short: "Restore a PostgreSQL surface to a point in time into an empty data directory",
@@ -560,13 +575,14 @@ postgresql.auto.conf. Start PostgreSQL on the directory to run the replay.
 Run it as the user PostgreSQL will run as: restore_command calls this CLI
 with the same config and key. Archiving is turned off on the restored cluster.
 
+A SQLite surface is restored to a new database file instead: --out names it.
+The daemon's segments are about a second apart, so the file holds every
+transaction committed up to the last segment pushed at or before --to.
+
 --to takes RFC 3339 (2026-10-17T14:52:00Z) or "2026-10-17 14:52:00", read as UTC.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
-			if pgdata == "" {
-				return errors.New("--pgdata is required: an empty directory to restore into")
-			}
 			var target time.Time
 			var err error
 			switch {
@@ -577,7 +593,7 @@ with the same config and key. Archiving is turned off on the restored cluster.
 					return err
 				}
 			}
-			a, _, err := walArchive(ctx, cfg, surfaceID, "")
+			a, s, err := walArchive(ctx, cfg, surfaceID, "")
 			if err != nil {
 				return err
 			}
@@ -589,6 +605,12 @@ with the same config and key. Archiving is turned off on the restored cluster.
 			}
 			if a.Identity, err = resolveIdentity(ctx, keyPath, privKey); err != nil {
 				return err
+			}
+			if walIsSQLite(s) {
+				return walRestoreSQLite(ctx, a, target, toPoint, out)
+			}
+			if pgdata == "" {
+				return errors.New("--pgdata is required: an empty directory to restore into")
 			}
 			dir, err := filepath.Abs(pgdata)
 			if err != nil {
@@ -641,7 +663,8 @@ with the same config and key. Archiving is turned off on the restored cluster.
 	cmd.Flags().StringVar(&systemID, "system", "", "The cluster's system identifier, when the archive holds more than one")
 	cmd.Flags().StringVar(&to, "to", "", "The moment to restore to")
 	cmd.Flags().StringVar(&toPoint, "to-point", "", "A restore point to restore to, as 'safegrd wal point' named it")
-	cmd.Flags().StringVar(&pgdata, "pgdata", "", "An empty directory to restore into (required)")
+	cmd.Flags().StringVar(&pgdata, "pgdata", "", "PostgreSQL: an empty directory to restore into")
+	cmd.Flags().StringVar(&out, "out", "", "SQLite: the database file to write; it must not exist")
 	cmd.Flags().StringVar(&keyPath, "key-path", "", "Path to the age identity (default encryption.key_path)")
 	cmd.Flags().StringVar(&privKey, "private-key", "", "The age identity, as env:VAR or file:/path")
 	cmd.Flags().StringVar(&node, "node", "", "On hosted storage, restore from the archive another host of the organization wrote (a host that replaces a lost one)")
@@ -701,4 +724,52 @@ func shellQuote(s string) string {
 		return s
 	}
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// walIsSQLite says whether a surface's WAL is SQLite's, which the daemon
+// follows, rather than PostgreSQL's, which archive_command pushes.
+func walIsSQLite(s *config.SurfaceConfig) bool { return strings.EqualFold(s.Type, "sqlite") }
+
+// refuseSQLite is the answer of a command that is PostgreSQL's only.
+func refuseSQLite(s *config.SurfaceConfig, what string) error {
+	if !walIsSQLite(s) {
+		return nil
+	}
+	return fmt.Errorf("surface %s is SQLite, whose WAL the resident daemon follows ('safegrd daemon run'); %s", s.ID, what)
+}
+
+// walRestoreSQLite writes a SQLite surface's database as it was at the
+// target, or at a restore point, to a new file.
+func walRestoreSQLite(ctx context.Context, a *wal.Archive, target time.Time, toPoint, out string) error {
+	if out == "" {
+		return errors.New("--out is required for a SQLite surface: the database file to write")
+	}
+	o := wal.SQLiteRestoreOptions{Target: target, Out: out}
+	if toPoint != "" {
+		points, err := a.RestorePoints(ctx)
+		if err != nil {
+			return storageFailure(err)
+		}
+		for i := range points {
+			if points[i].Name == toPoint {
+				o.Point = &points[i]
+			}
+		}
+		if o.Point == nil {
+			return fmt.Errorf("the archive records no restore point %s", toPoint)
+		}
+	}
+	res, err := a.RestoreSQLite(ctx, o)
+	if err != nil {
+		return err
+	}
+	ts := func(t time.Time) string { return t.UTC().Format("2006-01-02 15:04:05 UTC") }
+	fmt.Printf("Restored %s from generation %s (%d segments), integrity_check ok\n", out, res.Base.Generation, res.Segments)
+	switch {
+	case o.Point != nil:
+		fmt.Printf("   At restore point %s (%s)\n", o.Point.Name, ts(o.Point.At))
+	default:
+		fmt.Printf("   Holds every transaction committed by %s, the last segment at or before %s\n", ts(res.ReachedAt), ts(target))
+	}
+	return nil
 }

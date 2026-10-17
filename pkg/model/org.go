@@ -114,3 +114,15 @@ func (p *Project) LocksEveryBackup() bool {
 func (p *Project) IsArchived() bool {
 	return p.ArchivedAt != nil
 }
+
+// MaskedCopy returns a copy of the sink with its secret key blanked, for an
+// answer that must not carry it.
+func (s *S3SinkConfig) MaskedCopy() *S3SinkConfig {
+	if s == nil {
+		return nil
+	}
+	cp := *s
+	cp.HasSecret = cp.SecretAccessKey != ""
+	cp.SecretAccessKey = ""
+	return &cp
+}

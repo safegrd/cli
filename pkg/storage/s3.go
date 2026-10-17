@@ -36,8 +36,9 @@ type S3StorageProvider struct {
 	storageClass s3types.StorageClass
 
 	// lockDisabled records an explicit worm_mode: NONE. It is a separate flag
-	// rather than an empty wormMode because an empty wormMode means
-	// "unset", where default COMPLIANCE is applied.
+	// rather than an empty wormMode because an empty wormMode already means
+	// "unset" further down, where it re-applies COMPLIANCE — which would turn
+	// an opt-out into the strictest possible lock.
 	lockDisabled bool
 }
 
@@ -73,7 +74,9 @@ func NewS3Storage(ctx context.Context, cfg config.StorageConfig) (*S3StorageProv
 	if cfg.Endpoint != "" {
 		s3OptFns = append(s3OptFns, func(o *s3.Options) {
 			o.BaseEndpoint = &cfg.Endpoint
-			o.UsePathStyle = true // Common for MinIO & local S3
+			// A custom endpoint (MinIO, B2, R2, Spaces) is addressed path style:
+			// not every one serves a bucket as a subdomain.
+			o.UsePathStyle = true
 		})
 	} else if cfg.ForcePathStyle {
 		s3OptFns = append(s3OptFns, func(o *s3.Options) {
@@ -83,7 +86,10 @@ func NewS3Storage(ctx context.Context, cfg config.StorageConfig) (*S3StorageProv
 
 	client := s3.NewFromConfig(awsCfg, s3OptFns...)
 
-	// Resolve WORM Object Lock mode configuration.
+	// Resolved rather than branched on: an unrecognised worm_mode used to fall
+	// out of this if/else with no lock here and compliance mode in the CLI, so
+	// the two halves of the same product disagreed about retention. Refusing is
+	// the only outcome that cannot silently be the wrong one.
 	wormMode, err := cfg.ResolveWORMMode()
 	if err != nil {
 		return nil, err
@@ -270,10 +276,18 @@ func (s *S3StorageProvider) UploadMetadata(ctx context.Context, snapshotID strin
 	}
 
 	// Apply S3 Object Lock to the metadata manifest if retention is configured.
-	// Buckets with Object Lock disabled reject requests containing ObjectLock parameters.
+	//
+	// The lockDisabled check is load-bearing, not defensive. Without it this
+	// set ObjectLockRetainUntilDate with an EMPTY ObjectLockMode under
+	// worm_mode: NONE, and a bucket with no Object Lock rejects the request —
+	// so on DigitalOcean Spaces the ciphertext uploaded and the manifest
+	// beside it did not. `safegrd list` then printed "[metadata unavailable]"
+	// and `verify` had no digest to check, which is the product's own claim
+	// quietly reduced to a file copy (found dogfooding, 2026-09-21).
 	switch {
 	case s.lockDisabled:
-		// Nothing to apply.
+		// Nothing to apply, and saying so here is cheaper than a comment
+		// three call sites away wondering why the manifest is missing.
 	case !meta.WORMRetentionUntil.IsZero():
 		putInput.ObjectLockMode = s.wormMode
 		putInput.ObjectLockRetainUntilDate = &meta.WORMRetentionUntil
@@ -386,9 +400,18 @@ func (s *S3StorageProvider) DownloadMetadata(ctx context.Context, snapshotID str
 }
 
 func (s *S3StorageProvider) ListSnapshots(ctx context.Context) ([]string, error) {
-	// List snapshot versions so that shadowed snapshots remain discoverable.
-	// For S3-compatible providers that do not implement ListObjectVersions,
-	// fall back to listing current objects.
+	// Versions, not current keys. A single DELETE writes a delete
+	// marker over a snapshot, and listing current keys then reports "no
+	// snapshots found" for a bucket that still holds every locked byte —
+	// which reads like nothing was ever configured, at the exact moment
+	// someone is trying to recover.
+	//
+	// ListObjectVersions is a versioning API, and several S3-compatible
+	// providers — DigitalOcean Spaces among them — do not implement it. A
+	// provider with no versioning has no delete markers to see past, so there
+	// is nothing to lose by falling back: what it lists IS what is there.
+	// Failing outright instead would mean `safegrd list` and `restore` dying on
+	// a bucket that works perfectly, because of a feature it never had.
 	versions, err := s.listVersions(ctx, s.prefix+"/")
 	if err != nil {
 		return s.listSnapshotsWithoutVersioning(ctx)
@@ -476,16 +499,31 @@ func (s *S3StorageProvider) DeleteSnapshot(ctx context.Context, snapshotID strin
 		)
 	}
 
-	// Delete each version by ID rather than issuing a plain DELETE on the key.
-	// On a versioned bucket a plain keyed DELETE writes a delete marker.
+	// Every version, by id — not a plain DELETE on the key.
 	//
-	// In a bucket configured with WORM Compliance or Governance retention,
-	// deletion will be refused by S3 until retention expires.
+	// On a versioned bucket a keyed DELETE writes a delete marker and removes
+	// nothing. The read paths deliberately see through those, so a
+	// keyed delete here would leave the snapshot listed and downloadable
+	// forever AND report it as shadowed, which raises the "someone deleted your
+	// backups" alarm on our own routine expiry. An alarm that fires on normal
+	// operation is an alarm nobody reads — the exact failure seeing
+	// through delete markers was about, inverted.
+	//
+	// Expect this to be REFUSED in a correctly configured bucket: the documented
+	// bucket policy denies s3:DeleteObjectVersion precisely so nothing can destroy history,
+	// and expiry is the bucket's lifecycle policy's job rather than ours. A
+	// clear refusal is the right outcome. Appearing to succeed while leaving
+	// the data in place is not.
 	var deletedAny bool
 	for _, key := range keys {
 		versions, vErr := s.listVersions(ctx, key)
 		if vErr != nil {
-			// Fallback for providers without versioning support: plain keyed DELETE.
+			// Same fallback the read paths take, and here it is the difference
+			// between expiry working and a bucket that fills up forever: a
+			// provider without ListObjectVersions has no versions to address,
+			// so a plain keyed DELETE destroys the object outright — which is
+			// exactly the right behaviour there, and is what the delete-marker
+			// problem does not apply to.
 			if dErr := s.deleteKeyWithoutVersioning(ctx, key); dErr != nil {
 				return fmt.Errorf("failed to delete s3://%s/%s: %w", s.bucket, key, dErr)
 			}

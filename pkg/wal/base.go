@@ -48,6 +48,15 @@ type BaseInfo struct {
 	TarSha256   string    `json:"tar_sha256"`
 	StoredBytes int64     `json:"stored_bytes"`
 	LockedUntil time.Time `json:"locked_until,omitzero"`
+
+	// Kind is "sqlite" for a SQLite generation's base, a copy of the
+	// database file; TarBytes and TarSha256 are then the file's. The
+	// generation's WAL starts at the first frame of the WAL these salts head.
+	Kind       string `json:"kind,omitempty"`
+	Generation string `json:"generation,omitempty"`
+	WALSalt1   uint32 `json:"wal_salt1,omitempty"`
+	WALSalt2   uint32 `json:"wal_salt2,omitempty"`
+	PageSize   uint32 `json:"page_size,omitempty"`
 }
 
 // Major is the PostgreSQL major version the base was taken from.
@@ -437,7 +446,7 @@ func (a *Archive) Bases(ctx context.Context) (complete []BaseInfo, incomplete []
 			continue
 		}
 		switch file {
-		case "base.tar.zst.age":
+		case "base.tar.zst.age", "base.db.zst.age":
 			tars[id] = true
 		case "base.json":
 			body, err := a.readAll(ctx, o.Key)

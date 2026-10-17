@@ -24,9 +24,12 @@ type WALStatus struct {
 	Gap string `json:"gap,omitempty"`
 	// ArchiverFailing is the WAL file archive_command is failing on, read
 	// from pg_stat_archiver, and ArchiverFailures its failure count.
-	ArchiverFailing  string    `json:"archiver_failing,omitempty"`
-	ArchiverFailures int64     `json:"archiver_failures,omitempty"`
-	Drill            *WALDrill `json:"drill,omitempty"`
+	ArchiverFailing  string `json:"archiver_failing,omitempty"`
+	ArchiverFailures int64  `json:"archiver_failures,omitempty"`
+	// FollowError is why the daemon is not following a SQLite database's
+	// WAL; empty while it follows.
+	FollowError string    `json:"follow_error,omitempty"`
+	Drill       *WALDrill `json:"drill,omitempty"`
 }
 
 // WALDrill is one point-in-time drill: a restore to a restore point whose

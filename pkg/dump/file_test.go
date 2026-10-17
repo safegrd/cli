@@ -63,7 +63,7 @@ func TestFileCollector_GlobExclusion(t *testing.T) {
 		t.Fatalf("ScanAndStream failed: %v", err)
 	}
 
-	if meta.TotalItems != 3 {
+	if meta.TotalItems != 3 { // README.md, app.log, src/pkg/main.go (excluding temp.tmp and .git/config)
 		t.Fatalf("expected 3 files, got %d", meta.TotalItems)
 	}
 
@@ -87,8 +87,10 @@ func TestFileCollector_GlobExclusion(t *testing.T) {
 	}
 }
 
-// A symlink back to the root is stored as a symlink and not followed recursively,
-// preventing infinite loops.
+// A symlink back to the root is stored as a symlink, never followed, so it
+// cannot loop. This test used to assert the opposite — that such a tree fails
+// to back up — which failed every tree with a link to a directory already
+// walked.
 func TestFileCollector_SymlinkToAnAncestorIsKept(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlinks on windows require privileges")
@@ -214,6 +216,7 @@ func TestFileCollector_DiskExtraction(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Read stream to memory buffer so we can extract it
 	tarData, err := io.ReadAll(reader)
 	if err != nil {
 		t.Fatal(err)
@@ -230,6 +233,7 @@ func TestFileCollector_DiskExtraction(t *testing.T) {
 		t.Fatalf("expected 3 files extracted, got %d", extractRes.FilesExtracted)
 	}
 
+	// Verify extracted file content
 	content, err := os.ReadFile(filepath.Join(targetDir, "README.md"))
 	if err != nil {
 		t.Fatalf("failed reading extracted README.md: %v", err)
@@ -240,8 +244,13 @@ func TestFileCollector_DiskExtraction(t *testing.T) {
 }
 
 // A symlink is counted as an item by the collector and stores no payload bytes
-// in the archive. This test verifies that the file collector and verification runner
-// agree on item counts and byte accounting for symlinks in file archives.
+// in the archive. Until the two sides agreed on that, the collector sealed a
+// manifest claiming the symlink's target-string length as archive bytes and
+// counted it as a file, while the dry restorer counted symlink entries as
+// neither files nor directories. Every tree containing a symlink then failed
+// verification -- a backup that restored perfectly but could never be proven,
+// which is the product's whole claim. Found by the first real file-surface
+// dogfood; the suite was green because no fixture had a symlink in it.
 func TestFileCollector_SymlinkAccountingAgreesBetweenSealAndDrill(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlinks require privilege on Windows")

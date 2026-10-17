@@ -270,6 +270,12 @@ exits at once.`,
 				}
 			}
 
+			if once {
+				warnSQLiteOnce(cfg)
+			} else {
+				startSQLiteFollowers(ctx, cfg)
+			}
+
 			// Surfaces registered with the remote server during this process:
 			// once per start, so a config change reaches the
 			// console on the next restart without re-registering every tick.
@@ -1063,10 +1069,16 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 			break
 		}
 		st := daemonState.Surfaces[surface.ID]
-		if surface.WAL == nil || st == nil || st.Retired != "" || (surface.Type != "" && !surfaceIsPostgres(&surface)) {
+		if surface.WAL == nil || st == nil || st.Retired != "" || !(surface.Type == "" || surfaceIsPostgres(&surface) || walIsSQLite(&surface)) {
 			continue
 		}
-		archiving := checkWALArchiver(ctx, c, &surface, st)
+		archiving := true
+		if walIsSQLite(&surface) {
+			walState(st).FollowError = sqliteFollowError(surface.ID)
+			archiving = st.WAL.FollowError == ""
+		} else {
+			archiving = checkWALArchiver(ctx, c, &surface, st)
+		}
 		if !runWALWork(ctx, c, &surface, st, lockDir, time.Now().UTC()) || !archiving {
 			walFailed = append(walFailed, surface.ID)
 		}
