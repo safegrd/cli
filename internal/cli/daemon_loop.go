@@ -61,6 +61,7 @@ func postJSON(ctx context.Context, c *config.CLIConfig, path string, body, out a
 	req.Header.Set("User-Agent", UserAgent())
 	// This host's clock, so the remote server can say when it is wrong.
 	req.Header.Set("X-Safegrd-Host-Time", time.Now().UTC().Format(time.RFC3339Nano))
+	req.Header.Set(hostMachineHeader, hostMachine())
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return 0, err
