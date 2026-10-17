@@ -33,11 +33,14 @@ import (
 
 // SurfaceState tracks execution and schedule status per surface.
 type SurfaceState struct {
-	SurfaceID           string    `json:"surface_id"`
-	SurfaceType         string    `json:"surface_type"`
-	LastAttempt         time.Time `json:"last_attempt,omitempty"`
-	LastSuccess         time.Time `json:"last_success,omitempty"`
-	LastSnapshotID      string    `json:"last_snapshot_id,omitempty"`
+	SurfaceID      string    `json:"surface_id"`
+	SurfaceType    string    `json:"surface_type"`
+	LastAttempt    time.Time `json:"last_attempt,omitempty"`
+	LastSuccess    time.Time `json:"last_success,omitempty"`
+	LastSnapshotID string    `json:"last_snapshot_id,omitempty"`
+	// LastUnchanged is when a run last found nothing changed and wrote no
+	// backup (skip_if_unchanged).
+	LastUnchanged       time.Time `json:"last_unchanged,omitempty"`
 	ConsecutiveFailures int       `json:"consecutive_failures"`
 	NextDue             time.Time `json:"next_due,omitempty"`
 	LastError           string    `json:"last_error,omitempty"`
@@ -700,6 +703,9 @@ func warnAboutSchedules(c *config.CLIConfig) {
 			fmt.Fprintf(os.Stderr, "Warning: Surface %s: %v.\n   Backing it up every %s instead. Fix the schedule and run 'safegrd config validate'.\n",
 				s.ID, err, model.ShortDuration(interval))
 		}
+		if s.SkipIfUnchanged && !skipIfUnchanged(&s, c.Storage) {
+			fmt.Fprintf(os.Stderr, "Warning: Surface %s: skip_if_unchanged does not apply on hosted storage, which records every run before it writes. Every scheduled run is backed up.\n", s.ID)
+		}
 		if _, err := model.ParseBlackout(s.Blackout); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: Surface %s: %v.\n   Backing it up with no blackout window. Fix it and run 'safegrd config validate'.\n", s.ID, err)
 		}
@@ -782,20 +788,36 @@ func isSurfaceDue(s *config.SurfaceConfig, state *SurfaceState, now time.Time) (
 	if state.LastSuccess.IsZero() {
 		return true, now
 	}
+	// A run that found nothing changed counts as a run: the schedule starts
+	// again from it.
+	last := state.LastSuccess
+	if state.LastUnchanged.After(last) {
+		last = state.LastUnchanged
+	}
 
 	// Fixed times: due at the schedule's first time after the last backup,
 	// read on the surface's clock.
 	if model.IsCron(s.Schedule) {
 		if c, err := model.ParseCron(s.Schedule); err == nil {
-			next := c.Next(state.LastSuccess.In(surfaceClock(s))).UTC()
+			next := c.Next(last.In(surfaceClock(s))).UTC()
 			if !next.IsZero() {
 				return !now.Before(next), next
 			}
 		}
 	}
 
-	nextDue := state.LastSuccess.Add(interval)
+	nextDue := last.Add(interval)
 	return now.After(nextDue) || now.Equal(nextDue), nextDue
+}
+
+// errUnchanged is a run that found nothing changed and wrote no backup.
+var errUnchanged = errors.New("nothing changed since the last backup")
+
+// skipIfUnchanged reports whether a surface's run may write nothing. Hosted
+// storage records a run on the remote server before it writes, so there it
+// is not asked for, and the daemon says so once at start.
+func skipIfUnchanged(s *config.SurfaceConfig, st config.StorageConfig) bool {
+	return s.SkipIfUnchanged && st.Type != config.StorageTypeHosted
 }
 
 // surfaceClock is the location a surface's fixed times are read in: UTC
@@ -1107,6 +1129,10 @@ func backupSurfaceNow(ctx context.Context, c *config.CLIConfig, surface *config.
 		sState.notRecorded = ""
 		meta, plan, backupErr = runSurfaceBackup(ctx, c, surface, nodeID, sState, filepath.Dir(lockDir))
 	}
+	unchanged := errors.Is(backupErr, errUnchanged)
+	if unchanged {
+		backupErr = nil
+	}
 	// post_backup runs after every attempt, so whatever pre_backup paused is
 	// resumed even when the backup fails. Its failure does not undo a backup
 	// that was taken, but it is said out loud.
@@ -1114,6 +1140,8 @@ func backupSurfaceNow(ctx context.Context, c *config.CLIConfig, surface *config.
 		status, snapID := "success", ""
 		if backupErr != nil {
 			status = "failed"
+		} else if unchanged {
+			status = "unchanged"
 		}
 		if meta != nil {
 			snapID = meta.SnapshotID
@@ -1142,12 +1170,22 @@ func backupSurfaceNow(ctx context.Context, c *config.CLIConfig, surface *config.
 		if sState.notRecorded != "" {
 			sState.LastError, sState.BackupReason = sState.notRecorded, model.BackupReasonNotRecorded
 		}
-		sState.LastSuccess = time.Now().UTC()
-		if meta != nil {
-			sState.LastSnapshotID = meta.SnapshotID
+		if unchanged {
+			// Checked, and nothing to write: the newest backup is still
+			// current, and the remote server hears so with the heartbeat.
+			sState.LastUnchanged = time.Now().UTC()
+			fmt.Printf("Surface %s: nothing changed since %s; no backup written (skip_if_unchanged).\n", surface.ID, sState.LastSnapshotID)
+			// A backup reports itself; a check that wrote nothing has only
+			// the heartbeat, and this pass's went before it ran.
+			sendHeartbeat(ctx, c, nodeID, sState, 0, surface)
+		} else {
+			sState.LastSuccess = time.Now().UTC()
+			if meta != nil {
+				sState.LastSnapshotID = meta.SnapshotID
+			}
+			plan.record(sState)
+			fmt.Printf("Backed up surface %s\n", surface.ID)
 		}
-		plan.record(sState)
-		fmt.Printf("Backed up surface %s\n", surface.ID)
 	}
 	// Recomputed from the attempt just made. Reset next due after success
 	// so status reflects the next cycle.
@@ -1294,7 +1332,8 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 			plan = keptPlan(ownRule, plan, time.Now(), st)
 			kept := ownKeptRule(ownRule, plan, time.Now())
 			meta, res, err := runRepoBackup(ctx, repoParams{
-				SurfaceID: s.ID, Roots: roots, Excludes: s.Excludes, OneFS: s.OneFilesystem, StorageCfg: storageCfg,
+				SkipIfUnchanged: skipIfUnchanged(s, storageCfg),
+				SurfaceID:       s.ID, Roots: roots, Excludes: s.Excludes, OneFS: s.OneFilesystem, StorageCfg: storageCfg,
 				NodeID: nodeID, Recipient: pubKey,
 				Retention: policy.Retention{Days: storageCfg.RetentionDays, KeepDaily: tiers.Days, KeepWeekly: tiers.Weeks, KeepMonthly: tiers.Months},
 				Tier:      plan.Tier, Planned: plan.Until, SnapshotID: snapshotID, StateDir: stateDir, Out: os.Stdout,
@@ -1303,6 +1342,9 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 			st.newEpoch, st.rescan = false, false
 			if err != nil {
 				return nil, plan, err
+			}
+			if res.Skipped {
+				return nil, plan, errUnchanged
 			}
 			if res.Tier != plan.Tier {
 				// A resumed opening run keeps the tier its epoch was opened
@@ -1538,7 +1580,8 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 			plan = keptPlan(ownRule, plan, time.Now(), st)
 			kept := ownKeptRule(ownRule, plan, time.Now())
 			meta, res, err := runRepoDatabaseBackup(ctx, repoDBParams{
-				SurfaceID: s.ID, DatabaseURL: dbURL, StorageCfg: storageCfg, NodeID: nodeID, Recipient: pubKey,
+				SkipIfUnchanged: skipIfUnchanged(s, storageCfg),
+				SurfaceID:       s.ID, DatabaseURL: dbURL, StorageCfg: storageCfg, NodeID: nodeID, Recipient: pubKey,
 				Retention: policy.Retention{Days: storageCfg.RetentionDays, KeepDaily: tiers.Days, KeepWeekly: tiers.Weeks, KeepMonthly: tiers.Months},
 				Tier:      plan.Tier, Planned: plan.Until, SnapshotID: snapshotID, StateDir: stateDir, Out: os.Stdout,
 				NewEpoch: st.newEpoch, ChangeLog: s.ChangeLog, RolesWithoutPasswords: s.RolesWithoutPasswords,
@@ -1547,6 +1590,9 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 			st.newEpoch, st.rescan = false, false
 			if err != nil {
 				return nil, plan, err
+			}
+			if res.Skipped {
+				return nil, plan, errUnchanged
 			}
 			if res.Tier != plan.Tier {
 				plan.DayKey, plan.WeekKey, plan.MonthKey = "", "", ""

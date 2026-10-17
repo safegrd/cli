@@ -140,6 +140,8 @@ type repoParams struct {
 	// Kept is the rule this run writes under in the host's own bucket when
 	// its project locks only the kept copies; nil locks every object.
 	Kept *sink.KeptRule
+	// SkipIfUnchanged writes nothing when nothing changed (write.Options).
+	SkipIfUnchanged bool
 }
 
 // openedWhy says why a run opened its epoch, for the line that says so.
@@ -283,7 +285,7 @@ func runRepoBackup(ctx context.Context, p repoParams) (*model.SnapshotMetadata, 
 	res, err := write.Run(ctx, b, write.Options{
 		SurfaceID: p.SurfaceID, Roots: p.Roots, Excludes: p.Excludes, OneFilesystem: p.OneFS, SkipPaths: skip,
 		StateDir: p.StateDir, Recipient: p.Recipient, Retention: p.Retention, Tier: p.Tier, Planned: p.Planned,
-		NewEpoch: p.NewEpoch, Rescan: p.Rescan, Host: host, SnapshotID: p.SnapshotID,
+		NewEpoch: p.NewEpoch, Rescan: p.Rescan, Host: host, SnapshotID: p.SnapshotID, SkipIfUnchanged: p.SkipIfUnchanged,
 		OnStart: func(r *write.Result) {
 			if r.Opened {
 				fmt.Fprintf(out, "%s Epoch %s opened (%s). Every file is uploaded%s.\n", label, r.Epoch.EpochID, openedWhy(r), onceThisMonth(r.Epoch))
@@ -326,6 +328,10 @@ func runRepoBackup(ctx context.Context, p repoParams) (*model.SnapshotMetadata, 
 	})
 	if err != nil {
 		return nil, nil, err
+	}
+	if res.Skipped {
+		fmt.Fprintf(out, "%s Nothing changed since the last run: no backup written.\n", label)
+		return nil, res, nil
 	}
 	snap := res.Snapshot
 	if len(snap.Skipped) > 0 {

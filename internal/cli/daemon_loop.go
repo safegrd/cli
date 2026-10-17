@@ -184,6 +184,7 @@ func sendHeartbeat(ctx context.Context, c *config.CLIConfig, nodeID string, st *
 		Schedule:            s.Schedule,
 		RetentionDays:       s.RetentionDays,
 		BlackoutSeconds:     blackoutSeconds(s),
+		CheckedUnchangedAt:  checkedUnchangedAt(st),
 		WAL:                 walReport(s, st),
 	}, &resp)
 	if status == http.StatusNotFound && st.ServerNodeID != "" && st.ServerNodeID == nodeID && nodeID != c.NodeID {
@@ -692,4 +693,14 @@ func repoDrillTarget(ctx context.Context, c *config.CLIConfig, storageCfg config
 func blackoutSeconds(s *config.SurfaceConfig) *int {
 	n := int(model.BlackoutTotal(surfaceBlackout(s)) / time.Second)
 	return &n
+}
+
+// checkedUnchangedAt is when a run last found nothing changed, for the
+// heartbeat, or nil when none has.
+func checkedUnchangedAt(st *SurfaceState) *time.Time {
+	if st.LastUnchanged.IsZero() {
+		return nil
+	}
+	at := st.LastUnchanged.UTC()
+	return &at
 }

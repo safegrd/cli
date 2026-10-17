@@ -129,6 +129,8 @@ type repoDBParams struct {
 	// RecoverySealTo seals the recovery document to this recipient; ""
 	// writes it as text.
 	RecoverySealTo string
+	// SkipIfUnchanged writes nothing when no table changed (write.Options).
+	SkipIfUnchanged bool
 }
 
 // runRepoDatabaseBackup dumps a database into its repository as one
@@ -281,7 +283,7 @@ func runRepoDatabaseBackup(ctx context.Context, p repoDBParams) (*model.Snapshot
 	host, _ := os.Hostname()
 	res, err := write.Run(ctx, b, write.Options{
 		SurfaceID: p.SurfaceID, StateDir: p.StateDir, Recipient: p.Recipient, Retention: p.Retention,
-		Tier: p.Tier, Planned: p.Planned, NewEpoch: p.NewEpoch, Host: host, SnapshotID: p.SnapshotID,
+		Tier: p.Tier, Planned: p.Planned, NewEpoch: p.NewEpoch, Host: host, SnapshotID: p.SnapshotID, SkipIfUnchanged: p.SkipIfUnchanged,
 		// Every run reads every table: a dump has no file times to skip by.
 		Rescan:  true,
 		Chunker: &format.DatabaseChunker,
@@ -345,6 +347,10 @@ func runRepoDatabaseBackup(ctx context.Context, p repoDBParams) (*model.Snapshot
 			err = storageFailure(err)
 		}
 		return nil, nil, err
+	}
+	if res.Skipped {
+		fmt.Fprintf(out, "%s Nothing changed since the last run: %s read, no backup written.\n", label, formatBytes(res.ReadBytes))
+		return nil, res, nil
 	}
 	if res.CacheWarning != "" {
 		fmt.Fprintf(os.Stderr, "Warning: %s %s\n", label, res.CacheWarning)

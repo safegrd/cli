@@ -173,6 +173,11 @@ type SurfaceConfig struct {
 	// and the blackout windows are read on: "utc" (the default) or "local",
 	// this host's time zone.
 	Clock string `yaml:"clock,omitempty" json:"clock,omitempty"`
+	// SkipIfUnchanged writes no backup when an incremental run finds nothing
+	// changed since the last one; the remote server is told the surface was
+	// checked, so it is not Overdue. Own bucket and local storage only: on
+	// hosted storage the server records a run before it writes.
+	SkipIfUnchanged bool `yaml:"skip_if_unchanged,omitempty" json:"skip_if_unchanged,omitempty"`
 
 	// PreBackup runs before each of the daemon's backups of this surface and
 	// must succeed for the backup to happen; PostBackup runs after every

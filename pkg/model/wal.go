@@ -8,7 +8,12 @@ import "time"
 // point-in-time drill.
 type WALStatus struct {
 	// CheckedAt is when the daemon last read the archive.
-	CheckedAt  time.Time  `json:"checked_at"`
+	CheckedAt time.Time `json:"checked_at"`
+	// SurfaceID is the surface's id in the host's config, which a restore
+	// command names, and Major the PostgreSQL major version of the newest
+	// base backup, which a restore needs.
+	SurfaceID  string     `json:"surface_id,omitempty"`
+	Major      int        `json:"major,omitempty"`
 	WindowFrom *time.Time `json:"window_from,omitempty"`
 	WindowTo   *time.Time `json:"window_to,omitempty"`
 	// LockedTo is when the newest bundled WAL file was pushed: the window up

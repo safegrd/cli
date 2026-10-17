@@ -61,6 +61,10 @@ type Cache struct {
 	pol     chunk.Pol
 	done    bool
 	rescans int
+	// held keeps every write in the open transaction until Release or
+	// Discard: a run that may turn out to write nothing must leave the cache
+	// as it found it.
+	held bool
 }
 
 // batch is how many row writes share a transaction before it is committed.
@@ -233,7 +237,43 @@ func (c *Cache) OpeningDone() bool { return c.done }
 // RunsSinceRescan counts the runs since one last read every file.
 func (c *Cache) RunsSinceRescan() int { return c.rescans }
 
+// Hold keeps every write from here in one transaction, so Discard can undo
+// the run. A crash while held loses the run's rows, as Discard would: the
+// next run reads the cache as it was, and uploads again what this one did.
+func (c *Cache) Hold() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.held = true
+}
+
+// Release ends Hold and commits what was held.
+func (c *Cache) Release() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.held = false
+	return c.commitLocked()
+}
+
+// Discard ends Hold and rolls back everything written since it.
+func (c *Cache) Discard() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.held = false
+	if err := c.tx.Rollback(); err != nil {
+		return err
+	}
+	tx, err := c.db.Begin()
+	if err != nil {
+		return err
+	}
+	c.tx, c.ops = tx, 0
+	return nil
+}
+
 func (c *Cache) commitLocked() error {
+	if c.held {
+		return nil
+	}
 	if err := c.tx.Commit(); err != nil {
 		return err
 	}

@@ -179,9 +179,10 @@ func walState(st *SurfaceState) *model.WALStatus {
 // walReport is what the heartbeat says about the archive: nothing for a
 // surface without one.
 func walReport(s *config.SurfaceConfig, st *SurfaceState) *model.WALStatus {
-	if s.WAL == nil || st == nil {
+	if s.WAL == nil || st == nil || st.WAL == nil {
 		return nil
 	}
+	st.WAL.SurfaceID = s.ID
 	return st.WAL
 }
 
@@ -213,6 +214,9 @@ func walRefreshStatus(ctx context.Context, a *wal.Archive, st *SurfaceState, now
 	if status.HasWindow {
 		from, to := status.WindowFrom, status.WindowTo
 		w.WindowFrom, w.WindowTo = &from, &to
+	}
+	if n := len(status.Bases); n > 0 {
+		w.Major = status.Bases[n-1].Major()
 	}
 	if !status.LockedTo.IsZero() {
 		locked := status.LockedTo

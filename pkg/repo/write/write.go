@@ -92,6 +92,11 @@ type Options struct {
 	// surface, kept in the cache with the run and handed to the next run as
 	// Result.PriorState. It is called once the run is published.
 	State func(*Result) ([]byte, error)
+	// SkipIfUnchanged writes nothing when the run finds nothing changed
+	// since the last one: no new pack and no change in the catalog.
+	// Result.Skipped says so. A backend that records the run before it
+	// writes (a hosted run) must not ask for it.
+	SkipIfUnchanged bool
 }
 
 // Source supplies a snapshot's files as streams: a database dump, one entry
@@ -186,6 +191,9 @@ type Result struct {
 	// RecoveryWarning is set when the run succeeded but its recovery
 	// document was not written.
 	RecoveryWarning string
+	// Skipped is a run that found nothing changed and wrote nothing
+	// (Options.SkipIfUnchanged). Snapshot is then empty.
+	Skipped bool
 }
 
 // sourceStateKey is where the cache keeps Options.State.
@@ -362,6 +370,13 @@ func Run(ctx context.Context, b sink.Backend, o Options) (*Result, error) {
 	if o.OnStart != nil {
 		o.OnStart(res)
 	}
+	// A run that may write nothing holds the cache's writes, so a skip
+	// leaves it as it was. Only a later run of an epoch already open can
+	// skip: the first writes the epoch, a resumed one finishes another's.
+	hold := o.SkipIfUnchanged && !opened.New && res.Class != format.ClassOpening && len(adopted) == 0
+	if hold {
+		cur.Hold()
+	}
 	runID := format.NewRandomID()
 	if rs, ok := b.(sink.RunStarter); ok {
 		dec, err := rs.StartRun(ctx, e, runID)
@@ -450,6 +465,25 @@ func Run(ctx context.Context, b sink.Backend, o Options) (*Result, error) {
 	res.ChangedFiles = w.changed
 	res.Excluded = w.excludedN
 	res.NewBytes = w.newBytes
+
+	if hold {
+		deltas, err := cur.Deltas(completeCatalog)
+		if err != nil {
+			return nil, err
+		}
+		if up.packs == 0 && len(deltas) == 0 && len(w.inconsistent) == 0 && len(w.skipped) == 0 {
+			// Nothing changed: no index, catalog, snapshot or sidecar, and
+			// the cache as it was before the run.
+			if err := cur.Discard(); err != nil {
+				return nil, err
+			}
+			res.Skipped = true
+			return res, nil
+		}
+		if err := cur.Release(); err != nil {
+			return nil, err
+		}
+	}
 
 	// 5–6. Index, catalog, snapshot, sidecar, in that order.
 	if err := cur.Commit(); err != nil {

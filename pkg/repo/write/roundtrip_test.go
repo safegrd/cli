@@ -11,6 +11,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -594,5 +595,46 @@ func TestAFileChangingDuringTheBackupIsReported(t *testing.T) {
 	now, _ := os.ReadFile(p)
 	if !bytes.HasPrefix(now, got) {
 		t.Fatal("the restored file is not a read of the file")
+	}
+}
+
+// A run asked to skip when nothing changed writes nothing and leaves the
+// cache as it was: the next run that does change something is a normal run,
+// and every snapshot restores.
+func TestARunWithNothingChangedWritesNothingWhenAskedTo(t *testing.T) {
+	h := newHarness(t)
+	m := &mutator{rng: rand.New(rand.NewSource(5)), root: h.src}
+	m.apply(t, 40)
+	skip := func(o *write.Options) { o.SkipIfUnchanged = true }
+	count := func() int {
+		n := 0
+		_ = filepath.WalkDir(filepath.Join(filepath.Dir(h.state), "sink"), func(_ string, d os.DirEntry, _ error) error {
+			if d != nil && !d.IsDir() {
+				n++
+			}
+			return nil
+		})
+		return n
+	}
+	first := h.backup(skip)
+	if first.Skipped {
+		t.Fatal("the opening run of an epoch was skipped")
+	}
+	before := count()
+	second := h.backup(skip)
+	if !second.Skipped {
+		t.Fatalf("an unchanged tree was not skipped: %d new packs", second.Snapshot.Stats.NewPacks)
+	}
+	if after := count(); after != before {
+		t.Fatalf("a skipped run wrote %d objects", after-before)
+	}
+	m.apply(t, 5)
+	third := h.backup(skip)
+	if third.Skipped {
+		t.Fatal("a changed tree was skipped")
+	}
+	got, _, _ := h.restore(third.Epoch.EpochID, third.Snapshot.SnapshotID, nil)
+	if want := oracle(t, h.src); !reflect.DeepEqual(got, want) {
+		t.Fatal("the run after a skipped one does not restore as the source")
 	}
 }
