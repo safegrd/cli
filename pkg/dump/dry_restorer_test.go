@@ -342,3 +342,48 @@ func TestChunkWriterSplitsAndJoins(t *testing.T) {
 		t.Fatalf("joined %d bytes, want %d", got.Len(), len(payload))
 	}
 }
+
+// Totals that match prove nothing about each table: two tables off by
+// opposite amounts sum to the manifest's total. The drill fails and names
+// both.
+func TestDryRestorer_TablesOffByOppositeAmountsFailWithMatchingTotals(t *testing.T) {
+	manifest := model.SnapshotMetadata{
+		SnapshotID: "snap-test-dry-opposite", DatabaseName: "production_db", TotalTables: 2, TotalRows: 4,
+		TableStats: []model.TableStat{
+			{Schema: "public", TableName: "a", RowCount: 1},
+			{Schema: "public", TableName: "b", RowCount: 3},
+		},
+	}
+	manifestBytes, _ := json.MarshalIndent(manifest, "", "  ")
+	schemaSQL := `CREATE TABLE "public"."a" ("id" integer);
+CREATE TABLE "public"."b" ("id" integer);
+`
+	var tarBuf bytes.Buffer
+	tw := tar.NewWriter(&tarBuf)
+	addEntry := func(name string, data []byte) {
+		_ = tw.WriteHeader(&tar.Header{Name: name, Mode: 0644, Size: int64(len(data))})
+		_, _ = tw.Write(data)
+	}
+	addEntry("manifest.json", manifestBytes)
+	addEntry("schema.sql", []byte(schemaSQL))
+	addEntry("data/public/a.copy", buildSyntheticPgCopyBinary([][]string{{"1"}, {"2"}, {"3"}}))
+	addEntry("data/public/b.copy", buildSyntheticPgCopyBinary([][]string{{"1"}}))
+	_ = tw.Close()
+
+	res, err := NewDryRestorer().InspectArchive(context.Background(), &tarBuf)
+	if err != nil {
+		t.Fatalf("unexpected inspection error: %v", err)
+	}
+	if res.Passed {
+		t.Fatal("a drill whose tables are each wrong passed because the totals match")
+	}
+	failed := map[string]bool{}
+	for _, a := range res.Assertions {
+		if !a.Passed {
+			failed[a.Name] = true
+		}
+	}
+	if failed["Total Row Count Match"] || !failed["Row Count: public.a"] || !failed["Row Count: public.b"] {
+		t.Errorf("failed assertions %v, want both tables' row counts and not the total", failed)
+	}
+}

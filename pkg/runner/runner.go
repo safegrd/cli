@@ -261,6 +261,13 @@ func sandboxAssertions(report *model.VerificationReport, meta, restoredMeta *mod
 		report.Assertions = append(report.Assertions, a)
 	}
 
+	// Assertion B3: each table's newest row, where the backup recorded one.
+	newest, newestPassed := newestRowAssertions(meta, restoredMeta)
+	report.Assertions = append(report.Assertions, newest...)
+	if !newestPassed {
+		allPassed = false
+	}
+
 	// Assertion C: Extension boot match
 	extMatch := model.AssertionResult{
 		Name:     "ExtensionBootCheck",
@@ -695,6 +702,9 @@ func inspectSandbox(ctx context.Context, sandboxURL string, meta *model.Snapshot
 		return nil, err
 	}
 	if err := inspector.CountRowsExactly(ctx, restored); err != nil {
+		return nil, err
+	}
+	if err := readSandboxNewestRows(ctx, sandboxURL, meta, restored); err != nil {
 		return nil, err
 	}
 	return restored, nil
