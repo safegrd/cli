@@ -103,7 +103,10 @@ func (v *VerificationReport) StoredObjectsDamaged() (string, bool) {
 		return "", false
 	}
 	for _, a := range v.Assertions {
-		if a.Passed {
+		// A check the customer wrote reports what its own query or command
+		// printed ("table not found", "psql: command not found"), which says
+		// nothing about the stored objects.
+		if a.Passed || a.Kind == AssertionKindCheck {
 			continue
 		}
 		text := a.Actual + " " + a.Message
