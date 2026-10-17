@@ -507,17 +507,8 @@ func (d *NativeDumper) Dump(ctx context.Context, databaseName string, dst io.Wri
 		return nil, err
 	}
 
-	meta.CalculateTotals()
-	meta.DurationMs = elapsedMilliseconds(startTime)
-	manifest, err := json.MarshalIndent(meta, "", "  ")
-	if err != nil {
+	if err := finishArchive(tw, meta, startTime); err != nil {
 		return nil, err
-	}
-	if err := writeTarEntry(tw, entryManifest, manifest); err != nil {
-		return nil, fmt.Errorf("failed writing the manifest to the archive: %w", err)
-	}
-	if err := tw.Close(); err != nil {
-		return nil, fmt.Errorf("failed to close the archive: %w", err)
 	}
 	return meta, nil
 }

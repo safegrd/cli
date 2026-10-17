@@ -117,6 +117,10 @@ func TestDefinerRewriter(t *testing.T) {
 		"CREATE DEFINER=`o``dd`@`10.0.0.%` PROCEDURE `p`()",
 		"INSERT INTO `notes` VALUES (1,'DEFINER=`app`@`%` stays, it is data');",
 		strings.Repeat("x", 3<<20) + " DEFINER=`big`@`h`", // a long non-data line
+		// A data line longer than the read buffer: what follows its first
+		// chunk is still data, and the line after it is schema again.
+		"INSERT INTO `big` VALUES ('" + strings.Repeat("y", 2<<20) + " DEFINER=`d`@`e` is data');",
+		"CREATE DEFINER=`after`@`x` VIEW `v` AS SELECT 1;",
 		"",
 	}, "\n")
 	r := newDefinerRewriter(strings.NewReader(in))
@@ -135,16 +139,18 @@ func TestDefinerRewriter(t *testing.T) {
 		"CREATE DEFINER=CURRENT_USER PROCEDURE",
 		"'DEFINER=`app`@`%` stays, it is data'",
 		" DEFINER=CURRENT_USER\n",
+		" DEFINER=`d`@`e` is data');\n",
+		"CREATE DEFINER=CURRENT_USER VIEW `v`",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q", want)
 		}
 	}
-	if r.rewritten != 3 {
-		t.Errorf("rewrote %d definers, want 3", r.rewritten)
+	if r.rewritten != 4 {
+		t.Errorf("rewrote %d definers, want 4", r.rewritten)
 	}
-	if len(got) != len(in)-len("`app`@`%`")-len("`o``dd`@`10.0.0.%`")-len("`big`@`h`")+3*len("CURRENT_USER") {
-		t.Errorf("output length %d does not account for exactly three rewrites", len(got))
+	if len(got) != len(in)-len("`app`@`%`")-len("`o``dd`@`10.0.0.%`")-len("`big`@`h`")-len("`after`@`x`")+4*len("CURRENT_USER") {
+		t.Errorf("output length %d does not account for exactly four rewrites", len(got))
 	}
 }
 
