@@ -514,6 +514,17 @@ already_enrolled() {
 printf "\n"
 log_success "SafeGrd CLI ${TAG} is installed."
 
+# An upgrade replaces the binary under a running daemon, which keeps running
+# the old one until it is restarted. Where `safegrd daemon install` put a
+# service, say so.
+if [ -z "$ALREADY_INSTALLED" ] && [ -n "${EXISTING_VERSION:-}" ]; then
+  if [ -f /etc/systemd/system/safegrd.service ] || [ -f /Library/LaunchDaemons/dev.safegrd.daemon.plist ]; then
+    printf "   The daemon still runs %s. Restart it: ${CYAN}sudo safegrd daemon restart${RESET}\n" "$EXISTING_VERSION"
+  elif [ -f "${HOME}/.config/systemd/user/safegrd.service" ] || [ -f "${HOME}/Library/LaunchAgents/dev.safegrd.daemon.plist" ]; then
+    printf "   The daemon still runs %s. Restart it: ${CYAN}safegrd daemon restart${RESET}\n" "$EXISTING_VERSION"
+  fi
+fi
+
 # A host that is already enrolled keeps its key and its node: re-running the
 # installer is how people upgrade, and it must not re-register anything.
 if [ -z "${SAFEGRD_NO_SETUP:-}" ] && already_enrolled; then
