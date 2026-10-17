@@ -72,6 +72,12 @@ type RunDecision struct {
 	LockUntil time.Time
 	KeptUntil time.Time
 	Slot      string
+	// Kept says the run is under the rule that locks only the copies the
+	// project keeps: the runs around a locked one are written unlocked and
+	// deleted, snapshot and catalog included, once the epoch closes and
+	// their retention passes. A locked run then lists every path in its
+	// catalog, so a check of it replays nothing that can be gone.
+	Kept bool
 }
 
 // Until is the date the run's snapshot is kept or locked until.

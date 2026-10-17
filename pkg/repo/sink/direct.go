@@ -82,7 +82,7 @@ func (d *Direct) StartRun(_ context.Context, _ format.Epoch, _ string) (RunDecis
 	if d.Rule == nil {
 		return RunDecision{}, nil
 	}
-	return RunDecision{Known: true, Scheduled: d.Rule.Scheduled, Locked: d.Rule.Scheduled, LockUntil: d.Rule.LockUntil, KeptUntil: d.Rule.KeptUntil}, nil
+	return RunDecision{Known: true, Kept: true, Scheduled: d.Rule.Scheduled, Locked: d.Rule.Scheduled, LockUntil: d.Rule.LockUntil, KeptUntil: d.Rule.KeptUntil}, nil
 }
 
 func (d *Direct) Reserve(_ context.Context, e format.Epoch, class string, objs []ObjectSpec) ([]Slot, error) {

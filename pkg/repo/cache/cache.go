@@ -75,8 +75,16 @@ func Dir(stateDir, surfaceID string) string {
 	return filepath.Join(stateDir, "cache", surfaceID)
 }
 
+// dsn opens the cache in WAL mode with every commit synced. Under
+// synchronous=NORMAL a commit reaches the disk only at the next checkpoint,
+// so a power cut can lose the last commits while the objects they record are
+// already in the store: a run marked publishing and finished rolls back to
+// running, the next run computes its catalog delta against the run before,
+// and a path changed in the lost run and not since is wrong in every later
+// catalog until a complete one. Commits happen per 2000 rows and at each state
+// change, so the sync costs a few per pack.
 func dsn(path string) string {
-	return "file:" + path + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(10000)&_pragma=synchronous(NORMAL)"
+	return "file:" + path + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(10000)&_pragma=synchronous(FULL)"
 }
 
 func open(path string) (*Cache, error) {

@@ -54,3 +54,21 @@ func TestAMissingCorruptOrForeignCacheIsLostNeverAPanic(t *testing.T) {
 		t.Fatalf("corrupt: %v %v %v", got, lost, err)
 	}
 }
+
+// Every commit is synced: the store holds what a committed row records, so
+// a cache that can forget the commit after a power cut describes the store
+// wrongly to the next run.
+func TestEveryCommitIsSyncedToDisk(t *testing.T) {
+	c, err := Create(t.TempDir(), epoch(t, "s"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	var sync int
+	if err := c.tx.QueryRow(`PRAGMA synchronous`).Scan(&sync); err != nil {
+		t.Fatal(err)
+	}
+	if sync != 2 {
+		t.Fatalf("PRAGMA synchronous is %d, not 2 (FULL)", sync)
+	}
+}

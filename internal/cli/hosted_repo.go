@@ -225,7 +225,7 @@ func (h *hostedRepo) StartRun(ctx context.Context, e format.Epoch, runID string)
 	if v.Mode != "kept" && !v.KeptUntil.After(v.LockUntil) {
 		return sink.RunDecision{}, nil
 	}
-	return sink.RunDecision{Known: true, Scheduled: v.Scheduled, Locked: v.Locked, LockUntil: v.LockUntil, KeptUntil: v.KeptUntil, Slot: v.Slot}, nil
+	return sink.RunDecision{Known: true, Kept: v.Mode == "kept", Scheduled: v.Scheduled, Locked: v.Locked, LockUntil: v.LockUntil, KeptUntil: v.KeptUntil, Slot: v.Slot}, nil
 }
 
 func (h *hostedRepo) runID() string {

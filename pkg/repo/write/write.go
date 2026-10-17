@@ -394,12 +394,17 @@ func Run(ctx context.Context, b sink.Backend, o Options) (*Result, error) {
 	// The catalog lists every path in the opening run, and again after a
 	// run that may have published a snapshot without finishing: the cache
 	// does not hold what that run saw, so a delta against it would miss
-	// what changed since.
+	// what changed since. A locked run of a project that locks only the
+	// copies it keeps lists every path too: the unlocked runs before it are
+	// deleted with their catalogs once the epoch closes, and a delta against
+	// a deleted run replays to a state the trees contradict, which fails
+	// the check of the one copy the project kept. The cost is one listing
+	// of the tree per kept copy, against the data it locks for days.
 	unfinished, err := cur.UnfinishedRun()
 	if err != nil {
 		return nil, err
 	}
-	completeCatalog := res.Class == format.ClassOpening || unfinished
+	completeCatalog := res.Class == format.ClassOpening || unfinished || (res.Decision.Kept && res.Decision.Locked)
 	ch, err := chunk.New(cur.Polynomial(), e.Chunker)
 	if err != nil {
 		return nil, err
@@ -467,7 +472,10 @@ func Run(ctx context.Context, b sink.Backend, o Options) (*Result, error) {
 	res.NewBytes = w.newBytes
 
 	if hold {
-		deltas, err := cur.Deltas(completeCatalog)
+		// What changed since the last run decides the skip, whatever the
+		// catalog about to be written lists; after an unfinished run
+		// nothing is known to be unchanged.
+		deltas, err := cur.Deltas(unfinished)
 		if err != nil {
 			return nil, err
 		}
