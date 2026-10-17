@@ -169,6 +169,10 @@ type SurfaceConfig struct {
 	// scheduled backup of this surface: ["22:00-02:00"]. A due backup waits
 	// for the window to end; a backup asked for from the console does not.
 	Blackout []string `yaml:"blackout,omitempty" json:"blackout,omitempty"`
+	// Clock is the clock a schedule of fixed times ("at 02:00", a cron line)
+	// and the blackout windows are read on: "utc" (the default) or "local",
+	// this host's time zone.
+	Clock string `yaml:"clock,omitempty" json:"clock,omitempty"`
 
 	// PreBackup runs before each of the daemon's backups of this surface and
 	// must succeed for the backup to happen; PostBackup runs after every

@@ -29,7 +29,7 @@ func TestParseScheduleAcceptsBothOldVocabularies(t *testing.T) {
 }
 
 func TestParseScheduleRefusesTheFloorAndTheUnreadable(t *testing.T) {
-	for _, in := range []string{"1m", "30s", "59m", "@hourlyy", "0 3 * * *", "0d", "-2h", "xd", "106751992d", "1000000000d"} {
+	for _, in := range []string{"1m", "30s", "59m", "@hourlyy", "0 3 * *", "0d", "-2h", "xd", "106751992d", "1000000000d"} {
 		if d, err := ParseSchedule(in); err == nil {
 			t.Errorf("ParseSchedule(%q) = %v with no error", in, d)
 		}
@@ -42,10 +42,10 @@ func TestParseScheduleRefusesTheFloorAndTheUnreadable(t *testing.T) {
 
 func TestScheduleIntervalNeverFailsAndNeverGoesBelowTheFloor(t *testing.T) {
 	for in, want := range map[string]time.Duration{
-		"1m":        MinScheduleInterval,
-		"30s":       MinScheduleInterval,
-		"@hourlyy":  DefaultScheduleInterval,
-		"0 3 * * *": DefaultScheduleInterval,
+		"1m":       MinScheduleInterval,
+		"30s":      MinScheduleInterval,
+		"@hourlyy": DefaultScheduleInterval,
+		"0 3 * *":  DefaultScheduleInterval,
 	} {
 		got, err := ScheduleInterval(in)
 		if got != want || err == nil {

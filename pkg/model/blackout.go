@@ -6,7 +6,8 @@ import (
 	"time"
 )
 
-// BlackoutWindow is a time of day, in UTC, inside which a daemon starts no
+// BlackoutWindow is a time of day, on the surface's clock (UTC unless it
+// says local), inside which a daemon starts no
 // scheduled backup: "22:00-02:00" crosses midnight. A backup running when a
 // window opens finishes; a backup asked for from the console is not held.
 type BlackoutWindow struct {
@@ -56,10 +57,10 @@ func (w BlackoutWindow) Length() time.Duration {
 	return 24*time.Hour - w.Start + w.End
 }
 
-// Inside reports whether t falls in the window, and when it ends if so.
+// Inside reports whether t falls in the window, and when it ends if so. The
+// window is read in t's location.
 func (w BlackoutWindow) Inside(t time.Time) (bool, time.Time) {
-	t = t.UTC()
-	midnight := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+	midnight := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
 	of := t.Sub(midnight)
 	switch {
 	case w.End > w.Start && of >= w.Start && of < w.End:

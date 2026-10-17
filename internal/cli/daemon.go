@@ -783,8 +783,36 @@ func isSurfaceDue(s *config.SurfaceConfig, state *SurfaceState, now time.Time) (
 		return true, now
 	}
 
+	// Fixed times: due at the schedule's first time after the last backup,
+	// read on the surface's clock.
+	if model.IsCron(s.Schedule) {
+		if c, err := model.ParseCron(s.Schedule); err == nil {
+			next := c.Next(state.LastSuccess.In(surfaceClock(s))).UTC()
+			if !next.IsZero() {
+				return !now.Before(next), next
+			}
+		}
+	}
+
 	nextDue := state.LastSuccess.Add(interval)
 	return now.After(nextDue) || now.Equal(nextDue), nextDue
+}
+
+// surfaceClock is the location a surface's fixed times are read in: UTC
+// unless it says clock: local.
+func surfaceClock(s *config.SurfaceConfig) *time.Location {
+	if strings.EqualFold(strings.TrimSpace(s.Clock), "local") {
+		return time.Local
+	}
+	return time.UTC
+}
+
+// clockName is how the daemon names a surface's clock in what it prints.
+func clockName(s *config.SurfaceConfig) string {
+	if surfaceClock(s) == time.UTC {
+		return "UTC"
+	}
+	return "local time"
 }
 
 // sayNotDue tells a single pass why a surface was skipped: it is not yet at
@@ -930,8 +958,8 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 		// request is someone asking now, so it is not held.
 		var heldBy model.BlackoutWindow
 		if due {
-			if w, until, in := model.BlackoutAt(surfaceBlackout(&surface), now); in {
-				due, nextDue, heldBy = false, until, w
+			if w, until, in := model.BlackoutAt(surfaceBlackout(&surface), now.In(surfaceClock(&surface))); in {
+				due, nextDue, heldBy = false, until.UTC(), w
 			}
 		}
 		sState.NextDue = nextDue
@@ -948,8 +976,8 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 		if !due && !requested && heldBy.Text != "" && blackoutNotSaid(surface.ID, nextDue) {
 			// Said once per window, and on every single pass: a backup that
 			// is due and not taking place is news to whoever reads the log.
-			fmt.Printf("Surface %s (%s): due, held by its blackout window %s UTC. It backs up at %s.\n",
-				surface.ID, surface.Type, heldBy.Text, nextDue.UTC().Format("2006-01-02 15:04 UTC"))
+			fmt.Printf("Surface %s (%s): due, held by its blackout window %s %s. It backs up at %s.\n",
+				surface.ID, surface.Type, heldBy.Text, clockName(&surface), nextDue.UTC().Format("2006-01-02 15:04 UTC"))
 		} else if !due && !requested && tick == 0 {
 			// A single pass that does nothing must say why, or it looks
 			// like a run that hung or lost its output.

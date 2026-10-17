@@ -46,10 +46,25 @@ func ParseSchedule(schedule string) (time.Duration, error) {
 			d = time.Duration(n) * 24 * time.Hour
 			break
 		}
+		if IsCron(s) {
+			// Fixed times: measured by the longest gap between two runs, so
+			// Overdue waits for it, and held to the floor by the shortest.
+			c, err := ParseCron(schedule)
+			if err != nil {
+				return 0, err
+			}
+			shortest, longest := c.Gaps()
+			if shortest < MinScheduleInterval {
+				return 0, fmt.Errorf("schedule %q runs %s apart at its closest, more often than the minimum of %s: every backup is "+
+					"an object that Object Lock will not let anyone delete until it expires", schedule, ShortDuration(shortest), ShortDuration(MinScheduleInterval))
+			}
+			d = longest
+			break
+		}
 		parsed, err := time.ParseDuration(s)
 		if err != nil || parsed <= 0 {
 			return 0, fmt.Errorf("schedule %q is not recognised: use @hourly, @daily, @weekly, "+
-				"a duration such as 6h, or a number of days such as 2d", schedule)
+				"a duration such as 6h, a number of days such as 2d, a time of day such as at 02:00, or a cron line such as 0 3 * * 1-5", schedule)
 		}
 		d = parsed
 	}
