@@ -40,6 +40,9 @@ type Verifier struct {
 	// after a restore into a database (drill.checks). A drill in memory has
 	// no database to run them in.
 	Checks []model.DrillCheck
+	// Unreported runs the restore without sending its report: verify
+	// --query restores to read rows for a person, which is not a drill.
+	Unreported bool
 	// storageFailed is set when the last drill failed because the storage
 	// would not give the snapshot back, as opposed to a restore that failed.
 	storageFailed bool
@@ -506,6 +509,9 @@ func (v *Verifier) submitReport(ctx context.Context, report *model.VerificationR
 	// drill's report passes.
 	if v.sandboxDrill && v.KeepFailedSandbox && report.Status != model.VerificationStatusPassed {
 		report.SandboxKept = true
+	}
+	if v.Unreported {
+		return
 	}
 	if v.serverURL == "" {
 		fmt.Fprintf(os.Stderr, "\nWarning: Not recorded: no remote server configured for this run.\n"+

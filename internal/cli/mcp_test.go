@@ -23,3 +23,13 @@ func TestTheLocalMCPRestoreKeepsTheURLOutOfTheCommandLine(t *testing.T) {
 		t.Errorf("a directory restore changed: %v %v", argv, env)
 	}
 }
+
+// Reading rows out of a backup (verify --query) is for a person. No tool
+// offers an argument that would carry a query.
+func TestNoLocalMCPToolTakesAQuery(t *testing.T) {
+	for name := range localArgDescriptions {
+		if strings.Contains(name, "query") || strings.Contains(name, "sql") {
+			t.Errorf("the local MCP takes %q", name)
+		}
+	}
+}

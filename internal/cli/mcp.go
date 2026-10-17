@@ -144,6 +144,8 @@ func addLocalTools(server *mcp.Server, self string) {
 			}
 			return []string{"backup"}, nil
 		})
+	// No query argument: verify --query reads rows out of a backup, which is
+	// for a person at the terminal, not an agent.
 	tool(localTool{name: "verify", title: "Run a Fire Drill", required: []string{"snapshot_id"}, optional: []string{"sandbox_url"},
 		desc: "Prove a snapshot restores (a Fire Drill): replayed in memory, or restored into sandbox_url, an empty database, for a full drill."},
 		func(a localArgs) ([]string, error) {

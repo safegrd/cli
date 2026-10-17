@@ -43,6 +43,9 @@ func newVerifyCmd() *cobra.Command {
 		s3AccessKey string
 		s3SecretKey string
 		checksFile  string
+		query       string
+		queryOut    string
+		queryKeep   bool
 	)
 
 	cmd := &cobra.Command{
@@ -65,7 +68,16 @@ drill.checks takes, run against the sandbox after the restore:
     sql: SELECT count(*) FROM orders WHERE created_at > now() - interval '1 day'
     expect: "> 0"
   - name: app smoke test
-    command: ./scripts/smoke.sh   # SAFEGRD_SANDBOX_URL is set; exit 0 passes`,
+    command: ./scripts/smoke.sh   # SAFEGRD_SANDBOX_URL is set; exit 0 passes
+
+--query reads rows out of a database backup without restoring the table they
+came from. The snapshot is restored into --sandbox-target, or into a
+PostgreSQL cluster started on this host for the run, the query runs in a
+read-only transaction, and its rows go to stdout as CSV (or to --out). A
+cluster the run started is removed afterwards unless --keep. A query run is
+not reported as a drill.
+
+  safegrd verify --snapshot <id> --query "SELECT * FROM orders WHERE id = 4211" --out order.csv`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if snapshotID == "" {
 				return fmt.Errorf("--snapshot is required")
@@ -73,6 +85,12 @@ drill.checks takes, run against the sandbox after the restore:
 			checks, err := loadDrillChecks(checksFile)
 			if err != nil {
 				return err
+			}
+			if query != "" && (inMemory || len(checks) > 0) {
+				return fmt.Errorf("--query restores into a sandbox and reads rows; leave out --in-memory and --checks")
+			}
+			if query == "" && (queryOut != "" || queryKeep) {
+				return fmt.Errorf("--out and --keep go with --query")
 			}
 			if len(checks) > 0 && (inMemory || sandboxURL == "") {
 				return fmt.Errorf("--checks runs against the restored database, so it needs --sandbox-target and no --in-memory")
@@ -161,6 +179,20 @@ drill.checks takes, run against the sandbox after the restore:
 				// Said, and not fatal: the snapshot may be an archive, which
 				// does not need the repositories to be readable.
 				fmt.Fprintf(os.Stderr, "Warning: could not look among the incremental repositories: %v\n", err)
+			}
+			if query != "" {
+				q := verifyQueryRun{snapshotID: snapshotID, key: resolvedKey, sandboxURL: sandboxURL, query: query, out: queryOut, keep: queryKeep}
+				if rs != nil {
+					if !runner.IsRepoDatabase(rs.Meta) {
+						return fmt.Errorf("snapshot %s is a %s snapshot; --query reads rows from a database backup", snapshotID, rs.Meta.SurfaceType)
+					}
+					return q.repo(ctx, rs)
+				}
+				storageProvider, err := openStorage(ctx, cfg, storageCfg)
+				if err != nil {
+					return storageFailure(fmt.Errorf("storage error: %w", err))
+				}
+				return q.archive(ctx, storageProvider)
 			}
 			if rs != nil {
 				if runner.IsRepoDatabase(rs.Meta) {
@@ -345,6 +377,9 @@ drill.checks takes, run against the sandbox after the restore:
 	cmd.Flags().BoolVar(&inMemory, "in-memory", false, "Restore in memory only, even with --sandbox-target (the default without it)")
 	cmd.Flags().StringVar(&sandboxURL, "sandbox-target", "", "An empty database to restore the snapshot into for a full Fire Drill: postgres://…, mysql://…, or sqlite:///path/to/absent.db")
 	cmd.Flags().StringVar(&checksFile, "checks", "", "YAML file of your own checks to run against the sandbox after the restore")
+	cmd.Flags().StringVar(&query, "query", "", "Restore into a sandbox and print this SQL query's rows as CSV; nothing is reported as a drill")
+	cmd.Flags().StringVar(&queryOut, "out", "", "With --query, write the CSV to this file instead of stdout")
+	cmd.Flags().BoolVar(&queryKeep, "keep", false, "With --query, leave the PostgreSQL cluster the run started running for a day, and print how to connect")
 	cmd.Flags().StringVar(&keyPath, "key-path", "", "Path to the age identity file")
 	cmd.Flags().StringVar(&privKey, "private-key", "", "Age identity (AGE-SECRET-KEY-1...), as env:VAR, file:/path or the key")
 	cmd.Flags().StringVar(&s3Bucket, "s3-bucket", "", "Read the snapshot from this S3 bucket instead of the configured storage")
