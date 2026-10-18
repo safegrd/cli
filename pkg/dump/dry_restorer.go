@@ -194,6 +194,13 @@ func (d *DryRestorer) InspectArchive(ctx context.Context, src io.Reader) (*DryRe
 	if !fidelity.Passed {
 		result.Passed = false
 	}
+	if lo, ok := LargeObjectsLeftOut(result.Manifest); ok {
+		result.Assertions = append(result.Assertions, lo)
+		result.Passed = false
+		if result.ErrorMessage == "" {
+			result.ErrorMessage = lo.Message
+		}
+	}
 	if result.Manifest.SchemaSource != "" {
 		result.Assertions = append(result.Assertions, model.AssertionResult{
 			Name:     "Sequence Positions Recorded",
@@ -525,6 +532,30 @@ func (c *countingReader) Read(p []byte) (int, error) {
 	n, err := c.r.Read(p)
 	c.n += int64(n)
 	return n, err
+}
+
+// LargeObjectsLeftOut is the assertion a PostgreSQL drill adds when the
+// backup counted large objects it did not include, and false when there were
+// none to leave out.
+func LargeObjectsLeftOut(m *model.SnapshotMetadata) (model.AssertionResult, bool) {
+	if m == nil || m.LargeObjects == 0 {
+		return model.AssertionResult{}, false
+	}
+	return model.AssertionResult{
+		Name:     "Large Objects Included",
+		Passed:   false,
+		Expected: "every large object the database held",
+		Actual:   largeObjectsWords(m.LargeObjects) + " left out",
+		Message: fmt.Sprintf("The database held %s (pg_largeobject), and the backup does not include their contents: "+
+			"a restore brings back the rows that point at them, not the objects", largeObjectsWords(m.LargeObjects)),
+	}, true
+}
+
+func largeObjectsWords(n int64) string {
+	if n == 1 {
+		return "1 large object"
+	}
+	return fmt.Sprintf("%d large objects", n)
 }
 
 // SchemaFidelity is the Fire Drill's verdict on how a snapshot's schema was

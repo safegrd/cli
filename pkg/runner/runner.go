@@ -287,6 +287,10 @@ func sandboxAssertions(report *model.VerificationReport, meta, restoredMeta *mod
 		allPassed = false
 	}
 	report.Assertions = append(report.Assertions, fidelity)
+	if lo, ok := dump.LargeObjectsLeftOut(meta); ok {
+		allPassed = false
+		report.Assertions = append(report.Assertions, lo)
+	}
 	return allPassed
 }
 

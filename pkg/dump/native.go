@@ -281,6 +281,19 @@ func (d *NativeDumper) Dump(ctx context.Context, databaseName string, dst io.Wri
 	if meta.Replica, err = replicaRead(ctx, tx); err != nil {
 		return nil, err
 	}
+	// Large objects live outside every table the backup copies, and
+	// pg_dump leaves them out of the sections it is asked for, so a
+	// database that keeps files in them restored without their contents
+	// while the backup and its drill said nothing. Counted from the
+	// catalog, which any role may read, and said.
+	if err := tx.QueryRow(ctx, "SELECT count(*) FROM pg_largeobject_metadata").Scan(&meta.LargeObjects); err != nil {
+		return nil, fmt.Errorf("failed to count large objects: %w", err)
+	}
+	if meta.LargeObjects > 0 {
+		d.Warn(fmt.Sprintf("This database holds %s (pg_largeobject). The backup does not include their contents: "+
+			"a restore brings back the rows that point at them, not the objects, and a Fire Drill of this backup fails until it does. "+
+			"Keep another copy of them meanwhile.", largeObjectsWords(meta.LargeObjects)))
+	}
 	if meta.Extensions, err = queryStrings(ctx, tx, "SELECT extname FROM pg_extension WHERE extname <> 'plpgsql' ORDER BY extname"); err != nil {
 		return nil, fmt.Errorf("failed to list extensions: %w", err)
 	}

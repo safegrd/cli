@@ -259,6 +259,10 @@ type SnapshotMetadata struct {
 	// says how far behind the primary it had replayed when the backup's
 	// snapshot was taken.
 	Replica *ReplicaRead `json:"replica,omitempty" yaml:"replica,omitempty"`
+	// LargeObjects is how many PostgreSQL large objects (pg_largeobject) the
+	// database held. The backup does not include their contents yet, so a
+	// drill of a snapshot that counts any fails and says why.
+	LargeObjects int64 `json:"large_objects,omitempty" yaml:"large_objects,omitempty"`
 	// RolesNamed are the roles a Postgres snapshot's schema names (owners,
 	// grantees, the roles policies apply to), sorted. RolesSource says how
 	// roles.sql carried them: "pg_dumpall 16.4", with ", no passwords" when
