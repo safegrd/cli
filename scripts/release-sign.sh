@@ -7,13 +7,24 @@
 # base64. Then checks it against every key in pkg/release/trusted_keys.txt and
 # fails unless one verifies it, so a release is never published with a
 # signature its own binary would refuse. Needs OpenSSL 3.
+#
+# While trusted_keys.txt lists no key, releases are not signed: the binary
+# checks them against checksums.txt only, and this script writes nothing.
 set -eu
 
 dist="${1:?usage: release-sign.sh <dist directory>}"
 keys_file="$(dirname "$0")/../pkg/release/trusted_keys.txt"
 
+if ! grep -v '^[[:space:]]*#' "$keys_file" | grep -q '[^[:space:]]'; then
+  if [ -n "${SAFEGRD_RELEASE_SIGNING_KEY:-}" ]; then
+    echo "Error: SAFEGRD_RELEASE_SIGNING_KEY is set but pkg/release/trusted_keys.txt lists no key, so no binary would check the signature." >&2
+    exit 1
+  fi
+  echo "pkg/release/trusted_keys.txt lists no key: this release is not signed."
+  exit 0
+fi
 if [ -z "${SAFEGRD_RELEASE_SIGNING_KEY:-}" ]; then
-  echo "Error: SAFEGRD_RELEASE_SIGNING_KEY is empty. Set the release environment's secret before tagging." >&2
+  echo "Error: pkg/release/trusted_keys.txt lists a key but SAFEGRD_RELEASE_SIGNING_KEY is empty: every release after it must be signed. Set the release environment's secret." >&2
   exit 1
 fi
 

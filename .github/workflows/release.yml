@@ -65,7 +65,8 @@ jobs:
       # checksums.txt.sig is what a daemon checks before it installs a release
       # the console asks for, and what install.sh checks where openssl can.
       # The script fails unless the signature verifies with a key in
-      # pkg/release/trusted_keys.txt.
+      # pkg/release/trusted_keys.txt, and signs nothing while that file lists
+      # no key.
       - name: Sign checksums.txt
         env:
           SAFEGRD_RELEASE_SIGNING_KEY: ${{ secrets.SAFEGRD_RELEASE_SIGNING_KEY }}
@@ -133,7 +134,7 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --title "SafeGrd CLI $GITHUB_REF_NAME" \
             --generate-notes \
-            dist/safegrd_*.tar.gz dist/checksums.txt dist/checksums.txt.sig
+            dist/safegrd_*.tar.gz dist/checksums.txt $(ls dist/checksums.txt.sig 2>/dev/null)
 
   image:
     name: Publish the image

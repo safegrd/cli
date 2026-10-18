@@ -150,3 +150,22 @@ func TestInstallShTrustsTheSameKeysAsTheBinary(t *testing.T) {
 		}
 	}
 }
+
+// A build that trusts no key checks the archive against checksums.txt only:
+// a matching archive passes with no signature, a changed one does not.
+func TestABuildWithNoKeyChecksTheChecksumOnly(t *testing.T) {
+	old := testKey
+	testKey = ""
+	t.Cleanup(func() { testKey = old })
+	if Signed() {
+		t.Skip("this build trusts a release key, so every release must be signed")
+	}
+	path, sums := archive(t, "0.0.2", []byte("binary"))
+	if err := Verify(sums, nil, path, filepath.Base(path)); err != nil {
+		t.Fatalf("an unsigned release whose checksum matches: %v", err)
+	}
+	os.WriteFile(path, []byte("tampered"), 0o644)
+	if err := Verify(sums, nil, path, filepath.Base(path)); err == nil || !strings.Contains(err.Error(), "lists") {
+		t.Fatalf("a changed archive: %v", err)
+	}
+}

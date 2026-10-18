@@ -4,6 +4,8 @@
 //
 // The keys a build trusts are in trusted_keys.txt, compiled in. install.sh
 // carries the same keys (SAFEGRD_RELEASE_KEYS) and a test holds the two equal.
+// A build that trusts no key checks a release against its checksums.txt only;
+// a build with a key requires every release to be signed with one of them.
 package release
 
 import (
@@ -38,9 +40,16 @@ const (
 	SignatureFile = "checksums.txt.sig"
 )
 
-// ErrNoTrustedKey is returned when this build trusts no key, so no release
+// ErrNoTrustedKey is returned when this build trusts no key, so no signature
 // can be checked.
-var ErrNoTrustedKey = errors.New("this build of safegrd trusts no release signing key, so it cannot check a release")
+var ErrNoTrustedKey = errors.New("this build of safegrd trusts no release signing key, so it cannot check a signature")
+
+// Signed reports whether this build requires releases to be signed: it does
+// once it trusts a key.
+func Signed() bool {
+	keys, err := TrustedKeys()
+	return err != nil || len(keys) > 0
+}
 
 // TrustedKeys returns the public keys this build accepts a release from.
 func TrustedKeys() ([]ed25519.PublicKey, error) {
@@ -145,10 +154,13 @@ func FileSHA256(p string) (string, error) {
 }
 
 // Verify checks a downloaded release for one platform: the signature over
-// checksums, and the archive at archivePath against it.
+// checksums when this build trusts a key, and the archive at archivePath
+// against checksums.
 func Verify(checksums, sig []byte, archivePath, archiveName string) error {
-	if err := VerifyChecksums(checksums, sig); err != nil {
-		return err
+	if Signed() {
+		if err := VerifyChecksums(checksums, sig); err != nil {
+			return err
+		}
 	}
 	want, err := ExpectedSHA256(checksums, archiveName)
 	if err != nil {

@@ -297,7 +297,11 @@ func (u *updater) stage(ctx context.Context, v string) error {
 	ctx, cancel := context.WithTimeout(ctx, updateFetchLimit)
 	defer cancel()
 	archive := release.ArchiveName(v, runtime.GOOS, runtime.GOARCH)
-	for _, f := range []string{release.ChecksumsFile, release.SignatureFile, archive} {
+	files := []string{release.ChecksumsFile, archive}
+	if release.Signed() {
+		files = append(files, release.SignatureFile)
+	}
+	for _, f := range files {
 		if err := u.download(ctx, v, f, filepath.Join(dir, f)); err != nil {
 			return err
 		}
@@ -312,9 +316,11 @@ func (u *updater) verifyStaged(v string) error {
 	if err != nil {
 		return err
 	}
-	sig, err := os.ReadFile(filepath.Join(dir, release.SignatureFile))
-	if err != nil {
-		return err
+	var sig []byte
+	if release.Signed() {
+		if sig, err = os.ReadFile(filepath.Join(dir, release.SignatureFile)); err != nil {
+			return err
+		}
 	}
 	archive := release.ArchiveName(v, runtime.GOOS, runtime.GOARCH)
 	return release.Verify(sums, sig, filepath.Join(dir, archive), archive)
