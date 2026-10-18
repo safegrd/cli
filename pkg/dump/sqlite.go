@@ -2,7 +2,6 @@ package dump
 
 import (
 	"archive/tar"
-	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -159,7 +158,11 @@ func openSQLite(path string, readOnly bool) (*sql.DB, error) {
 }
 
 // checkSQLiteFile refuses anything that is not an existing SQLite database, so
-// a typo is an error and not a new empty database.
+// a typo is an error and not a new empty database. It reads the file through
+// SQLite only. Closing a descriptor of its own on the database would drop every
+// POSIX lock this process holds on the file, SQLite's included: the daemon
+// following the database's WAL would lose the shared lock that stops another
+// process, closing its last connection, from deleting the WAL.
 func checkSQLiteFile(path string) error {
 	fi, err := os.Stat(path)
 	if err != nil {
@@ -168,14 +171,21 @@ func checkSQLiteFile(path string) error {
 	if !fi.Mode().IsRegular() {
 		return fmt.Errorf("SQLite database %s is not a regular file", path)
 	}
-	f, err := os.Open(path)
+	notSQLite := fmt.Errorf("%s is not a SQLite 3 database (its first bytes are not the SQLite header)", path)
+	if fi.Size() < int64(len(sqliteHeader)) {
+		return notSQLite
+	}
+	db, err := openSQLite(path, true)
 	if err != nil {
 		return fmt.Errorf("SQLite database %s: %w", path, err)
 	}
-	defer f.Close()
-	head := make([]byte, len(sqliteHeader))
-	if _, err := io.ReadFull(f, head); err != nil || !bytes.Equal(head, sqliteHeader) {
-		return fmt.Errorf("%s is not a SQLite 3 database (its first bytes are not the SQLite header)", path)
+	defer db.Close()
+	var v int
+	if err := db.QueryRowContext(context.Background(), "PRAGMA schema_version").Scan(&v); err != nil {
+		if strings.Contains(err.Error(), "SQLITE_NOTADB") || strings.Contains(err.Error(), "not a database") {
+			return notSQLite
+		}
+		return fmt.Errorf("SQLite database %s: %w", path, err)
 	}
 	return nil
 }

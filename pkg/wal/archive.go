@@ -364,7 +364,9 @@ func (a *Archive) writeBundle(ctx context.Context, id string, take []Pushed, loc
 	pr, pw := io.Pipe()
 	files := make([]BundledFile, 0, len(take))
 	var off int64
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		for _, p := range take {
 			body, err := a.readCurrent(ctx, p.Key)
 			if err != nil {
@@ -382,7 +384,10 @@ func (a *Archive) writeBundle(ctx context.Context, id string, take []Pushed, loc
 		pw.Close()
 	}()
 	lock, err := a.Store.Put(ctx, a.bundleKey(id), pr, lockUntil)
+	// A Put that failed part way leaves the reader mid-file; closing the
+	// pipe ends it, and files is read only once it has stopped appending.
 	pr.CloseWithError(io.ErrClosedPipe)
+	<-done
 	if err != nil {
 		return nil, 0, lock, fmt.Errorf("writing bundle %s: %w", id, err)
 	}

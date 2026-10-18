@@ -138,6 +138,11 @@ type Opened struct {
 	// OpeningDone is true once the epoch's first snapshot is complete, so
 	// this run writes objects of the later class.
 	OpeningDone bool
+	// LastSnapshotID is the newest snapshot the backend recorded in the
+	// epoch, when it keeps that: a writer whose cache does not know it
+	// lists every path in its catalog rather than a delta against an older
+	// run. "" says nothing.
+	LastSnapshotID string
 }
 
 // RunCommit is what a finished run tells the backend.

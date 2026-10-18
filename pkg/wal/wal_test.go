@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -326,5 +327,75 @@ func TestARestoreIsCheckedAgainstTheRestorePointsCounts(t *testing.T) {
 	if len(wrong) != 2 || !strings.Contains(wrong[0], "public.quiet has 500 rows, the restore point recorded 400") ||
 		!strings.Contains(wrong[1], "recorded 1000 to 1010") {
 		t.Fatalf("wrong %v", wrong)
+	}
+}
+
+// A replay stops where restore_command first finds no file, and PostgreSQL
+// promotes there. A restore to the end of the archive, or to a moment past
+// a gap, is refused before anything is unpacked; one to a moment before the
+// gap goes ahead.
+func TestARestoreRefusesABaseAGapBreaks(t *testing.T) {
+	ctx := context.Background()
+	a, now := testArchive(t)
+	base := BaseInfo{Version: 1, BaseID: "b-20261017T120000Z-0000abcd", SurfaceID: "db", SystemID: a.SystemID,
+		StartedAt: *now, EndedAt: now.Add(time.Minute), ServerVersionNum: 160004, SegmentSize: seg16, Timeline: 1,
+		StartWAL: "000000010000000000000002", EndWAL: "000000010000000000000002"}
+	writeBase(t, a, base)
+	for _, n := range []string{"000000010000000000000002", "000000010000000000000003", "000000010000000000000005"} {
+		*now = now.Add(time.Minute)
+		if err := a.Push(ctx, n, bytes.NewReader([]byte(n))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	beforeGap := time.Date(2026, 10, 17, 12, 2, 0, 0, time.UTC) // segment 3's push
+	restore := func(target time.Time) error {
+		_, err := a.Restore(ctx, RestoreOptions{Target: target, PGData: filepath.Join(t.TempDir(), "pgdata")})
+		return err
+	}
+	for _, target := range []time.Time{{}, beforeGap.Add(30 * time.Second)} {
+		err := restore(target)
+		if err == nil || !strings.Contains(err.Error(), "missing 000000010000000000000004") || !strings.Contains(err.Error(), base.BaseID) {
+			t.Fatalf("a restore to %v across the gap: %v", target, err)
+		}
+	}
+	// Before the gap the replay is whole; the restore then fails only on
+	// the base's tar, which this archive does not hold.
+	if err := restore(beforeGap); err == nil || strings.Contains(err.Error(), "missing") {
+		t.Fatalf("a restore to the moment before the gap: %v", err)
+	}
+}
+
+// pg_basebackup is given the password in a file named by PGPASSFILE, never
+// on its command line, which every user on the host reads from the process
+// table, and never from a PGPASSWORD the operator's shell set.
+func TestABaseBackupKeepsThePasswordOffTheCommandLine(t *testing.T) {
+	ctx := context.Background()
+	a, _ := testArchive(t)
+	dir := t.TempDir()
+	record := filepath.Join(dir, "record")
+	script := filepath.Join(dir, "pg_basebackup")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\n{ echo \"args: $*\"; echo \"PGPASSFILE=$PGPASSFILE\"; cat \"$PGPASSFILE\"; env | grep '^PGPASSWORD=' || true; } > "+record+"\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PGPASSWORD", "from-the-shell")
+	_, err := a.Base(ctx, BaseOptions{ConnURL: "postgres://walrep:s3cret-pw@127.0.0.1:5432/app?sslmode=disable",
+		Server: Server{SystemID: a.SystemID, VersionNum: 160004, SegSize: seg16}, PgBasebackup: script})
+	if err == nil {
+		t.Fatal("a pg_basebackup that wrote nothing was taken as a base backup")
+	}
+	got, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatalf("pg_basebackup was not run: %v", err)
+	}
+	s := string(got)
+	args, _, _ := strings.Cut(s, "\n")
+	if strings.Contains(args, "s3cret-pw") || !strings.Contains(args, "walrep@127.0.0.1") {
+		t.Fatalf("pg_basebackup's command line: %s", args)
+	}
+	if !strings.Contains(s, "*:*:*:*:s3cret-pw") {
+		t.Fatalf("PGPASSFILE does not hold the password:\n%s", s)
+	}
+	if strings.Contains(s, "PGPASSWORD=") {
+		t.Fatalf("the shell's PGPASSWORD reached pg_basebackup, and libpq reads it before PGPASSFILE:\n%s", s)
 	}
 }

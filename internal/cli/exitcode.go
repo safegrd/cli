@@ -21,6 +21,14 @@ const (
 	// exitStorage: the storage the backups are in could not be opened,
 	// written or read.
 	exitStorage = 12
+	// exitRecoveryStop: 'wal fetch' failed for a reason other than the
+	// archive not holding the file. PostgreSQL reads an exit code it does
+	// not know as "not in the archive" and ends the replay there, promoting
+	// with WAL missing; a code above 125 stops recovery instead
+	// (src/common/wait_error.c), so the operator fixes the cause and starts
+	// it again. Not 126 or 127, which a shell reports for a command it
+	// could not run, and not 130, which is an interrupt.
+	exitRecoveryStop = 140
 )
 
 // classedError carries one of the exit codes above to Execute.

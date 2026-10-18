@@ -133,12 +133,20 @@ func runWALWork(ctx context.Context, c *config.CLIConfig, s *config.SurfaceConfi
 		walDaemonPoint(ctx, c, a, s, st)
 	}
 	if bundleDue {
-		if err := walDaemonBundle(ctx, a); err != nil {
+		conflicts, err := walDaemonBundle(ctx, a)
+		if err != nil {
 			st.WALBundleFailedAt = now
 			fmt.Fprintf(os.Stderr, "Error: Surface %s: bundling WAL: %v. The daemon tries again in an hour.\n", s.ID, err)
 			ok = false
 		} else {
+			// Done, conflicts or not: a name archived twice with different
+			// contents stays unlocked for a person to look at, and is said
+			// here and in the heartbeat, not retried every hour as a failed
+			// bundle.
 			st.WALLastBundle, st.WALBundleFailedAt = now, time.Time{}
+			if len(conflicts) > 0 {
+				fmt.Fprintf(os.Stderr, "Warning: Surface %s: %s.\n", s.ID, walConflictWords(conflicts))
+			}
 		}
 	}
 	if baseDue {
@@ -222,7 +230,7 @@ func walRefreshStatus(ctx context.Context, a *wal.Archive, s *config.SurfaceConf
 	}
 	st.WALCheckedAt = now
 	w := walState(st)
-	w.CheckedAt, w.WindowFrom, w.WindowTo, w.LockedTo, w.Gap = now, nil, nil, nil, ""
+	w.CheckedAt, w.WindowFrom, w.WindowTo, w.LockedTo, w.Gap, w.Conflict = now, nil, nil, nil, "", ""
 	if status.HasWindow {
 		from, to := status.WindowFrom, status.WindowTo
 		w.WindowFrom, w.WindowTo = &from, &to
@@ -236,6 +244,9 @@ func walRefreshStatus(ctx context.Context, a *wal.Archive, s *config.SurfaceConf
 	}
 	if len(status.Gaps) > 0 {
 		w.Gap = status.Gaps[0].First
+	}
+	if len(status.Conflicts) > 0 {
+		w.Conflict = status.Conflicts[0]
 	}
 }
 
@@ -292,13 +303,13 @@ func walUnlockedBytes(ctx context.Context, a *wal.Archive) int64 {
 
 // walDaemonBundle bundles every cluster's WAL. An archive nothing has been
 // pushed to yet has nothing to bundle.
-func walDaemonBundle(ctx context.Context, a *wal.Archive) error {
+func walDaemonBundle(ctx context.Context, a *wal.Archive) ([]string, error) {
 	systems, err := wal.Systems(ctx, a.Store, a.SurfaceID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if len(systems) == 0 {
-		return nil
+		return nil, nil
 	}
 	fmt.Printf("Surface %s: bundling WAL.\n", a.SurfaceID)
 	return walBundleAll(ctx, a, systems)

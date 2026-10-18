@@ -245,6 +245,19 @@ func (c *Cache) OpeningDone() bool { return c.done }
 // RunsSinceRescan counts the runs since one last read every file.
 func (c *Cache) RunsSinceRescan() int { return c.rescans }
 
+// LastCompleteSnapshot is the snapshot of the newest run this cache recorded
+// as complete, "" when it holds none.
+func (c *Cache) LastCompleteSnapshot() (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var id string
+	err := c.tx.QueryRow(`SELECT snapshot_id FROM runs WHERE state = ? ORDER BY started_at DESC LIMIT 1`, runComplete).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return id, err
+}
+
 // Hold keeps every write from here in one transaction, so Discard can undo
 // the run. A crash while held loses the run's rows, as Discard would: the
 // next run reads the cache as it was, and uploads again what this one did.

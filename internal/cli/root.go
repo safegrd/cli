@@ -69,6 +69,8 @@ Exit status:
   11   the remote server: unreachable, a server error, or an unreadable answer
   12   storage: the bucket or directory could not be opened, written or read
   130  interrupted
+  140  'safegrd wal fetch' could not read a WAL file the archive may hold;
+       PostgreSQL stops recovery instead of ending it there
   'safegrd guard' exits with the status of the command it runs, or 3 when it
   refused to run it.
 

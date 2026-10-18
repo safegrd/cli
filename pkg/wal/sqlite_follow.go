@@ -101,6 +101,7 @@ type SQLiteFollower struct {
 	Logf, Warnf     func(format string, args ...any)
 
 	db      *sql.DB
+	file    *os.File // the database file, open from Start to close
 	r, w, c *sql.Conn
 	reading bool
 
@@ -199,6 +200,13 @@ func (f *SQLiteFollower) Start(ctx context.Context) error {
 	}
 	f.db = db
 	f.Archive.SystemID = id
+	// Bases are read through one descriptor held until SQLite has closed:
+	// closing a descriptor on the database drops every POSIX lock this
+	// process holds on it, and without SQLite's shared lock another process
+	// closing its last connection deletes the WAL being followed.
+	if f.file, err = os.Open(f.Path); err != nil {
+		return err
+	}
 	for _, c := range []**sql.Conn{&f.r, &f.w, &f.c} {
 		if *c, err = db.Conn(ctx); err != nil {
 			return err
@@ -357,7 +365,7 @@ func (f *SQLiteFollower) checkpoint(ctx context.Context, point bool) error {
 	if err := f.beginRead(ctx); err != nil {
 		return err
 	}
-	h, err := ReadSQLiteWALHeader(f.walPath())
+	h, err := f.headerAfterWrite(ctx)
 	if err != nil {
 		return err
 	}
@@ -390,7 +398,7 @@ func (f *SQLiteFollower) newGeneration(ctx context.Context) error {
 	if err := f.beginRead(ctx); err != nil {
 		return err
 	}
-	h, err := ReadSQLiteWALHeader(f.walPath())
+	h, err := f.headerAfterWrite(ctx)
 	if err != nil {
 		return fmt.Errorf("reading the WAL header after a write: %w", err)
 	}
@@ -414,11 +422,11 @@ func (f *SQLiteFollower) newGeneration(ctx context.Context) error {
 // pushBase stores the database file as generation gen's base.
 func (f *SQLiteFollower) pushBase(ctx context.Context, gen string, h SQLiteWALHeader) error {
 	a := f.Archive
-	src, err := os.Open(f.Path)
+	fi, err := f.file.Stat()
 	if err != nil {
 		return err
 	}
-	defer src.Close()
+	src := io.NewSectionReader(f.file, 0, fi.Size())
 	started := a.now()
 	info := BaseInfo{Version: 1, Kind: "sqlite", BaseID: newID("b", started, randomHex()), SurfaceID: a.SurfaceID, SystemID: a.SystemID,
 		StartedAt: started, Generation: gen, WALSalt1: h.Salt1, WALSalt2: h.Salt2, PageSize: h.PageSize}
@@ -489,6 +497,26 @@ func (f *SQLiteFollower) recordPoint(ctx context.Context) error {
 	return nil
 }
 
+// headerAfterWrite reads the WAL header once a write of the follower's own
+// has put a frame there and the read transaction is held. An application
+// checkpoint with TRUNCATE in the moment between that write and the read
+// leaves an empty WAL; one more write puts a frame back, and the salts then
+// read as the restart they are.
+func (f *SQLiteFollower) headerAfterWrite(ctx context.Context) (SQLiteWALHeader, error) {
+	h, err := ReadSQLiteWALHeader(f.walPath())
+	if err != io.EOF {
+		return h, err
+	}
+	f.endRead()
+	if err := f.restartWrite(ctx); err != nil {
+		return h, err
+	}
+	if err := f.beginRead(ctx); err != nil {
+		return h, err
+	}
+	return ReadSQLiteWALHeader(f.walPath())
+}
+
 // restartWrite writes one row of _safegrd_wal in a transaction of its own.
 func (f *SQLiteFollower) restartWrite(ctx context.Context) error {
 	if _, err := f.w.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
@@ -518,6 +546,10 @@ func (f *SQLiteFollower) close() {
 	if f.db != nil {
 		f.db.Close()
 		f.db = nil
+	}
+	if f.file != nil {
+		f.file.Close()
+		f.file = nil
 	}
 }
 

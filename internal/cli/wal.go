@@ -274,40 +274,21 @@ func newWALFetchCmd() *cobra.Command {
 		Short: "Write one archived WAL file to a path (PostgreSQL's restore_command)",
 		Long: `Writes one WAL file from the archive to path. It exits 1, printing nothing,
 when the archive does not hold the file, which is how a restore learns it has
-replayed all there is. 'safegrd wal restore' writes the restore_command.`,
+replayed all there is. Any other failure (the storage does not answer, the key
+is missing, a file does not decrypt to what was pushed) exits 140 after a few
+tries, which makes PostgreSQL stop recovery instead of ending it there and
+promoting with WAL missing; fix the cause and start it again.
+'safegrd wal restore' writes the restore_command.`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := cmd.Context()
-			a, _, err := walArchive(ctx, cfg, surfaceID, "")
-			if err != nil {
-				return err
-			}
-			if err := walReadFrom(a, node); err != nil {
-				return err
-			}
-			if a.SystemID, err = oneSystem(ctx, a, systemID); err != nil {
-				return err
-			}
-			if a.Identity, err = resolveIdentity(ctx, keyPath, privKey); err != nil {
-				return err
-			}
-			dst := args[1]
-			tmp, err := os.CreateTemp(filepath.Dir(dst), ".safegrd-fetch-*")
-			if err != nil {
-				return err
-			}
-			defer os.Remove(tmp.Name())
-			ferr := a.Fetch(ctx, args[0], tmp)
-			if cerr := tmp.Close(); ferr == nil {
-				ferr = cerr
-			}
-			if errors.Is(ferr, wal.ErrNotFound) {
+			err := walFetch(cmd.Context(), args[0], args[1], surfaceID, systemID, keyPath, privKey, node)
+			if errors.Is(err, wal.ErrNotFound) {
 				return &exitError{code: 1}
 			}
-			if ferr != nil {
-				return storageFailure(ferr)
+			if err != nil {
+				return &exitError{code: exitRecoveryStop, err: fmt.Errorf("%w. Recovery stops here rather than promote with WAL missing; fix this and start PostgreSQL again", err)}
 			}
-			return os.Rename(tmp.Name(), dst)
+			return nil
 		},
 	}
 	cmd.Flags().StringVar(&surfaceID, "surface", "", "Surface id from the config (required)")
@@ -316,6 +297,61 @@ replayed all there is. 'safegrd wal restore' writes the restore_command.`,
 	cmd.Flags().StringVar(&privKey, "private-key", "", "The age identity, as env:VAR or file:/path")
 	cmd.Flags().StringVar(&node, "node", "", "On hosted storage, read the archive another host of the organization wrote")
 	return cmd
+}
+
+const (
+	// walFetchAttempts is how many times a fetch asks the storage for a file
+	// before it gives up: restore_command runs once per WAL file, and a
+	// storage that does not answer for a moment should not end a replay.
+	walFetchAttempts = 4
+	walFetchBackoff  = 2 * time.Second
+)
+
+// walFetch writes one archived WAL file to dst, trying again after a
+// failure that is not the archive lacking the file.
+func walFetch(ctx context.Context, name, dst, surfaceID, systemID, keyPath, privKey, node string) error {
+	a, _, err := walArchive(ctx, cfg, surfaceID, "")
+	if err != nil {
+		return err
+	}
+	if err := walReadFrom(a, node); err != nil {
+		return err
+	}
+	if a.SystemID, err = oneSystem(ctx, a, systemID); err != nil {
+		return err
+	}
+	if a.Identity, err = resolveIdentity(ctx, keyPath, privKey); err != nil {
+		return err
+	}
+	for attempt := 0; ; attempt++ {
+		err = walFetchOnce(ctx, a, name, dst)
+		if err == nil || errors.Is(err, wal.ErrNotFound) || attempt+1 >= walFetchAttempts {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(walFetchBackoff << attempt):
+		}
+	}
+}
+
+// walFetchOnce writes the file beside dst and renames it into place, so a
+// fetch that fails part way leaves no half file for PostgreSQL to read.
+func walFetchOnce(ctx context.Context, a *wal.Archive, name, dst string) error {
+	tmp, err := os.CreateTemp(filepath.Dir(dst), ".safegrd-fetch-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	ferr := a.Fetch(ctx, name, tmp)
+	if cerr := tmp.Close(); ferr == nil {
+		ferr = cerr
+	}
+	if ferr != nil {
+		return ferr
+	}
+	return os.Rename(tmp.Name(), dst)
 }
 
 func newWALBaseCmd() *cobra.Command {
@@ -410,21 +446,38 @@ wal.bundle_mb.`,
 			if err != nil {
 				return err
 			}
-			return walBundleAll(ctx, a, systems)
+			conflicts, err := walBundleAll(ctx, a, systems)
+			if err != nil {
+				return err
+			}
+			if len(conflicts) > 0 {
+				return errors.New(walConflictWords(conflicts))
+			}
+			return nil
 		},
 	}
 	cmd.Flags().StringVar(&surfaceID, "surface", "", "Surface id from the config (required)")
 	return cmd
 }
 
-// walBundleAll bundles each cluster's unlocked WAL and says what it did.
-func walBundleAll(ctx context.Context, a *wal.Archive, systems []string) error {
+// walConflictWords says which WAL file names were archived twice with
+// different contents. Those files stay unlocked and out of every bundle
+// until a person looks at them.
+func walConflictWords(conflicts []string) string {
+	return fmt.Sprintf("%d WAL file name(s) were archived twice with different contents and are left out of the bundle: %s. Check that only one cluster archives to this surface",
+		len(conflicts), strings.Join(conflicts, ", "))
+}
+
+// walBundleAll bundles each cluster's unlocked WAL and says what it did. The
+// names archived twice with different contents come back on their own: the
+// bundle is done, and they are the caller's to report.
+func walBundleAll(ctx context.Context, a *wal.Archive, systems []string) ([]string, error) {
 	var conflicts []string
 	for _, sys := range systems {
 		a.SystemID = sys
 		res, err := a.Bundle(ctx)
 		if err != nil {
-			return storageFailure(err)
+			return nil, storageFailure(err)
 		}
 		switch {
 		case res.Files > 0:
@@ -441,11 +494,7 @@ func walBundleAll(ctx context.Context, a *wal.Archive, systems []string) error {
 		}
 		conflicts = append(conflicts, res.Conflicts...)
 	}
-	if len(conflicts) > 0 {
-		return fmt.Errorf("%d WAL file name(s) were archived twice with different contents and are left out of the bundle: %s. Check that only one cluster archives to this surface",
-			len(conflicts), strings.Join(conflicts, ", "))
-	}
-	return nil
+	return conflicts, nil
 }
 
 func newWALStatusCmd() *cobra.Command {
@@ -579,16 +628,21 @@ A SQLite surface is restored to a new database file instead: --out names it.
 The daemon's segments are about a second apart, so the file holds every
 transaction committed up to the last segment pushed at or before --to.
 
---to takes RFC 3339 (2026-10-17T14:52:00Z) or "2026-10-17 14:52:00", read as UTC.`,
+--to takes RFC 3339 (2026-10-17T14:52:00Z) or "2026-10-17 14:52:00", read as UTC,
+or "latest": every archived WAL file is replayed, which is the restore after a
+lost host. A time at or after the last commit in the archive is refused by
+PostgreSQL ("recovery ended before configured recovery target was reached"),
+so use latest for the newest state.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
 			var target time.Time
 			var err error
+			latest := strings.EqualFold(strings.TrimSpace(to), "latest")
 			switch {
 			case to != "" && toPoint != "":
 				return errors.New("--to and --to-point are two targets; give one")
-			case toPoint == "":
+			case toPoint == "" && !latest:
 				if target, err = parseWALTarget(to); err != nil {
 					return err
 				}
@@ -642,8 +696,11 @@ transaction committed up to the last segment pushed at or before --to.
 			}
 			fmt.Printf("Restored base %s (PostgreSQL %d) into %s\n", res.Base.BaseID, res.Base.Major(), dir)
 			goal := target.UTC().Format("2006-01-02 15:04:05 UTC")
-			if toPoint != "" {
+			switch {
+			case toPoint != "":
 				goal = "restore point " + toPoint
+			case latest:
+				goal = fmt.Sprintf("the end of the archive (pushed %s)", res.ArchiveEnd.UTC().Format("2006-01-02 15:04:05 UTC"))
 			}
 			fmt.Printf("   Replays WAL to %s and promotes, when PostgreSQL %d starts on it:\n", goal, res.Base.Major())
 			if res.NoConf {
@@ -661,7 +718,7 @@ transaction committed up to the last segment pushed at or before --to.
 	}
 	cmd.Flags().StringVar(&surfaceID, "surface", "", "Surface id from the config (required)")
 	cmd.Flags().StringVar(&systemID, "system", "", "The cluster's system identifier, when the archive holds more than one")
-	cmd.Flags().StringVar(&to, "to", "", "The moment to restore to")
+	cmd.Flags().StringVar(&to, "to", "", "The moment to restore to, or latest for the end of the archive")
 	cmd.Flags().StringVar(&toPoint, "to-point", "", "A restore point to restore to, as 'safegrd wal point' named it")
 	cmd.Flags().StringVar(&pgdata, "pgdata", "", "PostgreSQL: an empty directory to restore into")
 	cmd.Flags().StringVar(&out, "out", "", "SQLite: the database file to write; it must not exist")
@@ -673,7 +730,7 @@ transaction committed up to the last segment pushed at or before --to.
 
 func parseWALTarget(s string) (time.Time, error) {
 	if s == "" {
-		return time.Time{}, errors.New("--to or --to-point is required: the moment or the restore point to restore to")
+		return time.Time{}, errors.New("--to or --to-point is required: the moment or the restore point to restore to, or --to latest")
 	}
 	for _, layout := range []string{time.RFC3339Nano, "2006-01-02 15:04:05", "2006-01-02T15:04:05", "2006-01-02 15:04"} {
 		if t, err := time.Parse(layout, strings.TrimSpace(s)); err == nil {
@@ -768,6 +825,8 @@ func walRestoreSQLite(ctx context.Context, a *wal.Archive, target time.Time, toP
 	switch {
 	case o.Point != nil:
 		fmt.Printf("   At restore point %s (%s)\n", o.Point.Name, ts(o.Point.At))
+	case target.IsZero():
+		fmt.Printf("   Holds every transaction committed by %s, the last segment in the archive\n", ts(res.ReachedAt))
 	default:
 		fmt.Printf("   Holds every transaction committed by %s, the last segment at or before %s\n", ts(res.ReachedAt), ts(target))
 	}
