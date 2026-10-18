@@ -415,6 +415,12 @@ func (fc *FileCollector) scanLocal(ctx context.Context) (string, []collectedItem
 	if !rootInfo.IsDir() {
 		return "", nil, fmt.Errorf("root path is not a directory: %s", absRoot)
 	}
+	// A root that is a symlink to a directory is walked as that directory:
+	// WalkDir does not follow it, and the backup held nothing and said
+	// "Backed up 0 files".
+	if real, err := filepath.EvalSymlinks(absRoot); err == nil {
+		absRoot = real
+	}
 
 	// 1. Traverse and discover files, failing on permission errors
 	var items []collectedItem
@@ -455,7 +461,11 @@ func (fc *FileCollector) scanLocal(ctx context.Context) (string, []collectedItem
 			return nil
 		}
 		for _, skip := range fc.cfg.SkipPaths {
-			if abs, err := filepath.Abs(skip); err == nil && filepath.Clean(path) == filepath.Clean(abs) {
+			abs, err := filepath.Abs(skip)
+			if real, rerr := filepath.EvalSymlinks(abs); err == nil && rerr == nil {
+				abs = real
+			}
+			if err == nil && filepath.Clean(path) == filepath.Clean(abs) {
 				fc.skipped = append(fc.skipped, relSlash+" (this host's backup storage)")
 				if d.IsDir() {
 					return filepath.SkipDir
