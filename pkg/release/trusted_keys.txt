@@ -1,0 +1,4 @@
+# The Ed25519 public keys a safegrd release is signed with, one per line,
+# base64. checksums.txt.sig must verify with one of them before safegrd
+# installs a release on its own. Keep the current key and, while rotating, the
+# next one. install.sh's SAFEGRD_RELEASE_KEYS holds the same lines.

@@ -188,6 +188,7 @@ func sendHeartbeat(ctx context.Context, c *config.CLIConfig, nodeID string, st *
 		BlackoutSeconds:     blackoutSeconds(s),
 		CheckedUnchangedAt:  checkedUnchangedAt(st),
 		WAL:                 walReport(s, st),
+		Update:              hostUpdates.report(tick),
 	}, &resp)
 	if status == http.StatusNotFound && st.ServerNodeID != "" && st.ServerNodeID == nodeID && nodeID != c.NodeID {
 		// The surface's node is gone: retired in the console while this
@@ -206,8 +207,11 @@ func sendHeartbeat(ctx context.Context, c *config.CLIConfig, nodeID string, st *
 		fmt.Fprintf(os.Stderr, "Warning: Surface %s: heartbeat failed (%v). %s\n", st.SurfaceID, err, hint)
 		return nil
 	}
-	if resp.UpgradeAvailable {
+	if resp.UpgradeAvailable && hostUpdates.notifies() {
 		notifyUpgrade(resp.LatestCLIVersion)
+	}
+	if tick > 0 {
+		hostUpdates.heard(&resp)
 	}
 	return &resp
 }

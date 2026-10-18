@@ -182,6 +182,7 @@ func newDaemonRunCmd() *cobra.Command {
 		once        bool
 		intervalStr string
 		stateDir    string
+		selfTestRun bool
 	)
 
 	cmd := &cobra.Command{
@@ -221,6 +222,12 @@ exits at once.`,
 			}()
 
 			resolvedStateDir := resolveStateDir(stateDir, cfg)
+			if selfTestRun {
+				// Run by a daemon about to switch to this release: the
+				// config, the state and the flags as it would run them, and
+				// nothing started.
+				return daemonSelfTest(resolvedStateDir, intervalStr)
+			}
 			if err := os.MkdirAll(resolvedStateDir, 0700); err != nil {
 				return fmt.Errorf("failed to create state directory: %w", err)
 			}
@@ -312,6 +319,14 @@ exits at once.`,
 				fmt.Printf("   Metrics:             http://%s/metrics\n", cfg.Daemon.MetricsAddr)
 			}
 
+			// Updates from the console: a resident daemon only, since a
+			// single pass would never be there to check in after a switch.
+			if hostUpdates, err = newUpdater(cfg.Daemon.Updates, cfg.Daemon.UpdatesURL, resolvedStateDir, os.Args[1:]); err != nil {
+				return err
+			}
+			hostUpdates.beforeExec = releaseDaemonLock
+			hostUpdates.start()
+			fmt.Printf("   Updates:             %s\n", updatesWords(hostUpdates))
 			fmt.Printf("   Poll interval:       %s (±10%% jitter)\n\n", interval)
 			// A changed config, from `safegrd claim` or by hand, is read at
 			// the start of each pass. The metrics address, the interval and
@@ -327,6 +342,7 @@ exits at once.`,
 				fmt.Fprintf(os.Stderr, "Error: first pass over the surfaces: %v\n", err)
 			}
 			pingPass(ctx, cfg, resolvedStateDir, err)
+			hostUpdates.afterPass(ctx, lockDir)
 
 			for {
 				// Apply ±10% jitter to avoid thundering herd against remote server / storage
@@ -350,6 +366,7 @@ exits at once.`,
 						fmt.Fprintf(os.Stderr, "Error: pass over the surfaces: %v\n", err)
 					}
 					pingPass(ctx, cfg, resolvedStateDir, err)
+					hostUpdates.afterPass(ctx, lockDir)
 				}
 			}
 		},
@@ -359,6 +376,8 @@ exits at once.`,
 	cmd.Flags().StringVar(&intervalStr, "interval", "", "How often to check which surfaces are due (default: daemon.interval, then 5m). "+
 		"With --once, how often a scheduler runs the pass: the console then sends it Back up now and Drill now, and alerts when the runs stop")
 	cmd.Flags().StringVar(&stateDir, "state-dir", "", "Directory for daemon state and locks")
+	cmd.Flags().BoolVar(&selfTestRun, "self-test", false, "Load the config and state as the daemon would, print the version and exit")
+	_ = cmd.Flags().MarkHidden("self-test") // run by a daemon checking a release before it switches to it
 
 	return cmd
 }
@@ -2142,6 +2161,12 @@ func daemonServiceSpec(userScope bool) (daemonService, error) {
 	}
 	home, _ := os.UserHomeDir()
 	svc := daemonService{exe: exe, configPath: configPath, stateDir: stateDir, home: home, writable: []string{stateDir}}
+	// Installed by install.sh: the service runs whatever release `current`
+	// points at, and may move it, which is how the console updates the host.
+	if l, _ := detectLayout(); l != nil {
+		svc.exe = filepath.Join(l.root, "current", "safegrd")
+		svc.writable = append(svc.writable, l.root)
+	}
 	// A local sink is written to by the daemon, so it must be writable under
 	// the unit's read-only filesystem too.
 	addLocal := func(sc config.StorageConfig) {

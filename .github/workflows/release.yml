@@ -41,6 +41,9 @@ jobs:
     name: Build release archives
     needs: test
     runs-on: ubuntu-latest
+    # The signing key is a secret of this environment, which only v* tags may
+    # deploy to: no branch or pull request workflow can read it.
+    environment: release
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -58,6 +61,15 @@ jobs:
       #   make dist VERSION=0.0.1
       - name: Build release archives
         run: make dist VERSION="${GITHUB_REF_NAME#v}"
+
+      # checksums.txt.sig is what a daemon checks before it installs a release
+      # the console asks for, and what install.sh checks where openssl can.
+      # The script fails unless the signature verifies with a key in
+      # pkg/release/trusted_keys.txt.
+      - name: Sign checksums.txt
+        env:
+          SAFEGRD_RELEASE_SIGNING_KEY: ${{ secrets.SAFEGRD_RELEASE_SIGNING_KEY }}
+        run: sh scripts/release-sign.sh dist
 
       - name: Keep them for the smoke test and the release
         uses: actions/upload-artifact@v4
@@ -121,7 +133,7 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --title "SafeGrd CLI $GITHUB_REF_NAME" \
             --generate-notes \
-            dist/safegrd_*.tar.gz dist/checksums.txt
+            dist/safegrd_*.tar.gz dist/checksums.txt dist/checksums.txt.sig
 
   image:
     name: Publish the image

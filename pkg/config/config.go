@@ -107,6 +107,15 @@ type DaemonConfig struct {
 	// style check URL: the URL itself after a pass, URL/fail after one that
 	// could not run. env:VAR or file:/path read it from elsewhere.
 	PingURL string `yaml:"ping_url,omitempty" json:"ping_url,omitempty"`
+	// Updates is "console" (the default): the daemon downloads each new
+	// release, checks its signature, and installs it when someone approves it
+	// in the console, which can also send the host back to the release it ran
+	// before. "off" downloads and installs nothing.
+	Updates string `yaml:"updates,omitempty" json:"updates,omitempty"`
+	// UpdatesURL is where releases are downloaded from, in place of
+	// https://github.com/safegrd/cli/releases/download: a mirror. Each
+	// release is <url>/v<version>/<file>, and is checked the same way.
+	UpdatesURL string `yaml:"updates_url,omitempty" json:"updates_url,omitempty"`
 }
 
 // DefaultsConfig defines fallback values inherited by surfaces.

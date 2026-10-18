@@ -157,6 +157,11 @@ type Node struct {
 	Arch             string `json:"arch,omitempty" yaml:"arch,omitempty"`
 	UpgradeAvailable bool   `json:"upgrade_available,omitempty" yaml:"upgrade_available,omitempty"`
 	LatestCLIVersion string `json:"latest_cli_version,omitempty" yaml:"latest_cli_version,omitempty"`
+	// Update is what the host's daemon last said about updating itself, and
+	// UpdateRequest an install or revert asked for in the console and not yet
+	// acted on. On the host's node, never on a surface's.
+	Update        *UpdateStatus  `json:"update,omitempty" yaml:"update,omitempty"`
+	UpdateRequest *UpdateRequest `json:"update_request,omitempty" yaml:"update_request,omitempty"`
 
 	// AlertState is the open alert episode, if any: AlertStateSilent or
 	// AlertStateOverdue. One alert opens it and one closes it, so it is
@@ -358,6 +363,9 @@ type HeartbeatRequest struct {
 	// WAL is the surface's WAL archive, from a daemon that keeps one. Nil
 	// from a surface without one leaves the record alone.
 	WAL *WALStatus `json:"wal,omitempty"`
+	// Update is the host's update state, sent by a resident daemon with each
+	// surface's heartbeat and recorded on the host's node.
+	Update *UpdateStatus `json:"update,omitempty"`
 }
 
 // HeartbeatResponse instructs the node on next actions.
@@ -410,6 +418,9 @@ type HeartbeatResponse struct {
 	// version of SafeGrd CLI is released.
 	LatestCLIVersion string `json:"latest_cli_version,omitempty"`
 	UpgradeAvailable bool   `json:"upgrade_available,omitempty"`
+	// UpdateRequest is an install or revert asked for this surface's host,
+	// sent on every surface's heartbeat until the host reports it handled.
+	UpdateRequest *UpdateRequest `json:"update_request,omitempty"`
 }
 
 // IsVersionOutdated reports whether current is strictly older than latest according to semantic versioning.

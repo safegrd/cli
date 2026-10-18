@@ -23,7 +23,10 @@
 #   curl -fsSL https://safegrd.dev/install.sh | SAFEGRD_INSTALL_DIR=~/.local/bin sh
 #
 #   VERSION              release tag to install (default: latest)
-#   SAFEGRD_INSTALL_DIR  where to put the binary (default: /usr/local/bin, or ~/.local/bin without sudo)
+#   SAFEGRD_INSTALL_DIR  where to put the binary (default: /usr/local/bin, or ~/.local/bin without sudo).
+#                        A binary put there is not updated from the console, unless SAFEGRD_LIB_DIR is set too
+#   SAFEGRD_LIB_DIR      with SAFEGRD_INSTALL_DIR: keep each release in this directory and link the
+#                        binary to it, so the console can update the host and go back
 #   SAFEGRD_NO_SETUP=1   install only; do not offer to log in and enroll
 #   SAFEGRD_FORCE_INSTALL=1  download and install even when this release is already installed
 #   SAFEGRD_PROJECT      project ID or slug to enroll this host into
@@ -41,6 +44,12 @@
 #                        build before it is published (curl only; file:// works)
 
 set -e
+
+# The Ed25519 public keys a release's checksums.txt.sig is checked against,
+# base64, one per line. pkg/release/trusted_keys.txt holds the same keys, and
+# the daemon checks them too before it installs a release from the console.
+SAFEGRD_RELEASE_KEYS="
+"
 
 # ANSI styling. The variables hold the escape characters themselves, not
 # "\033" text: printf expands that only in its format, so a colour passed in
@@ -165,22 +174,39 @@ esac
 log_info "Target release: ${BOLD}${TAG}${RESET} (${OS}/${ARCH})"
 
 # 5. Determine Destination Directory
+# Each release goes to LIB_DIR/versions/<version>, LIB_DIR/current points at
+# the one in use and INSTALL_DIR/safegrd at LIB_DIR/current/safegrd. A daemon
+# running from there can switch release when the console asks, and go back.
 if [ -n "${SAFEGRD_INSTALL_DIR:-}" ]; then
   INSTALL_DIR="$SAFEGRD_INSTALL_DIR"
+  LIB_DIR="${SAFEGRD_LIB_DIR:-}"
   USE_SUDO=0
 elif [ "$(id -u)" -eq 0 ]; then
   INSTALL_DIR="/usr/local/bin"
+  LIB_DIR="/usr/local/lib/safegrd"
   USE_SUDO=0
-elif [ -w "/usr/local/bin" ]; then
+elif [ -w "/usr/local/bin" ] && { [ -w "/usr/local/lib/safegrd" ] || { [ ! -e "/usr/local/lib/safegrd" ] && [ -w "/usr/local/lib" ]; }; }; then
   INSTALL_DIR="/usr/local/bin"
+  LIB_DIR="/usr/local/lib/safegrd"
   USE_SUDO=0
 elif command -v sudo >/dev/null 2>&1; then
   INSTALL_DIR="/usr/local/bin"
+  LIB_DIR="/usr/local/lib/safegrd"
   USE_SUDO=1
 else
   INSTALL_DIR="${HOME}/.local/bin"
+  LIB_DIR="${HOME}/.local/lib/safegrd"
   USE_SUDO=0
 fi
+
+as_installer() {
+  if [ "$USE_SUDO" -eq 1 ]; then sudo "$@"; else "$@"; fi
+}
+
+# in_layout says whether $1 is the link install.sh makes into LIB_DIR.
+in_layout() {
+  [ -n "$LIB_DIR" ] && [ -L "$1" ] && [ "$(readlink "$1")" = "$LIB_DIR/current/safegrd" ] && [ -L "$LIB_DIR/current" ]
+}
 
 # 6. Is this release already installed?
 # Re-running the one-liner is how a claim code or a second setup attempt is
@@ -204,7 +230,9 @@ fi
 ALREADY_INSTALLED=""
 if [ -n "$EXISTING_BIN" ] && [ -z "${SAFEGRD_FORCE_INSTALL:-}" ]; then
   EXISTING_VERSION="$(installed_version "$EXISTING_BIN" || true)"
-  if [ -n "$EXISTING_VERSION" ] && [ "$EXISTING_VERSION" = "$VERSION_NUM" ]; then
+  # A copy installed before the versions directory existed is moved into it,
+  # even at the same release.
+  if [ -n "$EXISTING_VERSION" ] && [ "$EXISTING_VERSION" = "$VERSION_NUM" ] && { [ -z "$LIB_DIR" ] || [ "$EXISTING_BIN" != "$INSTALL_DIR/safegrd" ] || in_layout "$EXISTING_BIN"; }; then
     ALREADY_INSTALLED=1
     SAFEGRD_BIN="$EXISTING_BIN"
     INSTALL_DIR="$(dirname "$EXISTING_BIN")"
@@ -212,6 +240,41 @@ if [ -n "$EXISTING_BIN" ] && [ -z "${SAFEGRD_FORCE_INSTALL:-}" ]; then
     printf "   Set SAFEGRD_FORCE_INSTALL=1 to download and install it again.\n"
   fi
 fi
+
+# verify_signature checks checksums.txt.sig against SAFEGRD_RELEASE_KEYS with
+# openssl. A signature that does not verify stops the install. A release
+# published before releases were signed, or an openssl too old to check
+# Ed25519, is said and the install goes on, checked against checksums.txt.
+verify_signature() {
+  KEYS="$(printf '%s\n' "$SAFEGRD_RELEASE_KEYS" | grep -v '^[[:space:]]*$' || true)"
+  if [ -z "$KEYS" ]; then
+    return 0
+  fi
+  if ! download_file "${DOWNLOAD_BASE}/checksums.txt.sig" "$TMP_DIR/checksums.txt.sig" 2>/dev/null; then
+    log_warn "${TAG} has no checksums.txt.sig, so it was checked against checksums.txt only."
+    return 0
+  fi
+  if ! command -v openssl >/dev/null 2>&1 || ! openssl pkeyutl -help 2>&1 | grep -q -- -rawin; then
+    log_warn "openssl here cannot check an Ed25519 signature, so ${TAG} was checked against checksums.txt only."
+    return 0
+  fi
+  if ! openssl base64 -d -A -in "$TMP_DIR/checksums.txt.sig" -out "$TMP_DIR/checksums.sig.bin" 2>/dev/null; then
+    log_error "checksums.txt.sig is not base64. Not installing."
+    exit 1
+  fi
+  for key in $KEYS; do
+    # The 12 bytes before an Ed25519 key in a SubjectPublicKeyInfo, base64.
+    printf '%s\n' '-----BEGIN PUBLIC KEY-----' "MCowBQYDK2VwAyEA${key}" '-----END PUBLIC KEY-----' > "$TMP_DIR/release.pub"
+    if openssl pkeyutl -verify -pubin -inkey "$TMP_DIR/release.pub" -rawin \
+        -in "$TMP_DIR/checksums.txt" -sigfile "$TMP_DIR/checksums.sig.bin" >/dev/null 2>&1; then
+      log_success "Signature verified: checksums.txt is signed by SafeGrd's release key."
+      return 0
+    fi
+  done
+  log_error "checksums.txt.sig does not verify with SafeGrd's release key, so this download is not the release SafeGrd published."
+  log_error "Not installing."
+  exit 1
+}
 
 TMP_DIR=""
 cleanup() {
@@ -274,6 +337,7 @@ if [ -z "$ALREADY_INSTALLED" ]; then
       exit 1
     fi
     log_success "Checksum verified: ${ACTUAL_HASH}"
+    verify_signature
   fi
 
   # 9. Unpack Archive
@@ -295,15 +359,27 @@ if [ -z "$ALREADY_INSTALLED" ]; then
 
   # 10. Install Binary
   if [ "$USE_SUDO" -eq 1 ]; then
-    log_info "Installing to ${INSTALL_DIR} (requires sudo)..."
-    sudo mkdir -p "$INSTALL_DIR"
-    sudo cp "$TMP_DIR/safegrd" "$INSTALL_DIR/safegrd"
-    sudo chmod 755 "$INSTALL_DIR/safegrd"
+    log_info "Installing to ${LIB_DIR:-$INSTALL_DIR} (requires sudo)..."
   else
-    log_info "Installing to ${INSTALL_DIR}..."
-    mkdir -p "$INSTALL_DIR"
-    cp "$TMP_DIR/safegrd" "$INSTALL_DIR/safegrd"
-    chmod 755 "$INSTALL_DIR/safegrd"
+    log_info "Installing to ${LIB_DIR:-$INSTALL_DIR}..."
+  fi
+  as_installer mkdir -p "$INSTALL_DIR"
+  if [ -n "$LIB_DIR" ]; then
+    VERSION_DIR="$LIB_DIR/versions/$VERSION_NUM"
+    as_installer mkdir -p "$VERSION_DIR"
+    as_installer cp "$TMP_DIR/safegrd" "$VERSION_DIR/safegrd.new"
+    as_installer chmod 755 "$VERSION_DIR/safegrd.new"
+    as_installer mv -f "$VERSION_DIR/safegrd.new" "$VERSION_DIR/safegrd"
+    # The release in use becomes the one the console can go back to.
+    OLD_CURRENT="$(readlink "$LIB_DIR/current" 2>/dev/null | sed 's#.*/##' || true)"
+    if [ -n "$OLD_CURRENT" ] && [ "$OLD_CURRENT" != "$VERSION_NUM" ] && [ -x "$LIB_DIR/versions/$OLD_CURRENT/safegrd" ]; then
+      as_installer ln -sfn "versions/$OLD_CURRENT" "$LIB_DIR/previous"
+    fi
+    as_installer ln -sfn "versions/$VERSION_NUM" "$LIB_DIR/current"
+    as_installer ln -sfn "$LIB_DIR/current/safegrd" "$INSTALL_DIR/safegrd"
+  else
+    as_installer cp "$TMP_DIR/safegrd" "$INSTALL_DIR/safegrd"
+    as_installer chmod 755 "$INSTALL_DIR/safegrd"
   fi
 
   # 11. Smoke Test
@@ -523,6 +599,23 @@ if [ -z "$ALREADY_INSTALLED" ] && [ -n "${EXISTING_VERSION:-}" ]; then
   elif [ -f "${HOME}/.config/systemd/user/safegrd.service" ] || [ -f "${HOME}/Library/LaunchAgents/dev.safegrd.daemon.plist" ]; then
     printf "   The daemon still runs %s. Restart it: ${CYAN}safegrd daemon restart${RESET}\n" "$EXISTING_VERSION"
   fi
+fi
+
+# A system unit from an earlier release keeps the daemon from writing outside
+# its state, so it could not switch release when the console asks. The unit
+# gains LIB_DIR as a path it may write, and nothing else changes.
+SYSTEM_UNIT=/etc/systemd/system/safegrd.service
+if [ -n "$LIB_DIR" ] && [ -f "$SYSTEM_UNIT" ] && grep -q '^ProtectSystem=strict' "$SYSTEM_UNIT" && ! grep -q "^ReadWritePaths=-${LIB_DIR}\$" "$SYSTEM_UNIT"; then
+  UNIT_SUDO=""
+  if [ "$(id -u)" -ne 0 ]; then UNIT_SUDO="sudo"; fi
+  UNIT_TMP="$(mktemp 2>/dev/null || mktemp -t safegrd-unit)"
+  awk -v line="ReadWritePaths=-${LIB_DIR}" '{ print } /^ProtectSystem=strict/ { print line }' "$SYSTEM_UNIT" > "$UNIT_TMP"
+  if $UNIT_SUDO cp "$UNIT_TMP" "$SYSTEM_UNIT" && $UNIT_SUDO systemctl daemon-reload; then
+    printf "   %s may now write %s, so the console can update this host.\n" "$SYSTEM_UNIT" "$LIB_DIR"
+  else
+    log_warn "Could not update ${SYSTEM_UNIT}. Run: sudo safegrd daemon install"
+  fi
+  rm -f "$UNIT_TMP"
 fi
 
 # A host that is already enrolled keeps its key and its node: re-running the
