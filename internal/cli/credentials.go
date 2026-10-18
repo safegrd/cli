@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -308,6 +309,7 @@ type heldKeyQuery struct {
 	snapshotID string
 	recipient  string
 	have       []string
+	purpose    string // for the key access log; the running command when empty
 }
 
 // fetchManagedIdentity asks the remote server for the one Age identity it
@@ -331,6 +333,11 @@ func fetchManagedIdentity(ctx context.Context, serverURL, nodeID, token string, 
 	}
 	for _, h := range hq.have {
 		q.Add("have", h)
+	}
+	// Named for the key access log, as a credential fetch is: a copy, a
+	// restore and a drill read differently there.
+	if purpose := cmp.Or(hq.purpose, runningCommand); purpose != "" {
+		q.Set("purpose", purpose)
 	}
 	req, err := http.NewRequestWithContext(ctx, "GET",
 		fmt.Sprintf("%s/api/v1/nodes/%s/identity?%s", strings.TrimRight(serverURL, "/"), nodeID, q.Encode()), nil)
