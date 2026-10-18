@@ -499,14 +499,67 @@ func restoreRepo(ctx context.Context, rs *repoSnapshot, privateKey, targetDir, t
 // tablePath is the file a database run keeps a table's rows in. A name with
 // no schema is in public.
 func tablePath(name string) (string, error) {
-	schema, table, ok := strings.Cut(name, ".")
-	if !ok {
-		schema, table = "public", name
-	}
-	if schema == "" || table == "" || strings.ContainsAny(name, "/\x00") {
+	schema, table, ok := splitTableName(name)
+	if !ok || schema == "" || table == "" || strings.ContainsAny(schema+table, "/\x00") {
 		return "", fmt.Errorf("--table %q is not schema.table", name)
 	}
 	return "data/" + schema + "/" + table + ".copy", nil
+}
+
+// splitTableName reads schema.table, either part quoted as SQL quotes it
+// ("Sales Team"."Order Items", a "" inside for a quote), as psql prints a
+// name that needs quoting. A name with no schema is in public.
+func splitTableName(name string) (schema, table string, ok bool) {
+	if !strings.Contains(name, `"`) {
+		s, t, found := strings.Cut(name, ".")
+		if !found {
+			return "public", name, true
+		}
+		return s, t, true
+	}
+	var parts []string
+	for i := 0; i < len(name); {
+		if name[i] == '"' {
+			var b strings.Builder
+			j := i + 1
+			for ; j < len(name); j++ {
+				if name[j] == '"' {
+					if j+1 < len(name) && name[j+1] == '"' {
+						b.WriteByte('"')
+						j++
+						continue
+					}
+					break
+				}
+				b.WriteByte(name[j])
+			}
+			if j >= len(name) {
+				return "", "", false
+			}
+			parts = append(parts, b.String())
+			i = j + 1
+		} else {
+			k := strings.IndexByte(name[i:], '.')
+			if k < 0 {
+				k = len(name) - i
+			}
+			parts = append(parts, name[i:i+k])
+			i += k
+		}
+		if i < len(name) {
+			if name[i] != '.' {
+				return "", "", false
+			}
+			i++
+		}
+	}
+	switch len(parts) {
+	case 1:
+		return "public", parts[0], true
+	case 2:
+		return parts[0], parts[1], true
+	}
+	return "", "", false
 }
 
 // openRun reads a run's snapshot, index and files, after checking its

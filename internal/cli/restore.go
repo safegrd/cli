@@ -600,7 +600,7 @@ files: each upload writes or updates the file's row in storage.objects.`,
 	cmd.Flags().StringArrayVar(&dataOnly, "data-only-schema", nil, "Load only this schema's rows into tables the target already has (repeatable)")
 	cmd.Flags().BoolVar(&salvage, "salvage", false, "Incremental files snapshot: restore every file that verifies and list the ones a damaged or missing pack leaves out, instead of restoring nothing. Exits non-zero when any is left out")
 	cmd.Flags().BoolVar(&noOwner, "no-owner", false, "PostgreSQL: restore without ownership and privileges, so every object belongs to the restoring role. The roles the schema names are still created")
-	cmd.Flags().StringArrayVar(&tables, "table", nil, "Restore only this table (schema.table) of a PostgreSQL snapshot into --target: into an empty table of the same definition, or created as the snapshot defined it when the target has none (repeatable)")
+	cmd.Flags().StringArrayVar(&tables, "table", nil, "Restore only this table (schema.table, either part quoted as psql prints it) of a PostgreSQL snapshot into --target: into an empty table of the same definition, or created as the snapshot defined it, with its schema, when the target has none (repeatable)")
 	cmd.Flags().StringVar(&surfaceSel, "surface", "", "With --path or --table and no --snapshot: the surface whose repository holds it")
 	cmd.Flags().StringArrayVar(&paths, "path", nil, "Restore only this path of a repository snapshot, relative to / (repeatable; '*', '?' and '**' match)")
 	cmd.Flags().StringVar(&sourceEndpoint, "source-endpoint", "", "With --target s3://…: the store's S3 URL (Supabase Storage: https://PROJECT.storage.supabase.co/storage/v1/s3); empty means AWS S3")

@@ -120,6 +120,11 @@ func (tr *tableRestore) prepare(ctx context.Context, tx pgx.Tx) error {
 			if !found {
 				return fmt.Errorf("the target has no table %s, and %s holds no definition of it to create it from. Restore the whole snapshot into an empty database", p.name, tr.id)
 			}
+			// The table's schema may be missing from a database that has
+			// other tables, and the table cannot be made without it.
+			if _, err := tx.Exec(ctx, "CREATE SCHEMA IF NOT EXISTS "+pgx.Identifier{p.stat.Schema}.Sanitize()); err != nil {
+				return fmt.Errorf("creating schema %s for %s: %w; nothing was restored", p.stat.Schema, p.name, err)
+			}
 			if _, err := tx.Exec(ctx, ddl.Create); err != nil {
 				return fmt.Errorf("creating %s as %s defines it: %w; nothing was restored", p.name, tr.id, err)
 			}
