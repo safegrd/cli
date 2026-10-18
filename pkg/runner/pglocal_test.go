@@ -185,7 +185,7 @@ func TestALocalSandboxStartsAndIsDeleted(t *testing.T) {
 }
 
 // A snapshot of a database that uses pg_cron restores into a local sandbox,
-// and the sandbox has none of its jobs. The sandbox used to start without
+// with its job created turned off. The sandbox used to start without
 // pg_cron's library, so the CREATE EXTENSION in the snapshot's schema failed
 // on the unset cron.database_name and the drill reported a broken backup.
 // Needs a PostgreSQL server with pg_cron, which scripts/test-root.sh
@@ -242,12 +242,22 @@ func TestASnapshotUsingPgCronRestoresIntoALocalSandboxWithNoJobs(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer conn.Close(ctx)
-	var rows, jobs int
-	if err := conn.QueryRow(ctx, "SELECT (SELECT count(*) FROM ticks), (SELECT count(*) FROM cron.job)").Scan(&rows, &jobs); err != nil {
+	// The snapshot carries the job, and the restore creates it turned off.
+	var rows, jobs, active int
+	if err := conn.QueryRow(ctx, "SELECT (SELECT count(*) FROM ticks), (SELECT count(*) FROM cron.job), (SELECT count(*) FROM cron.job WHERE active)").Scan(&rows, &jobs, &active); err != nil {
 		t.Fatal(err)
 	}
-	if rows != 2 || jobs != 0 {
-		t.Errorf("the sandbox holds %d rows of ticks (want 2) and %d pg_cron jobs (want none)", rows, jobs)
+	if rows != 2 || jobs != 1 || active != 0 {
+		t.Errorf("the sandbox holds %d rows of ticks (want 2) and %d pg_cron jobs, %d of them active (want 1, none active)", rows, jobs, active)
+	}
+	// The sandbox's role is a superuser, whose reset drops every schema the
+	// drill made: pg_cron's is the extension's, which PostgreSQL refuses to
+	// drop, and the next drill would have found the sandbox unusable.
+	if err := ResetSandbox(ctx, sb.URL); err != nil {
+		t.Fatalf("resetting a sandbox that has pg_cron: %v", err)
+	}
+	if err := CheckSandboxEmpty(ctx, sb.URL); err != nil {
+		t.Errorf("after the reset the sandbox is not empty: %v", err)
 	}
 }
 

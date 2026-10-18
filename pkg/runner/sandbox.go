@@ -17,9 +17,15 @@ import (
 // surface backs up, and after an unattended drill it is emptied again so the
 // next one can prove the same thing.
 
-// userSchemasQuery lists schemas that are not Postgres' own.
-const userSchemasQuery = `SELECT nspname FROM pg_namespace
-	WHERE nspname NOT LIKE 'pg\_%' AND nspname <> 'information_schema'`
+// userSchemasQuery lists schemas that are not Postgres' own, nor an
+// extension's: PostgreSQL refuses DROP SCHEMA cron CASCADE while pg_cron
+// owns it, and a drill of a snapshot that uses pg_cron left a superuser's
+// sandbox unable to reset. The extension stays, holding no table a check
+// counts, and the next drill's CREATE EXTENSION IF NOT EXISTS reuses it.
+const userSchemasQuery = `SELECT nspname FROM pg_namespace n
+	WHERE nspname NOT LIKE 'pg\_%' AND nspname <> 'information_schema'
+	  AND NOT EXISTS (SELECT 1 FROM pg_depend d
+	                  WHERE d.classid = 'pg_namespace'::regclass AND d.objid = n.oid AND d.deptype = 'e')`
 
 // CheckSandboxEmpty refuses a sandbox that holds any user table.
 func CheckSandboxEmpty(ctx context.Context, sandboxURL string) error {

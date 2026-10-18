@@ -1416,6 +1416,12 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 		return nil, plan, stageErr(model.BackupReasonStorage, err)
 	}
 	applyHeldSinkKey(ctx, c, &storageCfg)
+	// A surface that names erasure tables believes they are recorded: on
+	// storage that cannot keep the record it is refused, not backed up
+	// without one.
+	if len(s.Erasures) > 0 && (storageCfg.Type == config.StorageTypeHosted || hostedLayout(storageCfg)) {
+		return nil, plan, stageErr(model.BackupReasonConfig, fmt.Errorf("surface %s: %w", s.ID, errErasuresOnHosted))
+	}
 
 	storageProvider, err := openStorage(ctx, c, storageCfg)
 	if err != nil {
