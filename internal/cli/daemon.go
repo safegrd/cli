@@ -1014,9 +1014,15 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 		sayConsoleSettingsInForce(&surface, &configured, sState)
 
 		if clockWentBackwards(sState, now) {
+			// Whichever recorded time is ahead: a state with only a last
+			// success printed the zero time of the attempt.
+			ahead := sState.LastAttempt
+			if sState.LastSuccess.After(ahead) {
+				ahead = sState.LastSuccess
+			}
 			fmt.Fprintf(os.Stderr, "Warning: Surface %s: this host's clock is behind the last backup it recorded (%s); "+
 				"it went backwards. Backing up now rather than waiting for it to catch up. Check NTP.\n",
-				surface.ID, sState.LastAttempt.UTC().Format(time.RFC3339))
+				surface.ID, ahead.UTC().Format(time.RFC3339))
 		}
 		due, nextDue := isSurfaceDue(&surface, sState, now)
 		if !due && tick == 0 && sState.ConsecutiveFailures > 0 {
