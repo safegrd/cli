@@ -430,27 +430,27 @@ a file with --file:
 
 			serverURL := resolveServerURL()
 
-			// 1. Resolve the attestation keys
-			// A public key is no secret: file:/path is read, with no warning
-			// about the value being visible.
-			pinned, err := resolveConfigSecret("--key", keyStr)
-			if err != nil {
-				return err
-			}
-			keys, err := loadAttestationKeys(cmd.Context(), serverURL, pinned, keysFile)
-			if err != nil {
-				return err
-			}
-
-			// 2. Load verifications
+			// 1. Load the records: a file (an array of records, or an
+			// Evidence Pack), or the remote server's for one node.
 			var reports []*model.VerificationReport
+			var pack *evidencePackFile
 			if localFile != "" {
 				data, err := os.ReadFile(localFile)
 				if err != nil {
 					return fmt.Errorf("failed to read verifications file: %w", err)
 				}
-				if err := json.Unmarshal(data, &reports); err != nil {
-					return fmt.Errorf("failed to parse verifications file: %w", err)
+				if reports, pack, err = parseAttestationFile(data); err != nil {
+					return err
+				}
+				// --node picks one host's chain out of a file of several.
+				if cmd.Flags().Changed("node") {
+					kept := reports[:0]
+					for _, r := range reports {
+						if r.NodeID == nodeID {
+							kept = append(kept, r)
+						}
+					}
+					reports = kept
 				}
 			} else {
 				req, err := http.NewRequestWithContext(cmd.Context(), http.MethodGet, fmt.Sprintf("%s/api/v1/verifications?node_id=%s", serverURL, url.QueryEscape(nodeID)), nil)
@@ -487,6 +487,26 @@ a file with --file:
 				}
 			}
 
+			// 2. Resolve the attestation keys. A pack carries the keys that
+			// signed it; --key or --keys-file checks it against keys from
+			// elsewhere instead.
+			// A public key is no secret: file:/path is read, with no warning
+			// about the value being visible.
+			pinned, err := resolveConfigSecret("--key", keyStr)
+			if err != nil {
+				return err
+			}
+			var keys *attestationKeySet
+			keysFromPack := pack != nil && pinned == "" && keysFile == "" && pack.SigningKey.PublicKeyHex != ""
+			if keysFromPack {
+				keys, err = keySetFromPublished(pack.published())
+			} else {
+				keys, err = loadAttestationKeys(cmd.Context(), serverURL, pinned, keysFile)
+			}
+			if err != nil {
+				return err
+			}
+
 			if len(reports) == 0 {
 				if jsonOut {
 					fmt.Println(`{"status":"empty","count":0}`)
@@ -496,60 +516,116 @@ a file with --file:
 				return nil
 			}
 
-			// Sort oldest first (started_at ASC) to verify chain forwards from genesis
-			sort.Slice(reports, func(i, j int) bool {
-				if reports[i].StartedAt.Equal(reports[j].StartedAt) {
-					return reports[i].VerificationID < reports[j].VerificationID
+			// 3. Each node's records are a chain of their own, from genesis,
+			// or for a pack covering a period from the record before it.
+			byNode := map[string][]*model.VerificationReport{}
+			var nodes []string
+			for _, r := range reports {
+				if _, ok := byNode[r.NodeID]; !ok {
+					nodes = append(nodes, r.NodeID)
 				}
-				return reports[i].StartedAt.Before(reports[j].StartedAt)
-			})
-
-			expectedPrev := "genesis"
+				byNode[r.NodeID] = append(byNode[r.NodeID], r)
+			}
+			sort.Strings(nodes)
+			type chainResult struct {
+				node, anchor, first, head string
+				depth                     int
+			}
+			var chains []chainResult
 			unsigned := 0
-			for i, r := range reports {
-				// 1. Verify PrevHash chaining
-				if r.PrevHash != expectedPrev {
-					return fmt.Errorf("CHAIN BREAK DETECTED at index %d (verification %s): expected PrevHash=%q, actual PrevHash=%q",
-						i, r.VerificationID, expectedPrev, r.PrevHash)
+			for _, node := range nodes {
+				rs := byNode[node]
+				// Sort oldest first (started_at ASC) to verify chain forwards from genesis
+				sort.Slice(rs, func(i, j int) bool {
+					if rs[i].StartedAt.Equal(rs[j].StartedAt) {
+						return rs[i].VerificationID < rs[j].VerificationID
+					}
+					return rs[i].StartedAt.Before(rs[j].StartedAt)
+				})
+				anchor := "genesis"
+				if pack != nil {
+					if a, ok := pack.ChainAnchors[node]; ok && a != "" {
+						anchor = a
+					}
 				}
+				keys.newest = time.Time{}
+				expectedPrev := anchor
+				for i, r := range rs {
+					// 1. Verify PrevHash chaining
+					if r.PrevHash != expectedPrev {
+						if len(nodes) > 1 {
+							return fmt.Errorf("CHAIN BREAK DETECTED at index %d of node %s (verification %s): expected PrevHash=%q, actual PrevHash=%q",
+								i, node, r.VerificationID, expectedPrev, r.PrevHash)
+						}
+						return fmt.Errorf("CHAIN BREAK DETECTED at index %d (verification %s): expected PrevHash=%q, actual PrevHash=%q",
+							i, r.VerificationID, expectedPrev, r.PrevHash)
+					}
 
-				// 2. Verify the signature under the key the record names. A
-				// record with none is counted and said, never passed as verified.
-				if r.Signature == "" {
-					unsigned++
-				} else if err := keys.verify(i, r); err != nil {
-					return err
+					// 2. Verify the signature under the key the record names. A
+					// record with none is counted and said, never passed as verified.
+					if r.Signature == "" {
+						unsigned++
+					} else if err := keys.verify(i, r); err != nil {
+						return err
+					}
+
+					// Next link in chain must point to this report's certificate hash
+					expectedPrev = r.CertificateHash
 				}
-
-				// Next link in chain must point to this report's certificate hash
-				expectedPrev = r.CertificateHash
+				chains = append(chains, chainResult{node: node, anchor: anchor, first: rs[0].CertificateHash, head: rs[len(rs)-1].CertificateHash, depth: len(rs)})
 			}
 
 			if jsonOut {
 				res := map[string]any{
 					"status":        "verified",
-					"node_id":       nodeID,
-					"chain_depth":   len(reports),
-					"genesis_hash":  reports[0].CertificateHash,
-					"head_hash":     reports[len(reports)-1].CertificateHash,
 					"signatures_ok": unsigned == 0,
 					"unsigned":      unsigned,
 					"signing_keys":  keys.used(),
+				}
+				if len(chains) == 1 {
+					c := chains[0]
+					if nodeID == "" || localFile != "" {
+						nodeID = c.node
+					}
+					res["node_id"], res["chain_depth"], res["genesis_hash"], res["head_hash"] = nodeID, c.depth, c.first, c.head
+					if c.anchor != "genesis" {
+						res["starts_after"] = c.anchor
+					}
+				} else {
+					var list []map[string]any
+					for _, c := range chains {
+						list = append(list, map[string]any{"node_id": c.node, "chain_depth": c.depth, "starts_after": c.anchor, "head_hash": c.head})
+					}
+					res["chains"] = list
 				}
 				enc := json.NewEncoder(os.Stdout)
 				enc.SetIndent("", "  ")
 				return enc.Encode(res)
 			}
 
-			if nodeID == "" {
-				// A file names its node in every record; --node is optional with --file.
-				nodeID = reports[0].NodeID
+			from := func(c chainResult) string {
+				if c.anchor == "genesis" {
+					return "from genesis"
+				}
+				return "from the record before the period (" + c.anchor + ")"
 			}
 			fmt.Println("Attestation History Verified")
-			fmt.Printf("   Node ID:         %s\n", nodeID)
-			fmt.Printf("   Records:         %d, each linked to the one before it from genesis\n", len(reports))
-			fmt.Printf("   Genesis hash:    %s\n", reports[0].CertificateHash)
-			fmt.Printf("   Head hash:       %s\n", reports[len(reports)-1].CertificateHash)
+			if len(chains) == 1 {
+				c := chains[0]
+				if nodeID == "" || localFile != "" {
+					// A file names its node in every record; --node is optional with --file.
+					nodeID = c.node
+				}
+				fmt.Printf("   Node ID:         %s\n", nodeID)
+				fmt.Printf("   Records:         %d, each linked to the one before it %s\n", c.depth, from(c))
+				fmt.Printf("   Genesis hash:    %s\n", c.first)
+				fmt.Printf("   Head hash:       %s\n", c.head)
+			} else {
+				fmt.Printf("   Chains:          %d hosts, %d records, each linked to the one before it\n", len(chains), len(reports))
+				for _, c := range chains {
+					fmt.Printf("   %s: %d records %s, head %s\n", c.node, c.depth, from(c), c.head)
+				}
+			}
 			if unsigned == 0 {
 				fmt.Printf("   Signatures:      %d of %d valid (Ed25519)\n", len(reports), len(reports))
 			} else {
@@ -558,6 +634,9 @@ a file with --file:
 			}
 			if line := keys.usedLine(); line != "" {
 				fmt.Printf("   Signing keys:    %s\n", line)
+			}
+			if keysFromPack {
+				fmt.Println("   Keys:            the pack's own. Pass --key or --keys-file to check against keys you got elsewhere.")
 			}
 			return nil
 		},
@@ -693,6 +772,52 @@ func keySetFromPublished(pk publishedAttestationKeys) (*attestationKeySet, error
 		set.byID[r.KeyID] = &attestationKey{ID: r.KeyID, Public: pub, RetiredAt: r.RetiredAt.UTC()}
 	}
 	return set, nil
+}
+
+// evidencePackFile is what verify history reads from an Evidence Pack: its
+// records, the hash each node's first record links to, and its keys.
+type evidencePackFile struct {
+	DrillAttestations []*model.VerificationReport `json:"drill_attestations"`
+	ChainAnchors      map[string]string           `json:"chain_anchors"`
+	SigningKey        struct {
+		KeyID        string `json:"key_id"`
+		PublicKeyHex string `json:"public_key_hex"`
+	} `json:"signing_key"`
+	RetiredSigningKeys []struct {
+		KeyID     string    `json:"key_id"`
+		PublicKey string    `json:"public_key"`
+		RetiredAt time.Time `json:"retired_at"`
+	} `json:"retired_signing_keys"`
+}
+
+// published is the pack's keys in the shape of the public-key route.
+func (p *evidencePackFile) published() publishedAttestationKeys {
+	pk := publishedAttestationKeys{KeyID: p.SigningKey.KeyID, PublicKey: p.SigningKey.PublicKeyHex}
+	for _, r := range p.RetiredSigningKeys {
+		pk.Retired = append(pk.Retired, struct {
+			KeyID     string    `json:"key_id"`
+			PublicKey string    `json:"public_key"`
+			RetiredAt time.Time `json:"retired_at"`
+		}{r.KeyID, r.PublicKey, r.RetiredAt})
+	}
+	return pk
+}
+
+// parseAttestationFile reads an array of records, or an Evidence Pack.
+func parseAttestationFile(data []byte) ([]*model.VerificationReport, *evidencePackFile, error) {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) > 0 && trimmed[0] == '[' {
+		var reports []*model.VerificationReport
+		if err := json.Unmarshal(trimmed, &reports); err != nil {
+			return nil, nil, fmt.Errorf("failed to parse verifications file: %w", err)
+		}
+		return reports, nil, nil
+	}
+	var pack evidencePackFile
+	if err := json.Unmarshal(trimmed, &pack); err != nil || pack.DrillAttestations == nil {
+		return nil, nil, fmt.Errorf("the file is neither a list of verification records nor an Evidence Pack")
+	}
+	return pack.DrillAttestations, &pack, nil
 }
 
 // loadAttestationKeys resolves the keys from --key, --keys-file or
