@@ -101,7 +101,9 @@ func (i *Inspector) GetTableStats(ctx context.Context) ([]model.TableStat, error
 		if stats[idx].RowCount < 10000 {
 			var exactCount int64
 			ident := `"` + strings.ReplaceAll(stats[idx].Schema, `"`, `""`) + `"."` + strings.ReplaceAll(stats[idx].TableName, `"`, `""`) + `"`
-			err := i.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+ident).Scan(&exactCount)
+			// ONLY: a parent's own rows, as the backup copies them; its
+			// inherited children are tables of their own.
+			err := i.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM ONLY "+ident).Scan(&exactCount)
 			if err == nil {
 				stats[idx].RowCount = exactCount
 			}
@@ -118,7 +120,9 @@ func (i *Inspector) CountRowsExactly(ctx context.Context, m *model.SnapshotMetad
 	for idx := range m.TableStats {
 		t := &m.TableStats[idx]
 		ident := `"` + strings.ReplaceAll(t.Schema, `"`, `""`) + `"."` + strings.ReplaceAll(t.TableName, `"`, `""`) + `"`
-		if err := i.db.QueryRowContext(ctx, "SELECT count(*) FROM "+ident).Scan(&t.RowCount); err != nil {
+		// ONLY, or a parent with inherited children counted their rows too
+		// and every drill of a database using inheritance failed.
+		if err := i.db.QueryRowContext(ctx, "SELECT count(*) FROM ONLY "+ident).Scan(&t.RowCount); err != nil {
 			return fmt.Errorf("counting %s.%s: %w", t.Schema, t.TableName, err)
 		}
 	}
