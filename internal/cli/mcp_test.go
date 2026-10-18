@@ -1,9 +1,11 @@
 package cli
 
 import (
+	"io"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The local MCP's restore ran `safegrd restore --target postgres://user:pass@…`,
@@ -31,5 +33,46 @@ func TestNoLocalMCPToolTakesAQuery(t *testing.T) {
 		if strings.Contains(name, "query") || strings.Contains(name, "sql") {
 			t.Errorf("the local MCP takes %q", name)
 		}
+	}
+}
+
+// Stdin's end of file waits for the requests read before it, and a request
+// the client cancelled is not waited for.
+func TestTheLocalMCPHoldsEndOfFileUntilRequestsAreAnswered(t *testing.T) {
+	in := io.NopCloser(strings.NewReader(`{"jsonrpc":"2.0","id":7,"method":"tools/call"}` + "\n" + `{"jsonrpc":"2.0","id":"x","method":"tools/call"}`))
+	var out strings.Builder
+	s := newAnsweringStdio(in, &out, nil)
+	r, w := answeringReader{s}, answeringWriter{s}
+	if _, err := io.ReadAll(io.LimitReader(r, int64(len(`{"jsonrpc":"2.0","id":7,"method":"tools/call"}`)+1+len(`{"jsonrpc":"2.0","id":"x","method":"tools/call"}`)))); err != nil {
+		t.Fatal(err)
+	}
+	eof := make(chan error, 1)
+	go func() {
+		_, err := r.Read(make([]byte, 16))
+		eof <- err
+	}()
+	select {
+	case err := <-eof:
+		t.Fatalf("end of file before any answer: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if _, err := w.Write([]byte(`{"jsonrpc":"2.0","id":7.0,"result":{}}` + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-eof:
+		t.Fatalf("end of file with request x unanswered: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	s.mu.Lock()
+	s.noteRead([]byte(`{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"x"}}`))
+	s.mu.Unlock()
+	select {
+	case err := <-eof:
+		if err != io.EOF {
+			t.Fatalf("got %v, want end of file", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("still waiting after every request was answered or cancelled")
 	}
 }

@@ -50,7 +50,7 @@ directory or an empty database.`,
 					"Take a backup before a risky migration and verify it; restore only ever writes into a new or empty target.",
 			})
 			addLocalTools(server, self)
-			return server.Run(cmd.Context(), &mcp.StdioTransport{})
+			return server.Run(cmd.Context(), newAnsweringStdio(os.Stdin, os.Stdout, cmd.Context().Done()).transport())
 		},
 	}
 }
