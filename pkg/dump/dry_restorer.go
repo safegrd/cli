@@ -77,6 +77,7 @@ func (d *DryRestorer) InspectArchive(ctx context.Context, src io.Reader) (*DryRe
 		manifestFound bool
 		schemaFound   bool
 		sequencesSeen bool
+		cronJobs      = -1
 		rolesCarried  []string
 		rolesSeen     bool
 		sections      [][]byte
@@ -149,6 +150,12 @@ func (d *DryRestorer) InspectArchive(ctx context.Context, src io.Reader) (*DryRe
 				rolesSeen, rolesCarried = true, parseRolesSQL(data).names()
 			case entrySequences:
 				sequencesSeen = true
+			case entryCronJobs:
+				var jobs []CronJob
+				if err := json.NewDecoder(rd).Decode(&jobs); err != nil {
+					return fmt.Errorf("the archive's pg_cron jobs are unreadable: %w", err)
+				}
+				cronJobs = len(jobs)
 			}
 			return nil
 		},
@@ -217,6 +224,20 @@ func (d *DryRestorer) InspectArchive(ctx context.Context, src io.Reader) (*DryRe
 		if !sequencesSeen {
 			result.Passed = false
 		}
+	}
+	if result.Manifest.CronJobs > 0 || cronJobs >= 0 {
+		got := max(cronJobs, 0)
+		a := model.AssertionResult{
+			Name:     "CronJobsRecorded",
+			Passed:   got == result.Manifest.CronJobs,
+			Expected: fmt.Sprintf("%d pg_cron jobs", result.Manifest.CronJobs),
+			Actual:   fmt.Sprintf("%d pg_cron jobs", got),
+		}
+		if !a.Passed {
+			a.Message = "The archive does not carry the pg_cron jobs the backup counted"
+			result.Passed = false
+		}
+		result.Assertions = append(result.Assertions, a)
 	}
 
 	// 4. Collect per-table volume stats. The tables are the manifest's and

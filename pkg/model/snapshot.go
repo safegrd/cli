@@ -268,6 +268,10 @@ type SnapshotMetadata struct {
 	LargeObjectsLeftOut int64  `json:"large_objects_left_out,omitempty" yaml:"large_objects_left_out,omitempty"`
 	LargeObjectBytes    int64  `json:"large_object_bytes,omitempty" yaml:"large_object_bytes,omitempty"`
 	LargeObjectsDigest  string `json:"large_objects_digest,omitempty" yaml:"large_objects_digest,omitempty"`
+	// CronJobs is how many of pg_cron's jobs the archive carries. The jobs
+	// themselves are in the archive only, sealed: a job's command can hold
+	// a secret.
+	CronJobs int `json:"cron_jobs,omitempty" yaml:"cron_jobs,omitempty"`
 	// DatabaseSettings are the settings set on the PostgreSQL database
 	// itself (ALTER DATABASE ... SET), as "name=value", which no pg_dump
 	// section carries: a restore applies them to its target.

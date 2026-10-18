@@ -403,7 +403,7 @@ func runRepoDatabaseBackup(ctx context.Context, p repoDBParams) (*model.Snapshot
 
 // restoreRepo restores a repository snapshot: a files snapshot into a
 // directory, a database run into an empty database.
-func restoreRepo(ctx context.Context, rs *repoSnapshot, privateKey, targetDir, targetURL, toSQL string, paths, tables []string, noOwner, salvage bool) error {
+func restoreRepo(ctx context.Context, rs *repoSnapshot, privateKey, targetDir, targetURL, toSQL string, paths, tables []string, db dbRestoreOptions, salvage bool) error {
 	id := rs.Meta.SnapshotID
 	if salvage && (runner.IsRepoDatabase(rs.Meta) || runner.IsRepoLaravel(rs.Meta) || runner.IsRepoWordPress(rs.Meta) || toSQL != "") {
 		return fmt.Errorf("--salvage restores what verifies of a files snapshot; %s restores whole, in one transaction", id)
@@ -493,7 +493,7 @@ func restoreRepo(ctx context.Context, rs *repoSnapshot, privateKey, targetDir, t
 		return restoreRepoTables(ctx, rs, privateKey, targetURL, tables)
 	}
 	fmt.Printf("Restoring %s (epoch %s, %s) into %s\n", id, rs.Epoch.Epoch.EpochID, rs.SurfaceID, dump.RedactURL(targetURL))
-	return restoreRepoDatabase(ctx, rs, privateKey, targetURL, noOwner)
+	return restoreRepoDatabase(ctx, rs, privateKey, targetURL, db)
 }
 
 // tablePath is the file a database run keeps a table's rows in. A name with
@@ -694,7 +694,7 @@ func restoreRepoSQL(ctx context.Context, rs *repoSnapshot, privateKey, dir strin
 // restoreRepoDatabase loads a database run into an empty database in one
 // transaction, which commits only once every file has matched its SHA-256
 // and the content root matched the one recorded at backup time.
-func restoreRepoDatabase(ctx context.Context, rs *repoSnapshot, privateKey, targetURL string, noOwner bool) error {
+func restoreRepoDatabase(ctx context.Context, rs *repoSnapshot, privateKey, targetURL string, db dbRestoreOptions) error {
 	id := rs.Meta.SnapshotID
 	r, idx, files, err := openRun(ctx, rs, privateKey)
 	if err != nil {
@@ -709,9 +709,10 @@ func restoreRepoDatabase(ctx context.Context, rs *repoSnapshot, privateKey, targ
 		archived <- err
 	}()
 	restorer := dump.NewNativeRestorer(targetURL)
-	restorer.NoOwner = noOwner
+	restorer.NoOwner = db.NoOwner
+	restorer.CronJobsActive = db.KeepCronActive
 	restorer.DatabaseSettings = true
-	if noOwner {
+	if db.NoOwner {
 		fmt.Printf("   Ownership:      not restored (--no-owner); every object belongs to the restoring role\n")
 	}
 	waited := false
@@ -739,6 +740,7 @@ func restoreRepoDatabase(ctx context.Context, rs *repoSnapshot, privateKey, targ
 		len(got.TableStats), pluralWord(int64(len(got.TableStats)), "table", "tables"), formatNumber(rows), id,
 		shortDuration(time.Since(started)))
 	printCreatedRoles(restorer.CreatedRoles)
+	printCronJobs(restorer.CronJobs)
 	if restorer.ChangeLogRemoved {
 		fmt.Printf("   Change log:     not restored. A backup with change_log: true puts it back.\n")
 	}

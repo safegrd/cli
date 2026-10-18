@@ -190,6 +190,7 @@ func (v *Verifier) RunRepoDatabaseDrill(ctx context.Context, d RepoDrill, privat
 	}
 
 	var archiveErr, restoreErr error
+	var cronJobs []dump.CronJobResult
 	drained := false
 	switch kind {
 	case model.SurfaceTypeSQLite:
@@ -209,7 +210,7 @@ func (v *Verifier) RunRepoDatabaseDrill(ctx context.Context, d RepoDrill, privat
 		}
 		v.createdRoles = nil
 		_, restoreErr = restorer.Restore(ctx, pr)
-		v.createdRoles = restorer.CreatedRoles
+		v.createdRoles, cronJobs = restorer.CreatedRoles, restorer.CronJobs
 		if restorer.ChangeLogRemoved {
 			// The sandbox is held to what a restore brings back, which
 			// leaves the change log out.
@@ -231,6 +232,10 @@ func (v *Verifier) RunRepoDatabaseDrill(ctx context.Context, d RepoDrill, privat
 		return fail("RestoreIntegrity", "the sandbox can be counted", err.Error(), "sandbox inspection failed: "+err.Error())
 	}
 	allPassed := sandboxAssertions(report, meta, restored)
+	if a, ok := cronJobsAssertion(meta, cronJobs); ok {
+		report.Assertions = append(report.Assertions, a)
+		allPassed = allPassed && a.Passed
+	}
 	failedChecks := v.runChecks(ctx, report, sandboxURL, meta.CreatedAt)
 	report.CompletedAt = time.Now()
 	report.DurationMs = drillMilliseconds(report.CompletedAt.Sub(started))

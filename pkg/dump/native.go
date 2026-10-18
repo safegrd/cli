@@ -397,6 +397,11 @@ func (d *NativeDumper) Dump(ctx context.Context, databaseName string, dst io.Wri
 			_, _ = tx.Exec(ctx, "RELEASE SAVEPOINT safegrd_freshness")
 		}
 	}
+	cronJobs, err := readCronJobs(ctx, tx, currentDB)
+	if err != nil {
+		d.Warn(err.Error())
+	}
+	meta.CronJobs = len(cronJobs)
 	meta.SourceSnapshot, meta.SourceLSN = runIdentity(ctx, tx, serverVersionNum)
 	if meta.SourceSnapshot == "" {
 		d.Warn("The server did not report the snapshot this backup reads under, so the backup records none.")
@@ -571,6 +576,15 @@ func (d *NativeDumper) Dump(ctx context.Context, databaseName string, dst io.Wri
 	}
 	if err := writeTarEntry(tw, entrySequences, seqSQL); err != nil {
 		return nil, err
+	}
+	if len(cronJobs) > 0 {
+		data, err := json.Marshal(cronJobs)
+		if err != nil {
+			return nil, err
+		}
+		if err := writeTarEntry(tw, entryCronJobs, data); err != nil {
+			return nil, err
+		}
 	}
 
 	if err := finishArchive(tw, meta, startTime); err != nil {
@@ -897,6 +911,12 @@ type NativeRestorer struct {
 	// checks the stream's digest there, so a snapshot that fails it never
 	// becomes a database.
 	BeforeCommit func() error
+	// CronJobsActive creates pg_cron's jobs as they were at backup time.
+	// Unset, each is created turned off.
+	CronJobsActive bool
+	// CronJobs is what the restore did with each pg_cron job the archive
+	// carried.
+	CronJobs []CronJobResult
 	// ChangeLogRemoved is set when the backup brought the change log
 	// (changelog.go) and the restore dropped it: its trigger on every table
 	// would go on logging each write, and only a backup with the change log
@@ -1056,6 +1076,7 @@ func (r *NativeRestorer) Restore(ctx context.Context, src io.Reader) (*model.Sna
 	loadable := map[string]int{}
 	loOwners := map[uint32]string{}
 	loLoaded := loObjects{}
+	var cronJobs []CronJob
 
 	streams := &tableStreams{
 		consume: func(schema, table string, rd io.Reader) error {
@@ -1125,6 +1146,11 @@ func (r *NativeRestorer) Restore(ctx context.Context, src io.Reader) (*model.Sna
 				return nil
 			}
 			switch hdr.Name {
+			case entryCronJobs:
+				if err := json.NewDecoder(rd).Decode(&cronJobs); err != nil {
+					return fmt.Errorf("the archive's pg_cron jobs are unreadable: %w", err)
+				}
+				return nil
 			case entryLargeObjects:
 				var list []largeObject
 				if err := json.NewDecoder(rd).Decode(&list); err != nil {
@@ -1270,6 +1296,19 @@ func (r *NativeRestorer) Restore(ctx context.Context, src io.Reader) (*model.Sna
 	}
 	if err := r.dropChangeLog(ctx, conn, exec); err != nil {
 		return nil, err
+	}
+	// pg_cron's jobs, after the rows they would act on. A --schema restore
+	// goes into a database with jobs of its own, which a job of the same
+	// name would rewrite, so it creates none.
+	if len(cronJobs) > 0 {
+		if filtered {
+			r.CronJobs = make([]CronJobResult, len(cronJobs))
+			for i, j := range cronJobs {
+				r.CronJobs[i] = CronJobResult{CronJob: j, Why: "a --schema restore creates no pg_cron job"}
+			}
+		} else {
+			r.CronJobs = restoreCronJobs(ctx, conn, cronJobs, r.CronJobsActive)
+		}
 	}
 	if r.BeforeCommit != nil {
 		if err := r.BeforeCommit(); err != nil {

@@ -35,6 +35,7 @@ func newRestoreCmd() *cobra.Command {
 		schemas    []string
 		dataOnly   []string
 		noOwner    bool
+		keepCron   bool
 		salvage    bool
 
 		// A bucket to restore a files snapshot into, as backup reads one.
@@ -228,7 +229,7 @@ files: each upload writes or updates the file's row in storage.objects.`,
 					if bucketTarget {
 						return errRepoToBucket(snapshotID)
 					}
-					return restoreRepo(ctx, rs, resolvedKey, targetDir, targetURL, toSQL, paths, tables, noOwner, salvage)
+					return restoreRepo(ctx, rs, resolvedKey, targetDir, targetURL, toSQL, paths, tables, dbRestoreOptions{NoOwner: noOwner, KeepCronActive: keepCron}, salvage)
 				}
 			}
 			if salvage && fromDir != "" {
@@ -295,7 +296,7 @@ files: each upload writes or updates the file's row in storage.objects.`,
 					if bucketTarget {
 						return errRepoToBucket(snapshotID)
 					}
-					return restoreRepo(ctx, rs, resolvedKey, targetDir, targetURL, toSQL, paths, tables, noOwner, salvage)
+					return restoreRepo(ctx, rs, resolvedKey, targetDir, targetURL, toSQL, paths, tables, dbRestoreOptions{NoOwner: noOwner, KeepCronActive: keepCron}, salvage)
 				}
 				if salvage {
 					return fmt.Errorf("--salvage restores what verifies of an incremental files snapshot; %s is not one", snapshotID)
@@ -478,6 +479,7 @@ files: each upload writes or updates the file's row in storage.objects.`,
 				if n, ok := restorer.(*dump.NativeRestorer); ok {
 					native = n
 					native.NoOwner = noOwner
+					native.CronJobsActive = keepCron
 					native.DatabaseSettings = true
 					if noOwner {
 						fmt.Printf("   Ownership:      not restored (--no-owner); every object belongs to the restoring role\n")
@@ -579,6 +581,7 @@ files: each upload writes or updates the file's row in storage.objects.`,
 				}
 				if native != nil {
 					printCreatedRoles(native.CreatedRoles)
+					printCronJobs(native.CronJobs)
 				}
 				fmt.Printf("   Check the %s above against what you expect before you point an application at it.\n", what)
 			}
@@ -599,6 +602,7 @@ files: each upload writes or updates the file's row in storage.objects.`,
 	cmd.Flags().StringArrayVar(&schemas, "schema", nil, "Restore only this schema of a PostgreSQL snapshot, objects and rows, into a database that has other schemas (repeatable)")
 	cmd.Flags().StringArrayVar(&dataOnly, "data-only-schema", nil, "Load only this schema's rows into tables the target already has (repeatable)")
 	cmd.Flags().BoolVar(&salvage, "salvage", false, "Incremental files snapshot: restore every file that verifies and list the ones a damaged or missing pack leaves out, instead of restoring nothing. Exits non-zero when any is left out")
+	cmd.Flags().BoolVar(&keepCron, "keep-cron-active", false, "PostgreSQL: create pg_cron's jobs as they were at backup time. By default each is created turned off")
 	cmd.Flags().BoolVar(&noOwner, "no-owner", false, "PostgreSQL: restore without ownership and privileges, so every object belongs to the restoring role. The roles the schema names are still created")
 	cmd.Flags().StringArrayVar(&tables, "table", nil, "Restore only this table (schema.table, either part quoted as psql prints it) of a PostgreSQL snapshot into --target: into an empty table of the same definition, or created as the snapshot defined it, with its schema, when the target has none (repeatable)")
 	cmd.Flags().StringVar(&surfaceSel, "surface", "", "With --path or --table and no --snapshot: the surface whose repository holds it")
@@ -643,6 +647,38 @@ func printObjectRestore(res *dump.ObjectRestoreResult) {
 
 // printCreatedRoles names the roles a restore created on the target because
 // the schema named them and the target lacked them, one per line.
+// dbRestoreOptions are the choices a database restore takes from the
+// restore command's flags.
+type dbRestoreOptions struct {
+	NoOwner        bool
+	KeepCronActive bool
+}
+
+// printCronJobs says what the restore did with each pg_cron job the
+// snapshot carried: created and on or off, one per line with how to turn
+// one on, and on stderr each one it could not create, since a lost
+// schedule is not data and nothing else would say it is gone.
+func printCronJobs(jobs []dump.CronJobResult) {
+	var off []dump.CronJobResult
+	for _, j := range jobs {
+		switch {
+		case j.Created && j.On:
+			fmt.Printf("   pg_cron job:    %d %s (%s), on\n", j.ID, j.Label(), j.Schedule)
+		case j.Created:
+			fmt.Printf("   pg_cron job:    %d %s (%s), off\n", j.ID, j.Label(), j.Schedule)
+			off = append(off, j)
+		default:
+			fmt.Fprintf(os.Stderr, "Warning: pg_cron job %s (%s) was not restored: %s.\n", j.Label(), j.Schedule, j.Why)
+		}
+		if j.Created && j.RunsAs != "" {
+			fmt.Fprintf(os.Stderr, "Warning: pg_cron job %s runs as %s, not %s as it did: the restoring role could not set that.\n", j.Label(), j.RunsAs, j.Username)
+		}
+	}
+	if len(off) > 0 {
+		fmt.Printf("   Turn a job on:  SELECT cron.alter_job(%d, active := true);  (or restore with --keep-cron-active)\n", off[0].ID)
+	}
+}
+
 func printCreatedRoles(roles []string) {
 	for _, r := range roles {
 		fmt.Printf("   Created role:   %s\n", r)

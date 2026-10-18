@@ -148,8 +148,10 @@ func (v *Verifier) RunFireDrill(ctx context.Context, snapshotID, privateKey, san
 	restorer := dump.NewRestorer(dump.EngineTypeNative, sandboxTargetURL)
 	v.createdRoles = nil
 	_, restoreErr := restorer.Restore(ctx, plainReader)
+	var cronJobs []dump.CronJobResult
 	if native, ok := restorer.(*dump.NativeRestorer); ok {
 		v.createdRoles = native.CreatedRoles
+		cronJobs = native.CronJobs
 	}
 	// A restore that stops early leaves the rest of the stream unread, and
 	// the decrypting goroutine blocked on it forever. Read it out, so the
@@ -180,6 +182,10 @@ func (v *Verifier) RunFireDrill(ctx context.Context, snapshotID, privateKey, san
 	}
 
 	allPassed := sandboxAssertions(report, meta, restoredMeta)
+	if a, ok := cronJobsAssertion(meta, cronJobs); ok {
+		report.Assertions = append(report.Assertions, a)
+		allPassed = allPassed && a.Passed
+	}
 	failedChecks := v.runChecks(ctx, report, sandboxTargetURL, meta.CreatedAt)
 
 	report.CompletedAt = time.Now()
@@ -292,6 +298,47 @@ func sandboxAssertions(report *model.VerificationReport, meta, restoredMeta *mod
 		report.Assertions = append(report.Assertions, lo)
 	}
 	return allPassed
+}
+
+// cronJobsAssertion holds the pg_cron jobs a sandbox restore created, turned
+// off, to the ones the backup counted. A job pg_cron refused fails the drill:
+// a restore would not bring it back either. One the sandbox could not
+// schedule at all (no pg_cron there, or pg_cron runs from another database)
+// is said and passes, because that is the sandbox's, not the backup's. ok is
+// false for a snapshot with no jobs.
+func cronJobsAssertion(meta *model.SnapshotMetadata, jobs []dump.CronJobResult) (a model.AssertionResult, ok bool) {
+	if meta.CronJobs == 0 && len(jobs) == 0 {
+		return a, false
+	}
+	a = model.AssertionResult{Name: "CronJobsRestored", Expected: fmt.Sprintf("%d pg_cron jobs created, turned off", meta.CronJobs)}
+	created, refused := 0, []string{}
+	var notHere string
+	for _, j := range jobs {
+		switch {
+		case j.Created:
+			created++
+		case j.Refused:
+			refused = append(refused, j.Label()+": "+j.Why)
+		default:
+			notHere = j.Why
+		}
+	}
+	switch {
+	case len(jobs) != meta.CronJobs:
+		a.Actual = fmt.Sprintf("%d in the archive", len(jobs))
+		a.Message = "The archive does not carry the pg_cron jobs the backup counted"
+	case len(refused) > 0:
+		a.Actual = fmt.Sprintf("%d created, %d refused", created, len(refused))
+		a.Message = "pg_cron refused " + strings.Join(refused, "; ")
+	case created < len(jobs):
+		a.Passed = true
+		a.Actual = fmt.Sprintf("%d created", created)
+		a.Message = "Not checked in this sandbox: " + notHere
+	default:
+		a.Passed = true
+		a.Actual = fmt.Sprintf("%d created, turned off", created)
+	}
+	return a, true
 }
 
 // RunDryRestore downloads the encrypted snapshot from storage (S3 or local),

@@ -9,6 +9,7 @@
 //	large-objects/<oid>.lo       one large object's bytes
 //	post-data.sql
 //	sequences.sql
+//	cron-jobs.json               pg_cron's jobs, when the database has any
 //	manifest.json
 //
 // so a table whose rows did not move stores no new chunks, and a restore
@@ -111,6 +112,7 @@ const (
 	Schema    = "schema.sql"
 	PostData  = "post-data.sql"
 	Sequences = "sequences.sql"
+	CronJobs  = "cron-jobs.json"
 	Manifest  = "manifest.json"
 	dataDir   = "data/"
 	// SQLiteDatabase is a SQLite run's database file.
@@ -205,7 +207,7 @@ func Files(ctx context.Context, r *read.Repo, idx read.Index, s format.Snapshot)
 			tables, shapes[ShapePostgres] = append(tables, it), true
 		case dump.IsLargeObjectEntry(it.Path):
 			largeObjects, shapes[ShapePostgres] = append(largeObjects, it), true
-		case it.Path == LeftOut || it.Path == Roles || it.Path == PreData || it.Path == Schema || it.Path == PostData || it.Path == Sequences:
+		case it.Path == LeftOut || it.Path == Roles || it.Path == PreData || it.Path == Schema || it.Path == PostData || it.Path == Sequences || it.Path == CronJobs:
 			sections[it.Path], shapes[ShapePostgres] = it, true
 		case it.Path == Manifest:
 			sections[it.Path] = it
@@ -271,7 +273,7 @@ func Files(ctx context.Context, r *read.Repo, idx read.Index, s format.Snapshot)
 		return largeObjects[i].Path < largeObjects[j].Path
 	})
 	out = append(out, largeObjects...)
-	for _, name := range []string{PostData, Sequences, Manifest} {
+	for _, name := range []string{PostData, Sequences, CronJobs, Manifest} {
 		if it, ok := sections[name]; ok {
 			out = append(out, it)
 		}

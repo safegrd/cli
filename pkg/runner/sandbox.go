@@ -140,6 +140,18 @@ func resetSandbox(ctx context.Context, sandboxURL string, createdRoles []string)
 	if err := conn.QueryRow(ctx, `SELECT rolsuper FROM pg_roles WHERE rolname = current_user`).Scan(&super); err != nil {
 		return err
 	}
+	// The pg_cron jobs a drill created are rows of pg_cron's own table,
+	// which nothing below drops: left there, the next drill would find
+	// each job's name taken and create none.
+	var cron bool
+	if err := conn.QueryRow(ctx, `SELECT to_regclass('cron.job') IS NOT NULL`).Scan(&cron); err != nil {
+		return err
+	}
+	if cron {
+		if _, err := conn.Exec(ctx, `SELECT cron.unschedule(jobid) FROM cron.job WHERE database = current_database()`); err != nil {
+			return fmt.Errorf("removing the pg_cron jobs the drill created: %w", err)
+		}
+	}
 	// Roles the restore created exist only if it committed; a rolled-back
 	// restore leaves none. Only the ones that exist are handled.
 	var roles []string
