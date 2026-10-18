@@ -180,7 +180,7 @@ func (v *Verifier) RunFireDrill(ctx context.Context, snapshotID, privateKey, san
 	}
 
 	allPassed := sandboxAssertions(report, meta, restoredMeta)
-	failedChecks := v.runChecks(ctx, report, sandboxTargetURL)
+	failedChecks := v.runChecks(ctx, report, sandboxTargetURL, meta.CreatedAt)
 
 	report.CompletedAt = time.Now()
 	report.DurationMs = drillMilliseconds(report.CompletedAt.Sub(startTime))

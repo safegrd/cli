@@ -231,7 +231,7 @@ func (v *Verifier) RunRepoDatabaseDrill(ctx context.Context, d RepoDrill, privat
 		return fail("RestoreIntegrity", "the sandbox can be counted", err.Error(), "sandbox inspection failed: "+err.Error())
 	}
 	allPassed := sandboxAssertions(report, meta, restored)
-	failedChecks := v.runChecks(ctx, report, sandboxURL)
+	failedChecks := v.runChecks(ctx, report, sandboxURL, meta.CreatedAt)
 	report.CompletedAt = time.Now()
 	report.DurationMs = drillMilliseconds(report.CompletedAt.Sub(started))
 	if allPassed && len(failedChecks) == 0 {

@@ -30,9 +30,10 @@ const (
 )
 
 // runChecks runs the customer's drill checks against the restored sandbox and
-// appends one assertion per check to the report. It returns the names of the
-// checks that failed.
-func (v *Verifier) runChecks(ctx context.Context, report *model.VerificationReport, sandboxURL string) []string {
+// appends one assertion per check to the report. takenAt is when the backup
+// was taken, for a command that holds the restored data to it. It returns the
+// names of the checks that failed.
+func (v *Verifier) runChecks(ctx context.Context, report *model.VerificationReport, sandboxURL string, takenAt time.Time) []string {
 	if len(v.Checks) == 0 {
 		return nil
 	}
@@ -49,7 +50,7 @@ func (v *Verifier) runChecks(ctx context.Context, report *model.VerificationRepo
 	for _, c := range v.Checks {
 		var a model.AssertionResult
 		if strings.TrimSpace(c.Command) != "" {
-			a = runCommandCheck(ctx, c, sandboxURL, report)
+			a = runCommandCheck(ctx, c, sandboxURL, report, takenAt)
 		} else {
 			a = runSQLCheck(ctx, c, sandboxURL)
 		}
@@ -235,8 +236,10 @@ func checkValueText(v any) string {
 }
 
 // runCommandCheck runs the check's command through sh -c, with the
-// sandbox's connection string in SAFEGRD_SANDBOX_URL. Exit 0 passes.
-func runCommandCheck(ctx context.Context, c model.DrillCheck, sandboxURL string, report *model.VerificationReport) model.AssertionResult {
+// sandbox's connection string in SAFEGRD_SANDBOX_URL and the backup's time in
+// SAFEGRD_SNAPSHOT_CREATED_AT (RFC 3339, UTC), so a check can ask whether the
+// newest row is as new as the backup. Exit 0 passes.
+func runCommandCheck(ctx context.Context, c model.DrillCheck, sandboxURL string, report *model.VerificationReport, takenAt time.Time) model.AssertionResult {
 	a := model.AssertionResult{Expected: "exit 0"}
 	timeout := checkTimeout(c, defaultCommandCheckTimeout)
 	ctx, cancel := context.WithTimeout(ctx, timeout)
@@ -247,6 +250,7 @@ func runCommandCheck(ctx context.Context, c model.DrillCheck, sandboxURL string,
 		"SAFEGRD_SANDBOX_URL="+sandboxURL,
 		"SAFEGRD_SNAPSHOT_ID="+report.SnapshotID,
 		"SAFEGRD_DATABASE_NAME="+report.DatabaseName,
+		"SAFEGRD_SNAPSHOT_CREATED_AT="+takenAt.UTC().Format(time.RFC3339),
 	)
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out

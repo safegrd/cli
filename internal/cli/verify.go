@@ -70,6 +70,10 @@ drill.checks takes, run against the sandbox after the restore:
   - name: app smoke test
     command: ./scripts/smoke.sh   # SAFEGRD_SANDBOX_URL is set; exit 0 passes
 
+A command also gets SAFEGRD_SNAPSHOT_ID, and SAFEGRD_SNAPSHOT_CREATED_AT, when
+the backup was taken (RFC 3339, UTC): hold your newest row to it to catch a
+backup of data that stopped changing.
+
 --query reads rows out of a database backup without restoring the table they
 came from. The snapshot is restored into --sandbox-target, or into a
 PostgreSQL cluster started on this host for the run, the query runs in a
