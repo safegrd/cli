@@ -931,6 +931,27 @@ func sayClockStep(step time.Duration) {
 		"Every surface's next backup and drill is reckoned from the new time. Check NTP if this was not a suspend.\n", dir, step.Round(time.Second))
 }
 
+// repeatedIDSaid is each repeated surface id the daemon has said, so a
+// resident daemon says it once rather than every tick.
+var repeatedIDSaid = map[string]bool{}
+
+// repeatedSurfaceIDs counts the surfaces under each id, for the ids more
+// than one surface uses.
+func repeatedSurfaceIDs(surfaces []config.SurfaceConfig) map[string]int {
+	count := map[string]int{}
+	for _, s := range surfaces {
+		if s.ID != "" {
+			count[s.ID]++
+		}
+	}
+	for id, n := range count {
+		if n < 2 {
+			delete(count, id)
+		}
+	}
+	return count
+}
+
 func clockWentBackwards(state *SurfaceState, now time.Time) bool {
 	return now.Before(state.LastAttempt) || now.Before(state.LastSuccess)
 }
@@ -962,8 +983,22 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 		}
 	}
 
+	repeated := repeatedSurfaceIDs(c.Surfaces)
+	saidThisPass := map[string]bool{}
 	for _, surface := range c.Surfaces {
 		if surface.ID == "" {
+			continue
+		}
+		// Two surfaces under one id share its state and its repository, so
+		// their backups would mix and a restore could bring back either.
+		// Neither backs up until each has an id of its own.
+		if n := repeated[surface.ID]; n > 1 {
+			if !saidThisPass[surface.ID] && (tick == 0 || !repeatedIDSaid[surface.ID]) {
+				saidThisPass[surface.ID] = true
+				fmt.Fprintf(os.Stderr, "Error: Surface %s: %d surfaces in the config use this id, so none of them is backed up. Give each surface its own id.\n", surface.ID, n)
+				repeatedIDSaid[surface.ID] = true
+			}
+			hasErrors = true
 			continue
 		}
 

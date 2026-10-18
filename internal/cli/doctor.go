@@ -260,6 +260,20 @@ func runValidationChecks(path string, c *config.CLIConfig) []CheckResult {
 			Message: "no surfaces defined in config (0 protected targets)",
 		})
 	} else {
+		ids := make([]string, 0)
+		repeated := repeatedSurfaceIDs(c.Surfaces)
+		for id := range repeated {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		for _, id := range ids {
+			results = append(results, CheckResult{
+				Name:   "Surface IDs",
+				Status: "FAIL",
+				Message: fmt.Sprintf("%d surfaces use the id %q; their backups would mix, so the daemon backs up none of them. Give each surface its own id",
+					repeated[id], id),
+			})
+		}
 		for _, s := range c.Surfaces {
 			switch strings.ToLower(s.Type) {
 			case "postgres", "mysql", "mongodb", "sqlite":
