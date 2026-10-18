@@ -267,6 +267,10 @@ type SnapshotMetadata struct {
 	// itself (ALTER DATABASE ... SET), as "name=value", which no pg_dump
 	// section carries: a restore applies them to its target.
 	DatabaseSettings []string `json:"database_settings,omitempty" yaml:"database_settings,omitempty"`
+	// RoleSettings are the settings a role has in this database alone
+	// (ALTER ROLE ... IN DATABASE ... SET), applied by a restore as
+	// DatabaseSettings are.
+	RoleSettings []RoleSetting `json:"role_settings,omitempty" yaml:"role_settings,omitempty"`
 	// RolesNamed are the roles a Postgres snapshot's schema names (owners,
 	// grantees, the roles policies apply to), sorted. RolesSource says how
 	// roles.sql carried them: "pg_dumpall 16.4", with ", no passwords" when
@@ -429,4 +433,10 @@ type ReplicaRead struct {
 	// LagSeconds is the backup's snapshot time less ReplayedAt. On a primary
 	// with no writes it grows while nothing is behind.
 	LagSeconds float64 `json:"lag_seconds" yaml:"lag_seconds"`
+}
+
+// RoleSetting is one setting a role has in one database, as "name=value".
+type RoleSetting struct {
+	Role    string `json:"role" yaml:"role"`
+	Setting string `json:"setting" yaml:"setting"`
 }

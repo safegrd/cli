@@ -296,6 +296,23 @@ func (d *NativeDumper) Dump(ctx context.Context, databaseName string, dst io.Wri
 		WHERE setrole = 0 AND setdatabase = (SELECT oid FROM pg_database WHERE datname = current_database()) ORDER BY 1`); err != nil {
 		return nil, fmt.Errorf("failed to read the database's settings: %w", err)
 	}
+	rs, err := tx.Query(ctx, `SELECT r.rolname, unnest(s.setconfig) FROM pg_db_role_setting s JOIN pg_roles r ON r.oid = s.setrole
+		WHERE s.setdatabase = (SELECT oid FROM pg_database WHERE datname = current_database()) ORDER BY 1, 2`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read the database's role settings: %w", err)
+	}
+	for rs.Next() {
+		var rset model.RoleSetting
+		if err := rs.Scan(&rset.Role, &rset.Setting); err != nil {
+			rs.Close()
+			return nil, fmt.Errorf("failed to read the database's role settings: %w", err)
+		}
+		meta.RoleSettings = append(meta.RoleSettings, rset)
+	}
+	rs.Close()
+	if err := rs.Err(); err != nil {
+		return nil, fmt.Errorf("failed to read the database's role settings: %w", err)
+	}
 	if meta.LargeObjects > 0 {
 		d.Warn(fmt.Sprintf("This database holds %s (pg_largeobject). The backup does not include their contents: "+
 			"a restore brings back the rows that point at them, not the objects, and a Fire Drill of this backup fails until it does. "+
@@ -1186,8 +1203,8 @@ func (r *NativeRestorer) Restore(ctx context.Context, src io.Reader) (*model.Sna
 		return nil, err
 	}
 	committed = true
-	if r.DatabaseSettings && manifest != nil && len(manifest.DatabaseSettings) > 0 {
-		r.applyDatabaseSettings(ctx, conn, manifest.DatabaseSettings)
+	if r.DatabaseSettings && manifest != nil && (len(manifest.DatabaseSettings) > 0 || len(manifest.RoleSettings) > 0) {
+		r.applyDatabaseSettings(ctx, conn, manifest.DatabaseSettings, manifest.RoleSettings)
 	}
 
 	switch {
@@ -1254,31 +1271,45 @@ var settingNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_.]*$`)
 // applyDatabaseSettings sets each recorded "name=value" on the target
 // database. A setting the restoring role may not set is said, with the
 // statement to run, and the restore stands.
-func (r *NativeRestorer) applyDatabaseSettings(ctx context.Context, conn *pgx.Conn, settings []string) {
+func (r *NativeRestorer) applyDatabaseSettings(ctx context.Context, conn *pgx.Conn, settings []string, roleSettings []model.RoleSetting) {
 	var db string
 	if err := conn.QueryRow(ctx, "SELECT current_database()").Scan(&db); err != nil {
 		r.Warn(fmt.Sprintf("The source database's settings were not applied (%v): %s.", err, strings.Join(settings, "; ")))
 		return
 	}
+	dbIdent := pgx.Identifier{db}.Sanitize()
 	var failed []string
-	for _, kv := range settings {
+	apply := func(prefix, kv string) {
 		name, value, ok := strings.Cut(kv, "=")
 		if !ok || !settingNameRe.MatchString(name) {
 			failed = append(failed, kv+" (not a setting this restore can write)")
-			continue
+			return
 		}
 		v := "'" + strings.ReplaceAll(value, "'", "''") + "'"
 		if listSettings[strings.ToLower(name)] {
 			v = value
 		}
-		stmt := "ALTER DATABASE " + pgx.Identifier{db}.Sanitize() + " SET " + name + " = " + v
+		stmt := prefix + " SET " + name + " = " + v
 		if _, err := conn.Exec(ctx, stmt); err != nil {
 			failed = append(failed, fmt.Sprintf("%s (%v)", stmt, err))
 		}
 	}
+	for _, kv := range settings {
+		apply("ALTER DATABASE "+dbIdent, kv)
+	}
+	// A role's setting in this database alone. Setting it takes a
+	// superuser or a role that may administer that role, which a
+	// restoring role often is not; then it is said.
+	for _, rs := range roleSettings {
+		apply("ALTER ROLE "+pgx.Identifier{rs.Role}.Sanitize()+" IN DATABASE "+dbIdent, rs.Setting)
+	}
 	if len(failed) > 0 {
-		r.Warn(fmt.Sprintf("%d of the source database's settings were not applied; set them as the database's owner:\n     %s",
-			len(failed), strings.Join(failed, "\n     ")))
+		verb := "were"
+		if len(failed) == 1 {
+			verb = "was"
+		}
+		r.Warn(fmt.Sprintf("%d of the source database's settings %s not applied; set them as a superuser or the database's owner:\n     %s",
+			len(failed), verb, strings.Join(failed, "\n     ")))
 	}
 }
 
