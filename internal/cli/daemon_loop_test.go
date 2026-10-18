@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -27,6 +28,10 @@ type fakeRemoteServer struct {
 	drill        bool   // ask for a drill of the last snapshot on every heartbeat
 	lastSnapshot string // the last snapshot the daemon reported
 	drillReports int    // POST /api/v1/verifications, each answered 500
+	// events is every heartbeat and snapshot in the order they arrived:
+	// "beat", "beat:running" for one that says a backup is starting, and
+	// "snapshot".
+	events []string
 }
 
 func (f *fakeRemoteServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -36,6 +41,13 @@ func (f *fakeRemoteServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "/api/v1/nodes/host-1/surfaces":
 		_ = json.NewEncoder(w).Encode(model.SurfaceRegisterResponse{NodeID: "host-1--docs"})
 	case "/api/v1/nodes/heartbeat":
+		var beat model.HeartbeatRequest
+		_ = json.NewDecoder(r.Body).Decode(&beat)
+		if beat.BackupRunning {
+			f.events = append(f.events, "beat:running")
+		} else {
+			f.events = append(f.events, "beat")
+		}
 		resp := model.HeartbeatResponse{Acknowledge: true, TriggerBackup: f.trigger, BackupRequestID: f.requestID}
 		if f.drill && f.lastSnapshot != "" {
 			resp.TriggerFireDrill, resp.DrillSnapshotID, resp.FireDrillsIncluded = true, f.lastSnapshot, true
@@ -49,6 +61,7 @@ func (f *fakeRemoteServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&meta)
 		f.lastSnapshot = meta.SnapshotID
 		f.snapshots++
+		f.events = append(f.events, "snapshot")
 		w.WriteHeader(http.StatusCreated)
 		_, _ = w.Write([]byte("{}"))
 	default:
@@ -112,6 +125,14 @@ func TestTheDaemonIgnoresTriggerBackupAndRunsARequestOnce(t *testing.T) {
 	tick() // never backed up: due
 	if got := fake.backups(); got != 1 {
 		t.Fatalf("first tick backed up %d times, want 1", got)
+	}
+	// The remote server hears that the backup is starting before the
+	// snapshot arrives, so the console can show it running meanwhile.
+	fake.mu.Lock()
+	events := strings.Join(fake.events, " ")
+	fake.mu.Unlock()
+	if events != "beat beat:running snapshot" {
+		t.Fatalf("the first tick's calls were %q, want the heartbeat, one saying the backup is starting, then the snapshot", events)
 	}
 	// The sidecar records no lock: worm_mode defaults to COMPLIANCE, and a
 	// directory on the host has no Object Lock to apply it.

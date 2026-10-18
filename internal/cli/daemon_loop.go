@@ -183,6 +183,8 @@ func sendHeartbeat(ctx context.Context, c *config.CLIConfig, nodeID string, st *
 		DrillStatus:         st.DrillStatus,
 		DrillReason:         st.DrillReason,
 		DrillDetail:         st.DrillDetail,
+		BackupRunning:       st.backupRunning,
+		DrillRequestSeen:    st.LastDrillRequestID,
 		Schedule:            s.Schedule,
 		RetentionDays:       s.RetentionDays,
 		BlackoutSeconds:     blackoutSeconds(s),

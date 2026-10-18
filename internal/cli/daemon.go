@@ -64,6 +64,9 @@ type SurfaceState struct {
 	// recorded is still reported as an error, because the console shows no
 	// backup for it.
 	notRecorded string
+	// backupRunning is set for the heartbeat sent just before this
+	// surface's backup starts, and for nothing else.
+	backupRunning bool
 	// probe is this tick's probe, sent on the heartbeat. Memory only.
 	probe probeResult
 	// newEpoch and rescan are `backup --surface --new-epoch/--rescan` for a
@@ -1134,6 +1137,11 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 				fmt.Printf("Surface %s (%s) is due for backup.\n", surface.ID, surface.Type)
 			}
 			fetchHeldSurfaceSecret(ctx, c, nodeID, &surface)
+			// Said before the backup, so the console shows it running
+			// rather than "requested" or nothing for as long as it takes.
+			sState.backupRunning = true
+			sendHeartbeat(ctx, c, nodeID, sState, tick, &surface)
+			sState.backupRunning = false
 			if _, err := backupSurfaceNow(ctx, c, &surface, sState, nodeID, lockDir, statePath, daemonState); err != nil {
 				hasErrors = true
 			}

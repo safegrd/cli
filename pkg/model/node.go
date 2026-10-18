@@ -121,6 +121,10 @@ type Node struct {
 	// an agent over MCP. The heartbeat answers it with TriggerFireDrill,
 	// and the next drill report clears it.
 	DrillRequestedAt *time.Time `json:"drill_requested_at,omitempty" yaml:"drill_requested_at,omitempty"`
+	// BackupRunningSince is when the host's daemon said it was starting a
+	// backup of this surface (HeartbeatRequest.BackupRunning). Cleared by
+	// the snapshot that ends it, or by the next heartbeat without the flag.
+	BackupRunningSince *time.Time `json:"backup_running_since,omitempty" yaml:"backup_running_since,omitempty"`
 
 	// What the daemon said on its last heartbeat. Absent for a node that has
 	// never sent a heartbeat (for example, one run manually or from cron).
@@ -341,6 +345,14 @@ type HeartbeatRequest struct {
 	DrillStatus         DrillStatus  `json:"drill_status,omitempty"`
 	DrillReason         DrillReason  `json:"drill_reason,omitempty"`
 	DrillDetail         string       `json:"drill_detail,omitempty"`
+	// BackupRunning is sent on the heartbeat the daemon makes just before
+	// it starts a backup of this surface, so the console can say one is
+	// running. A heartbeat without it says none is.
+	BackupRunning bool `json:"backup_running,omitempty"`
+	// DrillRequestSeen is the last HeartbeatResponse.DrillRequestID this
+	// host acted on, so a request it could not run (no key, storage it
+	// could not open) is known to be answered without a report.
+	DrillRequestSeen string `json:"drill_request_seen,omitempty"`
 	// Schedule and RetentionDays are what the daemon runs this surface on,
 	// after any setting from the console, so the remote server measures
 	// "overdue" against the schedule actually in force.
