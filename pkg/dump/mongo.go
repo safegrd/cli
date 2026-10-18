@@ -786,8 +786,29 @@ func MongoCheckEmpty(ctx context.Context, db *mongo.Database) error {
 
 // MongoCountDocuments counts every manifest collection exactly.
 func MongoCountDocuments(ctx context.Context, db *mongo.Database, m *model.SnapshotMetadata) (map[string]int64, error) {
+	// A time-series collection is archived as its buckets, so the snapshot
+	// recorded buckets; counting the collection itself counts measurements,
+	// and every restore and drill of a database with one failed. The buckets
+	// are counted through $collStats, which the read role may run; the
+	// bucket collection itself is closed to readWrite.
+	series := map[string]bool{}
+	specs, err := db.ListCollectionSpecifications(ctx, bson.D{{Key: "type", Value: "timeseries"}})
+	if err != nil {
+		return nil, fmt.Errorf("listing collections: %w", err)
+	}
+	for _, s := range specs {
+		series[s.Name] = true
+	}
 	out := map[string]int64{}
 	for _, t := range m.TableStats {
+		if series[t.TableName] {
+			n, err := mongoBucketCount(ctx, db.Collection(t.TableName))
+			if err != nil {
+				return nil, fmt.Errorf("counting %s's buckets: %w", t.TableName, err)
+			}
+			out[t.TableName] = n
+			continue
+		}
 		n, err := db.Collection(t.TableName).CountDocuments(ctx, bson.D{})
 		if err != nil {
 			return nil, fmt.Errorf("counting %s: %w", t.TableName, err)
@@ -795,6 +816,28 @@ func MongoCountDocuments(ctx context.Context, db *mongo.Database, m *model.Snaps
 		out[t.TableName] = n
 	}
 	return out, nil
+}
+
+// mongoBucketCount is how many buckets a time-series collection holds.
+func mongoBucketCount(ctx context.Context, coll *mongo.Collection) (int64, error) {
+	cur, err := coll.Aggregate(ctx, mongo.Pipeline{{{Key: "$collStats", Value: bson.D{{Key: "storageStats", Value: bson.D{}}}}}})
+	if err != nil {
+		return 0, err
+	}
+	defer cur.Close(ctx)
+	var total int64
+	for cur.Next(ctx) {
+		v, err := cur.Current.LookupErr("storageStats", "timeseries", "bucketCount")
+		if err != nil {
+			return 0, fmt.Errorf("no bucket count in its storage stats")
+		}
+		n, ok := v.AsInt64OK()
+		if !ok {
+			return 0, fmt.Errorf("bucket count %v is not a number", v)
+		}
+		total += n
+	}
+	return total, cur.Err()
 }
 
 // MongoResetDatabase drops every collection and view a drill restored into
