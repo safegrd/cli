@@ -461,6 +461,9 @@ type repoSnapshot struct {
 	Epoch     sink.EpochInfo
 	SurfaceID string
 	Meta      *model.SnapshotMetadata
+	// StorageCfg is the storage the snapshot was found in, which keeps the
+	// erasure record it names; unset when the finder was handed a backend.
+	StorageCfg *config.StorageConfig
 }
 
 // lister is a backend that can enumerate its surfaces.
@@ -803,6 +806,9 @@ func locateRepoSnapshot(ctx context.Context, storageCfg config.StorageConfig, sn
 	}
 	for _, b := range bs {
 		rs, err := findRepoSnapshot(ctx, b, snapshotID)
+		if rs != nil {
+			rs.StorageCfg = &storageCfg
+		}
 		if err != nil || rs != nil {
 			return rs, err
 		}

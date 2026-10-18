@@ -131,6 +131,10 @@ type repoDBParams struct {
 	RecoverySealTo string
 	// SkipIfUnchanged writes nothing when no table changed (write.Options).
 	SkipIfUnchanged bool
+	// Erasures are the tables whose deleted rows the surface records, and
+	// ErasuresRetainUntil how long each object of the record is locked.
+	Erasures            []string
+	ErasuresRetainUntil time.Time
 }
 
 // runRepoDatabaseBackup dumps a database into its repository as one
@@ -150,6 +154,9 @@ func runRepoDatabaseBackup(ctx context.Context, p repoDBParams) (*model.Snapshot
 	}
 	if p.ChangeLog && kind != model.SurfaceTypePostgres {
 		return nil, nil, fmt.Errorf("the change log applies to a PostgreSQL database")
+	}
+	if len(p.Erasures) > 0 && kind != model.SurfaceTypePostgres {
+		return nil, nil, fmt.Errorf("erasures: applies to a PostgreSQL database")
 	}
 	// What a run that cannot reuse the epoch uploads again.
 	everything, tableWord, tablesWord, rowsWord := runUnit(kind)
@@ -205,6 +212,12 @@ func runRepoDatabaseBackup(ctx context.Context, p repoDBParams) (*model.Snapshot
 	default:
 		dumper = dump.NewNativeDumper(p.DatabaseURL)
 		dumper.RolesWithoutPasswords = p.RolesWithoutPasswords
+		if len(p.Erasures) > 0 {
+			dumper.Erasures = prepareErasures(ctx, erasureParams{
+				SurfaceID: p.SurfaceID, NodeID: p.NodeID, DatabaseURL: p.DatabaseURL, StorageCfg: p.StorageCfg,
+				Recipient: p.Recipient, Tables: p.Erasures, RetainUntil: p.ErasuresRetainUntil,
+			}, out, label)
+		}
 		source = dbrun.Source(dumper, "", &dumpMeta)
 	}
 	var (
@@ -696,6 +709,12 @@ func restoreRepoSQL(ctx context.Context, rs *repoSnapshot, privateKey, dir strin
 // and the content root matched the one recorded at backup time.
 func restoreRepoDatabase(ctx context.Context, rs *repoSnapshot, privateKey, targetURL string, db dbRestoreOptions) error {
 	id := rs.Meta.SnapshotID
+	// Before anything is written: a record that cannot be read stops the
+	// restore here.
+	replay, err := loadErasureReplay(ctx, rs, privateKey, db.WithoutErasures)
+	if err != nil {
+		return err
+	}
 	r, idx, files, err := openRun(ctx, rs, privateKey)
 	if err != nil {
 		return err
@@ -712,6 +731,9 @@ func restoreRepoDatabase(ctx context.Context, rs *repoSnapshot, privateKey, targ
 	restorer.NoOwner = db.NoOwner
 	restorer.CronJobsActive = db.KeepCronActive
 	restorer.DatabaseSettings = true
+	if replay != nil {
+		restorer.InTransaction = replay.apply
+	}
 	if db.NoOwner {
 		fmt.Printf("   Ownership:      not restored (--no-owner); every object belongs to the restoring role\n")
 	}
@@ -741,6 +763,7 @@ func restoreRepoDatabase(ctx context.Context, rs *repoSnapshot, privateKey, targ
 		shortDuration(time.Since(started)))
 	printCreatedRoles(restorer.CreatedRoles)
 	printCronJobs(restorer.CronJobs)
+	replay.print()
 	if restorer.ChangeLogRemoved {
 		fmt.Printf("   Change log:     not restored. A backup with change_log: true puts it back.\n")
 	}
@@ -840,6 +863,7 @@ func restoreRepoEngine(ctx context.Context, rs *repoSnapshot, privateKey, target
 func verifyRepoDatabase(ctx context.Context, rs *repoSnapshot, privateKey, sandboxURL string, checks []model.DrillCheck) error {
 	verifier := runner.NewVerifier(nil, cfg.ServerURL)
 	verifier.Checks = checks
+	verifier.Erasures = drillErasures(ctx, rs)
 	if cfg.ServerToken != "" {
 		verifier.SetServerToken(cfg.ServerToken)
 	}

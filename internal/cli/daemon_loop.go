@@ -380,6 +380,7 @@ func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, d pendingDrill
 	// A Laravel app is always a run of its repository.
 	if strings.EqualFold(s.Type, "laravel") || notTar && (strings.EqualFold(s.Type, "files") || surfaceIsDatabase(s) || strings.TrimSpace(s.Type) == "") {
 		rs = repoDrillTarget(ctx, c, storageCfg, snapshotID)
+		verifier.Erasures = drillErasures(ctx, rs)
 	}
 	dbRun := rs != nil && runner.IsRepoDatabase(rs.Meta)
 	var local *runner.LocalPostgres
@@ -725,9 +726,10 @@ func repoDrillTarget(ctx context.Context, c *config.CLIConfig, storageCfg config
 		return nil
 	}
 	rs, err := findRepoSnapshot(ctx, rb, snapshotID)
-	if err != nil {
+	if err != nil || rs == nil {
 		return nil
 	}
+	rs.StorageCfg = &storageCfg
 	return rs
 }
 

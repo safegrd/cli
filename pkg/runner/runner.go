@@ -46,6 +46,9 @@ type Verifier struct {
 	// storageFailed is set when the last drill failed because the storage
 	// would not give the snapshot back, as opposed to a restore that failed.
 	storageFailed bool
+	// Erasures is the storage a snapshot's erasure record is kept in, which
+	// a drill of a snapshot that names one reads and replays.
+	Erasures storage.Objects
 }
 
 // StorageError is a drill that could not read its snapshot from storage.

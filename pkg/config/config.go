@@ -221,6 +221,12 @@ type SurfaceConfig struct {
 	// safegrd schema in the database, which `DROP SCHEMA safegrd CASCADE`
 	// removes.
 	ChangeLog bool `yaml:"change_log,omitempty" json:"change_log,omitempty"`
+	// Erasures names the tables, as schema.table, whose deleted rows are
+	// erasures: a trigger records each one's primary key, the daemon moves
+	// the record into sealed objects beside the backups, and a restore of an
+	// older backup deletes those rows again before it commits. PostgreSQL,
+	// with local storage or the customer's own bucket.
+	Erasures []string `yaml:"erasures,omitempty" json:"erasures,omitempty"`
 	// RolesWithoutPasswords leaves role passwords out of a PostgreSQL
 	// surface's backups. By default the roles the schema names travel with
 	// their password hashes, sealed like everything else, so a restored role

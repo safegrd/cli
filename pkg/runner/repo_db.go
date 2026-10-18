@@ -172,6 +172,13 @@ func (v *Verifier) RunRepoDatabaseDrill(ctx context.Context, d RepoDrill, privat
 		report.TablesRestored, report.RowsRestored = res.TotalTables, res.TotalRows
 		report.ExtensionsBooted = res.Extensions
 		report.Assertions = append(report.Assertions, res.Assertions...)
+		if a, ok := v.erasureAssertion(ctx, meta, privateKey, ""); ok {
+			report.Assertions = append(report.Assertions, a)
+			if !a.Passed {
+				res.Passed = false
+				res.ErrorMessage = a.Message
+			}
+		}
 		report.CompletedAt = time.Now()
 		report.DurationMs = drillMilliseconds(report.CompletedAt.Sub(started))
 		if res.Passed {
@@ -233,6 +240,10 @@ func (v *Verifier) RunRepoDatabaseDrill(ctx context.Context, d RepoDrill, privat
 	}
 	allPassed := sandboxAssertions(report, meta, restored)
 	if a, ok := cronJobsAssertion(meta, cronJobs); ok {
+		report.Assertions = append(report.Assertions, a)
+		allPassed = allPassed && a.Passed
+	}
+	if a, ok := v.erasureAssertion(ctx, meta, privateKey, sandboxURL); ok {
 		report.Assertions = append(report.Assertions, a)
 		allPassed = allPassed && a.Passed
 	}

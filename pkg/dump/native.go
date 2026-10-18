@@ -101,6 +101,9 @@ type NativeDumper struct {
 	// default they ride along, sealed with everything else, so a restored
 	// role logs in as it did.
 	RolesWithoutPasswords bool
+	// Erasures, when set, goes into the manifest: where the surface's
+	// erasure record is kept and what it covers.
+	Erasures *model.ErasureRecord
 }
 
 // NewNativeDumper creates a dumper for databaseURL.
@@ -577,6 +580,7 @@ func (d *NativeDumper) Dump(ctx context.Context, databaseName string, dst io.Wri
 	if err := writeTarEntry(tw, entrySequences, seqSQL); err != nil {
 		return nil, err
 	}
+	meta.Erasures = d.Erasures
 	if len(cronJobs) > 0 {
 		data, err := json.Marshal(cronJobs)
 		if err != nil {
@@ -906,6 +910,11 @@ type NativeRestorer struct {
 	// restore command sets it; a drill does not, so a sandbox kept between
 	// drills does not collect one snapshot's settings.
 	DatabaseSettings bool
+	// InTransaction, if set, runs on the restore's connection inside its
+	// transaction, after the rows are loaded and counted and before
+	// BeforeCommit: the erasure record's replay. An error rolls the whole
+	// restore back.
+	InTransaction func(ctx context.Context, conn *pgx.Conn) error
 	// BeforeCommit, if set, runs after everything is loaded and before the
 	// transaction commits; an error rolls the whole restore back. The caller
 	// checks the stream's digest there, so a snapshot that fails it never
@@ -1308,6 +1317,11 @@ func (r *NativeRestorer) Restore(ctx context.Context, src io.Reader) (*model.Sna
 			}
 		} else {
 			r.CronJobs = restoreCronJobs(ctx, conn, cronJobs, r.CronJobsActive)
+		}
+	}
+	if r.InTransaction != nil {
+		if err := r.InTransaction(ctx, conn); err != nil {
+			return nil, fmt.Errorf("nothing was committed: %w", err)
 		}
 	}
 	if r.BeforeCommit != nil {

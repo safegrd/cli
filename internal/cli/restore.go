@@ -36,7 +36,10 @@ func newRestoreCmd() *cobra.Command {
 		dataOnly   []string
 		noOwner    bool
 		keepCron   bool
-		salvage    bool
+		// withoutErasures restores a snapshot whose erasure record cannot be
+		// read, and says erased rows may be back.
+		withoutErasures bool
+		salvage         bool
 
 		// A bucket to restore a files snapshot into, as backup reads one.
 		sourceEndpoint  string
@@ -229,7 +232,7 @@ files: each upload writes or updates the file's row in storage.objects.`,
 					if bucketTarget {
 						return errRepoToBucket(snapshotID)
 					}
-					return restoreRepo(ctx, rs, resolvedKey, targetDir, targetURL, toSQL, paths, tables, dbRestoreOptions{NoOwner: noOwner, KeepCronActive: keepCron}, salvage)
+					return restoreRepo(ctx, rs, resolvedKey, targetDir, targetURL, toSQL, paths, tables, dbRestoreOptions{NoOwner: noOwner, KeepCronActive: keepCron, WithoutErasures: withoutErasures}, salvage)
 				}
 			}
 			if salvage && fromDir != "" {
@@ -296,7 +299,7 @@ files: each upload writes or updates the file's row in storage.objects.`,
 					if bucketTarget {
 						return errRepoToBucket(snapshotID)
 					}
-					return restoreRepo(ctx, rs, resolvedKey, targetDir, targetURL, toSQL, paths, tables, dbRestoreOptions{NoOwner: noOwner, KeepCronActive: keepCron}, salvage)
+					return restoreRepo(ctx, rs, resolvedKey, targetDir, targetURL, toSQL, paths, tables, dbRestoreOptions{NoOwner: noOwner, KeepCronActive: keepCron, WithoutErasures: withoutErasures}, salvage)
 				}
 				if salvage {
 					return fmt.Errorf("--salvage restores what verifies of an incremental files snapshot; %s is not one", snapshotID)
@@ -602,6 +605,7 @@ files: each upload writes or updates the file's row in storage.objects.`,
 	cmd.Flags().StringArrayVar(&schemas, "schema", nil, "Restore only this schema of a PostgreSQL snapshot, objects and rows, into a database that has other schemas (repeatable)")
 	cmd.Flags().StringArrayVar(&dataOnly, "data-only-schema", nil, "Load only this schema's rows into tables the target already has (repeatable)")
 	cmd.Flags().BoolVar(&salvage, "salvage", false, "Incremental files snapshot: restore every file that verifies and list the ones a damaged or missing pack leaves out, instead of restoring nothing. Exits non-zero when any is left out")
+	cmd.Flags().BoolVar(&withoutErasures, "without-erasures", false, "PostgreSQL: restore even when the surface's erasure record cannot be read. Rows erased after the backup may come back")
 	cmd.Flags().BoolVar(&keepCron, "keep-cron-active", false, "PostgreSQL: create pg_cron's jobs as they were at backup time. By default each is created turned off")
 	cmd.Flags().BoolVar(&noOwner, "no-owner", false, "PostgreSQL: restore without ownership and privileges, so every object belongs to the restoring role. The roles the schema names are still created")
 	cmd.Flags().StringArrayVar(&tables, "table", nil, "Restore only this table (schema.table, either part quoted as psql prints it) of a PostgreSQL snapshot into --target: into an empty table of the same definition, or created as the snapshot defined it, with its schema, when the target has none (repeatable)")
@@ -650,8 +654,9 @@ func printObjectRestore(res *dump.ObjectRestoreResult) {
 // dbRestoreOptions are the choices a database restore takes from the
 // restore command's flags.
 type dbRestoreOptions struct {
-	NoOwner        bool
-	KeepCronActive bool
+	NoOwner         bool
+	KeepCronActive  bool
+	WithoutErasures bool
 }
 
 // printCronJobs says what the restore did with each pg_cron job the

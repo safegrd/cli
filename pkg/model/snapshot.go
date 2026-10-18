@@ -272,6 +272,10 @@ type SnapshotMetadata struct {
 	// themselves are in the archive only, sealed: a job's command can hold
 	// a secret.
 	CronJobs int `json:"cron_jobs,omitempty" yaml:"cron_jobs,omitempty"`
+	// Erasures is where the surface's erasure record is kept and the tables
+	// it covers, when the surface names any: a restore replays the erasures
+	// this backup did not see before it commits.
+	Erasures *ErasureRecord `json:"erasures,omitempty" yaml:"erasures,omitempty"`
 	// DatabaseSettings are the settings set on the PostgreSQL database
 	// itself (ALTER DATABASE ... SET), as "name=value", which no pg_dump
 	// section carries: a restore applies them to its target.
@@ -461,4 +465,12 @@ type DatabaseGrant struct {
 	Role      string `json:"role" yaml:"role"` // "PUBLIC" for every role
 	Privilege string `json:"privilege" yaml:"privilege"`
 	Grantable bool   `json:"grantable,omitempty" yaml:"grantable,omitempty"`
+}
+
+// ErasureRecord names a surface's erasure record: the directory its sealed
+// objects are kept in, relative to the storage's root, and the tables whose
+// deleted rows it records, as schema.table.
+type ErasureRecord struct {
+	Path   string   `json:"path" yaml:"path"`
+	Tables []string `json:"tables" yaml:"tables"`
 }

@@ -1033,6 +1033,7 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 		sState.probe = probeResult{}
 		if tick > 0 {
 			sState.probe = probeSurface(ctx, c, &surface)
+			shipErasuresOnTick(ctx, c, &surface, nodeID, sState)
 			sayProbe(sState, sState.probe)
 		}
 		hb := sendHeartbeat(ctx, c, nodeID, sState, tick, &surface)
@@ -1362,6 +1363,9 @@ func uploadErr(err error, producer <-chan error, what string) error {
 // remote server's record is the prefix it looks under.
 func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.SurfaceConfig, nodeID string, st *SurfaceState, stateDir string) (*model.SnapshotMetadata, retentionPlan, error) {
 	var plan retentionPlan
+	if len(s.Erasures) > 0 && !strings.EqualFold(s.Type, "postgres") {
+		return nil, plan, stageErr(model.BackupReasonConfig, fmt.Errorf("surface %s: erasures: applies to a PostgreSQL surface; remove it from this %s surface", s.ID, s.Type))
+	}
 	storageCfg := c.Storage
 	if s.Storage != nil {
 		storageCfg = *s.Storage
@@ -1679,6 +1683,13 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 		if dbFormat == "" && repoDatabaseKind(dump.SurfaceTypeOfURL(dbURL)) {
 			dbFormat = formatRepo
 		}
+		// The erasure record is kept by a PostgreSQL repository run: a
+		// surface that names one and cannot keep it is refused, never
+		// backed up as if it had.
+		if len(s.Erasures) > 0 && (dbFormat != formatRepo || dump.SurfaceTypeOfURL(dbURL) != model.SurfaceTypePostgres) {
+			return nil, plan, stageErr(model.BackupReasonConfig, fmt.Errorf("surface %s: erasures: applies to a PostgreSQL surface in repo format (the default); "+
+				"remove format: tar, or remove erasures:", s.ID))
+		}
 		switch dbFormat {
 		case "", formatTar:
 		case formatRepo:
@@ -1697,6 +1708,7 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 				Tier:      plan.Tier, Planned: plan.Until, SnapshotID: snapshotID, StateDir: stateDir, Out: os.Stdout,
 				NewEpoch: st.newEpoch, ChangeLog: s.ChangeLog, RolesWithoutPasswords: s.RolesWithoutPasswords,
 				RecoverySealTo: recoveryDocSealTo(s, pubKey), Kept: kept,
+				Erasures: s.Erasures, ErasuresRetainUntil: planRetention(time.Now(), storageCfg.RetentionDays, tiers, nil).Until,
 			})
 			st.newEpoch, st.rescan = false, false
 			if err != nil {
