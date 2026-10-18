@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -213,8 +214,9 @@ const localSandboxPrefix = "pg-"
 const rootSandboxBase = "/var/tmp/safegrd-drill"
 
 // StartLocalPostgres starts a throwaway cluster from srv under stateDir/drill,
-// after checking the disk has room for need bytes. The caller must Stop it.
-func StartLocalPostgres(ctx context.Context, srv *PgServer, stateDir string, need int64) (*LocalPostgres, error) {
+// after checking the disk has room for need bytes, able to create the
+// extensions named (a snapshot's). The caller must Stop it.
+func StartLocalPostgres(ctx context.Context, srv *PgServer, stateDir string, need int64, extensions []string) (*LocalPostgres, error) {
 	// PostgreSQL refuses to run as root, and a system service runs the daemon
 	// as root: the cluster runs as whoever owns the state directory, or as
 	// nobody under rootSandboxBase when that is root.
@@ -274,27 +276,48 @@ func StartLocalPostgres(ctx context.Context, srv *PgServer, stateDir string, nee
 		return fail(fmt.Errorf("initdb (%s) could not create a local sandbox: %v: %s", srv.Version, err, lastLines(string(out), 5)))
 	}
 
-	args := []string{"-D", dataDir, "-k", sockDir, "-p", "5432"}
-	for _, s := range sandboxSettings {
-		args = append(args, "-c", s)
-	}
-	// Not CommandContext: a cancelled drill stops the cluster through Stop,
-	// with a shutdown it can finish, not a SIGKILL.
-	cmd := exec.Command(filepath.Join(srv.BinDir, "postgres"), args...)
-	cmd.Env = env
-	cmd.Dir = dataDir
-	cmd.Stdout, cmd.Stderr = lp.log, lp.log
-	cred.apply(cmd)
-	if err := cmd.Start(); err != nil {
-		return fail(fmt.Errorf("could not start postgres for a local sandbox: %w", err))
-	}
-	lp.cmd = cmd
-	go func() {
-		lp.waitErr = cmd.Wait()
-		close(lp.exited)
-	}()
-
 	lp.URL = fmt.Sprintf("host=%s port=5432 user=safegrd dbname=postgres sslmode=disable", sockDir)
+	start := func(extra []string) error {
+		args := []string{"-D", dataDir, "-k", sockDir, "-p", "5432"}
+		for _, s := range append(append([]string{}, sandboxSettings...), extra...) {
+			args = append(args, "-c", s)
+		}
+		// Not CommandContext: a cancelled drill stops the cluster through Stop,
+		// with a shutdown it can finish, not a SIGKILL.
+		cmd := exec.Command(filepath.Join(srv.BinDir, "postgres"), args...)
+		cmd.Env = env
+		cmd.Dir = dataDir
+		cmd.Stdout, cmd.Stderr = lp.log, lp.log
+		cred.apply(cmd)
+		if err := cmd.Start(); err != nil {
+			return fmt.Errorf("could not start postgres for a local sandbox: %w", err)
+		}
+		lp.cmd, lp.exited = cmd, make(chan struct{})
+		exited := lp.exited
+		go func() {
+			lp.waitErr = cmd.Wait()
+			close(exited)
+		}()
+		return lp.waitReady(ctx)
+	}
+	if err := start(nil); err != nil {
+		return fail(err)
+	}
+	preload, err := lp.preloadSettings(ctx, extensions)
+	if err != nil {
+		return fail(err)
+	}
+	if len(preload) > 0 {
+		lp.halt()
+		if err := start(preload); err != nil {
+			return fail(err)
+		}
+	}
+	return lp, nil
+}
+
+// waitReady waits for the cluster to accept connections.
+func (lp *LocalPostgres) waitReady(ctx context.Context) error {
 	deadline := time.Now().Add(60 * time.Second)
 	for {
 		cctx, cancel := context.WithTimeout(ctx, 2*time.Second)
@@ -302,19 +325,85 @@ func StartLocalPostgres(ctx context.Context, srv *PgServer, stateDir string, nee
 		cancel()
 		if err == nil {
 			_ = conn.Close(context.Background())
-			return lp, nil
+			return nil
 		}
 		select {
 		case <-lp.exited:
-			return fail(fmt.Errorf("postgres (%s) exited while starting a local sandbox: %v: %s", srv.Version, lp.waitErr, lastLines(lp.log.String(), 5)))
+			return fmt.Errorf("postgres (%s) exited while starting a local sandbox: %v: %s", lp.Server.Version, lp.waitErr, lastLines(lp.log.String(), 5))
 		case <-ctx.Done():
-			return fail(ctx.Err())
+			return ctx.Err()
 		case <-time.After(100 * time.Millisecond):
 		}
 		if time.Now().After(deadline) {
-			return fail(fmt.Errorf("postgres (%s) did not accept connections within 60s: %s", srv.Version, lastLines(lp.log.String(), 5)))
+			return fmt.Errorf("postgres (%s) did not accept connections within 60s: %s", lp.Server.Version, lastLines(lp.log.String(), 5))
 		}
 	}
+}
+
+// halt stops the cluster's server and leaves its files, for a restart.
+func (lp *LocalPostgres) halt() {
+	if lp.cmd == nil || lp.cmd.Process == nil {
+		return
+	}
+	// SIGINT is PostgreSQL's fast shutdown: open transactions roll back and
+	// the server exits without waiting for clients.
+	_ = lp.cmd.Process.Signal(os.Interrupt)
+	select {
+	case <-lp.exited:
+	case <-time.After(30 * time.Second):
+		_ = lp.cmd.Process.Kill()
+		<-lp.exited
+	}
+	lp.cmd = nil
+}
+
+// A snapshot's schema creates its extensions, and two that Supabase
+// projects use cannot be created on a server that did not load their
+// library at start: pg_cron fails on its unset cron.database_name, pg_net
+// says it is not in shared_preload_libraries. Either failed the restore, so
+// the drill reported a broken backup for a reason that was the sandbox's.
+//
+// Loaded, both would act from the drill host. pg_cron runs the jobs in
+// cron.job, and pg_net sends the HTTP requests queued in its table. So the
+// sandbox holds pg_cron's jobs (cron.launch_active_jobs, pg_cron 1.6 and
+// newer: an older one ignores the setting, and the sandbox then relies on
+// a restore never writing cron.job rows, which a snapshot does not carry),
+// and points pg_net's worker at template1, where it is never created, so
+// a request queued in the sandbox is never sent.
+var preloadedExtensions = map[string][]string{
+	"pg_cron": {"cron.database_name=postgres", "cron.launch_active_jobs=off", "cron.use_background_workers=off"},
+	"pg_net":  {"pg_net.database_name=template1"},
+}
+
+// preloadSettings are the settings that load the libraries of the
+// extensions in want that need it and this server has, or nil.
+func (lp *LocalPostgres) preloadSettings(ctx context.Context, want []string) ([]string, error) {
+	var need []string
+	for _, w := range want {
+		if preloadedExtensions[w] != nil {
+			need = append(need, w)
+		}
+	}
+	if len(need) == 0 {
+		return nil, nil
+	}
+	missing, err := lp.MissingExtensions(ctx, need)
+	if err != nil {
+		return nil, err
+	}
+	var libs, settings []string
+	for _, n := range need {
+		if slices.Contains(missing, n) {
+			continue
+		}
+		libs = append(libs, n)
+		settings = append(settings, preloadedExtensions[n]...)
+	}
+	if len(libs) == 0 {
+		return nil, nil
+	}
+	sort.Strings(libs)
+	return append([]string{"shared_preload_libraries=" + strings.Join(libs, ",")}, settings...), nil
 }
 
 // MissingExtensions lists the names in want that this cluster cannot create.
@@ -358,18 +447,7 @@ func (lp *LocalPostgres) MissingExtensions(ctx context.Context, want []string) (
 // Stop shuts the cluster down and deletes it. It is safe to call more than
 // once and on a cluster that never started.
 func (lp *LocalPostgres) Stop() {
-	if lp.cmd != nil && lp.cmd.Process != nil {
-		// SIGINT is PostgreSQL's fast shutdown: open transactions roll back
-		// and the server exits without waiting for clients.
-		_ = lp.cmd.Process.Signal(os.Interrupt)
-		select {
-		case <-lp.exited:
-		case <-time.After(30 * time.Second):
-			_ = lp.cmd.Process.Kill()
-			<-lp.exited
-		}
-		lp.cmd = nil
-	}
+	lp.halt()
 	if lp.dataDir != "" {
 		if err := os.RemoveAll(lp.dataDir); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: could not delete the local sandbox at %s: %v. Delete it by hand to free the disk.\n", lp.dataDir, err)

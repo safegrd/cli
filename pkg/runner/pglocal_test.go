@@ -1,18 +1,21 @@
 package runner
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/safegrd/cli/pkg/diskspace"
+	"github.com/safegrd/cli/pkg/dump"
 	"github.com/safegrd/cli/pkg/model"
 )
 
@@ -110,7 +113,7 @@ func TestFindPgServerRefusesOneOlderThanTheSnapshot(t *testing.T) {
 // would leave its disk nearly full is refused before initdb runs.
 func TestCheckRoomRefusesARestoreThatWouldFillTheDisk(t *testing.T) {
 	dir := sandboxStateDir(t)
-	if _, err := StartLocalPostgres(context.Background(), &PgServer{BinDir: t.TempDir()}, dir, 1<<60); err == nil ||
+	if _, err := StartLocalPostgres(context.Background(), &PgServer{BinDir: t.TempDir()}, dir, 1<<60, nil); err == nil ||
 		!strings.Contains(err.Error(), "not enough disk") {
 		t.Errorf("StartLocalPostgres did not check the disk first: %v", err)
 	}
@@ -133,7 +136,7 @@ func TestALocalSandboxStartsAndIsDeleted(t *testing.T) {
 		t.Skipf("this host cannot start a local PostgreSQL: %v", err)
 	}
 	stateDir := sandboxStateDir(t)
-	lp, err := StartLocalPostgres(ctx, srv, stateDir, 1<<20)
+	lp, err := StartLocalPostgres(ctx, srv, stateDir, 1<<20, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +168,7 @@ func TestALocalSandboxStartsAndIsDeleted(t *testing.T) {
 	}
 
 	// A daemon killed mid-drill leaves its cluster running.
-	left, err := StartLocalPostgres(ctx, srv, stateDir, 1<<20)
+	left, err := StartLocalPostgres(ctx, srv, stateDir, 1<<20, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,6 +181,73 @@ func TestALocalSandboxStartsAndIsDeleted(t *testing.T) {
 	}
 	if _, err := os.Stat(left.dataDir); !os.IsNotExist(err) {
 		t.Errorf("the sweep left %s behind (%v)", left.dataDir, err)
+	}
+}
+
+// A snapshot of a database that uses pg_cron restores into a local sandbox,
+// and the sandbox has none of its jobs. The sandbox used to start without
+// pg_cron's library, so the CREATE EXTENSION in the snapshot's schema failed
+// on the unset cron.database_name and the drill reported a broken backup.
+// Needs a PostgreSQL server with pg_cron, which scripts/test-root.sh
+// installs; it sets SAFEGRD_TEST_PG_CRON.
+func TestASnapshotUsingPgCronRestoresIntoALocalSandboxWithNoJobs(t *testing.T) {
+	if os.Getenv("SAFEGRD_TEST_PG_CRON") == "" {
+		t.Skip("needs a PostgreSQL server with pg_cron: scripts/test-root.sh")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	srv, err := FindPgServer(ctx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := StartLocalPostgres(ctx, srv, sandboxStateDir(t), 1<<20, []string{"pg_cron"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer src.Stop()
+	conn, err := pgx.Connect(ctx, src.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{
+		"CREATE EXTENSION pg_cron",
+		"CREATE TABLE ticks (id int)",
+		"INSERT INTO ticks VALUES (1), (2)",
+		"SELECT cron.schedule('tick', '* * * * *', 'INSERT INTO ticks VALUES (0)')",
+	} {
+		if _, err := conn.Exec(ctx, q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	_ = conn.Close(ctx)
+
+	var archive bytes.Buffer
+	meta, err := dump.NewNativeDumper(src.URL).Dump(ctx, "", &archive)
+	if err != nil {
+		t.Fatalf("backup: %v", err)
+	}
+	if !slices.Contains(meta.Extensions, "pg_cron") {
+		t.Fatalf("the snapshot does not name pg_cron: %v", meta.Extensions)
+	}
+	sb, err := StartLocalPostgres(ctx, srv, sandboxStateDir(t), SandboxBytesNeeded(meta), meta.Extensions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sb.Stop()
+	if _, err := dump.NewNativeRestorer(sb.URL).Restore(ctx, &archive); err != nil {
+		t.Fatalf("restoring a snapshot that uses pg_cron into the sandbox: %v", err)
+	}
+	conn, err = pgx.Connect(ctx, sb.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(ctx)
+	var rows, jobs int
+	if err := conn.QueryRow(ctx, "SELECT (SELECT count(*) FROM ticks), (SELECT count(*) FROM cron.job)").Scan(&rows, &jobs); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 2 || jobs != 0 {
+		t.Errorf("the sandbox holds %d rows of ticks (want 2) and %d pg_cron jobs (want none)", rows, jobs)
 	}
 }
 
@@ -199,7 +269,7 @@ func TestALocalSandboxUnderRootRunsAsTheStateDirsOwner(t *testing.T) {
 
 	// The enrolling user's state directory, in a tree that user can reach.
 	stateDir := sandboxStateDir(t)
-	lp, err := StartLocalPostgres(ctx, srv, stateDir, 1<<20)
+	lp, err := StartLocalPostgres(ctx, srv, stateDir, 1<<20, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,7 +330,7 @@ func TestARootDaemonsSandboxRunsAsNobody(t *testing.T) {
 	if err := os.Mkdir(stateDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	lp, err := StartLocalPostgres(ctx, srv, stateDir, 1<<20)
+	lp, err := StartLocalPostgres(ctx, srv, stateDir, 1<<20, nil)
 	if err != nil {
 		t.Fatalf("a root daemon with a root-owned state directory cannot start a sandbox: %v", err)
 	}

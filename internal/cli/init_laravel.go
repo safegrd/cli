@@ -132,8 +132,13 @@ func mergeLaravelSurface(c *config.CLIConfig, s config.SurfaceConfig, explicitID
 
 // printLaravelSchedule says how to keep the surface backed up and drilled:
 // a service, or Laravel's own scheduler for a host where the app's user
-// cannot install one.
+// cannot install one. A caller that runs the schedule itself, such as the
+// SafeGrd Laravel package, sets SAFEGRD_SCHEDULED_BY and says so in its own
+// words; these steps would tell its user to set up a second one.
 func printLaravelSchedule(id string, enrolled bool) {
+	if os.Getenv("SAFEGRD_SCHEDULED_BY") != "" {
+		return
+	}
 	bin, err := os.Executable()
 	if err != nil {
 		bin = "safegrd"

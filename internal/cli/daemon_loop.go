@@ -663,7 +663,7 @@ func startLocalSandbox(ctx context.Context, provider storage.StorageProvider, sn
 	case err != nil:
 		return nil, model.DrillReasonSandboxStartFailed, err
 	}
-	lp, err := runner.StartLocalPostgres(ctx, srv, stateDir, runner.SandboxBytesNeeded(meta))
+	lp, err := runner.StartLocalPostgres(ctx, srv, stateDir, runner.SandboxBytesNeeded(meta), meta.Extensions)
 	if errors.Is(err, diskspace.ErrNotEnoughDisk) {
 		return nil, model.DrillReasonSandboxNoDisk, err
 	} else if err != nil {
