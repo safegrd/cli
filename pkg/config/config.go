@@ -221,6 +221,13 @@ type SurfaceConfig struct {
 	// safegrd schema in the database, which `DROP SCHEMA safegrd CASCADE`
 	// removes.
 	ChangeLog bool `yaml:"change_log,omitempty" json:"change_log,omitempty"`
+	// Watch makes a PostgreSQL surface check the backups another tool writes
+	// (Coolify's, a cron pg_dump) where that tool puts them, instead of
+	// backing up a database: the newest one is read and counted on the
+	// surface's schedule, which is how often the other tool is expected to
+	// write, and its drills load it into a sandbox.
+	Watch *WatchConfig `yaml:"watch,omitempty" json:"watch,omitempty"`
+
 	// Erasures names the tables, as schema.table, whose deleted rows are
 	// erasures: a trigger records each one's primary key, the daemon moves
 	// the record into sealed objects beside the backups, and a restore of an
@@ -310,6 +317,19 @@ type WALConfig struct {
 // sign requests to it. Endpoint is the store's S3 URL (for Supabase Storage,
 // https://PROJECT.storage.supabase.co/storage/v1/s3); empty means AWS S3.
 // Region is what the store shows for the bucket.
+// WatchConfig is where another tool puts its backups: a prefix in a bucket
+// (s3://bucket/prefix, with the endpoint and keys for one not on AWS) or a
+// directory on this host. Match, when set, is a glob a backup's file name
+// must match, for a location that holds other files too.
+type WatchConfig struct {
+	URL       string `yaml:"url" json:"url"`
+	Endpoint  string `yaml:"endpoint,omitempty" json:"endpoint,omitempty"`
+	Region    string `yaml:"region,omitempty" json:"region,omitempty"`
+	AccessKey string `yaml:"access_key,omitempty" json:"access_key,omitempty"`
+	SecretKey string `yaml:"secret_key,omitempty" json:"secret_key,omitempty"`
+	Match     string `yaml:"match,omitempty" json:"match,omitempty"`
+}
+
 type ObjectStoreSourceConfig struct {
 	Endpoint        string `yaml:"endpoint,omitempty" json:"endpoint,omitempty"`
 	Region          string `yaml:"region,omitempty" json:"region,omitempty"`

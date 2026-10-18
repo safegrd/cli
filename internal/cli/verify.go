@@ -46,6 +46,7 @@ func newVerifyCmd() *cobra.Command {
 		query       string
 		queryOut    string
 		queryKeep   bool
+		surfaceSel  string
 	)
 
 	cmd := &cobra.Command{
@@ -83,6 +84,15 @@ not reported as a drill.
 
   safegrd verify --snapshot <id> --query "SELECT * FROM orders WHERE id = 4211" --out order.csv`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if surfaceSel != "" {
+				if snapshotID != "" {
+					return fmt.Errorf("--surface drills a watched surface's newest checked backup; leave out --snapshot")
+				}
+				if inMemory {
+					sandboxURL = ""
+				}
+				return verifyWatchedSurface(cmd.Context(), surfaceSel, sandboxURL)
+			}
 			if snapshotID == "" {
 				return fmt.Errorf("--snapshot is required")
 			}
@@ -376,6 +386,7 @@ not reported as a drill.
 	}
 
 	cmd.Flags().StringVar(&snapshotID, "snapshot", "", "Snapshot ID to verify (required)")
+	cmd.Flags().StringVar(&surfaceSel, "surface", "", "Drill the backup a watched surface (watch:) last read, where the other tool put it, instead of a snapshot")
 	cmd.Flags().BoolVar(&keep, "keep-sandbox", false, "When a sandbox drill fails, record that the sandbox is kept for a person to look at")
 	cmd.Flags().BoolVar(&showURL, "show-url", false, "When a sandbox drill fails, print the sandbox's URL with its password")
 	cmd.Flags().BoolVar(&inMemory, "in-memory", false, "Restore in memory only, even with --sandbox-target (the default without it)")

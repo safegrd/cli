@@ -276,6 +276,10 @@ type SnapshotMetadata struct {
 	// it covers, when the surface names any: a restore replays the erasures
 	// this backup did not see before it commits.
 	Erasures *ErasureRecord `json:"erasures,omitempty" yaml:"erasures,omitempty"`
+	// External is set on a backup another tool made, which a watched
+	// surface read where that tool put it. SafeGrd holds no archive of it:
+	// StorageURI is the other tool's object, Sha256Checksum its bytes'.
+	External *ExternalBackup `json:"external,omitempty" yaml:"external,omitempty"`
 	// DatabaseSettings are the settings set on the PostgreSQL database
 	// itself (ALTER DATABASE ... SET), as "name=value", which no pg_dump
 	// section carries: a restore applies them to its target.
@@ -473,4 +477,26 @@ type DatabaseGrant struct {
 type ErasureRecord struct {
 	Path   string   `json:"path" yaml:"path"`
 	Tables []string `json:"tables" yaml:"tables"`
+}
+
+// ExternalBackup is what a check read about a backup another tool made.
+type ExternalBackup struct {
+	// URI is where the other tool put it: s3://bucket/key or file:///path.
+	URI string `json:"uri" yaml:"uri"`
+	// Tool names the tool when the file name says ("Coolify"), or is empty.
+	Tool string `json:"tool,omitempty" yaml:"tool,omitempty"`
+	// Format is custom (pg_dump --format=custom), plain or cluster
+	// (pg_dumpall).
+	Format string `json:"format" yaml:"format"`
+	// Modified is when the other tool wrote it.
+	Modified time.Time `json:"modified" yaml:"modified"`
+}
+
+// MadeBy names who made the backup, for a sentence: "Coolify" or "another
+// tool".
+func (e *ExternalBackup) MadeBy() string {
+	if e == nil || e.Tool == "" {
+		return "another tool"
+	}
+	return e.Tool
 }

@@ -58,6 +58,9 @@ func ParseObjectStoreRoot(root string) (bucket, prefix string, ok bool) {
 	return bucket, strings.Trim(prefix, "/"), true
 }
 
+// Client is the S3 client the source reads with.
+func (o ObjectStoreSource) Client(ctx context.Context) (*s3.Client, error) { return o.client(ctx) }
+
 func (o ObjectStoreSource) client(ctx context.Context) (*s3.Client, error) {
 	if o.Bucket == "" {
 		return nil, errors.New("object store source: bucket is required")

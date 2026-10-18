@@ -672,6 +672,9 @@ func computeCertificateHash(r *model.VerificationReport) string {
 	if d := checksDigest(r); d != "" {
 		payload += ":CHECKS:" + d
 	}
+	if r.External != nil {
+		payload += ":EXTERNAL:" + r.External.URI + ":" + r.ExternalSha256
+	}
 	h := sha256.Sum256([]byte(payload))
 	return "cert_sg_" + hex.EncodeToString(h[:])
 }

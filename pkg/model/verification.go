@@ -72,6 +72,11 @@ type VerificationReport struct {
 	// named, so a copy kept for months is one whose every object is locked.
 	// Not stored and not part of the certificate.
 	ObjectsRead []string `json:"objects_read,omitempty" yaml:"-"`
+	// External is set on a drill of a backup another tool made. Its URI and
+	// the backup's SHA-256 are inside the certificate hash, so the signed
+	// record fixes which object was drilled.
+	External       *ExternalBackup `json:"external,omitempty" yaml:"external,omitempty"`
+	ExternalSha256 string          `json:"external_sha256,omitempty" yaml:"external_sha256,omitempty"`
 }
 
 // CanonicalBytes returns the deterministic serialization for cryptographic signing and chaining.

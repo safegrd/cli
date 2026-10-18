@@ -44,10 +44,15 @@ type SurfaceState struct {
 	LastSizeBytes  int64 `json:"last_size_bytes,omitempty"`
 	// LastUnchanged is when a run last found nothing changed and wrote no
 	// backup (skip_if_unchanged).
-	LastUnchanged       time.Time `json:"last_unchanged,omitempty"`
-	ConsecutiveFailures int       `json:"consecutive_failures"`
-	NextDue             time.Time `json:"next_due,omitempty"`
-	LastError           string    `json:"last_error,omitempty"`
+	LastUnchanged time.Time `json:"last_unchanged,omitempty"`
+	// LastChecked is when a watched surface last found no new backup, and
+	// Watched the backup its last check read. A check counts as a run for
+	// the schedule and is never reported as "unchanged".
+	LastChecked         time.Time      `json:"last_checked,omitempty"`
+	Watched             *watchedBackup `json:"watched,omitempty"`
+	ConsecutiveFailures int            `json:"consecutive_failures"`
+	NextDue             time.Time      `json:"next_due,omitempty"`
+	LastError           string         `json:"last_error,omitempty"`
 	// BackupReason is why the last backup failed, or what went wrong after
 	// one that was taken. LastError is the same in words.
 	BackupReason model.BackupReason `json:"backup_reason,omitempty"`
@@ -837,14 +842,17 @@ func isSurfaceDue(s *config.SurfaceConfig, state *SurfaceState, now time.Time) (
 	}
 
 	// Never backed up -> due immediately
-	if state.LastSuccess.IsZero() {
+	if state.LastSuccess.IsZero() && state.LastChecked.IsZero() {
 		return true, now
 	}
 	// A run that found nothing changed counts as a run: the schedule starts
-	// again from it.
+	// again from it. So does a watched surface's check that found nothing new.
 	last := state.LastSuccess
 	if state.LastUnchanged.After(last) {
 		last = state.LastUnchanged
+	}
+	if state.LastChecked.After(last) {
+		last = state.LastChecked
 	}
 
 	// Fixed times: due at the schedule's first time after the last backup,
@@ -1234,6 +1242,22 @@ func backupSurfaceNow(ctx context.Context, c *config.CLIConfig, surface *config.
 	if unchanged {
 		backupErr = nil
 	}
+	// A watched surface's check that found the backup it read last time:
+	// rescheduled, and nothing reported, so the surface goes Overdue when
+	// the other tool stops writing.
+	if errors.Is(backupErr, errNothingNew) {
+		releaseLock()
+		sState.ConsecutiveFailures, sState.LastError, sState.BackupReason = 0, "", ""
+		sState.LastChecked = time.Now().UTC()
+		_, sState.NextDue = isSurfaceDue(surface, sState, sState.LastChecked)
+		said := fmt.Sprintf("no new backup at %s since %s", surface.Watch.URL, sState.Watched.Object.Modified.Format("2006-01-02 15:04 UTC"))
+		fmt.Printf("Surface %s: %s.\n", surface.ID, said)
+		warnIfStateUnsaved(saveDaemonState(statePath, daemonState), statePath)
+		// The check ran, so the ping started above is finished; the
+		// server's Overdue says when the other tool stopped writing.
+		warnPing(surface.ID, ping(ctx, "surfaces["+surface.ID+"].ping_url", surface.PingURL, "", "Checked "+surface.ID+": "+said))
+		return nil, nil
+	}
 	// post_backup runs after every attempt, so whatever pre_backup paused is
 	// resumed even when the backup fails. Its failure does not undo a backup
 	// that was taken, but it is said out loud.
@@ -1365,6 +1389,13 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 	var plan retentionPlan
 	if len(s.Erasures) > 0 && !strings.EqualFold(s.Type, "postgres") {
 		return nil, plan, stageErr(model.BackupReasonConfig, fmt.Errorf("surface %s: erasures: applies to a PostgreSQL surface; remove it from this %s surface", s.ID, s.Type))
+	}
+	if s.Watch != nil {
+		if len(s.Erasures) > 0 {
+			return nil, plan, stageErr(model.BackupReasonConfig, fmt.Errorf("surface %s: erasures: needs a database this host backs up, not watch:", s.ID))
+		}
+		meta, err := runWatchCheck(ctx, c, s, nodeID, st, stateDir)
+		return meta, plan, err
 	}
 	storageCfg := c.Storage
 	if s.Storage != nil {

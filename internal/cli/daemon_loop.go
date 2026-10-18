@@ -282,6 +282,10 @@ func daemonPrivateKey(ctx context.Context, c *config.CLIConfig) string {
 // d.requestID is a "drill now" not yet run: it goes ahead inside the usual
 // spacing, once, because a person or a daemon asked for it.
 func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, d pendingDrill, save func()) {
+	if d.surface.Watch != nil {
+		runWatchDrill(ctx, c, d, save)
+		return
+	}
 	s, st, nodeID, snapshotID, requestID := d.surface, d.state, d.nodeID, d.snapshotID, d.requestID
 	now := time.Now().UTC()
 	if requestID != "" {
