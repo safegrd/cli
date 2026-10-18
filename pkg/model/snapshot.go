@@ -271,6 +271,11 @@ type SnapshotMetadata struct {
 	// (ALTER ROLE ... IN DATABASE ... SET), applied by a restore as
 	// DatabaseSettings are.
 	RoleSettings []RoleSetting `json:"role_settings,omitempty" yaml:"role_settings,omitempty"`
+	// DatabaseGrants are the privileges granted on the database itself
+	// (GRANT CONNECT ON DATABASE ...), set when they are not the default.
+	// A restore revokes the default and grants these, so a database that
+	// let only its own roles connect does not come back open to all.
+	DatabaseGrants []DatabaseGrant `json:"database_grants,omitempty" yaml:"database_grants,omitempty"`
 	// RolesNamed are the roles a Postgres snapshot's schema names (owners,
 	// grantees, the roles policies apply to), sorted. RolesSource says how
 	// roles.sql carried them: "pg_dumpall 16.4", with ", no passwords" when
@@ -439,4 +444,12 @@ type ReplicaRead struct {
 type RoleSetting struct {
 	Role    string `json:"role" yaml:"role"`
 	Setting string `json:"setting" yaml:"setting"`
+}
+
+// DatabaseGrant is one privilege on a PostgreSQL database: CONNECT, CREATE
+// or TEMPORARY, to a role or to PUBLIC.
+type DatabaseGrant struct {
+	Role      string `json:"role" yaml:"role"` // "PUBLIC" for every role
+	Privilege string `json:"privilege" yaml:"privilege"`
+	Grantable bool   `json:"grantable,omitempty" yaml:"grantable,omitempty"`
 }

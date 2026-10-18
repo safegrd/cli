@@ -313,6 +313,36 @@ func (d *NativeDumper) Dump(ctx context.Context, databaseName string, dst io.Wri
 	if err := rs.Err(); err != nil {
 		return nil, fmt.Errorf("failed to read the database's role settings: %w", err)
 	}
+	// Privileges on the database itself, when they are not the default
+	// (NULL is the default: every role may connect). The owner's own are
+	// implicit and left out.
+	grants, err := tx.Query(ctx, `SELECT coalesce(r.rolname, 'PUBLIC'), a.privilege_type, a.is_grantable
+		FROM pg_database d CROSS JOIN LATERAL aclexplode(d.datacl) a LEFT JOIN pg_roles r ON r.oid = a.grantee
+		WHERE d.datname = current_database() AND a.grantee <> d.datdba ORDER BY 1, 2`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read the database's privileges: %w", err)
+	}
+	var explicitACL bool
+	for grants.Next() {
+		var g model.DatabaseGrant
+		if err := grants.Scan(&g.Role, &g.Privilege, &g.Grantable); err != nil {
+			grants.Close()
+			return nil, fmt.Errorf("failed to read the database's privileges: %w", err)
+		}
+		meta.DatabaseGrants = append(meta.DatabaseGrants, g)
+	}
+	grants.Close()
+	if err := grants.Err(); err != nil {
+		return nil, fmt.Errorf("failed to read the database's privileges: %w", err)
+	}
+	if err := tx.QueryRow(ctx, `SELECT datacl IS NOT NULL FROM pg_database WHERE datname = current_database()`).Scan(&explicitACL); err != nil {
+		return nil, fmt.Errorf("failed to read the database's privileges: %w", err)
+	}
+	if explicitACL && len(meta.DatabaseGrants) == 0 {
+		// Only the owner may connect: recorded as no grant at all, which a
+		// restore must still apply by revoking the default.
+		meta.DatabaseGrants = []model.DatabaseGrant{{Role: "", Privilege: "NONE"}}
+	}
 	if meta.LargeObjects > 0 {
 		d.Warn(fmt.Sprintf("This database holds %s (pg_largeobject). The backup does not include their contents: "+
 			"a restore brings back the rows that point at them, not the objects, and a Fire Drill of this backup fails until it does. "+
@@ -1203,8 +1233,16 @@ func (r *NativeRestorer) Restore(ctx context.Context, src io.Reader) (*model.Sna
 		return nil, err
 	}
 	committed = true
-	if r.DatabaseSettings && manifest != nil && (len(manifest.DatabaseSettings) > 0 || len(manifest.RoleSettings) > 0) {
-		r.applyDatabaseSettings(ctx, conn, manifest.DatabaseSettings, manifest.RoleSettings)
+	// Only a whole database takes the source's settings and privileges: a
+	// --schema restore goes into a database that is someone else's too,
+	// such as a Supabase project.
+	whole := len(r.Schemas) == 0 && len(r.DataOnlySchemas) == 0
+	if r.DatabaseSettings && whole && manifest != nil && (len(manifest.DatabaseSettings) > 0 || len(manifest.RoleSettings) > 0 || len(manifest.DatabaseGrants) > 0) {
+		grants := manifest.DatabaseGrants
+		if r.NoOwner {
+			grants = nil // --no-owner restores no privileges
+		}
+		r.applyDatabaseSettings(ctx, conn, manifest.DatabaseSettings, manifest.RoleSettings, grants)
 	}
 
 	switch {
@@ -1271,7 +1309,7 @@ var settingNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_.]*$`)
 // applyDatabaseSettings sets each recorded "name=value" on the target
 // database. A setting the restoring role may not set is said, with the
 // statement to run, and the restore stands.
-func (r *NativeRestorer) applyDatabaseSettings(ctx context.Context, conn *pgx.Conn, settings []string, roleSettings []model.RoleSetting) {
+func (r *NativeRestorer) applyDatabaseSettings(ctx context.Context, conn *pgx.Conn, settings []string, roleSettings []model.RoleSetting, grants []model.DatabaseGrant) {
 	var db string
 	if err := conn.QueryRow(ctx, "SELECT current_database()").Scan(&db); err != nil {
 		r.Warn(fmt.Sprintf("The source database's settings were not applied (%v): %s.", err, strings.Join(settings, "; ")))
@@ -1302,6 +1340,31 @@ func (r *NativeRestorer) applyDatabaseSettings(ctx context.Context, conn *pgx.Co
 	// restoring role often is not; then it is said.
 	for _, rs := range roleSettings {
 		apply("ALTER ROLE "+pgx.Identifier{rs.Role}.Sanitize()+" IN DATABASE "+dbIdent, rs.Setting)
+	}
+	// The source's privileges on the database replace the default, which
+	// lets every role connect.
+	if len(grants) > 0 {
+		run := func(stmt string) {
+			if _, err := conn.Exec(ctx, stmt); err != nil {
+				failed = append(failed, fmt.Sprintf("%s (%v)", stmt, err))
+			}
+		}
+		run("REVOKE ALL ON DATABASE " + dbIdent + " FROM PUBLIC")
+		for _, g := range grants {
+			priv := strings.ToUpper(g.Privilege)
+			if g.Role == "" || (priv != "CONNECT" && priv != "CREATE" && priv != "TEMPORARY") {
+				continue
+			}
+			grantee := "PUBLIC"
+			if g.Role != "PUBLIC" {
+				grantee = pgx.Identifier{g.Role}.Sanitize()
+			}
+			stmt := "GRANT " + priv + " ON DATABASE " + dbIdent + " TO " + grantee
+			if g.Grantable {
+				stmt += " WITH GRANT OPTION"
+			}
+			run(stmt)
+		}
 	}
 	if len(failed) > 0 {
 		verb := "were"
