@@ -298,3 +298,65 @@ func TestEmailDrillFailsWhenArchiveAndManifestDisagree(t *testing.T) {
 		t.Fatalf("an entry the manifest does not list passed the drill: %+v", bad)
 	}
 }
+
+// folderScript answers like Dovecot or Fastmail: no X-GM-EXT-1, and spam and
+// trash under names of the server's own, flagged \Junk and \Trash (RFC 6154).
+// Each mailbox holds one message.
+func folderScript(selected *[]string) func(verb, args string) string {
+	return func(verb, args string) string {
+		switch verb {
+		case "LOGIN":
+			return "TAG OK Logged in\r\n"
+		case "CAPABILITY":
+			return "* CAPABILITY IMAP4rev1 SPECIAL-USE UIDPLUS\r\nTAG OK\r\n"
+		case "LIST":
+			return "* LIST (\\HasNoChildren) \"/\" INBOX\r\n" +
+				"* LIST (\\HasNoChildren) \"/\" Archive\r\n" +
+				"* LIST (\\HasNoChildren \\Junk) \"/\" Junk\r\n" +
+				"* LIST (\\HasNoChildren \\Trash) \"/\" \"Deleted Messages\"\r\n" +
+				"TAG OK List completed\r\n"
+		case "SELECT":
+			*selected = append(*selected, strings.Trim(args, `"`))
+			return "* 1 EXISTS\r\n* OK [UIDVALIDITY 3] UIDs valid\r\nTAG OK [READ-WRITE] Select completed\r\n"
+		case "UID FETCH":
+			m := eml("<m@example.com>", "a message")
+			return fmt.Sprintf("* 1 FETCH (UID 1 BODY[] {%d}\r\n%s)\r\n", len(m), m) + "TAG OK Fetch completed\r\n"
+		}
+		return "TAG BAD unexpected\r\n"
+	}
+}
+
+func TestSpamAndTrashAreLeftOutWhateverTheServerCallsThem(t *testing.T) {
+	serverTLS, clientTLS := selfSignedTLS(t)
+	backup := func(include []string) ([]string, int) {
+		t.Helper()
+		var selected []string
+		srv := startScriptedIMAP(t, serverTLS, folderScript(&selected))
+		host, port, _ := net.SplitHostPort(srv.addr)
+		var p int
+		fmt.Sscan(port, &p)
+		collector := NewEmailCollector(EmailCollectorConfig{
+			Host: host, Port: p, Username: "u@example.com", Password: "pw",
+			IncludeFolders: include,
+			ExcludeFolders: []string{"[Gmail]/Spam", "[Gmail]/Trash"},
+			TLSConfig:      clientTLS,
+			Warn:           func(string) {},
+		})
+		stream, meta, err := collector.ScanAndStream(context.Background(), nil)
+		if err != nil {
+			t.Fatalf("ScanAndStream: %v", err)
+		}
+		if _, err := io.ReadAll(stream); err != nil {
+			t.Fatal(err)
+		}
+		return selected, meta.TotalContainers
+	}
+	selected, n := backup(nil)
+	if n != 2 || strings.Join(selected, ",") != "Archive,INBOX" {
+		t.Fatalf("by default the backup took %d folders, selecting %q; want Archive and INBOX, without Junk and Deleted Messages", n, selected)
+	}
+	// A surface that names its folders gets them, spam included.
+	if selected, _ := backup([]string{"Junk"}); strings.Join(selected, ",") != "Junk" {
+		t.Fatalf("a surface naming Junk selected %q", selected)
+	}
+}

@@ -109,6 +109,15 @@ type IMAPSource interface {
 	Close() error
 }
 
+// SpecialUseSource is implemented by an IMAPSource that knows which mailboxes
+// the server flags as spam or trash. Gmail's [Gmail]/Spam and [Gmail]/Trash
+// are also left out by name, which a server without RFC 6154 needs.
+type SpecialUseSource interface {
+	// JunkOrTrash reports whether folder was listed with \Junk or \Trash.
+	// Valid after ListFolders.
+	JunkOrTrash(folder string) bool
+}
+
 // GmailSource is implemented by an IMAPSource that can tell whether it is
 // talking to Gmail.
 type GmailSource interface {
@@ -127,6 +136,9 @@ type StandardIMAPClient struct {
 	FolderHighestUID  map[string]uint32
 	gmail             bool
 	allMail           string
+	// junkOrTrash are the mailboxes the server flags \Junk or \Trash
+	// (RFC 6154), which a backup leaves out unless the surface names them.
+	junkOrTrash map[string]bool
 }
 
 func NewStandardIMAPClient(cfg EmailCollectorConfig) *StandardIMAPClient {
@@ -239,6 +251,9 @@ func (c *StandardIMAPClient) capabilities() (map[string]bool, error) {
 	}
 }
 
+// JunkOrTrash implements SpecialUseSource.
+func (c *StandardIMAPClient) JunkOrTrash(folder string) bool { return c.junkOrTrash[folder] }
+
 // GmailAllMail implements GmailSource.
 func (c *StandardIMAPClient) GmailAllMail() (string, bool) {
 	return c.allMail, c.gmail
@@ -275,6 +290,12 @@ func (c *StandardIMAPClient) ListFolders(ctx context.Context) ([]string, error) 
 			folders = append(folders, folder)
 			if hasFlag(flags, `\All`) {
 				c.allMail = folder
+			}
+			if hasFlag(flags, `\Junk`) || hasFlag(flags, `\Trash`) {
+				if c.junkOrTrash == nil {
+					c.junkOrTrash = map[string]bool{}
+				}
+				c.junkOrTrash[folder] = true
 			}
 		}
 	}
@@ -521,9 +542,16 @@ func (ec *EmailCollector) ScanAndStream(ctx context.Context, source IMAPSource) 
 		return nil, nil, fmt.Errorf("failed listing folders: %w", err)
 	}
 
+	special, _ := source.(SpecialUseSource)
 	var targetFolders []string
 	for _, f := range folders {
 		if MatchesExclude(f, ec.cfg.ExcludeFolders) {
+			continue
+		}
+		// Spam and trash are left out by default, whatever the server calls
+		// them: before this, only Gmail's were, by name, and a Fastmail or
+		// Dovecot mailbox's Spam and Trash were backed up.
+		if len(ec.cfg.IncludeFolders) == 0 && special != nil && special.JunkOrTrash(f) {
 			continue
 		}
 		if len(ec.cfg.IncludeFolders) > 0 && !MatchesExclude(f, ec.cfg.IncludeFolders) {
