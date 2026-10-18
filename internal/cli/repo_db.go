@@ -657,6 +657,7 @@ func restoreRepoDatabase(ctx context.Context, rs *repoSnapshot, privateKey, targ
 	}()
 	restorer := dump.NewNativeRestorer(targetURL)
 	restorer.NoOwner = noOwner
+	restorer.DatabaseSettings = true
 	if noOwner {
 		fmt.Printf("   Ownership:      not restored (--no-owner); every object belongs to the restoring role\n")
 	}

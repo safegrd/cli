@@ -289,6 +289,13 @@ func (d *NativeDumper) Dump(ctx context.Context, databaseName string, dst io.Wri
 	if err := tx.QueryRow(ctx, "SELECT count(*) FROM pg_largeobject_metadata").Scan(&meta.LargeObjects); err != nil {
 		return nil, fmt.Errorf("failed to count large objects: %w", err)
 	}
+	// Settings on the database itself (a search_path, a timezone) are in
+	// no pg_dump section: an application that relied on one met another
+	// after a restore. The catalogue is readable by any role.
+	if meta.DatabaseSettings, err = queryStrings(ctx, tx, `SELECT unnest(setconfig) FROM pg_db_role_setting
+		WHERE setrole = 0 AND setdatabase = (SELECT oid FROM pg_database WHERE datname = current_database()) ORDER BY 1`); err != nil {
+		return nil, fmt.Errorf("failed to read the database's settings: %w", err)
+	}
 	if meta.LargeObjects > 0 {
 		d.Warn(fmt.Sprintf("This database holds %s (pg_largeobject). The backup does not include their contents: "+
 			"a restore brings back the rows that point at them, not the objects, and a Fire Drill of this backup fails until it does. "+
@@ -837,6 +844,11 @@ type NativeRestorer struct {
 	SkippedOwnership []string
 	// Warn is told what the restore could not bring back. Stderr by default.
 	Warn func(string)
+	// DatabaseSettings applies the settings the source database carried
+	// (ALTER DATABASE ... SET) to the target once the restore commits. The
+	// restore command sets it; a drill does not, so a sandbox kept between
+	// drills does not collect one snapshot's settings.
+	DatabaseSettings bool
 	// BeforeCommit, if set, runs after everything is loaded and before the
 	// transaction commits; an error rolls the whole restore back. The caller
 	// checks the stream's digest there, so a snapshot that fails it never
@@ -1174,6 +1186,9 @@ func (r *NativeRestorer) Restore(ctx context.Context, src io.Reader) (*model.Sna
 		return nil, err
 	}
 	committed = true
+	if r.DatabaseSettings && manifest != nil && len(manifest.DatabaseSettings) > 0 {
+		r.applyDatabaseSettings(ctx, conn, manifest.DatabaseSettings)
+	}
 
 	switch {
 	case legacySchema:
@@ -1229,6 +1244,44 @@ func (r *NativeRestorer) Restore(ctx context.Context, src io.Reader) (*model.Sna
 // carries that the target lacks, and records each. On a connection that is
 // not a superuser the new role is granted to the restoring role, so the
 // OWNER TO statements that follow, and the sandbox's cleanup, may act as it.
+// listSettings are the settings whose recorded value is a list of
+// identifiers, written as it is; any other value is one string literal.
+var listSettings = map[string]bool{"search_path": true, "temp_tablespaces": true,
+	"session_preload_libraries": true, "local_preload_libraries": true}
+
+var settingNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_.]*$`)
+
+// applyDatabaseSettings sets each recorded "name=value" on the target
+// database. A setting the restoring role may not set is said, with the
+// statement to run, and the restore stands.
+func (r *NativeRestorer) applyDatabaseSettings(ctx context.Context, conn *pgx.Conn, settings []string) {
+	var db string
+	if err := conn.QueryRow(ctx, "SELECT current_database()").Scan(&db); err != nil {
+		r.Warn(fmt.Sprintf("The source database's settings were not applied (%v): %s.", err, strings.Join(settings, "; ")))
+		return
+	}
+	var failed []string
+	for _, kv := range settings {
+		name, value, ok := strings.Cut(kv, "=")
+		if !ok || !settingNameRe.MatchString(name) {
+			failed = append(failed, kv+" (not a setting this restore can write)")
+			continue
+		}
+		v := "'" + strings.ReplaceAll(value, "'", "''") + "'"
+		if listSettings[strings.ToLower(name)] {
+			v = value
+		}
+		stmt := "ALTER DATABASE " + pgx.Identifier{db}.Sanitize() + " SET " + name + " = " + v
+		if _, err := conn.Exec(ctx, stmt); err != nil {
+			failed = append(failed, fmt.Sprintf("%s (%v)", stmt, err))
+		}
+	}
+	if len(failed) > 0 {
+		r.Warn(fmt.Sprintf("%d of the source database's settings were not applied; set them as the database's owner:\n     %s",
+			len(failed), strings.Join(failed, "\n     ")))
+	}
+}
+
 func (r *NativeRestorer) createRoles(ctx context.Context, conn *pgx.Conn, d *roleDump, super bool) error {
 	have := map[string]bool{}
 	rows, err := conn.Query(ctx, "SELECT rolname FROM pg_roles")

@@ -478,6 +478,7 @@ files: each upload writes or updates the file's row in storage.objects.`,
 				if n, ok := restorer.(*dump.NativeRestorer); ok {
 					native = n
 					native.NoOwner = noOwner
+					native.DatabaseSettings = true
 					if noOwner {
 						fmt.Printf("   Ownership:      not restored (--no-owner); every object belongs to the restoring role\n")
 					}

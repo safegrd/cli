@@ -263,6 +263,10 @@ type SnapshotMetadata struct {
 	// database held. The backup does not include their contents yet, so a
 	// drill of a snapshot that counts any fails and says why.
 	LargeObjects int64 `json:"large_objects,omitempty" yaml:"large_objects,omitempty"`
+	// DatabaseSettings are the settings set on the PostgreSQL database
+	// itself (ALTER DATABASE ... SET), as "name=value", which no pg_dump
+	// section carries: a restore applies them to its target.
+	DatabaseSettings []string `json:"database_settings,omitempty" yaml:"database_settings,omitempty"`
 	// RolesNamed are the roles a Postgres snapshot's schema names (owners,
 	// grantees, the roles policies apply to), sorted. RolesSource says how
 	// roles.sql carried them: "pg_dumpall 16.4", with ", no passwords" when
