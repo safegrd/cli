@@ -122,7 +122,7 @@ func writeHeldKeyCopy(ctx context.Context, out, snapshotID string) error {
 	if _, err := os.Stat(path); err == nil {
 		return fmt.Errorf("%s already exists; it is never overwritten. Choose another --out", path)
 	}
-	res, err := fetchManagedIdentity(ctx, resolveServerURL(), cfg.NodeID, cfg.ServerToken, hq)
+	identity, publicKey, err := fetchHeldKey(ctx, resolveServerURL(), cfg.NodeID, cfg.ServerToken, hq)
 	if errors.Is(err, errNoManagedKey) {
 		if hq.snapshotID == "" {
 			if cfg.Encryption.KeyPath != "" {
@@ -133,33 +133,46 @@ func writeHeldKeyCopy(ctx context.Context, out, snapshotID string) error {
 		return fmt.Errorf("SafeGrd holds no key for snapshot %s%s", hq.snapshotID, strings.TrimPrefix(err.Error(), errNoManagedKey.Error()))
 	}
 	if err != nil {
-		return fmt.Errorf("could not fetch the key from the remote server: %w", err)
+		return err
 	}
-	if len(res.Identities) != 1 {
-		return fmt.Errorf("the remote server released %d keys, want one", len(res.Identities))
-	}
-	got := res.Identities[0]
-	// The key is checked against the public key it was released as, so a
-	// copy that would not open those backups is never written.
-	ids, err := crypto.ParseIdentities(got.Identity)
-	if err != nil || len(ids) != 1 {
-		return fmt.Errorf("the remote server released a key that is not an age identity")
-	}
-	x, ok := ids[0].(*age.X25519Identity)
-	if !ok || x.Recipient().String() != strings.TrimSpace(got.PublicKey) {
-		return fmt.Errorf("the remote server released a key that does not match its public key %s", crypto.Fingerprint(got.PublicKey))
-	}
-	if hq.recipient != "" && x.Recipient().String() != hq.recipient {
-		return fmt.Errorf("the remote server released %s, not this host's key %s", crypto.Fingerprint(got.PublicKey), crypto.Fingerprint(hq.recipient))
-	}
-	if err := crypto.SavePrivateKey(got.Identity, path); err != nil {
+	if err := crypto.SavePrivateKey(identity, path); err != nil {
 		return err
 	}
 	fmt.Printf("Private key: %s (mode 0600), a copy of the SafeGrd-managed key.\n", path)
-	fmt.Printf("Public key:  %s\n", got.PublicKey)
-	fmt.Printf("Fingerprint: %s\n", crypto.Fingerprint(got.PublicKey))
+	fmt.Printf("Public key:  %s\n", publicKey)
+	fmt.Printf("Fingerprint: %s\n", crypto.Fingerprint(publicKey))
 	fmt.Println("SafeGrd still holds this key and releases it only to your enrolled hosts. Keep this copy somewhere safe: it opens every backup sealed to this key.")
 	return nil
+}
+
+// fetchHeldKey fetches the one key the remote server holds for what hq
+// names and checks it against the public key it was released as, and
+// against hq.recipient when that is set, so a key that would not open those
+// backups is never written anywhere.
+func fetchHeldKey(ctx context.Context, serverURL, nodeID, token string, hq heldKeyQuery) (identity, publicKey string, err error) {
+	res, err := fetchManagedIdentity(ctx, serverURL, nodeID, token, hq)
+	if errors.Is(err, errNoManagedKey) {
+		return "", "", err
+	}
+	if err != nil {
+		return "", "", fmt.Errorf("could not fetch the key from the remote server: %w", err)
+	}
+	if len(res.Identities) != 1 {
+		return "", "", fmt.Errorf("the remote server released %d keys, want one", len(res.Identities))
+	}
+	got := res.Identities[0]
+	ids, err := crypto.ParseIdentities(got.Identity)
+	if err != nil || len(ids) != 1 {
+		return "", "", fmt.Errorf("the remote server released a key that is not an age identity")
+	}
+	x, ok := ids[0].(*age.X25519Identity)
+	if !ok || x.Recipient().String() != strings.TrimSpace(got.PublicKey) {
+		return "", "", fmt.Errorf("the remote server released a key that does not match its public key %s", crypto.Fingerprint(got.PublicKey))
+	}
+	if hq.recipient != "" && x.Recipient().String() != hq.recipient {
+		return "", "", fmt.Errorf("the remote server released %s, not the key asked for, %s", crypto.Fingerprint(got.PublicKey), crypto.Fingerprint(hq.recipient))
+	}
+	return got.Identity, x.Recipient().String(), nil
 }
 
 // expandHome resolves a leading ~/ in a path.
