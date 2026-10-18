@@ -1481,9 +1481,10 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 		}
 		started := time.Now()
 		collector := dump.NewFileCollector(dump.FileCollectorConfig{
-			RootDir:  roots[0],
-			Excludes: s.Excludes,
-			Source:   source,
+			RootDir:   roots[0],
+			Excludes:  s.Excludes,
+			Source:    source,
+			SkipPaths: localStoragePaths(storageCfg),
 		})
 		rawStream, meta, err := collector.ScanAndStream(ctx)
 		// What the walk left out is said out loud, even when the backup succeeds.

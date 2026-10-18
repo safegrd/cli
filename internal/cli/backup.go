@@ -283,9 +283,10 @@ and never leaves this host.`,
 
 				started := time.Now()
 				collector := dump.NewFileCollector(dump.FileCollectorConfig{
-					RootDir:  filesPath,
-					Excludes: excludes,
-					Source:   source,
+					RootDir:   filesPath,
+					Excludes:  excludes,
+					Source:    source,
+					SkipPaths: localStoragePaths(storageCfg),
 				})
 
 				rawStream, meta, err := collector.ScanAndStream(ctx)

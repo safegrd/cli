@@ -244,15 +244,7 @@ func runRepoBackup(ctx context.Context, p repoParams) (*model.SnapshotMetadata, 
 	}
 	label := "[" + p.SurfaceID + "]"
 	locked := repoLocked(p.StorageCfg)
-	var skip []string
-	if p.StorageCfg.Type == config.StorageTypeLocal || p.StorageCfg.Type == "" {
-		lp := p.StorageCfg.LocalPath
-		if lp == "" {
-			lp = "./safegrd-storage"
-		}
-		skip = append(skip, lp)
-	}
-	skip = append(skip, filepath.Join(p.StateDir, "cache"))
+	skip := append(localStoragePaths(p.StorageCfg), filepath.Join(p.StateDir, "cache"))
 	started := time.Now()
 	var meta *model.SnapshotMetadata
 	host, _ := os.Hostname()
@@ -712,6 +704,19 @@ func verifyRepoSnapshot(ctx context.Context, rs *repoSnapshot, privateKey string
 // drillScratch is where a drill restores to: under the state directory, so
 // a large tree does not land in a small /tmp.
 func drillScratch() string { return drillScratchIn(resolveStateDir("", cfg)) }
+
+// localStoragePaths is the directory a local sink writes to, which a files
+// backup of a tree that holds it must leave out.
+func localStoragePaths(sc config.StorageConfig) []string {
+	if sc.Type != config.StorageTypeLocal && sc.Type != "" {
+		return nil
+	}
+	lp := sc.LocalPath
+	if lp == "" {
+		lp = "./safegrd-storage"
+	}
+	return []string{lp}
+}
 
 // stateDirOf is the state directory a config names, or the default.
 func stateDirOf(c *config.CLIConfig) string { return resolveStateDir("", c) }

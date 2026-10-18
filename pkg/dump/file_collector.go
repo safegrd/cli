@@ -60,6 +60,10 @@ type FileCollectorConfig struct {
 	// Source, when set, reads a bucket instead of RootDir. The archive has
 	// the same shape, so it restores into a directory like any other.
 	Source *ObjectStoreSource
+	// SkipPaths are left out of the walk and said: this host's own backup
+	// storage when it sits inside the tree, which each backup would
+	// otherwise carry into the next.
+	SkipPaths []string
 }
 
 // FileCollector traverses a filesystem tree, or lists a bucket, and produces
@@ -449,6 +453,15 @@ func (fc *FileCollector) scanLocal(ctx context.Context) (string, []collectedItem
 				return filepath.SkipDir
 			}
 			return nil
+		}
+		for _, skip := range fc.cfg.SkipPaths {
+			if abs, err := filepath.Abs(skip); err == nil && filepath.Clean(path) == filepath.Clean(abs) {
+				fc.skipped = append(fc.skipped, relSlash+" (this host's backup storage)")
+				if d.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
 		}
 
 		info, err := d.Info()
