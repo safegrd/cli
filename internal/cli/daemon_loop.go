@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -274,8 +275,9 @@ func daemonPrivateKey(ctx context.Context, c *config.CLIConfig) string {
 // surface with drill.sandbox_url is restored into that scratch database for
 // real and counted there. A Postgres surface without one, on a plan that
 // records sandbox drills, is restored into a throwaway cluster this host
-// starts, when it can; everything else is replayed in memory, and the report
-// says which.
+// starts, when it can, and a SQLite surface into a new file under the state
+// directory; everything else is replayed in memory, and the report says
+// which.
 //
 // d.requestID is a "drill now" not yet run: it goes ahead inside the usual
 // spacing, once, because a person or a daemon asked for it.
@@ -402,6 +404,34 @@ func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, d pendingDrill
 			}()
 		}
 	}
+	// A SQLite surface without drill.sandbox_url, on a plan that records
+	// sandbox drills, restores into a new file under the state directory: a
+	// whole SQLite restore, held to the counts, with the surface's checks
+	// run against it. It drilled the same file as in memory before, so the
+	// checks never ran.
+	scratchFile := false
+	if sandboxErr == nil && sandbox == "" && d.sandboxIncluded && model.SurfaceType(strings.ToLower(s.Type)) == model.SurfaceTypeSQLite {
+		dir := drillScratchIn(d.stateDir)
+		var need int64
+		if rs != nil {
+			need = rs.Meta.RawSizeBytes
+		}
+		switch {
+		case dir == "":
+			sandboxErr = fmt.Errorf("no scratch directory under %s for the drill's SQLite file", filepath.Join(d.stateDir, "drill"))
+		default:
+			defer os.RemoveAll(dir)
+			if err := diskspace.CheckFreeSpace(dir, need, "a Fire Drill of "+snapshotID+", which writes the database out",
+				"free some space on the disk that holds the state directory"); err != nil {
+				sandboxErr = &runner.DrillBlockedError{Err: err}
+			} else {
+				sandbox, scratchFile = "sqlite://"+filepath.Join(dir, "drill.sqlite"), true
+				// The file goes with the directory, so a failed drill's is
+				// not kept.
+				verifier.KeepFailedSandbox = false
+			}
+		}
+	}
 	switch {
 	case sandboxErr != nil:
 		err = sandboxErr
@@ -417,8 +447,12 @@ func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, d pendingDrill
 			report, err = verifier.RunFireDrill(ctx, snapshotID, key, local.URL)
 		}
 	case sandbox != "":
+		into := "its sandbox database"
 		how = "restore into the sandbox database"
-		fmt.Printf("Surface %s: Fire Drill due: restoring snapshot %s into its sandbox database.\n", s.ID, snapshotID)
+		if scratchFile {
+			how, into = "restore into a scratch SQLite file", "a scratch SQLite file"
+		}
+		fmt.Printf("Surface %s: Fire Drill due: restoring snapshot %s into %s.\n", s.ID, snapshotID, into)
 		verifier.Checks = checks
 		if dbRun {
 			report, err = verifier.RunRepoSandboxDrill(ctx, runner.RepoDrill{Backend: rs.Backend, Epoch: rs.Epoch, Meta: rs.Meta}, key, sandbox)

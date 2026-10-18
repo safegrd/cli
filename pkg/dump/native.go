@@ -281,14 +281,6 @@ func (d *NativeDumper) Dump(ctx context.Context, databaseName string, dst io.Wri
 	if meta.Replica, err = replicaRead(ctx, tx); err != nil {
 		return nil, err
 	}
-	// Large objects live outside every table the backup copies, and
-	// pg_dump leaves them out of the sections it is asked for, so a
-	// database that keeps files in them restored without their contents
-	// while the backup and its drill said nothing. Counted from the
-	// catalog, which any role may read, and said.
-	if err := tx.QueryRow(ctx, "SELECT count(*) FROM pg_largeobject_metadata").Scan(&meta.LargeObjects); err != nil {
-		return nil, fmt.Errorf("failed to count large objects: %w", err)
-	}
 	// Settings on the database itself (a search_path, a timezone) are in
 	// no pg_dump section: an application that relied on one met another
 	// after a restore. The catalogue is readable by any role.
@@ -342,11 +334,6 @@ func (d *NativeDumper) Dump(ctx context.Context, databaseName string, dst io.Wri
 		// Only the owner may connect: recorded as no grant at all, which a
 		// restore must still apply by revoking the default.
 		meta.DatabaseGrants = []model.DatabaseGrant{{Role: "", Privilege: "NONE"}}
-	}
-	if meta.LargeObjects > 0 {
-		d.Warn(fmt.Sprintf("This database holds %s (pg_largeobject). The backup does not include their contents: "+
-			"a restore brings back the rows that point at them, not the objects, and a Fire Drill of this backup fails until it does. "+
-			"Keep another copy of them meanwhile.", largeObjectsWords(meta.LargeObjects)))
 	}
 	if meta.Extensions, err = queryStrings(ctx, tx, "SELECT extname FROM pg_extension WHERE extname <> 'plpgsql' ORDER BY extname"); err != nil {
 		return nil, fmt.Errorf("failed to list extensions: %w", err)
@@ -483,7 +470,10 @@ func (d *NativeDumper) Dump(ctx context.Context, databaseName string, dst io.Wri
 				pgDumpArgs = append(pgDumpArgs, "--exclude-table="+pgx.Identifier{t.Schema, t.Table}.Sanitize())
 			}
 		}
-		preData, err := pgDump.Section(ctx, d.databaseURL, snapshot, "pre-data", pgDumpArgs...)
+		// -B: pg_dump 16 and older put a lo_create and an owner for every
+		// large object in pre-data, which collides with the restore's own
+		// (large_objects.go). -B means the same from pg_dump 10 to 18.
+		preData, err := pgDump.Section(ctx, d.databaseURL, snapshot, "pre-data", append(pgDumpArgs, "-B")...)
 		if err != nil {
 			return nil, err
 		}
@@ -555,6 +545,12 @@ func (d *NativeDumper) Dump(ctx context.Context, databaseName string, dst io.Wri
 		d.Warn(fmt.Sprintf("Row-level security hid rows of %s from this backup's role:\n%s"+
 			"   Those tables are backed up with only the rows the role could see. Back up as the tables'\n"+
 			"   owner or a role with BYPASSRLS (ALTER ROLE ... BYPASSRLS) to capture every row.", databaseName, msg))
+	}
+
+	// Large objects, after the rows and before post-data, read under the
+	// same snapshot (large_objects.go).
+	if err := dumpLargeObjects(ctx, tx, tw, meta, d.Warn); err != nil {
+		return nil, err
 	}
 
 	if postData != nil {
@@ -1058,6 +1054,8 @@ func (r *NativeRestorer) Restore(ctx context.Context, src io.Reader) (*model.Sna
 	// loaded is still refused: there was nothing to restore into.
 	notLoaded := map[string]string{}
 	loadable := map[string]int{}
+	loOwners := map[uint32]string{}
+	loLoaded := loObjects{}
 
 	streams := &tableStreams{
 		consume: func(schema, table string, rd io.Reader) error {
@@ -1094,7 +1092,47 @@ func (r *NativeRestorer) Restore(ctx context.Context, src io.Reader) (*model.Sna
 			return nil
 		},
 		other: func(hdr *tar.Header, rd io.Reader) error {
+			if oid, ok := parseLargeObjectEntry(hdr.Name); ok {
+				// A --schema restore goes into a database that is not
+				// only this snapshot's; large objects are the database's,
+				// not a schema's, and stay out of it.
+				if filtered {
+					_, err := io.Copy(io.Discard, rd)
+					return err
+				}
+				n, sum, err := loadLargeObject(ctx, conn, oid, rd)
+				if err != nil {
+					return err
+				}
+				loLoaded[oid] = struct {
+					size int64
+					sum  []byte
+				}{n, sum}
+				if owner := loOwners[oid]; owner != "" && !r.NoOwner {
+					stmt := fmt.Sprintf("ALTER LARGE OBJECT %d OWNER TO %s", oid, pgx.Identifier{owner}.Sanitize())
+					if err := exec("saving", "SAVEPOINT safegrd_ownership"); err != nil {
+						return err
+					}
+					if _, err := pgConn.Exec(ctx, stmt).ReadAll(); err != nil {
+						if err := exec("rolling back", "ROLLBACK TO SAVEPOINT safegrd_ownership; RELEASE SAVEPOINT safegrd_ownership"); err != nil {
+							return err
+						}
+						r.SkippedOwnership = append(r.SkippedOwnership, stmt)
+						return nil
+					}
+					return exec("releasing", "RELEASE SAVEPOINT safegrd_ownership")
+				}
+				return nil
+			}
 			switch hdr.Name {
+			case entryLargeObjects:
+				var list []largeObject
+				if err := json.NewDecoder(rd).Decode(&list); err != nil {
+					return fmt.Errorf("the archive's list of large objects is unreadable: %w", err)
+				}
+				for _, lo := range list {
+					loOwners[lo.OID] = lo.Owner
+				}
 			case entryManifest:
 				data, err := io.ReadAll(rd)
 				if err != nil {
@@ -1221,6 +1259,15 @@ func (r *NativeRestorer) Restore(ctx context.Context, src io.Reader) (*model.Sna
 			}
 		}
 	}
+	// The large objects loaded are the ones the backup read, digest for
+	// digest; the transaction has not committed, so a mismatch leaves the
+	// target as it was.
+	if !filtered && manifest.LargeObjects > manifest.LargeObjectsLeftOut {
+		if d := loLoaded.digest(); d.n != manifest.LargeObjects-manifest.LargeObjectsLeftOut || d.hex() != manifest.LargeObjectsDigest {
+			return nil, fmt.Errorf("the large objects loaded are not the snapshot's: %s with digest %s, where the snapshot recorded %s with %s; nothing was committed",
+				largeObjectsWords(d.n), shortDigest(d.hex()), largeObjectsWords(manifest.LargeObjects-manifest.LargeObjectsLeftOut), shortDigest(manifest.LargeObjectsDigest))
+		}
+	}
 	if err := r.dropChangeLog(ctx, conn, exec); err != nil {
 		return nil, err
 	}
@@ -1287,6 +1334,10 @@ func (r *NativeRestorer) Restore(ctx context.Context, src io.Reader) (*model.Sna
 		}
 		r.Warn(fmt.Sprintf("%d ownership or privilege statements were skipped: the restoring role is not a superuser and may not run them.\n"+
 			"   Those objects belong to the restoring role. Restore as a superuser to keep every owner and grant.\n     %s", n, strings.Join(shown, "\n     ")))
+	}
+	if manifest != nil && manifest.LargeObjectsLeftOut > 0 {
+		r.Warn(fmt.Sprintf("This snapshot does not hold %s the backup's role could not read; the rows that point at them are restored without them.",
+			largeObjectsWords(manifest.LargeObjectsLeftOut)))
 	}
 	if !sawSequences {
 		r.Warn("This snapshot predates recorded sequence positions: every sequence starts over, so the next insert\n" +

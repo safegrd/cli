@@ -260,9 +260,14 @@ type SnapshotMetadata struct {
 	// snapshot was taken.
 	Replica *ReplicaRead `json:"replica,omitempty" yaml:"replica,omitempty"`
 	// LargeObjects is how many PostgreSQL large objects (pg_largeobject) the
-	// database held. The backup does not include their contents yet, so a
-	// drill of a snapshot that counts any fails and says why.
-	LargeObjects int64 `json:"large_objects,omitempty" yaml:"large_objects,omitempty"`
+	// database held; LargeObjectsLeftOut how many of them the backup's role
+	// could not read, which the snapshot does not hold. LargeObjectsDigest
+	// is one SHA-256 over every object it does hold, which a restore and a
+	// drill check what they read against.
+	LargeObjects        int64  `json:"large_objects,omitempty" yaml:"large_objects,omitempty"`
+	LargeObjectsLeftOut int64  `json:"large_objects_left_out,omitempty" yaml:"large_objects_left_out,omitempty"`
+	LargeObjectBytes    int64  `json:"large_object_bytes,omitempty" yaml:"large_object_bytes,omitempty"`
+	LargeObjectsDigest  string `json:"large_objects_digest,omitempty" yaml:"large_objects_digest,omitempty"`
 	// DatabaseSettings are the settings set on the PostgreSQL database
 	// itself (ALTER DATABASE ... SET), as "name=value", which no pg_dump
 	// section carries: a restore applies them to its target.

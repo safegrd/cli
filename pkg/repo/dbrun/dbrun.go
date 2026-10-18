@@ -5,6 +5,8 @@
 //	roles.sql                    the roles the schema names, when it names any
 //	pre-data.sql                 (schema.sql when no pg_dump was usable)
 //	data/<schema>/<table>.copy   a table's rows as one binary COPY stream
+//	large-objects.json           the large objects' oids, owners and sizes
+//	large-objects/<oid>.lo       one large object's bytes
 //	post-data.sql
 //	sequences.sql
 //	manifest.json
@@ -176,12 +178,12 @@ func Files(ctx context.Context, r *read.Repo, idx read.Index, s format.Snapshot)
 		return nil, err
 	}
 	var sections = map[string]read.Item{}
-	var tables, mysqlTables, mongoColls []read.Item
+	var tables, mysqlTables, mongoColls, largeObjects []read.Item
 	var sqliteDB, mysqlHead, mysqlTail, prelude *read.Item
 	shapes := map[Shape]bool{}
 	err = r.Walk(ctx, idx, root, func(it read.Item) error {
 		switch {
-		case it.Node.Type == format.NodeDir && (it.Path == "data" || strings.HasPrefix(it.Path, dataDir)):
+		case it.Node.Type == format.NodeDir && (it.Path == "data" || strings.HasPrefix(it.Path, dataDir) || it.Path == "large-objects"):
 			return nil
 		case it.Node.Type == format.NodeDir && (it.Path == sqliteDir || it.Path == mysqlDir || it.Path+"/" == dump.MySQLTablesDir || it.Path == mongoDir || it.Path+"/" == dump.MongoCollectionsDir):
 			return nil
@@ -201,6 +203,8 @@ func Files(ctx context.Context, r *read.Repo, idx read.Index, s format.Snapshot)
 			mongoColls, shapes[ShapeMongo] = append(mongoColls, it), true
 		case strings.HasPrefix(it.Path, dataDir) && strings.HasSuffix(it.Path, ".copy"):
 			tables, shapes[ShapePostgres] = append(tables, it), true
+		case dump.IsLargeObjectEntry(it.Path):
+			largeObjects, shapes[ShapePostgres] = append(largeObjects, it), true
 		case it.Path == LeftOut || it.Path == Roles || it.Path == PreData || it.Path == Schema || it.Path == PostData || it.Path == Sequences:
 			sections[it.Path], shapes[ShapePostgres] = it, true
 		case it.Path == Manifest:
@@ -258,6 +262,15 @@ func Files(ctx context.Context, r *read.Repo, idx read.Index, s format.Snapshot)
 		}
 	}
 	out = append(out, tables...)
+	// The list before the objects, which sort in oid order by name.
+	sort.Slice(largeObjects, func(i, j int) bool {
+		li, lj := largeObjects[i].Path == "large-objects.json", largeObjects[j].Path == "large-objects.json"
+		if li != lj {
+			return li
+		}
+		return largeObjects[i].Path < largeObjects[j].Path
+	})
+	out = append(out, largeObjects...)
 	for _, name := range []string{PostData, Sequences, Manifest} {
 		if it, ok := sections[name]; ok {
 			out = append(out, it)

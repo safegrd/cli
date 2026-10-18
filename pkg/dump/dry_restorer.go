@@ -72,6 +72,7 @@ func (d *DryRestorer) InspectArchive(ctx context.Context, src io.Reader) (*DryRe
 		Passed: true,
 	}
 
+	loSeen := loObjects{}
 	var (
 		manifestFound bool
 		schemaFound   bool
@@ -110,6 +111,9 @@ func (d *DryRestorer) InspectArchive(ctx context.Context, src io.Reader) (*DryRe
 			return nil
 		},
 		other: func(hdr *tar.Header, rd io.Reader) error {
+			if oid, ok := parseLargeObjectEntry(hdr.Name); ok {
+				return loSeen.hashLargeObject(oid, rd)
+			}
 			switch hdr.Name {
 			case entryManifest:
 				manifestFound = true
@@ -194,11 +198,13 @@ func (d *DryRestorer) InspectArchive(ctx context.Context, src io.Reader) (*DryRe
 	if !fidelity.Passed {
 		result.Passed = false
 	}
-	if lo, ok := LargeObjectsLeftOut(result.Manifest); ok {
+	if lo, ok := largeObjectsAssertion(result.Manifest, loSeen); ok {
 		result.Assertions = append(result.Assertions, lo)
-		result.Passed = false
-		if result.ErrorMessage == "" {
-			result.ErrorMessage = lo.Message
+		if !lo.Passed {
+			result.Passed = false
+			if result.ErrorMessage == "" {
+				result.ErrorMessage = lo.Message
+			}
 		}
 	}
 	if result.Manifest.SchemaSource != "" {
@@ -534,20 +540,21 @@ func (c *countingReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// LargeObjectsLeftOut is the assertion a PostgreSQL drill adds when the
-// backup counted large objects it did not include, and false when there were
-// none to leave out.
+// LargeObjectsLeftOut is the assertion a sandbox drill adds when the backup's
+// role could not read some of the database's large objects, so the snapshot
+// does not hold them, and false when it read them all. The restore itself
+// holds the ones it loaded to the backup's digest.
 func LargeObjectsLeftOut(m *model.SnapshotMetadata) (model.AssertionResult, bool) {
-	if m == nil || m.LargeObjects == 0 {
+	if m == nil || m.LargeObjectsLeftOut == 0 {
 		return model.AssertionResult{}, false
 	}
 	return model.AssertionResult{
 		Name:     "Large Objects Included",
 		Passed:   false,
 		Expected: "every large object the database held",
-		Actual:   largeObjectsWords(m.LargeObjects) + " left out",
-		Message: fmt.Sprintf("The database held %s (pg_largeobject), and the backup does not include their contents: "+
-			"a restore brings back the rows that point at them, not the objects", largeObjectsWords(m.LargeObjects)),
+		Actual:   largeObjectsWords(m.LargeObjectsLeftOut) + " left out",
+		Message: fmt.Sprintf("The backup's role could not read %s of the database's %d, so the snapshot does not hold them",
+			largeObjectsWords(m.LargeObjectsLeftOut), m.LargeObjects),
 	}, true
 }
 

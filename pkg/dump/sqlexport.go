@@ -3,6 +3,7 @@ package dump
 import (
 	"archive/tar"
 	"bufio"
+	"bytes"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -74,6 +75,7 @@ func ExportSQL(src io.Reader, dir string) (*SQLExport, error) {
 		sqlFiles    = map[string]bool{}
 		leftOut     map[string]bool
 		droppedKeys []string
+		loFiles     []string // each large object as SQL, in oid order
 	)
 	write := func(name string, r io.Reader) error {
 		f, err := os.OpenFile(filepath.Join(dir, name), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
@@ -101,6 +103,15 @@ func ExportSQL(src io.Reader, dir string) (*SQLExport, error) {
 			return nil
 		},
 		other: func(hdr *tar.Header, rd io.Reader) error {
+			if oid, ok := parseLargeObjectEntry(hdr.Name); ok {
+				sqlText, err := largeObjectSQL(oid, rd)
+				if err != nil {
+					return fmt.Errorf("large object %d: %w", oid, err)
+				}
+				name := fmt.Sprintf("data/large-object-%010d.sql", oid)
+				loFiles = append(loFiles, name)
+				return write(name, bytes.NewReader(sqlText))
+			}
 			switch hdr.Name {
 			case entryLeftOut:
 				var tables []LeftOutTable
@@ -184,6 +195,9 @@ func ExportSQL(src io.Reader, dir string) (*SQLExport, error) {
 	}
 	for _, t := range tables {
 		fmt.Fprintf(&b, "\\copy %s FROM '%s' WITH (FORMAT binary)\n", pgx.Identifier{t.schema, t.table}.Sanitize(), t.file)
+	}
+	for _, name := range loFiles {
+		fmt.Fprintf(&b, "\\ir %s\n", name)
 	}
 	for _, name := range []string{entryPostData, entrySequences} {
 		if sqlFiles[name] {
