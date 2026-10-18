@@ -23,6 +23,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/safegrd/cli/pkg/crypto"
+	"github.com/safegrd/cli/pkg/dump"
 )
 
 // BaseInfo is what a base backup covers. Its presence in the archive is what
@@ -168,7 +169,16 @@ func (a *Archive) Base(ctx context.Context, o BaseOptions) (BaseInfo, error) {
 		info.LockedUntil = started.Add(a.Window + a.BaseEvery + lockSlack)
 	}
 
-	cmd := exec.CommandContext(ctx, bin, "-d", o.ConnURL, "-D", "-", "-Ft", "-X", "none", "--checkpoint=fast", "--no-password")
+	// The password travels in a 0600 file named by PGPASSFILE, never on
+	// the command line, which every user on the host reads from the
+	// process table; pg_dump is run the same way.
+	dsn, env, cleanup, err := dump.PgToolEnv(o.ConnURL)
+	if err != nil {
+		return info, err
+	}
+	defer cleanup()
+	cmd := exec.CommandContext(ctx, bin, "-d", dsn, "-D", "-", "-Ft", "-X", "none", "--checkpoint=fast", "--no-password")
+	cmd.Env = env
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	stdout, err := cmd.StdoutPipe()

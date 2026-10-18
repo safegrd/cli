@@ -22,6 +22,10 @@ type WALStatus struct {
 	// Gap is the first WAL file missing from the archive; replay from the
 	// base backups before it stops there.
 	Gap string `json:"gap,omitempty"`
+	// Conflict is a WAL file name archived twice with different contents,
+	// which happens when two clusters archive to one surface. It stays
+	// unlocked and out of every bundle until someone looks at it.
+	Conflict string `json:"conflict,omitempty"`
 	// ArchiverFailing is the WAL file archive_command is failing on, read
 	// from pg_stat_archiver, and ArchiverFailures its failure count.
 	ArchiverFailing  string `json:"archiver_failing,omitempty"`

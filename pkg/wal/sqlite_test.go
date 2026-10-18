@@ -184,3 +184,65 @@ func TestAConcurrentWriterLosesNothingAcrossCheckpoints(t *testing.T) {
 		t.Fatalf("restored %d ledger rows of %d committed, across %d restarts", got["ledger"], want, restarts)
 	}
 }
+
+// A segment missing from the middle of a generation breaks its run. A
+// restore to the end of the archive is refused, as one to a moment past the
+// gap is, instead of writing the database as it was before the gap and
+// saying nothing; the status names the gap.
+func TestASQLiteRestoreToTheEndRefusesAGap(t *testing.T) {
+	ctx := context.Background()
+	a, _ := testArchive(t)
+	a.Now = nil
+	dir := t.TempDir()
+	path := filepath.Join(dir, "app.db")
+	app, err := sql.Open("sqlite", "file:"+path+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(10000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.Close()
+	if _, err := app.Exec(`CREATE TABLE ledger (id INTEGER PRIMARY KEY, pad BLOB)`); err != nil {
+		t.Fatal(err)
+	}
+	f := &SQLiteFollower{Archive: a, Path: path, CheckpointBytes: 64 << 10}
+	if err := f.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	round := func() {
+		t.Helper()
+		for i := 0; i < 10; i++ {
+			if _, err := app.Exec(`INSERT INTO ledger (pad) VALUES (randomblob(3000))`); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := f.Step(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 4; i++ {
+		round()
+	}
+	pushed, err := a.Pushed(ctx)
+	if err != nil || len(pushed) < 3 {
+		t.Fatalf("%d segments pushed (%v); the test needs a middle one to delete", len(pushed), err)
+	}
+	if err := a.Store.Delete(ctx, pushed[1].Key); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 4; i++ {
+		round()
+	}
+	f.Close()
+
+	_, err = a.RestoreSQLite(ctx, SQLiteRestoreOptions{Out: filepath.Join(dir, "end.db")})
+	if err == nil || !strings.Contains(err.Error(), "missing WAL") || !strings.Contains(err.Error(), pushed[2].Name) {
+		t.Fatalf("a restore to the end across a gap: %v", err)
+	}
+	_, err = a.RestoreSQLite(ctx, SQLiteRestoreOptions{Out: filepath.Join(dir, "later.db"), Target: time.Now().Add(time.Hour)})
+	if err == nil || !strings.Contains(err.Error(), "missing WAL") {
+		t.Fatalf("a restore to a moment past the gap: %v", err)
+	}
+	st, err := a.SQLiteStatus(ctx)
+	if err != nil || len(st.Gaps) != 1 || st.Gaps[0].First != pushed[2].Name {
+		t.Fatalf("status gaps %+v %v, want %s", st.Gaps, err, pushed[2].Name)
+	}
+}

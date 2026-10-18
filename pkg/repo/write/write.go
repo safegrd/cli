@@ -329,6 +329,21 @@ func Run(ctx context.Context, b sink.Backend, o Options) (*Result, error) {
 			return nil, err
 		}
 	}
+	// A cache that does not know the epoch's newest snapshot (the run that
+	// wrote it could not keep its cache afterwards: a hosted run whose save
+	// failed) holds the catalog of an older run. A delta against it would
+	// miss what that run changed, and a check would find the catalogs and
+	// the trees disagree, so this run lists every path and skips nothing.
+	stale := false
+	if opened.LastSnapshotID != "" && !opened.New {
+		last, err := cur.LastCompleteSnapshot()
+		if err != nil {
+			return nil, err
+		}
+		if stale = last != opened.LastSnapshotID; stale {
+			o.Logf("The cache does not know the epoch's newest snapshot %s; this run lists every path.", opened.LastSnapshotID)
+		}
+	}
 	e := opened.Epoch
 	res.Class, res.Tier = format.ClassLater, tier
 	if !cur.OpeningDone() {
@@ -377,7 +392,7 @@ func Run(ctx context.Context, b sink.Backend, o Options) (*Result, error) {
 	// A run that may write nothing holds the cache's writes, so a skip
 	// leaves it as it was. Only a later run of an epoch already open can
 	// skip: the first writes the epoch, a resumed one finishes another's.
-	hold := o.SkipIfUnchanged && !opened.New && res.Class != format.ClassOpening && len(adopted) == 0
+	hold := o.SkipIfUnchanged && !opened.New && res.Class != format.ClassOpening && len(adopted) == 0 && !stale
 	if hold {
 		cur.Hold()
 	}
@@ -408,7 +423,7 @@ func Run(ctx context.Context, b sink.Backend, o Options) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	completeCatalog := res.Class == format.ClassOpening || unfinished || (res.Decision.Kept && res.Decision.Locked)
+	completeCatalog := res.Class == format.ClassOpening || unfinished || stale || (res.Decision.Kept && res.Decision.Locked)
 	ch, err := chunk.New(cur.Polynomial(), e.Chunker)
 	if err != nil {
 		return nil, err

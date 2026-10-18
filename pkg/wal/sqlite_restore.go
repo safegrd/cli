@@ -192,7 +192,10 @@ func (a *Archive) RestoreSQLite(ctx context.Context, o SQLiteRestoreOptions) (SQ
 			}
 			return res, fmt.Errorf("the archive's WAL does not reach restore point %s", o.Point.Name)
 		}
-	} else if !o.Target.IsZero() && gap != "" && (len(run) == 0 || run[len(run)-1].PushedAt.Before(o.Target)) {
+	} else if gap != "" && (o.Target.IsZero() || len(run) == 0 || run[len(run)-1].PushedAt.Before(o.Target)) {
+		// The run stops before the moment asked for, or before the end of
+		// the archive: a restore that went ahead would hold the database as
+		// it was before the gap and say nothing.
 		return res, fmt.Errorf("the archive is missing WAL after %s (first out of place: %s), before the moment asked for", timeOr(run), gap)
 	}
 

@@ -122,6 +122,9 @@ type hostedEpochView struct {
 	State       string          `json:"state"`
 	New         bool            `json:"new"`
 	OpeningDone bool            `json:"opening_done"`
+	// LastSnapshotID is the newest snapshot the remote server committed
+	// into the epoch, so a cache fetched from it can be checked against it.
+	LastSnapshotID string `json:"last_snapshot_id"`
 }
 
 func (h *hostedRepo) remember(v hostedEpochView) (format.Epoch, error) {
@@ -185,7 +188,7 @@ func (h *hostedRepo) OpenEpoch(ctx context.Context, req sink.OpenRequest) (sink.
 	if err != nil {
 		return sink.Opened{}, err
 	}
-	return sink.Opened{Epoch: e, New: v.New, OpeningDone: v.OpeningDone}, nil
+	return sink.Opened{Epoch: e, New: v.New, OpeningDone: v.OpeningDone, LastSnapshotID: v.LastSnapshotID}, nil
 }
 
 type hostedSlot struct {

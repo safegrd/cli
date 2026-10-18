@@ -13,6 +13,9 @@ type Gap struct {
 	First, Last string
 	// Breaks are the base backups whose replay stops at this gap.
 	Breaks []string
+	// Before is when the last segment a replay reads before the gap was
+	// pushed: the last moment a restore from the bases it breaks can reach.
+	Before time.Time
 }
 
 // Status is what an archive holds and how far back it can restore.
@@ -161,7 +164,7 @@ func (a *Archive) Status(ctx context.Context) (Status, error) {
 				g.Breaks = append(g.Breaks, b.BaseID)
 				break
 			}
-			g := &Gap{Timeline: t, First: name, Last: name, Breaks: []string{b.BaseID}}
+			g := &Gap{Timeline: t, First: name, Last: name, Breaks: []string{b.BaseID}, Before: to}
 			for s2 := s + 1; s2 <= top; s2++ {
 				t2 := expected(s2, tli)
 				if _, ok := byTLI[t2][s2]; ok {

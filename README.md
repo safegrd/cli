@@ -6,8 +6,8 @@
 
 `safegrd` backs up PostgreSQL, MySQL, MariaDB, MongoDB and SQLite databases, directory trees
 and IMAP mailboxes. Each backup is compressed with zstd and encrypted with age on the host that
-takes it, written to S3-compatible storage under Object Lock, and restored on a schedule to
-check that every table, row and file came back.
+takes it, then written to S3-compatible storage under Object Lock. It is restored on a schedule
+to check that every table, row and file came back.
 
 It is the CLI and daemon of [SafeGrd](https://safegrd.dev). Documentation is at
 [safegrd.dev/docs](https://safegrd.dev/docs), and every command and flag is in the
@@ -351,4 +351,4 @@ In short: read, modify and build it freely, and use it for evaluation anywhere.
 Production use is included with a SafeGrd account on any plan, the free one too.
 Listing, verifying, restoring and exporting your backups is always permitted, with
 or without an account. Each version becomes GPL-3.0-or-later four years after it
-is published. For a commercial licence, contact support@safegrd.dev.
+is published. For a commercial license, contact support@safegrd.dev.

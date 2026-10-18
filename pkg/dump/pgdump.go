@@ -149,6 +149,19 @@ func pgEnv(password string) (env []string, cleanup func(), err error) {
 	return env, cleanup, nil
 }
 
+// PgToolEnv is how a PostgreSQL client tool (pg_dump, pg_basebackup) is
+// given the database URL: the URL with its password taken out, to pass on
+// the command line, and the environment to run with, which names a 0600
+// password file. cleanup removes the file once the tool has exited.
+func PgToolEnv(databaseURL string) (dsn string, env []string, cleanup func(), err error) {
+	dsn, password := splitPassword(databaseURL)
+	env, cleanup, err = pgEnv(password)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	return dsn, env, cleanup, nil
+}
+
 // pgPassFile writes password as one .pgpass line matching every host, port,
 // database and user, in a 0600 file inside a private directory. libpq ignores
 // a wider file. The format escapes backslash and colon; a line break has no

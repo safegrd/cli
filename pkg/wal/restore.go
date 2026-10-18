@@ -9,6 +9,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -73,6 +74,24 @@ func (a *Archive) Restore(ctx context.Context, o RestoreOptions) (RestoreResult,
 	// is still inside the archive.
 	if o.TargetName == "" && !o.Target.IsZero() && o.Target.After(res.ArchiveEnd.Add(time.Second)) {
 		return res, fmt.Errorf("the archive reaches %s, and %s is after it: the WAL since then is not archived yet. Restore to a time before it", stamp(res.ArchiveEnd), stamp(o.Target))
+	}
+	// A missing WAL file ends the replay where restore_command first finds
+	// nothing, and PostgreSQL promotes there: a replay to the end of the
+	// archive would say nothing, and one to a later time stops with
+	// "recovery ended before configured recovery target was reached".
+	// Refused here, before anything is unpacked, with the file named.
+	st, err := a.Status(ctx)
+	if err != nil {
+		return res, err
+	}
+	for _, g := range st.Gaps {
+		// The same second of slack as the archive's end above: push times
+		// are whole seconds.
+		if !slices.Contains(g.Breaks, pick.BaseID) || (!o.Target.IsZero() && !o.Target.After(g.Before.Add(time.Second))) {
+			continue
+		}
+		return res, fmt.Errorf("the archive is missing %s, so a replay from base %s stops at %s. Restore to a time before that, or take a base backup (safegrd wal base) to start an unbroken window after it",
+			g.First, pick.BaseID, stamp(g.Before))
 	}
 	if err := emptyDir(o.PGData); err != nil {
 		return res, err
