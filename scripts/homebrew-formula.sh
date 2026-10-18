@@ -64,7 +64,7 @@ class Safegrd < Formula
         safegrd enroll
       Or set up a standalone host that contacts no server:
         safegrd init
-      After an upgrade, a daemon started with `safegrd daemon install` keeps
+      After an upgrade, a daemon started with safegrd daemon install keeps
       running the old binary until you restart it:
         safegrd daemon restart
     EOS
