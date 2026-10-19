@@ -105,7 +105,9 @@ func runWALWork(ctx context.Context, c *config.CLIConfig, s *config.SurfaceConfi
 	// A SQLite database's follower takes its own bases and points.
 	baseDue := !walIsSQLite(s) && now.Sub(st.WALLastBase) >= baseEvery && now.Sub(st.WALBaseFailedAt) >= walRetry
 	bundleDue := now.Sub(st.WALLastBundle) >= walBundleEvery && now.Sub(st.WALBundleFailedAt) >= walRetry
-	drillDue := walDrillDue(s, st, now)
+	// A surface paused in the console keeps archiving its WAL, but its
+	// scheduled point-in-time drill waits like any other drill.
+	drillDue := walDrillDue(s, st, now) && !consolePaused(st, now)
 	statusDue := now.Sub(st.WALCheckedAt) >= walStatusEvery
 	if !baseDue && !bundleDue && !drillDue && !statusDue && now.Sub(walSizeChecked[s.ID]) < walSizeEvery {
 		return true
