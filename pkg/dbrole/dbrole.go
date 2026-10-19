@@ -6,6 +6,7 @@ package dbrole
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -27,6 +28,33 @@ type Facts struct {
 const userTables = `FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
 	WHERE c.relkind IN ('r', 'p') AND n.nspname NOT IN ('pg_catalog', 'information_schema')
 	AND n.nspname NOT LIKE 'pg_toast%'`
+
+// loginRoleRe is the login a managed database's sign-in hands out: on
+// Supabase, cli_login_<role>, a member of <role> that does not inherit its
+// privileges.
+var loginRoleRe = regexp.MustCompile(`^cli_login_([a-z_][a-z0-9_]*)$`)
+
+// TakeLoginRole switches conn to the role a cli_login_<role> login stands
+// for, as Supabase's own CLI does with pg_dump --role. It returns the role
+// taken, or "" when the session user is not such a login or the switch is
+// refused. A backup reads as this role, so anything that judges what the
+// backup can read has to take it first: judged as the login, every table
+// behind row-level security looked hidden, while the role it switches to
+// (supabase_read_only_user, BYPASSRLS) reads them all.
+func TakeLoginRole(ctx context.Context, conn *pgx.Conn) string {
+	var sessionUser string
+	if err := conn.QueryRow(ctx, "SELECT session_user").Scan(&sessionUser); err != nil {
+		return ""
+	}
+	m := loginRoleRe.FindStringSubmatch(sessionUser)
+	if m == nil {
+		return ""
+	}
+	if _, err := conn.Exec(ctx, "SET ROLE "+pgx.Identifier{m[1]}.Sanitize()); err != nil {
+		return ""
+	}
+	return m[1]
+}
 
 // Inspect reads the facts from the catalogue over conn. It writes nothing.
 func Inspect(ctx context.Context, conn *pgx.Conn) (Facts, error) {

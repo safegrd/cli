@@ -31,6 +31,8 @@ func inspectRole(ctx context.Context, databaseURL string) (dbrole.Facts, error) 
 		return dbrole.Facts{}, err
 	}
 	defer conn.Close(ctx)
+	// Judge the role the backup reads as (dump takes it the same way).
+	dbrole.TakeLoginRole(ctx, conn)
 	return dbrole.Inspect(ctx, conn)
 }
 

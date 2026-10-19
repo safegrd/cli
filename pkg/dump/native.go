@@ -15,6 +15,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/safegrd/cli/pkg/dbrole"
 	"github.com/safegrd/cli/pkg/model"
 )
 
@@ -45,10 +46,6 @@ const (
 	entryManifest  = "manifest.json"
 	entryLeftOut   = "left-out.json"
 )
-
-// loginRoleRe matches the role Supabase's sign-in hands out, and captures the
-// role it stands in for.
-var loginRoleRe = regexp.MustCompile(`^cli_login_([a-z_][a-z0-9_]*)$`)
 
 // LeftOutTable is a table the backup's role could not read, so the snapshot
 // holds neither its definition nor its rows.
@@ -253,15 +250,7 @@ func (d *NativeDumper) Dump(ctx context.Context, databaseName string, dst io.Wri
 	// pg_dump --role postgres. Take the role when the set works, so auth and
 	// storage are backed up; when it does not, the backup goes on as the
 	// session user and leaves out what that user cannot read.
-	var asRole string
-	var sessionUser string
-	if err := conn.QueryRow(ctx, "SELECT session_user").Scan(&sessionUser); err == nil {
-		if m := loginRoleRe.FindStringSubmatch(sessionUser); m != nil {
-			if _, err := conn.Exec(ctx, "SET ROLE "+pgx.Identifier{m[1]}.Sanitize()); err == nil {
-				asRole = m[1]
-			}
-		}
-	}
+	asRole := dbrole.TakeLoginRole(ctx, conn)
 
 	// One snapshot for everything: the table list, the schema pg_dump reads,
 	// the rows, and so the counts.
