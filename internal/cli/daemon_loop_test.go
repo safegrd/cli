@@ -25,6 +25,8 @@ type fakeRemoteServer struct {
 	requestID string // HeartbeatResponse.BackupRequestID
 	snapshots int
 
+	paused       bool   // HeartbeatResponse.Paused
+	down         bool   // heartbeats answered 503, as when the server cannot be reached
 	drill        bool   // ask for a drill of the last snapshot on every heartbeat
 	lastSnapshot string // the last snapshot the daemon reported
 	drillReports int    // POST /api/v1/verifications, each answered 500
@@ -41,6 +43,10 @@ func (f *fakeRemoteServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "/api/v1/nodes/host-1/surfaces":
 		_ = json.NewEncoder(w).Encode(model.SurfaceRegisterResponse{NodeID: "host-1--docs"})
 	case "/api/v1/nodes/heartbeat":
+		if f.down {
+			http.Error(w, "down", http.StatusServiceUnavailable)
+			return
+		}
 		var beat model.HeartbeatRequest
 		_ = json.NewDecoder(r.Body).Decode(&beat)
 		if beat.BackupRunning {
@@ -48,7 +54,7 @@ func (f *fakeRemoteServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		} else {
 			f.events = append(f.events, "beat")
 		}
-		resp := model.HeartbeatResponse{Acknowledge: true, TriggerBackup: f.trigger, BackupRequestID: f.requestID}
+		resp := model.HeartbeatResponse{Acknowledge: true, TriggerBackup: f.trigger, BackupRequestID: f.requestID, Paused: f.paused}
 		if f.drill && f.lastSnapshot != "" {
 			resp.TriggerFireDrill, resp.DrillSnapshotID, resp.FireDrillsIncluded = true, f.lastSnapshot, true
 		}
@@ -174,6 +180,83 @@ func TestTheDaemonIgnoresTriggerBackupAndRunsARequestOnce(t *testing.T) {
 	tick()
 	if got := fake.backups(); got != 3 {
 		t.Fatalf("a second, different request did not run: %d backups", got)
+	}
+}
+
+// A surface paused in the console takes no scheduled backup, also while the
+// remote server cannot be reached, and a backup requested from the console
+// still runs. Resumed, the backup that was due runs on the next tick.
+func TestThePausedSurfaceTakesNoScheduledBackup(t *testing.T) {
+	fake := &fakeRemoteServer{paused: true}
+	ts := httptest.NewServer(fake)
+	defer ts.Close()
+
+	dir := t.TempDir()
+	id, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree := filepath.Join(dir, "tree")
+	if err := os.MkdirAll(tree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tree, "a.txt"), []byte("a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := &config.CLIConfig{
+		ServerURL:   ts.URL,
+		ServerToken: "tok",
+		NodeID:      "host-1",
+		Storage:     config.StorageConfig{Type: config.StorageTypeLocal, LocalPath: filepath.Join(dir, "worm"), RetentionDays: 1},
+		Encryption:  config.EncryptionConfig{PublicKey: id.Recipient().String()},
+		Surfaces:    []config.SurfaceConfig{{ID: "docs", Type: "files", Format: "tar", Schedule: "@hourly", Roots: []string{tree}}},
+	}
+	stateDir := filepath.Join(dir, "state")
+	if err := os.MkdirAll(filepath.Join(stateDir, "locks"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	tick := func() {
+		t.Helper()
+		if err := reconcileSurfaces(context.Background(), c, stateDir, time.Minute, map[string]bool{}); err != nil {
+			t.Fatalf("reconcile: %v", err)
+		}
+	}
+
+	tick() // never backed up, so due, but paused
+	if got := fake.backups(); got != 0 {
+		t.Fatalf("a paused surface backed up %d times on schedule", got)
+	}
+	fake.mu.Lock()
+	fake.down = true
+	fake.mu.Unlock()
+	tick()
+	if got := fake.backups(); got != 0 {
+		t.Fatalf("a paused surface backed up %d times while the server was unreachable", got)
+	}
+	fake.mu.Lock()
+	fake.down = false
+	fake.mu.Unlock()
+
+	fake.set(false, "req-1")
+	tick()
+	if got := fake.backups(); got != 1 {
+		t.Fatalf("a backup requested while paused ran %d times, want once", got)
+	}
+
+	// Resumed, and the request's backup made an hour ago: due again.
+	statePath := filepath.Join(stateDir, "daemon_state.json")
+	state := loadDaemonState(statePath)
+	st := state.Surfaces["docs"]
+	st.LastSuccess, st.LastAttempt = st.LastSuccess.Add(-2*time.Hour), st.LastAttempt.Add(-2*time.Hour)
+	if err := saveDaemonState(statePath, state); err != nil {
+		t.Fatal(err)
+	}
+	fake.mu.Lock()
+	fake.paused = false
+	fake.mu.Unlock()
+	tick()
+	if got := fake.backups(); got != 2 {
+		t.Fatalf("after resuming, the due backup did not run: %d backups", got)
 	}
 }
 

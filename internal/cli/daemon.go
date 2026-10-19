@@ -122,6 +122,12 @@ type SurfaceState struct {
 	// ConsoleDrillChecks are the drill checks the console holds for this
 	// surface, run beside the config's own. Kept for the same reason.
 	ConsoleDrillChecks []model.DrillCheck `json:"console_drill_checks,omitempty"`
+	// ConsolePaused is whether the console paused this surface's schedule,
+	// until ConsolePausedUntil when that is set. Kept for the same reason:
+	// a paused surface stays paused while the remote server cannot be
+	// reached.
+	ConsolePaused      bool       `json:"console_paused,omitempty"`
+	ConsolePausedUntil *time.Time `json:"console_paused_until,omitempty"`
 
 	// For a surface with a wal: block: when the daemon last took a base
 	// backup and bundled the WAL, and when an attempt at either last failed,
@@ -746,6 +752,20 @@ func noteConsoleSettings(st *SurfaceState, configured *config.SurfaceConfig, hb 
 		}
 		st.ConsoleRetentionDays = hb.RetentionDays
 	}
+	if hb.Paused != st.ConsolePaused || !sameTime(hb.PausedUntil, st.ConsolePausedUntil) {
+		changed = true
+		switch {
+		case !hb.Paused:
+			fmt.Printf("Surface %s: resumed in the console; scheduled backups run again.\n", st.SurfaceID)
+		case hb.PausedUntil != nil:
+			fmt.Printf("Surface %s: paused in the console until %s. No scheduled backup or drill runs until then; "+
+				"a backup requested from the console still does.\n", st.SurfaceID, hb.PausedUntil.UTC().Format("2006-01-02 15:04 UTC"))
+		default:
+			fmt.Printf("Surface %s: paused in the console. No scheduled backup or drill runs until it is resumed; "+
+				"a backup requested from the console still does.\n", st.SurfaceID)
+		}
+		st.ConsolePaused, st.ConsolePausedUntil = hb.Paused, hb.PausedUntil
+	}
 	if !sameDrillChecks(hb.DrillChecks, st.ConsoleDrillChecks) {
 		changed = true
 		if len(hb.DrillChecks) == 0 {
@@ -917,6 +937,30 @@ func clockName(s *config.SurfaceConfig) string {
 		return "UTC"
 	}
 	return "local time"
+}
+
+// sameTime reports whether two optional times are the same instant.
+func sameTime(a, b *time.Time) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.Equal(*b)
+}
+
+// consolePaused reports whether the console's pause holds this surface's
+// scheduled backups at now.
+func consolePaused(st *SurfaceState, now time.Time) bool {
+	return st.ConsolePaused && (st.ConsolePausedUntil == nil || now.Before(*st.ConsolePausedUntil))
+}
+
+// sayPaused tells a single pass why a due surface was skipped.
+func sayPaused(s *config.SurfaceConfig, st *SurfaceState) {
+	until := "until it is resumed"
+	if st.ConsolePausedUntil != nil {
+		until = "until " + st.ConsolePausedUntil.UTC().Format("2006-01-02 15:04 UTC")
+	}
+	fmt.Printf("Surface %s (%s): paused in the console %s. No scheduled backup.\n", s.ID, s.Type, until)
+	fmt.Printf("   To back up now: safegrd backup --surface %s\n", s.ID)
 }
 
 // sayNotDue tells a single pass why a surface was skipped: it is not yet at
@@ -1108,6 +1152,12 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 				due, nextDue, heldBy = false, until.UTC(), w
 			}
 		}
+		// Paused in the console: a scheduled backup waits for the pause to
+		// end. A console request is someone asking now, so it runs.
+		paused := due && consolePaused(sState, now)
+		if paused {
+			due = false
+		}
 		sState.NextDue = nextDue
 
 		// A console "back up now" is run once, by its id. TriggerBackup is
@@ -1124,6 +1174,8 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 			// is due and not taking place is news to whoever reads the log.
 			fmt.Printf("Surface %s (%s): due, held by its blackout window %s %s. It backs up at %s.\n",
 				surface.ID, surface.Type, heldBy.Text, clockName(&surface), nextDue.UTC().Format("2006-01-02 15:04 UTC"))
+		} else if paused && !requested && tick == 0 {
+			sayPaused(&surface, sState)
 		} else if !due && !requested && tick == 0 {
 			// A single pass that does nothing must say why, or it looks
 			// like a run that hung or lost its output.

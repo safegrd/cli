@@ -107,6 +107,17 @@ type Node struct {
 	ConsoleSchedule      string `json:"console_schedule,omitempty" yaml:"console_schedule,omitempty"`
 	ConsoleRetentionDays int    `json:"console_retention_days,omitempty" yaml:"console_retention_days,omitempty"`
 	NamedInConsole       bool   `json:"named_in_console,omitempty" yaml:"named_in_console,omitempty"`
+	// PausedAt is when the surface's schedule was paused in the console, by
+	// PausedBy (an email), with PauseReason in their words. While paused no
+	// scheduled backup or drill runs and the surface is not reported
+	// overdue; "Back up now" and "Drill now" still run. PausedUntil, when
+	// set, ends the pause by itself. ResumedAt is when it was last resumed,
+	// so lateness counts from then and not from the backup before the pause.
+	PausedAt    *time.Time `json:"paused_at,omitempty" yaml:"paused_at,omitempty"`
+	PausedUntil *time.Time `json:"paused_until,omitempty" yaml:"paused_until,omitempty"`
+	PausedBy    string     `json:"paused_by,omitempty" yaml:"paused_by,omitempty"`
+	PauseReason string     `json:"pause_reason,omitempty" yaml:"pause_reason,omitempty"`
+	ResumedAt   *time.Time `json:"resumed_at,omitempty" yaml:"resumed_at,omitempty"`
 	// DrillChecks are the surface's drill checks chosen in the console:
 	// queries only, never commands, which run on the host and are set in
 	// its own config. Sent to the daemon on its heartbeat and to SafeGrd's
@@ -425,6 +436,11 @@ type HeartbeatResponse struct {
 	// after a drill's restore beside the ones in the host's config. Absent
 	// means none.
 	DrillChecks []DrillCheck `json:"drill_checks,omitempty"`
+	// Paused says the surface's schedule is paused in the console: the
+	// daemon takes no scheduled backup of it until a heartbeat says
+	// otherwise, or PausedUntil passes. BackupRequestID is still honoured.
+	Paused      bool       `json:"paused,omitempty"`
+	PausedUntil *time.Time `json:"paused_until,omitempty"`
 
 	// LatestCLIVersion and UpgradeAvailable inform the client when a newer
 	// version of SafeGrd CLI is released.
@@ -433,6 +449,27 @@ type HeartbeatResponse struct {
 	// UpdateRequest is an install or revert asked for this surface's host,
 	// sent on every surface's heartbeat until the host reports it handled.
 	UpdateRequest *UpdateRequest `json:"update_request,omitempty"`
+}
+
+// IsPaused reports whether the surface's schedule is paused at now: paused,
+// and not past the end the pause was given.
+func (n *Node) IsPaused(now time.Time) bool {
+	return n.PausedAt != nil && (n.PausedUntil == nil || now.Before(*n.PausedUntil))
+}
+
+// ScheduleResumedAt is when the surface's schedule last started again after a
+// pause: resumed by hand, or a pause that ran out by itself. Nil when it was
+// never paused or is paused now. Lateness counts from it, so a surface paused
+// for a week is not overdue the moment it resumes.
+func (n *Node) ScheduleResumedAt(now time.Time) *time.Time {
+	at := n.ResumedAt
+	if n.PausedAt != nil && n.PausedUntil != nil && !now.Before(*n.PausedUntil) && (at == nil || n.PausedUntil.After(*at)) {
+		at = n.PausedUntil
+	}
+	if n.IsPaused(now) {
+		return nil
+	}
+	return at
 }
 
 // IsVersionOutdated reports whether current is strictly older than latest according to semantic versioning.
