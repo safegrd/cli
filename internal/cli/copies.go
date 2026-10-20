@@ -394,14 +394,20 @@ func syncRepos(ctx context.Context, c *config.CLIConfig, primaryCfg config.Stora
 		if dryRun {
 			continue
 		}
-		_, _, cerr := exportEpoch(ctx, src, e, dst, surfaceID)
+		// Every snapshot of the epoch is taken by its planned end, so the
+		// copy keeps each for its own retention from then, and never for
+		// less than the epoch is locked in the surface's own storage.
+		until := e.Epoch.PlannedEnd.AddDate(0, 0, rc.cfg.RetentionDays)
+		if until.Before(e.Epoch.OpeningRetainUntil) {
+			until = e.Epoch.OpeningRetainUntil
+		}
+		_, _, cerr := exportEpochLocked(ctx, src, e, dst, surfaceID, until)
 		state, msg := model.CopyHeld, ""
 		if cerr != nil {
 			state, msg, err = model.CopyFailed, cerr.Error(), cerr
 		} else {
 			missing -= max(len(snaps), 1)
 		}
-		until := e.Epoch.OpeningRetainUntil
 		for _, id := range snaps {
 			sc := model.SnapshotCopy{SnapshotID: id, Bucket: rc.name, WORMMode: string(rc.cfg.WORMMode), State: state, Error: msg,
 				StorageURI: copyRepoURI(rc.cfg, prefix)}

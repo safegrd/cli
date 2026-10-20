@@ -356,6 +356,12 @@ func exportRepos(ctx context.Context, srcCfg, dstCfg config.StorageConfig, onlyS
 // source object's length; the bytes are sealed, and a restore or check of
 // the copy proves them.
 func exportEpoch(ctx context.Context, src sink.Backend, e sink.EpochInfo, dst *sink.Direct, surface string) (copied, already int, err error) {
+	return exportEpochLocked(ctx, src, e, dst, surface, e.Epoch.OpeningRetainUntil)
+}
+
+// exportEpochLocked is exportEpoch with the lock each copied object gets,
+// at least a day from now.
+func exportEpochLocked(ctx context.Context, src sink.Backend, e sink.EpochInfo, dst *sink.Direct, surface string, lock time.Time) (copied, already int, err error) {
 	objs, err := src.List(ctx, e, "")
 	if err != nil {
 		return 0, 0, err
@@ -367,7 +373,6 @@ func exportEpoch(ctx context.Context, src sink.Backend, e sink.EpochInfo, dst *s
 			have[o.Key] = o.Size
 		}
 	}
-	lock := e.Epoch.OpeningRetainUntil
 	if min := time.Now().Add(24 * time.Hour); lock.Before(min) {
 		lock = min
 	}
