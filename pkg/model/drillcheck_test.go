@@ -38,20 +38,24 @@ func TestADrillExpectationComparesNumbersAsNumbersAndTextAsText(t *testing.T) {
 func TestDrillChecksThatCannotRunAreRefused(t *testing.T) {
 	ok := DrillCheck{Name: "n", SQL: "SELECT 1", Expect: "1"}
 	for name, checks := range map[string][]DrillCheck{
-		"no name":         {{SQL: "SELECT 1", Expect: "1"}},
-		"named twice":     {ok, ok},
-		"both":            {{Name: "n", SQL: "SELECT 1", Expect: "1", Command: "true"}},
-		"neither":         {{Name: "n"}},
-		"sql, no expect":  {{Name: "n", SQL: "SELECT 1"}},
-		"command, expect": {{Name: "n", Command: "true", Expect: "0"}},
-		"order on text":   {{Name: "n", SQL: "SELECT 1", Expect: "> abc"}},
-		"operator only":   {{Name: "n", SQL: "SELECT 1", Expect: ">="}},
+		"no name":          {{SQL: "SELECT 1", Expect: "1"}},
+		"named twice":      {ok, ok},
+		"both":             {{Name: "n", SQL: "SELECT 1", Expect: "1", Command: "true"}},
+		"neither":          {{Name: "n"}},
+		"sql, no expect":   {{Name: "n", SQL: "SELECT 1"}},
+		"command, expect":  {{Name: "n", Command: "true", Expect: "0"}},
+		"order on text":    {{Name: "n", SQL: "SELECT 1", Expect: "> abc"}},
+		"operator only":    {{Name: "n", SQL: "SELECT 1", Expect: ">="}},
+		"unknown variable": {{Name: "n", SQL: "SELECT '${SAFEGRD_SNAPSHOT_TIME}'", Expect: "1"}},
+		"unclosed":         {{Name: "n", SQL: "SELECT '${SAFEGRD_SNAPSHOT_CREATED_AT'", Expect: "1"}},
 	} {
 		if err := ValidateDrillChecks(checks); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
 	}
-	if err := ValidateDrillChecks([]DrillCheck{ok, {Name: "smoke", Command: "./smoke.sh"}}); err != nil {
+	fresh := DrillCheck{Name: "fresh", Expect: "true",
+		SQL: "SELECT max(created_at) >= timestamptz '${SAFEGRD_SNAPSHOT_CREATED_AT}' - interval '1 hour' FROM orders"}
+	if err := ValidateDrillChecks([]DrillCheck{ok, fresh, {Name: "smoke", Command: "./smoke.sh"}}); err != nil {
 		t.Errorf("valid checks refused: %v", err)
 	}
 }

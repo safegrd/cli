@@ -14,7 +14,8 @@ import (
 type DrillCheck struct {
 	// Name is what the drill report and the console call the check.
 	Name string `yaml:"name" json:"name"`
-	// SQL is a single statement, run in a read-only transaction.
+	// SQL is a single statement, run in a read-only transaction. It may
+	// name DrillCheckSnapshotTime.
 	SQL string `yaml:"sql,omitempty" json:"sql,omitempty"`
 	// Expect is the value the query must return: "42", "true", "> 0",
 	// ">= 1000", "!= 0". With an operator both sides must be numbers,
@@ -28,9 +29,15 @@ type DrillCheck struct {
 	TimeoutSeconds int `yaml:"timeout_seconds,omitempty" json:"timeout_seconds,omitempty"`
 }
 
+// DrillCheckSnapshotTime, written in a check's query, is replaced with when
+// the backup was taken, in RFC 3339 and UTC (2026-10-20T09:30:00Z), so a
+// query can hold the newest restored row to it. The query quotes it.
+const DrillCheckSnapshotTime = "${SAFEGRD_SNAPSHOT_CREATED_AT}"
+
 // ValidateDrillChecks refuses checks a drill could not run: no name, a name
 // used twice, neither or both of sql and command, a query with no expected
-// value, or an expected value that does not parse.
+// value, an expected value that does not parse, or a ${SAFEGRD_...} in a
+// query other than DrillCheckSnapshotTime.
 func ValidateDrillChecks(checks []DrillCheck) error {
 	seen := map[string]bool{}
 	for i, c := range checks {
@@ -54,6 +61,9 @@ func ValidateDrillChecks(checks []DrillCheck) error {
 			return fmt.Errorf("drill check %q is a command, which passes on exit 0; leave out expect", name)
 		}
 		if hasSQL {
+			if v := unknownCheckVariable(c.SQL); v != "" {
+				return fmt.Errorf("drill check %q names %s; a query can name only %s", name, v, DrillCheckSnapshotTime)
+			}
 			if _, err := ParseDrillExpect(c.Expect); err != nil {
 				return fmt.Errorf("drill check %q: %w", name, err)
 			}
@@ -63,6 +73,27 @@ func ValidateDrillChecks(checks []DrillCheck) error {
 		}
 	}
 	return nil
+}
+
+// unknownCheckVariable returns the first ${SAFEGRD_...} in query that is not
+// DrillCheckSnapshotTime, which would otherwise reach the database as text.
+func unknownCheckVariable(query string) string {
+	rest := query
+	for {
+		i := strings.Index(rest, "${SAFEGRD_")
+		if i < 0 {
+			return ""
+		}
+		rest = rest[i:]
+		end := strings.IndexByte(rest, '}')
+		if end < 0 {
+			return rest
+		}
+		if v := rest[:end+1]; v != DrillCheckSnapshotTime {
+			return v
+		}
+		rest = rest[end+1:]
+	}
 }
 
 // DrillExpect is a parsed DrillCheck.Expect.

@@ -52,7 +52,7 @@ func (v *Verifier) runChecks(ctx context.Context, report *model.VerificationRepo
 		if strings.TrimSpace(c.Command) != "" {
 			a = runCommandCheck(ctx, c, sandboxURL, report, takenAt)
 		} else {
-			a = runSQLCheck(ctx, c, sandboxURL)
+			a = runSQLCheck(ctx, c, sandboxURL, takenAt)
 		}
 		a.Name, a.Kind = strings.TrimSpace(c.Name), model.AssertionKindCheck
 		if !a.Passed {
@@ -86,15 +86,26 @@ func checkTimeout(c model.DrillCheck, def time.Duration) time.Duration {
 }
 
 // runSQLCheck runs the check's query in a read-only transaction and holds the
-// first column of its first row to the expected value.
-func runSQLCheck(ctx context.Context, c model.DrillCheck, sandboxURL string) model.AssertionResult {
+// first column of its first row to the expected value. The query may name
+// the backup's time as ${SAFEGRD_SNAPSHOT_CREATED_AT}, which a command check
+// gets in its environment.
+func runSQLCheck(ctx context.Context, c model.DrillCheck, sandboxURL string, takenAt time.Time) model.AssertionResult {
 	want, _ := model.ParseDrillExpect(c.Expect) // validated by runChecks
 	a := model.AssertionResult{Expected: want.String()}
+	query := c.SQL
+	if strings.Contains(query, model.DrillCheckSnapshotTime) {
+		if takenAt.IsZero() {
+			a.Actual = "error"
+			a.Message = "The query names " + model.DrillCheckSnapshotTime + ", and this backup does not record when it was taken"
+			return a
+		}
+		query = strings.ReplaceAll(query, model.DrillCheckSnapshotTime, takenAt.UTC().Format(time.RFC3339))
+	}
 	timeout := checkTimeout(c, defaultSQLCheckTimeout)
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	got, err := querySandboxValue(ctx, sandboxURL, c.SQL, timeout)
+	got, err := querySandboxValue(ctx, sandboxURL, query, timeout)
 	if err != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			err = fmt.Errorf("did not finish within %s", timeout)
