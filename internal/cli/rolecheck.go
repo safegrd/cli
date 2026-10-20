@@ -184,12 +184,19 @@ func refuseHiddenRows(ctx context.Context, databaseURL, via string) error {
 	if len(f.RowSecurity) == 0 {
 		return nil
 	}
-	fix := fmt.Sprintf("Run ALTER ROLE %s BYPASSRLS; as the database's owner, or hold a connection string for a role that reads every row.", dbrole.Ident(f.Name))
+	return hiddenRowsRefusal(f.Name, f.RowSecurity, via)
+}
+
+// hiddenRowsRefusal is the error refuseHiddenRows returns. It exits
+// exitSource: the database's own grants refused the role, and an exit 1
+// read as a failure whose side nobody knew.
+func hiddenRowsRefusal(role string, tables []string, via string) error {
+	fix := fmt.Sprintf("Run ALTER ROLE %s BYPASSRLS; as the database's owner, or hold a connection string for a role that reads every row.", dbrole.Ident(role))
 	if via == "supabase" {
 		fix = "Type the project's database password instead: its postgres user reads every row."
 	}
-	return fmt.Errorf("row-level security hides rows of %d table(s) (%s) from %s, the role the %s sign-in gave this backup, so the backup would miss them. %s",
-		len(f.RowSecurity), dbrole.Some(f.RowSecurity), f.Name, signInTitle(via), fix)
+	return classed(exitSource, fmt.Errorf("row-level security hides rows of %d table(s) (%s) from %s, the role the %s sign-in gave this backup, so the backup would miss them. %s",
+		len(tables), dbrole.Some(tables), role, signInTitle(via), fix))
 }
 
 // signInTitle is a sign-in's name as the console shows it.
