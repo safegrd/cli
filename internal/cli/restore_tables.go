@@ -198,6 +198,7 @@ func (tr *tableRestore) commit(ctx context.Context, tx pgx.Tx) error {
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("committing the restore: %w", err)
 	}
+	noteRestored(ctx, len(tr.picks), tr.rows)
 	fmt.Printf("Restored %d %s, %s rows, from %s in %s. Every table matched its SHA-256 and its row count.\n", len(tr.picks),
 		pluralWord(int64(len(tr.picks)), "table", "tables"), formatNumber(tr.rows), tr.id, shortDuration(time.Since(tr.started)))
 	fmt.Printf("   As of %s. The target's other tables are as they were, and are not consistent with it.\n", tr.asOf.UTC().Format("2006-01-02 15:04:05 UTC"))

@@ -85,6 +85,9 @@ type SurfaceState struct {
 	// LastDrillRequestID is the last "drill now" this surface ran, so each
 	// request is run once.
 	LastDrillRequestID string            `json:"last_drill_request_id,omitempty"`
+	// LastRestoreRequestID is the last restore asked for in the console that
+	// this surface started, so each runs once: its target is handed over once.
+	LastRestoreRequestID string `json:"last_restore_request_id,omitempty"`
 	DrillStatus        model.DrillStatus `json:"drill_status,omitempty"`
 	// DrillReason is why the last drill was not the one the plan includes,
 	// or why it did not pass; DrillDetail is the same in this host's words.
@@ -1038,6 +1041,7 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 
 	var hasErrors bool
 	var drills []pendingDrill
+	var restores []pendingRestore
 
 	// A sandbox kept after a failed drill is removed once its day is up. Only
 	// by a resident daemon: a pass run by hand beside it would stop the
@@ -1220,6 +1224,10 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 			} else if sState.DrillStatus == model.DrillStatusNoKey {
 				sState.setDrill("", "", "")
 			}
+			if hb.RestoreRequestID != "" && hb.RestoreRequestID != sState.LastRestoreRequestID {
+				s := surface
+				restores = append(restores, pendingRestore{surface: &s, state: sState, nodeID: nodeID, requestID: hb.RestoreRequestID})
+			}
 		}
 		warnIfStateUnsaved(saveDaemonState(statePath, daemonState), statePath)
 	}
@@ -1231,6 +1239,16 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 		runUnattendedDrill(ctx, c, d, func() {
 			warnIfStateUnsaved(saveDaemonState(statePath, daemonState), statePath)
 		})
+	}
+
+	// Restores asked for in the console, after the backups and drills of
+	// this tick, so the backup a restore takes first is never one the
+	// schedule is taking at the same time.
+	for _, rq := range restores {
+		if ctx.Err() != nil {
+			break
+		}
+		runConsoleRestore(ctx, c, rq, lockDir, statePath, daemonState)
 	}
 
 	// WAL archives: base backups and bundles, after every backup and drill

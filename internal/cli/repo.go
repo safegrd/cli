@@ -588,6 +588,7 @@ func restoreRepoSnapshot(ctx context.Context, rs *repoSnapshot, privateKey, targ
 		}
 		return fmt.Errorf("restore failed, and %s is as it was: %w", targetDir, err)
 	}
+	noteRestored(ctx, int(res.Dirs), res.Files+res.Symlinks)
 	switch {
 	case len(paths) > 0:
 		fmt.Printf("   Restored %s, from the backup of %s, into %s.\n", strings.Join(paths, ", "), snap.Roots[0], targetDir)

@@ -758,6 +758,7 @@ func restoreRepoDatabase(ctx context.Context, rs *repoSnapshot, privateKey, targ
 	for _, t := range got.TableStats {
 		rows += t.RowCount
 	}
+	noteRestored(ctx, len(got.TableStats), rows)
 	fmt.Printf("Restored %d %s, %s rows, from %s in %s. Every table matched its SHA-256 and its row count.\n",
 		len(got.TableStats), pluralWord(int64(len(got.TableStats)), "table", "tables"), formatNumber(rows), id,
 		shortDuration(time.Since(started)))
@@ -812,6 +813,7 @@ func restoreRepoSQLite(ctx context.Context, rs *repoSnapshot, privateKey, target
 	for _, t := range got.TableStats {
 		rows += t.RowCount
 	}
+	noteRestored(ctx, len(got.TableStats), rows)
 	fmt.Printf("Restored %d %s, %s rows, from %s into %s in %s. The database matched its SHA-256 and passed PRAGMA integrity_check.\n",
 		len(got.TableStats), pluralWord(int64(len(got.TableStats)), "table", "tables"), formatNumber(rows), id, target,
 		shortDuration(time.Since(started)))
@@ -852,6 +854,7 @@ func restoreRepoEngine(ctx context.Context, rs *repoSnapshot, privateKey, target
 	for _, t := range got.TableStats {
 		rows += t.RowCount
 	}
+	noteRestored(ctx, len(got.TableStats), rows)
 	fmt.Printf("Restored %d %s, %s %s, from %s in %s. Every file matched its SHA-256, and every %s its count.\n",
 		len(got.TableStats), pluralWord(int64(len(got.TableStats)), tableWord, tablesWord), formatNumber(rows), rowsWord, id,
 		shortDuration(time.Since(started)), tableWord)

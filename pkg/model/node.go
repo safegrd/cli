@@ -426,6 +426,9 @@ type HeartbeatResponse struct {
 	// DrillRequestID names a one-shot "drill now". The daemon runs each id once,
 	// even inside its usual spacing between drills: someone asked for it.
 	DrillRequestID string `json:"drill_request_id,omitempty"`
+	// RestoreRequestID names a restore asked for in the console. The daemon
+	// fetches its plan and runs it once, after the tick's backups.
+	RestoreRequestID string `json:"restore_request_id,omitempty"`
 
 	// Schedule and RetentionDays, when set, were chosen in the console and
 	// replace the host's config for this surface. Absent means the config
