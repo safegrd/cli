@@ -280,6 +280,10 @@ type SnapshotMetadata struct {
 	// surface read where that tool put it. SafeGrd holds no archive of it:
 	// StorageURI is the other tool's object, Sha256Checksum its bytes'.
 	External *ExternalBackup `json:"external,omitempty" yaml:"external,omitempty"`
+	// Copies are this snapshot's copies in the surface's other buckets, as
+	// the host wrote them with the snapshot and as its catch-up writes them
+	// later. Empty for a surface with one bucket.
+	Copies []SnapshotCopy `json:"copies,omitempty" yaml:"copies,omitempty"`
 	// DatabaseSettings are the settings set on the PostgreSQL database
 	// itself (ALTER DATABASE ... SET), as "name=value", which no pg_dump
 	// section carries: a restore applies them to its target.

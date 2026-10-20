@@ -23,6 +23,9 @@ import (
 // is a backup, but a sidecar that is missing is said on stderr. sealTo is the
 // recipient the recovery document is sealed to, or "" to write it as text.
 func uploadSidecars(ctx context.Context, provider storage.StorageProvider, storageCfg config.StorageConfig, snapshotID string, meta *model.SnapshotMetadata, sealTo string) {
+	// What the copies came to goes on the record the remote server gets,
+	// after the sidecars, which describe the snapshot and not its copies.
+	defer noteTeeCopies(provider, meta)
 	warnIfManifestFailed(provider.UploadMetadata(ctx, snapshotID, meta), snapshotID)
 	doc, sealed, err := renderRecoveryDoc(meta, recoveryLocation(storageCfg, meta.NodeID), sealTo)
 	if err != nil {

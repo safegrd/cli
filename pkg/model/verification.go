@@ -77,6 +77,10 @@ type VerificationReport struct {
 	// record fixes which object was drilled.
 	External       *ExternalBackup `json:"external,omitempty" yaml:"external,omitempty"`
 	ExternalSha256 string          `json:"external_sha256,omitempty" yaml:"external_sha256,omitempty"`
+	// SourceBucket names the copy a drill read, when it read one of the
+	// surface's other buckets rather than its own storage. It is inside the
+	// certificate hash, so the signed record fixes which bucket was proven.
+	SourceBucket string `json:"source_bucket,omitempty" yaml:"source_bucket,omitempty"`
 }
 
 // CanonicalBytes returns the deterministic serialization for cryptographic signing and chaining.

@@ -190,6 +190,8 @@ func sendHeartbeat(ctx context.Context, c *config.CLIConfig, nodeID string, st *
 		BlackoutSeconds:     blackoutSeconds(s),
 		CheckedUnchangedAt:  checkedUnchangedAt(st),
 		WAL:                 walReport(s, st),
+		CopiesBehind:        st.CopiesBehind,
+		CopiesChecked:       st.HasCopies,
 		Update:              hostUpdates.report(tick),
 	}, &resp)
 	if status == http.StatusNotFound && st.ServerNodeID != "" && st.ServerNodeID == nodeID && nodeID != c.NodeID {
@@ -362,8 +364,21 @@ func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, d pendingDrill
 		_, err = resolveHostedStorage(ctx, c, &storageCfg, false)
 	}
 	var provider storage.StorageProvider
+	source := ""
 	if err == nil {
 		applyHeldSinkKey(ctx, c, &storageCfg)
+		// drill.source: rotate reads the next of the surface's buckets each
+		// drill, so every copy is restored in turn.
+		if s.Drill != nil && s.Drill.Source == config.DrillSourceRotate {
+			if copies := surfaceCopies(ctx, c, s, nodeID, storageCfg); len(copies) > 0 {
+				i := st.DrillRotation % (len(copies) + 1)
+				st.DrillRotation++
+				if i > 0 {
+					storageCfg, source = copies[i-1].cfg, copies[i-1].name
+					fmt.Printf("Surface %s: this drill reads copy %s (drill.source: rotate).\n", s.ID, source)
+				}
+			}
+		}
 		provider, err = openStorage(ctx, c, storageCfg)
 	}
 	if err != nil {
@@ -375,6 +390,7 @@ func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, d pendingDrill
 	verifier := runner.NewVerifier(provider, c.ServerURL)
 	verifier.SetServerToken(c.ServerToken)
 	verifier.KeepFailedSandbox = keep
+	verifier.SourceBucket = source
 	var checks []model.DrillCheck
 	if s.Drill != nil {
 		checks = s.Drill.Checks

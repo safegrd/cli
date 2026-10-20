@@ -45,6 +45,9 @@ type nodeSinkResponse struct {
 	} `json:"registered"`
 	// FingerprintSalt keys the fingerprint of this host's own bucket key.
 	FingerprintSalt string `json:"fingerprint_salt"`
+	// Copies are the buckets the project writes every backup to beside its
+	// own; they replace the host's copies: when there are any.
+	Copies []model.SinkCopy `json:"copies"`
 }
 
 func fetchNodeSink(ctx context.Context, serverURL, nodeID, token string) (*nodeSinkResponse, error) {

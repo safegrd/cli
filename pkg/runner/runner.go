@@ -49,6 +49,9 @@ type Verifier struct {
 	// Erasures is the storage a snapshot's erasure record is kept in, which
 	// a drill of a snapshot that names one reads and replays.
 	Erasures storage.Objects
+	// SourceBucket names the copy this verifier reads, when it reads one of
+	// the surface's other buckets; the report and its hash name it.
+	SourceBucket string
 }
 
 // StorageError is a drill that could not read its snapshot from storage.
@@ -108,6 +111,7 @@ func (v *Verifier) RunFireDrill(ctx context.Context, snapshotID, privateKey, san
 	}
 
 	report := &model.VerificationReport{
+		SourceBucket:   v.SourceBucket,
 		VerificationID: "verif-" + uuid.New().String()[:8],
 		SnapshotID:     snapshotID,
 		NodeID:         meta.NodeID,
@@ -371,6 +375,7 @@ func (v *Verifier) RunDryRestore(ctx context.Context, snapshotID, privateKey str
 	}
 
 	report := &model.VerificationReport{
+		SourceBucket:   v.SourceBucket,
 		VerificationID: "verif-dry-" + uuid.New().String()[:8],
 		SnapshotID:     snapshotID,
 		NodeID:         meta.NodeID,
@@ -674,6 +679,9 @@ func computeCertificateHash(r *model.VerificationReport) string {
 	}
 	if r.External != nil {
 		payload += ":EXTERNAL:" + r.External.URI + ":" + r.ExternalSha256
+	}
+	if r.SourceBucket != "" {
+		payload += ":SOURCE:" + r.SourceBucket
 	}
 	h := sha256.Sum256([]byte(payload))
 	return "cert_sg_" + hex.EncodeToString(h[:])

@@ -84,11 +84,23 @@ type SurfaceState struct {
 	LastBackupRequestID string `json:"last_backup_request_id,omitempty"`
 	// LastDrillRequestID is the last "drill now" this surface ran, so each
 	// request is run once.
-	LastDrillRequestID string            `json:"last_drill_request_id,omitempty"`
+	LastDrillRequestID string `json:"last_drill_request_id,omitempty"`
 	// LastRestoreRequestID is the last restore asked for in the console that
 	// this surface started, so each runs once: its target is handed over once.
 	LastRestoreRequestID string `json:"last_restore_request_id,omitempty"`
-	DrillStatus        model.DrillStatus `json:"drill_status,omitempty"`
+	// CopiesBehind are the surface's other buckets that lack snapshots its
+	// own storage holds, and LastCopySync when the catch-up last ran.
+	CopiesBehind []model.CopyBehind `json:"copies_behind,omitempty"`
+	LastCopySync time.Time          `json:"last_copy_sync,omitempty"`
+	// DrillRotation counts the drills of a surface with drill.source:
+	// rotate, so each reads the next of its buckets.
+	DrillRotation int `json:"drill_rotation,omitempty"`
+	// HasCopies says the surface writes to other buckets, so the heartbeat
+	// says whether they are caught up.
+	HasCopies    bool `json:"has_copies,omitempty"`
+	hasCopies    bool
+	copiesWanted int
+	DrillStatus  model.DrillStatus `json:"drill_status,omitempty"`
 	// DrillReason is why the last drill was not the one the plan includes,
 	// or why it did not pass; DrillDetail is the same in this host's words.
 	// Both travel on the heartbeat, so the console says it too.
@@ -1251,6 +1263,25 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 		runConsoleRestore(ctx, c, rq, lockDir, statePath, daemonState)
 	}
 
+	// Copies behind: the catch-up, at most every half hour per surface,
+	// after the backups and drills of this tick.
+	for _, surface := range c.Surfaces {
+		if ctx.Err() != nil {
+			break
+		}
+		st := daemonState.Surfaces[surface.ID]
+		if st == nil || st.Retired != "" || !copySyncDue(st, time.Now().UTC()) {
+			continue
+		}
+		node := st.ServerNodeID
+		if node == "" {
+			node = surface.ID
+		}
+		s := surface
+		runCopySync(ctx, c, &s, node, st)
+		warnIfStateUnsaved(saveDaemonState(statePath, daemonState), statePath)
+	}
+
 	// WAL archives: base backups and bundles, after every backup and drill
 	// for the same reason drills wait. A base backup of a large database
 	// takes hours. Each failure says itself, once; it fails a single pass,
@@ -1408,6 +1439,7 @@ func backupSurfaceNow(ctx context.Context, c *config.CLIConfig, surface *config.
 			}
 			plan.record(sState)
 			fmt.Printf("Backed up surface %s\n", surface.ID)
+			afterBackupCopies(ctx, c, surface, nodeID, meta, sState)
 		}
 	}
 	// Recomputed from the attempt just made. Reset next due after success
@@ -1524,6 +1556,10 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 	if err != nil {
 		return nil, plan, stageErr(model.BackupReasonStorage, fmt.Errorf("storage provider init failed: %w", err))
 	}
+	// Each archive is written to the surface's other buckets from the same
+	// stream; a run of a repository is copied after it commits.
+	storageProvider, st.copiesWanted = teeCopies(ctx, c, s, nodeID, storageCfg, storageProvider)
+	st.hasCopies = st.copiesWanted > 0
 
 	pubKey := c.Encryption.PublicKey
 	if s.Encryption != nil && s.Encryption.PublicKey != "" {

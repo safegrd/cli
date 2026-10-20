@@ -35,6 +35,7 @@ func (v *Verifier) RunRepoWordPressDrill(ctx context.Context, d RepoDrill, priva
 	started := time.Now()
 	meta := d.Meta
 	report := &model.VerificationReport{
+		SourceBucket:   v.SourceBucket,
 		VerificationID: "verif-dry-" + uuid.New().String()[:8],
 		SnapshotID:     meta.SnapshotID,
 		NodeID:         meta.NodeID,

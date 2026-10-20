@@ -146,6 +146,7 @@ other line to stderr, so the output can be piped to jq.`,
 			return nil
 		},
 	}
+	cmd.Flags().StringVar(&listFromBucket, "from-bucket", "", "List a copy (copies: name, or the name of a bucket the project writes to beside its own) instead of this host's storage")
 	cmd.Flags().StringVar(&listFromDir, "from", "", "List an export: the directory 'safegrd export --to-dir' wrote, read without the remote server or this host's storage")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print the snapshots as a JSON array on stdout")
 	return cmd
@@ -284,6 +285,10 @@ func printRepoTable(rows []repoSnapshot, storageCfg config.StorageConfig) {
 // server down nothing said which snapshot IDs an export holds.
 var listFromDir string
 
+// listFromBucket is list --from-bucket: one of the surface's copies, listed
+// in place of its own storage.
+var listFromBucket string
+
 // listStorage is the storage list reads: an export directory with --from,
 // otherwise this host's, routed and credentialed like backup and restore.
 func listStorage(ctx context.Context) (config.StorageConfig, error) {
@@ -293,7 +298,7 @@ func listStorage(ctx context.Context) (config.StorageConfig, error) {
 		}
 		return config.StorageConfig{Type: config.StorageTypeLocal, LocalPath: listFromDir}, nil
 	}
-	storageCfg, routeErr := resolveStorageRouting(ctx, cfg, "", "", "", "", false)
+	storageCfg, routeErr := storageOrCopy(ctx, listFromBucket)
 	if routeErr != nil {
 		return storageCfg, routeErr
 	}

@@ -46,12 +46,18 @@ type restoreFlags struct {
 	key            string
 	bucket         *dump.ObjectStoreSource
 	surface        *config.SurfaceConfig
+
+	// fromBucket reads the snapshot from one of the copies.
+	fromBucket string
 }
 
 // restoreStorage is the storage a restore reads: the surface's own when the
 // restore is one of a configured surface with storage of its own, the host's
 // routed as backup routes it otherwise.
 func restoreStorage(ctx context.Context, f *restoreFlags) (config.StorageConfig, error) {
+	if f.fromBucket != "" {
+		return storageOrCopy(ctx, f.fromBucket)
+	}
 	if f.surface != nil && f.surface.Storage != nil {
 		st := *f.surface.Storage
 		return st, checkSurfaceStorage(ctx, cfg, &st)

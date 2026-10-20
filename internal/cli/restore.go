@@ -89,6 +89,7 @@ files: each upload writes or updates the file's row in storage.objects.`,
 	cmd.Flags().StringVar(&f.sourceRegion, "source-region", "", "With --target s3://…: the bucket's region as the store shows it")
 	cmd.Flags().StringVar(&f.sourceAccessKey, "source-access-key", "", "With --target s3://…: the store's access key id, as env:VAR or file:/path")
 	cmd.Flags().StringVar(&f.sourceSecretKey, "source-secret-key", "", "With --target s3://…: the store's secret access key, as env:VAR or file:/path")
+	cmd.Flags().StringVar(&f.fromBucket, "from-bucket", "", "Read the snapshot from this copy (copies: name, or the name of a bucket the project writes to beside its own) instead of the surface's own storage")
 	cmd.Flags().StringVar(&f.requestID, "request", "", "Run a restore asked for in the console, by its id (rst_...): what to restore and where come from the request, and the outcome is reported back")
 	cmd.Flags().StringVar(&f.fromPath, "from", "", "Restore from an export: the directory 'safegrd export --to-dir' wrote, or one .safegrd file in it")
 

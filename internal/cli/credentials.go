@@ -49,6 +49,12 @@ type nodeCredentialsResponse struct {
 	} `json:"sink"`
 	PublicKey string `json:"public_key"`
 	Notice    string `json:"notice"`
+	// Copies are the keys of the project's other buckets SafeGrd holds.
+	Copies []struct {
+		Name            string `json:"name"`
+		AccessKeyID     string `json:"access_key_id"`
+		SecretAccessKey string `json:"secret_access_key"`
+	} `json:"copies"`
 	// ObjectStore is the bucket a files surface reads and the key that signs
 	// for it, when the remote server holds them.
 	ObjectStore *struct {

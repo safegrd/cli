@@ -51,6 +51,10 @@ type Node struct {
 	PublicKey                 string         `json:"public_key,omitempty" yaml:"public_key,omitempty"`
 	KeyFingerprint            string         `json:"key_fingerprint,omitempty" yaml:"key_fingerprint,omitempty"`
 	KeyEscrowed               bool           `json:"key_escrowed" yaml:"key_escrowed,omitempty"`
+	// CopiesBehind is what the surface's host last said of the buckets it
+	// writes to beside its own: those that lack snapshots, by how many,
+	// since when. Filled in when nodes are listed; not stored on the node.
+	CopiesBehind []CopyBehind `json:"copies_behind,omitempty" yaml:"-"`
 	SurfaceType               SurfaceType    `json:"surface_type,omitempty" yaml:"surface_type,omitempty"`
 	LastBackupStatus          SnapshotStatus `json:"last_backup_status,omitempty" yaml:"last_backup_status,omitempty"`
 	LastBackupDurationMs      int64          `json:"last_backup_duration_ms,omitempty" yaml:"last_backup_duration_ms,omitempty"`
@@ -364,6 +368,11 @@ type HeartbeatRequest struct {
 	// host acted on, so a request it could not run (no key, storage it
 	// could not open) is known to be answered without a report.
 	DrillRequestSeen string `json:"drill_request_seen,omitempty"`
+	// CopiesBehind are the surface's other buckets that lack snapshots its
+	// own bucket holds, said until the host's catch-up has written them.
+	// Absent with CopiesChecked: every copy is caught up.
+	CopiesBehind  []CopyBehind `json:"copies_behind,omitempty"`
+	CopiesChecked bool         `json:"copies_checked,omitempty"`
 	// Schedule and RetentionDays are what the daemon runs this surface on,
 	// after any setting from the console, so the remote server measures
 	// "overdue" against the schedule actually in force.

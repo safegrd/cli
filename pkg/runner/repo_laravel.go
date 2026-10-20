@@ -48,6 +48,7 @@ func (v *Verifier) RunRepoLaravelDrill(ctx context.Context, d RepoDrill, private
 	started := time.Now()
 	meta := d.Meta
 	report := &model.VerificationReport{
+		SourceBucket:   v.SourceBucket,
 		VerificationID: "verif-dry-" + uuid.New().String()[:8],
 		SnapshotID:     meta.SnapshotID,
 		NodeID:         meta.NodeID,

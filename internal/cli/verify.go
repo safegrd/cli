@@ -28,6 +28,7 @@ import (
 )
 
 func newVerifyCmd() *cobra.Command {
+	var fromBucket string
 	var (
 		snapshotID  string
 		sandboxURL  string
@@ -171,7 +172,7 @@ not reported as a drill.
 				return fmt.Errorf("decryption key required for verification: specify --private-key or configure ~/.safegrd/keys/daemon.key")
 			}
 
-			storageCfg, routeErr := resolveStorageRouting(ctx, cfg, "", "", "", "", false)
+			storageCfg, routeErr := storageOrCopy(ctx, fromBucket)
 			if routeErr != nil {
 				return routeErr
 			}
@@ -390,6 +391,7 @@ not reported as a drill.
 	cmd.Flags().BoolVar(&keep, "keep-sandbox", false, "When a sandbox drill fails, record that the sandbox is kept for a person to look at")
 	cmd.Flags().BoolVar(&showURL, "show-url", false, "When a sandbox drill fails, print the sandbox's URL with its password")
 	cmd.Flags().BoolVar(&inMemory, "in-memory", false, "Restore in memory only, even with --sandbox-target (the default without it)")
+	cmd.Flags().StringVar(&fromBucket, "from-bucket", "", "Read the snapshot from this copy (copies: name, or the name of a bucket the project writes to beside its own) instead of the surface's own storage")
 	cmd.Flags().StringVar(&sandboxURL, "sandbox-target", "", "An empty database to restore the snapshot into for a full Fire Drill: postgres://…, mysql://…, or sqlite:///path/to/absent.db")
 	cmd.Flags().StringVar(&checksFile, "checks", "", "YAML file of your own checks to run against the sandbox after the restore")
 	cmd.Flags().StringVar(&query, "query", "", "Restore into a sandbox and print this SQL query's rows as CSV; nothing is reported as a drill")

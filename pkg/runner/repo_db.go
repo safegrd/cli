@@ -59,6 +59,7 @@ func (v *Verifier) RunRepoDatabaseDrill(ctx context.Context, d RepoDrill, privat
 		}
 	}
 	report := &model.VerificationReport{
+		SourceBucket:   v.SourceBucket,
 		VerificationID: "verif-dry-" + uuid.New().String()[:8],
 		SnapshotID:     meta.SnapshotID,
 		NodeID:         meta.NodeID,

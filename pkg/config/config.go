@@ -287,6 +287,9 @@ type SurfaceConfig struct {
 
 	// Storage & Encryption overrides
 	Storage    *StorageConfig    `yaml:"storage,omitempty" json:"storage,omitempty"`
+	// Copies names which of the config's copies this surface writes to.
+	// Absent means all of them; an empty list means none.
+	Copies *[]string `yaml:"copies,omitempty" json:"copies,omitempty"`
 	Encryption *EncryptionConfig `yaml:"encryption,omitempty" json:"encryption,omitempty"`
 
 	// Drill configures how the daemon proves this surface restores.
@@ -361,7 +364,17 @@ type DrillConfig struct {
 	// sandbox after the restore. A drill that restores in memory has no
 	// database to run them in, and says so.
 	Checks []model.DrillCheck `yaml:"checks,omitempty" json:"checks,omitempty"`
+	// Source is which bucket a drill reads: "primary" (the default) or
+	// "rotate", the next of the surface's buckets each drill, so every copy
+	// is restored in turn.
+	Source string `yaml:"source,omitempty" json:"source,omitempty"`
 }
+
+// Drill sources.
+const (
+	DrillSourcePrimary = "primary"
+	DrillSourceRotate  = "rotate"
+)
 
 // RemoteServerConfig is the file's server: block, the remote server this
 // host reports to.
@@ -398,7 +411,11 @@ type CLIConfig struct {
 	// surface.
 	DatabaseURL string `yaml:"-" json:"database_url"`
 
-	Storage    StorageConfig    `yaml:"storage" json:"storage"`
+	Storage StorageConfig `yaml:"storage" json:"storage"`
+	// Copies are up to two more S3 buckets every backup is written to,
+	// each under its own key, lock and retention. A surface may name a
+	// subset (SurfaceConfig.Copies).
+	Copies     []CopyConfig     `yaml:"copies,omitempty" json:"copies,omitempty"`
 	Encryption EncryptionConfig `yaml:"encryption" json:"encryption"`
 
 	// Daemon & Multi-Surface Unattended Protection
@@ -419,7 +436,7 @@ var unknownFieldRe = regexp.MustCompile(`line (\d+): field (\S+) not found in ty
 // line number says which.
 var sectionOfType = map[string]string{
 	"CLIConfig": "", "RemoteServerConfig": "server.", "NodeIdentity": "node.", "StorageConfig": "storage.", "EncryptionConfig": "encryption.",
-	"DaemonConfig": "daemon.", "DefaultsConfig": "defaults.", "SurfaceConfig": "surfaces[].", "DrillConfig": "surfaces[].drill.", "WALConfig": "surfaces[].wal.",
+	"DaemonConfig": "daemon.", "DefaultsConfig": "defaults.", "SurfaceConfig": "surfaces[].", "DrillConfig": "surfaces[].drill.", "WALConfig": "surfaces[].wal.", "CopyConfig": "copies[].",
 }
 
 // unknownKeys decodes the file again, strictly, and names every key the
@@ -959,4 +976,90 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 		d.Close()
 	}
 	return nil
+}
+
+// CopyConfig is a bucket every backup is written to beside the surface's own:
+// a full storage block with a name.
+type CopyConfig struct {
+	Name          string `yaml:"name" json:"name"`
+	StorageConfig `yaml:",inline"`
+}
+
+// MaxCopies is how many buckets a surface writes to beside its own.
+const MaxCopies = 2
+
+var copyNameRe = regexp.MustCompile(`^[a-z0-9-]{1,32}$`)
+
+// ValidateCopies refuses a copies: list that cannot be written: more than
+// two, a name used twice or not [a-z0-9-], a type other than s3, no bucket,
+// a lock mode not stated, the primary's own bucket, or a surface naming a
+// copy the list does not have.
+func (c *CLIConfig) ValidateCopies() error {
+	if len(c.Copies) > MaxCopies {
+		return fmt.Errorf("copies: at most %d buckets beside storage; this config lists %d", MaxCopies, len(c.Copies))
+	}
+	seen := map[string]bool{}
+	for i, cp := range c.Copies {
+		where := fmt.Sprintf("copies[%d]", i)
+		if !copyNameRe.MatchString(cp.Name) {
+			return fmt.Errorf("%s.name %q: use 1 to 32 lowercase letters, digits and dashes", where, cp.Name)
+		}
+		where = "copies " + cp.Name
+		if seen[cp.Name] {
+			return fmt.Errorf("%s: the name is used twice", where)
+		}
+		seen[cp.Name] = true
+		if cp.Type != StorageTypeS3 {
+			return fmt.Errorf("%s: type must be s3; a copy is an S3-compatible bucket", where)
+		}
+		if cp.Bucket == "" {
+			return fmt.Errorf("%s: bucket is required", where)
+		}
+		switch cp.WORMMode {
+		case "COMPLIANCE", "GOVERNANCE", WORMModeNone:
+		default:
+			return fmt.Errorf("%s: set worm_mode to COMPLIANCE, GOVERNANCE or NONE; a copy does not take the primary's lock", where)
+		}
+		if cp.Layout != "" {
+			return fmt.Errorf("%s: layout is for reading hosted storage, not for a copy", where)
+		}
+		if c.Storage.Type == StorageTypeS3 && cp.Bucket == c.Storage.Bucket &&
+			strings.TrimRight(cp.Endpoint, "/") == strings.TrimRight(c.Storage.Endpoint, "/") &&
+			strings.Trim(cp.Prefix, "/") == strings.Trim(c.Storage.Prefix, "/") {
+			return fmt.Errorf("%s: it is the same bucket and prefix as storage", where)
+		}
+	}
+	for _, s := range c.Surfaces {
+		if s.Copies == nil {
+			continue
+		}
+		for _, n := range *s.Copies {
+			if !seen[n] {
+				return fmt.Errorf("surface %s: copies names %q, which copies: does not list", s.ID, n)
+			}
+		}
+		if s.Drill != nil && s.Drill.Source != "" && s.Drill.Source != DrillSourcePrimary && s.Drill.Source != DrillSourceRotate {
+			return fmt.Errorf("surface %s: drill.source is primary or rotate", s.ID)
+		}
+	}
+	return nil
+}
+
+// CopiesOf is the copies a surface writes to: all of them unless the surface
+// names a subset.
+func (c *CLIConfig) CopiesOf(s *SurfaceConfig) []CopyConfig {
+	if s == nil || s.Copies == nil {
+		return append([]CopyConfig(nil), c.Copies...)
+	}
+	want := map[string]bool{}
+	for _, n := range *s.Copies {
+		want[n] = true
+	}
+	var out []CopyConfig
+	for _, cp := range c.Copies {
+		if want[cp.Name] {
+			out = append(out, cp)
+		}
+	}
+	return out
 }
