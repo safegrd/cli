@@ -100,6 +100,7 @@ type SurfaceState struct {
 	HasCopies    bool `json:"has_copies,omitempty"`
 	hasCopies    bool
 	copiesWanted int
+	copies       []resolvedCopy
 	DrillStatus  model.DrillStatus `json:"drill_status,omitempty"`
 	// DrillReason is why the last drill was not the one the plan includes,
 	// or why it did not pass; DrillDetail is the same in this host's words.
@@ -1558,7 +1559,8 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 	}
 	// Each archive is written to the surface's other buckets from the same
 	// stream; a run of a repository is copied after it commits.
-	storageProvider, st.copiesWanted = teeCopies(ctx, c, s, nodeID, storageCfg, storageProvider)
+	storageProvider, st.copies = teeCopies(ctx, c, s, nodeID, storageCfg, storageProvider)
+	st.copiesWanted = len(st.copies)
 	st.hasCopies = st.copiesWanted > 0
 
 	pubKey := c.Encryption.PublicKey
@@ -1625,7 +1627,7 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 				NodeID: nodeID, Recipient: pubKey,
 				Retention: policy.Retention{Days: storageCfg.RetentionDays, KeepDaily: tiers.Days, KeepWeekly: tiers.Weeks, KeepMonthly: tiers.Months},
 				Tier:      plan.Tier, Planned: plan.Until, SnapshotID: snapshotID, StateDir: stateDir, Out: os.Stdout,
-				NewEpoch: st.newEpoch, Rescan: st.rescan, RecoverySealTo: recoveryDocSealTo(s, pubKey), Kept: kept,
+				NewEpoch: st.newEpoch, Rescan: st.rescan, RecoverySealTo: recoveryDocSealTo(s, pubKey), Kept: kept, Copies: st.copies,
 			})
 			st.newEpoch, st.rescan = false, false
 			if err != nil {
@@ -1731,7 +1733,7 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 				SurfaceID: s.ID, DatabaseURL: dbURL, StorageCfg: storageCfg, NodeID: nodeID, Recipient: pubKey,
 				Retention: policy.Retention{Days: storageCfg.RetentionDays, KeepDaily: tiers.Days, KeepWeekly: tiers.Weeks, KeepMonthly: tiers.Months},
 				Tier:      plan.Tier, Planned: plan.Until, SnapshotID: snapshotID, StateDir: stateDir, Out: os.Stdout,
-				NewEpoch: st.newEpoch, RecoverySealTo: recoveryDocSealTo(s, pubKey), Kept: kept,
+				NewEpoch: st.newEpoch, RecoverySealTo: recoveryDocSealTo(s, pubKey), Kept: kept, Copies: st.copies,
 			},
 			Root: root, Excludes: s.Excludes, Rescan: st.rescan, MigrationsTable: s.MigrationsTable,
 		})
@@ -1877,7 +1879,7 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 				Retention: policy.Retention{Days: storageCfg.RetentionDays, KeepDaily: tiers.Days, KeepWeekly: tiers.Weeks, KeepMonthly: tiers.Months},
 				Tier:      plan.Tier, Planned: plan.Until, SnapshotID: snapshotID, StateDir: stateDir, Out: os.Stdout,
 				NewEpoch: st.newEpoch, ChangeLog: s.ChangeLog, RolesWithoutPasswords: s.RolesWithoutPasswords,
-				RecoverySealTo: recoveryDocSealTo(s, pubKey), Kept: kept,
+				RecoverySealTo: recoveryDocSealTo(s, pubKey), Kept: kept, Copies: st.copies,
 				Erasures: s.Erasures, ErasuresRetainUntil: planRetention(time.Now(), storageCfg.RetentionDays, tiers, nil).Until,
 			})
 			st.newEpoch, st.rescan = false, false

@@ -140,6 +140,8 @@ type repoParams struct {
 	// Kept is the rule this run writes under in the host's own bucket when
 	// its project locks only the kept copies; nil locks every object.
 	Kept *sink.KeptRule
+	// Copies are the other buckets the run is written to as it goes.
+	Copies []resolvedCopy
 	// SkipIfUnchanged writes nothing when nothing changed (write.Options).
 	SkipIfUnchanged bool
 }
@@ -242,13 +244,14 @@ func runRepoBackup(ctx context.Context, p repoParams) (*model.SnapshotMetadata, 
 	if d, ok := b.(*sink.Direct); ok && p.Kept != nil {
 		d.Rule = p.Kept
 	}
+	wb, multi := runCopies(ctx, b, p.Copies)
 	label := "[" + p.SurfaceID + "]"
 	locked := repoLocked(p.StorageCfg)
 	skip := append(localStoragePaths(p.StorageCfg), filepath.Join(p.StateDir, "cache"))
 	started := time.Now()
 	var meta *model.SnapshotMetadata
 	host, _ := os.Hostname()
-	res, err := write.Run(ctx, b, write.Options{
+	res, err := write.Run(ctx, wb, write.Options{
 		SurfaceID: p.SurfaceID, Roots: p.Roots, Excludes: p.Excludes, OneFilesystem: p.OneFS, SkipPaths: skip,
 		StateDir: p.StateDir, Recipient: p.Recipient, Retention: p.Retention, Tier: p.Tier, Planned: p.Planned,
 		NewEpoch: p.NewEpoch, Rescan: p.Rescan, Host: host, SnapshotID: p.SnapshotID, SkipIfUnchanged: p.SkipIfUnchanged,
@@ -335,6 +338,7 @@ func runRepoBackup(ctx context.Context, p repoParams) (*model.SnapshotMetadata, 
 			pluralWord(snap.Stats.NewPacks, "pack", "packs"), took)
 	}
 	printRepoKept(out, label, res, locked)
+	noteRunCopies(multi, p.Copies, meta)
 	return meta, res, nil
 }
 

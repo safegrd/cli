@@ -142,13 +142,14 @@ func openCopies(ctx context.Context, copies []resolvedCopy) []storage.NamedCopy 
 }
 
 // teeCopies wraps a surface's storage so each archive is written to its
-// copies too. It returns the provider unchanged for a surface with none.
-func teeCopies(ctx context.Context, c *config.CLIConfig, s *config.SurfaceConfig, nodeID string, primaryCfg config.StorageConfig, p storage.StorageProvider) (storage.StorageProvider, int) {
+// copies too, and returns the copies so a repository run writes them as it
+// goes. It returns the provider unchanged for a surface with none.
+func teeCopies(ctx context.Context, c *config.CLIConfig, s *config.SurfaceConfig, nodeID string, primaryCfg config.StorageConfig, p storage.StorageProvider) (storage.StorageProvider, []resolvedCopy) {
 	copies := surfaceCopies(ctx, c, s, nodeID, primaryCfg)
 	if len(copies) == 0 {
-		return p, 0
+		return p, nil
 	}
-	return storage.NewTee(p, openCopies(ctx, copies)...), len(copies)
+	return storage.NewTee(p, openCopies(ctx, copies)...), copies
 }
 
 // noteTeeCopies records what the copies of an archive came to on its record,
@@ -515,8 +516,9 @@ func afterBackupCopies(ctx context.Context, c *config.CLIConfig, s *config.Surfa
 			failed = true
 		}
 	}
-	if meta.EpochID == "" && !failed && len(meta.Copies) > 0 {
-		st.CopiesBehind = nil
+	// Every copy took this backup, archive or run, and none was behind
+	// before it: nothing to catch up.
+	if !failed && len(meta.Copies) > 0 && len(st.CopiesBehind) == 0 {
 		return
 	}
 	runCopySync(ctx, c, s, nodeID, st)
@@ -587,4 +589,68 @@ func storageOrCopy(ctx context.Context, name string) (config.StorageConfig, erro
 		return config.StorageConfig{}, fmt.Errorf("--from-bucket %s: this config has no copies: and the project names no other bucket", name)
 	}
 	return config.StorageConfig{}, fmt.Errorf("--from-bucket %s: no copy by that name; there is %s", name, strings.Join(known, ", "))
+}
+
+// runCopies wraps a repository run's backend so the run is written to each
+// copy as it goes. It returns b unchanged when there is no copy, or when b
+// is not a store this host writes itself (hosted storage): the catch-up
+// copies those runs after they commit.
+func runCopies(ctx context.Context, b sink.Backend, copies []resolvedCopy) (sink.Backend, *sink.Multi) {
+	d, ok := b.(*sink.Direct)
+	if !ok || len(copies) == 0 {
+		return b, nil
+	}
+	var named []sink.Named
+	for _, rc := range copies {
+		cb, err := repoBackend(ctx, cfg, rc.cfg)
+		if err == nil {
+			if cd, ok := cb.(*sink.Direct); ok {
+				named = append(named, sink.Named{Name: rc.name, D: cd, RetentionDays: rc.cfg.RetentionDays})
+				continue
+			}
+			err = fmt.Errorf("a copy of a repository is written to a bucket")
+		}
+		fmt.Fprintf(os.Stderr, "Warning: copy to %s failed: opening the bucket: %v; the catch-up will retry\n", rc.name, err)
+	}
+	if len(named) == 0 {
+		return b, nil
+	}
+	m := sink.NewMulti(d, named...)
+	return m, m
+}
+
+// noteRunCopies records on a run's record what each copy came to, and says
+// each: where it is and its lock, or why it failed. A copy that lacks
+// earlier objects of the epoch is left to the catch-up, which reports it.
+func noteRunCopies(m *sink.Multi, copies []resolvedCopy, meta *model.SnapshotMetadata) {
+	if m == nil || meta == nil {
+		return
+	}
+	mode := map[string]config.StorageConfig{}
+	for _, rc := range copies {
+		mode[rc.name] = rc.cfg
+	}
+	for _, r := range m.Results() {
+		if r.Behind {
+			continue
+		}
+		cc := mode[r.Name]
+		sc := model.SnapshotCopy{SnapshotID: meta.SnapshotID, Bucket: r.Name, WORMMode: string(cc.WORMMode), State: model.CopyHeld,
+			StorageURI: copyRepoURI(cc, r.Prefix)}
+		if !r.RetainUntil.IsZero() && cc.WORMMode != config.WORMModeNone {
+			until := r.RetainUntil
+			sc.RetainUntil = &until
+		}
+		if r.Err != nil || !r.Held {
+			why := r.Err
+			if why == nil {
+				why = fmt.Errorf("the run was not published there")
+			}
+			sc.State, sc.Error, sc.StorageURI = model.CopyFailed, why.Error(), ""
+			fmt.Fprintf(os.Stderr, "Warning: copy to %s failed: %v; the catch-up will retry\n", r.Name, why)
+		} else {
+			fmt.Printf("   Copy %s:%s%s, %s\n", r.Name, strings.Repeat(" ", max(1, 11-len(r.Name))), sc.StorageURI, copyLockWords(sc))
+		}
+		meta.Copies = append(meta.Copies, sc)
+	}
 }

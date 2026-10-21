@@ -125,6 +125,7 @@ func runRepoLaravelBackup(ctx context.Context, p repoLaravelParams) (*model.Snap
 	if d, ok := b.(*sink.Direct); ok && p.Kept != nil {
 		d.Rule = p.Kept
 	}
+	wb, multi := runCopies(ctx, b, p.Copies)
 	started := time.Now()
 	var dumpMeta, meta *model.SnapshotMetadata
 	stats := &model.LaravelStats{
@@ -203,7 +204,7 @@ func runRepoLaravelBackup(ctx context.Context, p repoLaravelParams) (*model.Snap
 		return emit(write.Entry{Path: larun.ManifestFile, Reader: bytes.NewReader(body)})
 	}
 	host, _ := os.Hostname()
-	res, err := write.Run(ctx, b, write.Options{
+	res, err := write.Run(ctx, wb, write.Options{
 		SurfaceID: p.SurfaceID, StateDir: p.StateDir, Recipient: p.Recipient, Retention: p.Retention,
 		Tier: p.Tier, Planned: p.Planned, NewEpoch: p.NewEpoch, Host: host, SnapshotID: p.SnapshotID,
 		Rescan:   p.Rescan,
@@ -275,6 +276,7 @@ func runRepoLaravelBackup(ctx context.Context, p repoLaravelParams) (*model.Snap
 		formatBytes(res.ReadBytes), formatBytes(res.WrittenBytes), res.Snapshot.Stats.NewPacks,
 		pluralWord(res.Snapshot.Stats.NewPacks, "pack", "packs"), shortDuration(time.Since(started)))
 	printRepoKept(out, label, res, repoLocked(p.StorageCfg))
+	noteRunCopies(multi, p.Copies, meta)
 	return meta, res, nil
 }
 

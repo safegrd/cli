@@ -117,6 +117,8 @@ type repoDBParams struct {
 	// Kept is the rule this run writes under in the host's own bucket when
 	// its project locks only the kept copies; nil locks every object.
 	Kept *sink.KeptRule
+	// Copies are the other buckets the run is written to as it goes.
+	Copies []resolvedCopy
 	// ServerCache keeps the writer's cache on the remote server between
 	// runs, for a run on a machine that does not outlive it.
 	ServerCache bool
@@ -180,6 +182,7 @@ func runRepoDatabaseBackup(ctx context.Context, p repoDBParams) (*model.Snapshot
 	if d, ok := b.(*sink.Direct); ok && p.Kept != nil {
 		d.Rule = p.Kept
 	}
+	wb, multi := runCopies(ctx, b, p.Copies)
 	label := "[" + p.SurfaceID + "]"
 	started := time.Now()
 	var sc *serverCache
@@ -299,7 +302,7 @@ func runRepoDatabaseBackup(ctx context.Context, p repoDBParams) (*model.Snapshot
 		return err
 	}
 	host, _ := os.Hostname()
-	res, err := write.Run(ctx, b, write.Options{
+	res, err := write.Run(ctx, wb, write.Options{
 		SurfaceID: p.SurfaceID, StateDir: p.StateDir, Recipient: p.Recipient, Retention: p.Retention,
 		Tier: p.Tier, Planned: p.Planned, NewEpoch: p.NewEpoch, Host: host, SnapshotID: p.SnapshotID, SkipIfUnchanged: p.SkipIfUnchanged,
 		// Every run reads every table: a dump has no file times to skip by.
@@ -411,6 +414,7 @@ func runRepoDatabaseBackup(ctx context.Context, p repoDBParams) (*model.Snapshot
 			fmt.Fprintf(os.Stderr, "Warning: %s the change log was not advanced (%v). The next run reads every table.\n", label, err)
 		}
 	}
+	noteRunCopies(multi, p.Copies, meta)
 	return meta, res, nil
 }
 
