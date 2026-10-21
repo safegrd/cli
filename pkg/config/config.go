@@ -286,10 +286,10 @@ type SurfaceConfig struct {
 	HeldSecret string `yaml:"-" json:"-"`
 
 	// Storage & Encryption overrides
-	Storage    *StorageConfig    `yaml:"storage,omitempty" json:"storage,omitempty"`
+	Storage *StorageConfig `yaml:"storage,omitempty" json:"storage,omitempty"`
 	// Copies names which of the config's copies this surface writes to.
 	// Absent means all of them; an empty list means none.
-	Copies *[]string `yaml:"copies,omitempty" json:"copies,omitempty"`
+	Copies     *[]string         `yaml:"copies,omitempty" json:"copies,omitempty"`
 	Encryption *EncryptionConfig `yaml:"encryption,omitempty" json:"encryption,omitempty"`
 
 	// Drill configures how the daemon proves this surface restores.

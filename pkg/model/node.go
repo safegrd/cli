@@ -48,13 +48,13 @@ type Node struct {
 	// matching identity. Per node, not per organization: a host that brought
 	// its own key and a host that did not can sit in the same org, and the
 	// honest view is to report that rather than to forbid it.
-	PublicKey                 string         `json:"public_key,omitempty" yaml:"public_key,omitempty"`
-	KeyFingerprint            string         `json:"key_fingerprint,omitempty" yaml:"key_fingerprint,omitempty"`
-	KeyEscrowed               bool           `json:"key_escrowed" yaml:"key_escrowed,omitempty"`
+	PublicKey      string `json:"public_key,omitempty" yaml:"public_key,omitempty"`
+	KeyFingerprint string `json:"key_fingerprint,omitempty" yaml:"key_fingerprint,omitempty"`
+	KeyEscrowed    bool   `json:"key_escrowed" yaml:"key_escrowed,omitempty"`
 	// CopiesBehind is what the surface's host last said of the buckets it
 	// writes to beside its own: those that lack snapshots, by how many,
 	// since when. Filled in when nodes are listed; not stored on the node.
-	CopiesBehind []CopyBehind `json:"copies_behind,omitempty" yaml:"-"`
+	CopiesBehind              []CopyBehind   `json:"copies_behind,omitempty" yaml:"-"`
 	SurfaceType               SurfaceType    `json:"surface_type,omitempty" yaml:"surface_type,omitempty"`
 	LastBackupStatus          SnapshotStatus `json:"last_backup_status,omitempty" yaml:"last_backup_status,omitempty"`
 	LastBackupDurationMs      int64          `json:"last_backup_duration_ms,omitempty" yaml:"last_backup_duration_ms,omitempty"`

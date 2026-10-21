@@ -21,11 +21,11 @@ import (
 // in the console sets in their place.
 type restoreFlags struct {
 	snapshotID, targetURL, targetDir, toSQL, engineStr, keyPath, privKey, fromPath string
-	paths                                                                         []string
-	version                                                                       int
-	surfaceSel                                                                    string
-	tables, schemas, dataOnly                                                     []string
-	noOwner, keepCron                                                             bool
+	paths                                                                          []string
+	version                                                                        int
+	surfaceSel                                                                     string
+	tables, schemas, dataOnly                                                      []string
+	noOwner, keepCron                                                              bool
 	// withoutErasures restores a snapshot whose erasure record cannot be
 	// read, and says erased rows may be back.
 	withoutErasures, salvage bool
