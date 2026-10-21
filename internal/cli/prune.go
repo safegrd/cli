@@ -16,6 +16,7 @@ import (
 
 	"github.com/aws/smithy-go"
 	"github.com/safegrd/cli/pkg/config"
+	"github.com/safegrd/cli/pkg/model"
 	"github.com/safegrd/cli/pkg/repo/sink"
 	"github.com/safegrd/cli/pkg/storage"
 	"github.com/spf13/cobra"
@@ -98,12 +99,73 @@ type pruneWriters struct{ Out, Err io.Writer }
 
 func runPrune(ctx context.Context, b pruneBucket, keepFor func(node string) (map[string]bool, error),
 	retainUntil func(metaKey string) (time.Time, error), dryRun bool, out pruneWriters) (pruneReport, error) {
-	return runPruneWithGrace(ctx, b, keepFor, retainUntil, pruneGrace, 1, dryRun, out)
+	return runPruneWithGrace(ctx, b, keepFor, nil, retainUntil, pruneGrace, 1, dryRun, out)
+}
+
+// drillsFunc is the outcome of the newest drill of each of a node's
+// snapshots, from the remote server; nil when it cannot say.
+type drillsFunc func(node string) map[string]model.VerificationStatus
+
+// keepPassedDrill names the snapshot prune keeps beyond the newest few when
+// none of those passed its drill and the oldest of them failed: the newest
+// older one that passed. Otherwise the oldest backup left would be one a
+// drill could not restore while a good one was deleted. newestFirst is the
+// surface's snapshots, newest first.
+func keepPassedDrill(newestFirst []string, kept int, drills map[string]model.VerificationStatus) string {
+	if len(drills) == 0 || kept < 1 || len(newestFirst) <= kept {
+		return ""
+	}
+	for _, id := range newestFirst[:kept] {
+		if drills[id] == model.VerificationStatusPassed {
+			return ""
+		}
+	}
+	if drills[newestFirst[kept-1]] != model.VerificationStatusFailed {
+		return ""
+	}
+	for _, id := range newestFirst[kept:] {
+		if drills[id] == model.VerificationStatusPassed {
+			return id
+		}
+	}
+	return ""
+}
+
+// sayKeptPassed says the snapshot kept because it is the newest one whose
+// drill passed.
+func sayKeptPassed(out pruneWriters, node, id, failed string) {
+	where := ""
+	if node != "" {
+		where = " of " + node
+	}
+	fmt.Fprintf(out.Out, "   Kept %s%s: the newest backup whose drill passed. The oldest kept after it, %s, failed its drill, and none since passed.\n", id, where, failed)
+}
+
+// serverDrills asks the remote server for the outcome of each snapshot's
+// newest drill. A host that cannot ask keeps prune's other rules.
+func serverDrills(ctx context.Context, c *config.CLIConfig) drillsFunc {
+	if !hostIsEnrolled(c) {
+		return nil
+	}
+	return func(node string) map[string]model.VerificationStatus {
+		if node == "" {
+			node = c.NodeID
+		}
+		var resp struct {
+			Snapshots map[string]model.VerificationStatus `json:"snapshots"`
+		}
+		status, err := getJSON(ctx, c, "/api/v1/nodes/"+url.PathEscape(node)+"/drill-results", &resp)
+		if err != nil {
+			noteServerStatus(status)
+			return nil
+		}
+		return resp.Snapshots
+	}
 }
 
 // runPruneWithGrace is runPrune with the grace and the number of each
 // surface's newest snapshots that are never deleted (at least one).
-func runPruneWithGrace(ctx context.Context, b pruneBucket, keepFor func(node string) (map[string]bool, error),
+func runPruneWithGrace(ctx context.Context, b pruneBucket, keepFor func(node string) (map[string]bool, error), drillsFor drillsFunc,
 	retainUntil func(metaKey string) (time.Time, error), grace time.Duration, minKeep int, dryRun bool, out pruneWriters) (pruneReport, error) {
 	var r pruneReport
 	now, err := b.BucketNow(ctx)
@@ -180,6 +242,20 @@ func runPruneWithGrace(ctx context.Context, b pruneBucket, keepFor func(node str
 			fmt.Fprintf(out.Err, "Warning: Surface %s: not pruned, because the remote server could not say which snapshot it keeps as last known good: %v\n", node, err)
 			r.Failed++
 			continue
+		}
+		if drillsFor != nil {
+			ids := make([]string, 0, len(list))
+			for _, s := range list {
+				ids = append(ids, s.id)
+			}
+			kept := min(max(minKeep, 1), len(ids))
+			if id := keepPassedDrill(ids, kept, drillsFor(node)); id != "" {
+				if keep == nil {
+					keep = map[string]bool{}
+				}
+				keep[id] = true
+				sayKeptPassed(out, node, id, ids[kept-1])
+			}
 		}
 		for i, s := range list {
 			if (i < max(minKeep, 1) && !s.newest.IsZero()) || keep[s.id] {
@@ -376,7 +452,8 @@ func pruneStorage(ctx context.Context, c *config.CLIConfig, storageCfg config.St
 	}
 	retainUntil := func(metaKey string) (time.Time, error) { return b.RecordedRetainUntil(ctx, metaKey) }
 	keepFor := func(node string) (map[string]bool, error) { return serverKeepList(ctx, c, node) }
-	r, err := runPruneWithGrace(ctx, b, keepFor, retainUntil, grace, minKeep, dryRun, out)
+	drills := serverDrills(ctx, c)
+	r, err := runPruneWithGrace(ctx, b, keepFor, drills, retainUntil, grace, minKeep, dryRun, out)
 	if err != nil {
 		return r, err
 	}
@@ -392,7 +469,7 @@ func pruneStorage(ctx context.Context, c *config.CLIConfig, storageCfg config.St
 	if err != nil {
 		return r, err
 	}
-	err = pruneRepos(ctx, &sink.S3{Client: client, Bucket: bucket, Prefix: basePrefix, Mode: mode}, keepFor, now, grace, minKeep, dryRun, out, &r)
+	err = pruneRepos(ctx, &sink.S3{Client: client, Bucket: bucket, Prefix: basePrefix, Mode: mode}, keepFor, drills, now, grace, minKeep, dryRun, out, &r)
 	return r, err
 }
 

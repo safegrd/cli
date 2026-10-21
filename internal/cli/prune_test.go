@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"github.com/safegrd/cli/pkg/config"
+	"github.com/safegrd/cli/pkg/model"
 	"strings"
 	"testing"
 	"time"
@@ -159,7 +160,7 @@ func TestPruneKeepsTheNewestFewWhateverTheLocksSay(t *testing.T) {
 	}
 	b.put("web", "w1", now.AddDate(0, 0, -30), now.AddDate(0, 0, -20))
 	var out bytes.Buffer
-	r, err := runPruneWithGrace(context.Background(), b, func(string) (map[string]bool, error) { return nil, nil },
+	r, err := runPruneWithGrace(context.Background(), b, func(string) (map[string]bool, error) { return nil, nil }, nil,
 		nil, pruneGrace, 3, false, pruneWriters{Out: &out, Err: &out})
 	if err != nil {
 		t.Fatal(err)
@@ -194,5 +195,26 @@ func TestAStandaloneHostPrunesWithoutAServer(t *testing.T) {
 	enrolled := &config.CLIConfig{ServerURL: "http://127.0.0.1:1", ServerToken: "sg_tok_x", NodeID: "node-x"}
 	if _, err := serverKeepList(context.Background(), enrolled, ""); err == nil {
 		t.Fatal("an enrolled host whose server is unreachable got a keep list")
+	}
+}
+
+func TestPruneKeepsTheNewestPassedDrillWhenTheOldestKeptFailed(t *testing.T) {
+	p, f := model.VerificationStatusPassed, model.VerificationStatusFailed
+	newestFirst := []string{"s5", "s4", "s3", "s2", "s1"}
+	for _, c := range []struct {
+		kept   int
+		drills map[string]model.VerificationStatus
+		want   string
+	}{
+		{2, map[string]model.VerificationStatus{"s4": f, "s2": p, "s1": p}, "s2"},
+		{2, map[string]model.VerificationStatus{"s5": p, "s4": f, "s2": p}, ""},   // a kept one passed
+		{2, map[string]model.VerificationStatus{"s2": p}, ""},                     // the oldest kept was not drilled
+		{2, map[string]model.VerificationStatus{"s4": f}, ""},                     // nothing older passed
+		{5, map[string]model.VerificationStatus{"s1": f}, ""},                     // nothing is pruned
+		{1, map[string]model.VerificationStatus{"s5": f, "s3": p, "s1": p}, "s3"}, // the newest passed
+	} {
+		if got := keepPassedDrill(newestFirst, c.kept, c.drills); got != c.want {
+			t.Errorf("kept %d, drills %v: got %q, want %q", c.kept, c.drills, got, c.want)
+		}
 	}
 }

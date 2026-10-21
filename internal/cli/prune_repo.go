@@ -45,7 +45,7 @@ type repoPruneStore interface {
 // the bucket says the lock has ended, with the grace on top. Packs, indexes,
 // catalogs and snapshot objects go first, sidecars after them, epoch.json
 // last, and each key's delete markers after its versions.
-func pruneRepos(ctx context.Context, st repoPruneStore, keepFor func(node string) (map[string]bool, error),
+func pruneRepos(ctx context.Context, st repoPruneStore, keepFor func(node string) (map[string]bool, error), drillsFor drillsFunc,
 	now time.Time, grace time.Duration, minKeep int, dryRun bool, out pruneWriters, r *pruneReport) error {
 	root := strings.Trim(st.Root(), "/")
 	nodes, err := st.Children(ctx, root)
@@ -77,8 +77,12 @@ func pruneRepos(ctx context.Context, st repoPruneStore, keepFor func(node string
 		if err != nil {
 			return err
 		}
+		var drills map[string]model.VerificationStatus
+		if drillsFor != nil {
+			drills = drillsFor(pl.node)
+		}
 		for _, sf := range surfaces {
-			if err := pruneSurfaceRepo(ctx, st, d, sf, keep, now, grace, minKeep, dryRun, out, r); err != nil {
+			if err := pruneSurfaceRepo(ctx, st, d, sf, keep, drills, now, grace, minKeep, dryRun, out, r); err != nil {
 				fmt.Fprintf(out.Err, "Error: Surface %s: %v\n", sf, err)
 				r.Failed++
 			}
@@ -103,7 +107,7 @@ type sidecarInfo struct {
 	created time.Time
 }
 
-func pruneSurfaceRepo(ctx context.Context, st repoPruneStore, d *sink.Direct, surface string, keep map[string]bool,
+func pruneSurfaceRepo(ctx context.Context, st repoPruneStore, d *sink.Direct, surface string, keep map[string]bool, drills map[string]model.VerificationStatus,
 	now time.Time, grace time.Duration, minKeep int, dryRun bool, out pruneWriters, r *pruneReport) error {
 	epochs, err := d.Epochs(ctx, surface)
 	if err != nil {
@@ -145,6 +149,15 @@ func pruneSurfaceRepo(ctx context.Context, st repoPruneStore, d *sink.Direct, su
 	newestFew := map[string]bool{}
 	for i := 0; i < len(all) && i < max(minKeep, 1); i++ {
 		newestFew[all[i].id] = true
+	}
+	ids := make([]string, 0, len(all))
+	for _, s := range all {
+		ids = append(ids, s.id)
+	}
+	kept := min(max(minKeep, 1), len(ids))
+	if id := keepPassedDrill(ids, kept, drills); id != "" {
+		newestFew[id] = true
+		sayKeptPassed(out, surface, id, ids[kept-1])
 	}
 	for _, e := range epochs {
 		ep := e.Epoch
