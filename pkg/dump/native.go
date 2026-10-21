@@ -534,6 +534,9 @@ func (d *NativeDumper) Dump(ctx context.Context, databaseName string, dst io.Wri
 		cw := newChunkWriter(tw, t.Schema, t.TableName)
 		tag, err := pgConn.CopyTo(ctx, cw, "COPY "+pgx.Identifier{t.Schema, t.TableName}.Sanitize()+" TO STDOUT (FORMAT binary)")
 		if err != nil {
+			if words := damagedPage(t.Schema, t.TableName, err); words != nil {
+				return nil, words
+			}
 			return nil, fmt.Errorf("failed to copy %s.%s: %w", t.Schema, t.TableName, err)
 		}
 		if err := cw.Close(); err != nil {

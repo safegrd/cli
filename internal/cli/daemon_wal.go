@@ -344,5 +344,20 @@ func walDaemonBase(ctx context.Context, c *config.CLIConfig, a *wal.Archive, s *
 	st.WALLastBase, st.WALBaseFailedAt = info.StartedAt, time.Time{}
 	fmt.Printf("Base backup %s (%s, %s), %s\n", info.BaseID, formatBytes(info.StoredBytes),
 		info.EndedAt.Sub(info.StartedAt).Round(time.Second), walLockLine(a, info.LockedUntil))
+	warnChecksumFailures(info)
 	return nil
+}
+
+// warnChecksumFailures says which pages of a base failed their checksum.
+// PostgreSQL read each twice before it reported it, so these are damaged on
+// disk, not pages caught mid-write. The base is kept: it holds every other
+// page, and WAL replay rewrites a damaged page the database changed after
+// the base began.
+func warnChecksumFailures(info wal.BaseInfo) {
+	if info.ChecksumFailures == 0 && len(info.ChecksumFiles) == 0 {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "Warning: base %s: pages that failed their checksum when PostgreSQL read them twice: %s. "+
+		"The base is kept and holds those pages as they were read. Check the disk, and run pg_amcheck on the database.\n",
+		info.BaseID, info.ChecksumWords())
 }

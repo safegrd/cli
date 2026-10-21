@@ -49,6 +49,11 @@ type BaseInfo struct {
 	TarSha256   string    `json:"tar_sha256"`
 	StoredBytes int64     `json:"stored_bytes"`
 	LockedUntil time.Time `json:"locked_until,omitzero"`
+	// ChecksumFailures counts the pages PostgreSQL read twice and found
+	// failing their checksum as it sent the base, ChecksumFiles them by
+	// file. The base holds those pages as they were read.
+	ChecksumFailures int            `json:"checksum_failures,omitempty"`
+	ChecksumFiles    map[string]int `json:"checksum_files,omitempty"`
 
 	// Kind is "sqlite" for a SQLite generation's base, a copy of the
 	// database file; TarBytes and TarSha256 are then the file's. The
@@ -223,6 +228,17 @@ func (a *Archive) Base(ctx context.Context, o BaseOptions) (BaseInfo, error) {
 	putErr := pr.err
 	info.LockedUntil = pr.lock
 	facts := <-scanned
+	// Pages that failed their checksum end the backup with an error after
+	// every file was sent. The base is whole; what failed is counted on it.
+	if waitErr != nil && encErr == nil && putErr == nil && facts.err == nil {
+		if byFile, ok := checksumFailures(stderr.String()); ok {
+			waitErr = nil
+			info.ChecksumFiles = byFile
+			for _, n := range byFile {
+				info.ChecksumFailures += n
+			}
+		}
+	}
 	switch {
 	case waitErr != nil:
 		return info, fmt.Errorf("could not take a base backup with pg_basebackup: %w\n%s", waitErr, strings.TrimSpace(stderr.String()))
@@ -309,16 +325,21 @@ type tarFacts struct {
 func scanTar(r io.Reader) tarFacts {
 	var f tarFacts
 	tr := tar.NewReader(r)
+	last := ""
 	for {
 		h, err := tr.Next()
-		if err == io.EOF {
+		if err == io.EOF || (errors.Is(err, io.ErrUnexpectedEOF) && last == "backup_manifest" && f.manifest != nil) {
+			// PostgreSQL 13 and 14 end a tar written to stdout right after
+			// the manifest's last byte, without padding its block or the
+			// end-of-archive blocks. The manifest read whole is the end.
 			return f
 		}
 		if err != nil {
 			f.err = err
 			return f
 		}
-		switch strings.TrimPrefix(h.Name, "./") {
+		last = strings.TrimPrefix(h.Name, "./")
+		switch last {
 		case "backup_label":
 			b, err := io.ReadAll(tr)
 			if err != nil {
