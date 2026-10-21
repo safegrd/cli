@@ -91,7 +91,10 @@ type SurfaceState struct {
 	// CopiesBehind are the surface's other buckets that lack snapshots its
 	// own storage holds, and LastCopySync when the catch-up last ran.
 	CopiesBehind []model.CopyBehind `json:"copies_behind,omitempty"`
-	LastCopySync time.Time          `json:"last_copy_sync,omitempty"`
+	// CopiesIgnored names the config's copies of the surface that the
+	// project's buckets replace, so the heartbeat says so.
+	CopiesIgnored []string  `json:"copies_ignored,omitempty"`
+	LastCopySync  time.Time `json:"last_copy_sync,omitempty"`
 	// DrillRotation counts the drills of a surface with drill.source:
 	// rotate, so each reads the next of its buckets.
 	DrillRotation int `json:"drill_rotation,omitempty"`
@@ -1312,12 +1315,34 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 
 	// Expiry in the customer's own bucket, when they opted in: once a day.
 	// A failure is said and retried tomorrow; it never fails the backups.
-	if c.Storage.ExpireAfterLock && c.Storage.Type == config.StorageTypeS3 && time.Since(daemonState.LastPrune) >= pruneEvery {
+	// Each copy whose own expire_after_lock is set is pruned the same day,
+	// by its own locks and min_keep.
+	copyExpiry := false
+	for _, cp := range c.Copies {
+		copyExpiry = copyExpiry || cp.ExpireAfterLock
+	}
+	ownExpiry := c.Storage.ExpireAfterLock && c.Storage.Type == config.StorageTypeS3
+	if (ownExpiry || copyExpiry) && time.Since(daemonState.LastPrune) >= pruneEvery {
 		daemonState.LastPrune = time.Now().UTC()
-		if r, err := pruneOwnBucket(ctx, c, pruneGrace, minKeepOf(c.Storage), false, pruneWriters{Out: os.Stdout, Err: os.Stderr}); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: Prune (storage.expire_after_lock): %v\n", err)
-		} else {
-			fmt.Printf("Prune: %s\n", r)
+		out := pruneWriters{Out: os.Stdout, Err: os.Stderr}
+		if ownExpiry {
+			if r, err := pruneOwnBucket(ctx, c, pruneGrace, minKeepOf(c.Storage), false, out); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: Prune (storage.expire_after_lock): %v\n", err)
+			} else {
+				fmt.Printf("Prune: %s\n", r)
+			}
+		}
+		if copyExpiry {
+			for _, rc := range hostCopies(ctx, c) {
+				if !rc.cfg.ExpireAfterLock {
+					continue
+				}
+				if r, err := pruneStorage(ctx, c, rc.cfg, pruneGrace, minKeepOf(rc.cfg), false, out); err != nil {
+					fmt.Fprintf(os.Stderr, "Error: Prune %s (copies expire_after_lock): %v\n", rc.name, err)
+				} else {
+					fmt.Printf("Prune %s: %s\n", rc.name, r)
+				}
+			}
 		}
 	}
 
@@ -1559,7 +1584,7 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 	}
 	// Each archive is written to the surface's other buckets from the same
 	// stream; a run of a repository is copied after it commits.
-	storageProvider, st.copies = teeCopies(ctx, c, s, nodeID, storageCfg, storageProvider)
+	storageProvider, st.copies, st.CopiesIgnored = teeCopies(ctx, c, s, nodeID, storageCfg, storageProvider)
 	st.copiesWanted = len(st.copies)
 	st.hasCopies = st.copiesWanted > 0
 

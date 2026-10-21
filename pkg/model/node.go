@@ -54,7 +54,11 @@ type Node struct {
 	// CopiesBehind is what the surface's host last said of the buckets it
 	// writes to beside its own: those that lack snapshots, by how many,
 	// since when. Filled in when nodes are listed; not stored on the node.
-	CopiesBehind              []CopyBehind   `json:"copies_behind,omitempty" yaml:"-"`
+	CopiesBehind []CopyBehind `json:"copies_behind,omitempty" yaml:"-"`
+	// CopiesIgnored names copies in the host's config that the project's
+	// buckets replace, as the host last said: those buckets are not
+	// written. Filled in when nodes are listed; not stored on the node.
+	CopiesIgnored             []string       `json:"copies_ignored,omitempty" yaml:"-"`
 	SurfaceType               SurfaceType    `json:"surface_type,omitempty" yaml:"surface_type,omitempty"`
 	LastBackupStatus          SnapshotStatus `json:"last_backup_status,omitempty" yaml:"last_backup_status,omitempty"`
 	LastBackupDurationMs      int64          `json:"last_backup_duration_ms,omitempty" yaml:"last_backup_duration_ms,omitempty"`
@@ -373,6 +377,9 @@ type HeartbeatRequest struct {
 	// Absent with CopiesChecked: every copy is caught up.
 	CopiesBehind  []CopyBehind `json:"copies_behind,omitempty"`
 	CopiesChecked bool         `json:"copies_checked,omitempty"`
+	// CopiesIgnored names copies in the host's config that the project's
+	// buckets replace, so they are not written.
+	CopiesIgnored []string `json:"copies_ignored,omitempty"`
 	// Schedule and RetentionDays are what the daemon runs this surface on,
 	// after any setting from the console, so the remote server measures
 	// "overdue" against the schedule actually in force.

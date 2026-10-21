@@ -352,6 +352,13 @@ func pruneOwnBucket(ctx context.Context, c *config.CLIConfig, grace time.Duratio
 	if err != nil {
 		return pruneReport{}, err
 	}
+	resolveRuntimeCredentials(ctx, c, &storageCfg, false)
+	return pruneStorage(ctx, c, storageCfg, grace, minKeep, dryRun, out)
+}
+
+// pruneStorage prunes one bucket: the host's own, or one of its copies,
+// each by its own locks.
+func pruneStorage(ctx context.Context, c *config.CLIConfig, storageCfg config.StorageConfig, grace time.Duration, minKeep int, dryRun bool, out pruneWriters) (pruneReport, error) {
 	if hostedLayout(storageCfg) {
 		return pruneReport{}, errHostedLayoutReadOnly
 	}
@@ -359,7 +366,6 @@ func pruneOwnBucket(ctx context.Context, c *config.CLIConfig, grace time.Duratio
 		return pruneReport{}, fmt.Errorf("prune works on your own S3 bucket (storage.type: s3), not %q: hosted storage expires on its own, "+
 			"and a local directory has no lock or clock to judge by", storageCfg.Type)
 	}
-	resolveRuntimeCredentials(ctx, c, &storageCfg, false)
 	sp, err := openStorage(ctx, c, storageCfg)
 	if err != nil {
 		return pruneReport{}, err
@@ -394,6 +400,7 @@ func newPruneCmd() *cobra.Command {
 	var dryRun bool
 	var grace time.Duration
 	var minKeep int
+	var bucket string
 	cmd := &cobra.Command{
 		Use:   "prune",
 		Short: "Delete snapshots from your own bucket once their Object Lock has ended",
@@ -404,7 +411,11 @@ anomaly on it.
 
 Needs s3:DeleteObjectVersion and s3:GetObjectRetention on this host's key, which the
 recommended bucket policy denies. Set storage.expire_after_lock: true for the daemon to
-prune once a day.`,
+prune once a day.
+
+Each copy (copies:, or a bucket the project writes to beside its own) is pruned after
+the host's own bucket, by its own locks and its own min_keep. --from-bucket <name> prunes
+one copy only. A copy's expire_after_lock lets the daemon prune it too.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if grace < 0 {
 				return errors.New("--grace cannot be negative")
@@ -412,19 +423,58 @@ prune once a day.`,
 			if minKeep < 1 {
 				return errors.New("--min-keep is at least 1: a surface's newest snapshot is never deleted")
 			}
-			r, err := pruneOwnBucket(cmd.Context(), cfg, grace, minKeep, dryRun, pruneWriters{Out: os.Stdout, Err: os.Stderr})
-			if err != nil {
-				return err
+			ctx := cmd.Context()
+			out := pruneWriters{Out: os.Stdout, Err: os.Stderr}
+			keepFor := func(st config.StorageConfig) int {
+				if cmd.Flags().Changed("min-keep") {
+					return minKeep
+				}
+				return minKeepOf(st)
 			}
-			fmt.Printf("Prune: %s\n", r)
-			if r.Failed > 0 {
-				return fmt.Errorf("%d could not be pruned; see above", r.Failed)
+			failed := 0
+			if bucket == "" {
+				r, err := pruneOwnBucket(ctx, cfg, grace, keepFor(cfg.Storage), dryRun, out)
+				if err != nil {
+					return err
+				}
+				fmt.Printf("Prune: %s\n", r)
+				failed += r.Failed
+			}
+			copies := hostCopies(ctx, cfg)
+			found := bucket == ""
+			for _, rc := range copies {
+				if bucket != "" && rc.name != bucket {
+					continue
+				}
+				found = true
+				r, err := pruneStorage(ctx, cfg, rc.cfg, grace, keepFor(rc.cfg), dryRun, out)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Error: Prune %s: %v\n", rc.name, err)
+					failed++
+					continue
+				}
+				fmt.Printf("Prune %s: %s\n", rc.name, r)
+				failed += r.Failed
+			}
+			if !found {
+				var names []string
+				for _, rc := range copies {
+					names = append(names, rc.name)
+				}
+				if len(names) == 0 {
+					return fmt.Errorf("--from-bucket %s: this host writes to no copy", bucket)
+				}
+				return fmt.Errorf("--from-bucket %s: no copy by that name; there is %s", bucket, strings.Join(names, ", "))
+			}
+			if failed > 0 {
+				return fmt.Errorf("%d could not be pruned; see above", failed)
 			}
 			return nil
 		},
 	}
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "List what would be deleted, and delete nothing")
-	cmd.Flags().IntVar(&minKeep, "min-keep", pruneMinKeep, "How many of each surface's newest snapshots are kept whatever their locks say")
+	cmd.Flags().StringVar(&bucket, "from-bucket", "", "Prune only this copy (its copies: name, or the project's name for it)")
+	cmd.Flags().IntVar(&minKeep, "min-keep", pruneMinKeep, "How many of each surface's newest snapshots are kept whatever their locks say (default: each bucket's min_keep, else 3)")
 	cmd.Flags().DurationVar(&grace, "grace", pruneGrace, "How long after a lock ends a snapshot is kept anyway (the bucket refuses a locked one regardless)")
 	return cmd
 }

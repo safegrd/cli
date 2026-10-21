@@ -189,6 +189,7 @@ func newFindCmd() *cobra.Command {
 		deleted, jsonOut bool
 		keyPath, privKey string
 		tables           []string
+		fromBucket       string
 	)
 	cmd := &cobra.Command{
 		Use:   "find <pattern>...",
@@ -227,6 +228,9 @@ or, for a table: safegrd restore --table <schema.table> --version <n> --target <
 				return err
 			}
 			storageCfg, err := repoStorage(ctx)
+			if fromBucket != "" {
+				storageCfg, err = storageOrCopy(ctx, fromBucket)
+			}
 			if err != nil {
 				return err
 			}
@@ -283,6 +287,7 @@ or, for a table: safegrd restore --table <schema.table> --version <n> --target <
 		},
 	}
 	cmd.Flags().StringVar(&surface, "surface", "", "Search this surface only")
+	cmd.Flags().StringVar(&fromBucket, "from-bucket", "", "Search this copy (copies: name, or the name of a bucket the project writes to beside its own) instead of this host's storage")
 	cmd.Flags().StringArrayVar(&tables, "table", nil, "List the versions of this table (schema.table) in incremental PostgreSQL backups (repeatable)")
 	cmd.Flags().BoolVar(&deleted, "deleted", false, "List only files the newest snapshot no longer holds")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print the histories as JSON")

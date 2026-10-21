@@ -37,10 +37,13 @@ var projectCopiesSaid sync.Map
 // surfaceCopies is the buckets surface s writes to beside primary: the
 // project's, when the remote server names any, else the config's. A config
 // whose copies: does not validate is said, and the backup goes on to its
-// own storage alone.
-func surfaceCopies(ctx context.Context, c *config.CLIConfig, s *config.SurfaceConfig, nodeID string, primary config.StorageConfig) []resolvedCopy {
-	var out []resolvedCopy
+// own storage alone. ignored names the config's copies of s that the
+// project's buckets replace, for the heartbeat to say.
+func surfaceCopies(ctx context.Context, c *config.CLIConfig, s *config.SurfaceConfig, nodeID string, primary config.StorageConfig) (out []resolvedCopy, ignored []string) {
 	if server := projectCopies(ctx, c, primary); len(server) > 0 {
+		for _, cp := range c.CopiesOf(s) {
+			ignored = append(ignored, cp.Name)
+		}
 		if len(c.Copies) > 0 {
 			if _, said := projectCopiesSaid.LoadOrStore(c, true); !said {
 				var names, buckets []string
@@ -58,7 +61,7 @@ func surfaceCopies(ctx context.Context, c *config.CLIConfig, s *config.SurfaceCo
 	} else {
 		if err := c.ValidateCopies(); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v. This backup is written to its own storage only.\n", err)
-			return nil
+			return nil, nil
 		}
 		for _, cp := range c.CopiesOf(s) {
 			cfg := cp.StorageConfig
@@ -83,7 +86,7 @@ func surfaceCopies(ctx context.Context, c *config.CLIConfig, s *config.SurfaceCo
 			out[i].cfg.RetentionDays = primary.RetentionDays
 		}
 	}
-	return out
+	return out, ignored
 }
 
 // projectCopies is the buckets the project on the remote server names beside
@@ -144,12 +147,12 @@ func openCopies(ctx context.Context, copies []resolvedCopy) []storage.NamedCopy 
 // teeCopies wraps a surface's storage so each archive is written to its
 // copies too, and returns the copies so a repository run writes them as it
 // goes. It returns the provider unchanged for a surface with none.
-func teeCopies(ctx context.Context, c *config.CLIConfig, s *config.SurfaceConfig, nodeID string, primaryCfg config.StorageConfig, p storage.StorageProvider) (storage.StorageProvider, []resolvedCopy) {
-	copies := surfaceCopies(ctx, c, s, nodeID, primaryCfg)
+func teeCopies(ctx context.Context, c *config.CLIConfig, s *config.SurfaceConfig, nodeID string, primaryCfg config.StorageConfig, p storage.StorageProvider) (storage.StorageProvider, []resolvedCopy, []string) {
+	copies, ignored := surfaceCopies(ctx, c, s, nodeID, primaryCfg)
 	if len(copies) == 0 {
-		return p, nil
+		return p, nil, ignored
 	}
-	return storage.NewTee(p, openCopies(ctx, copies)...), copies
+	return storage.NewTee(p, openCopies(ctx, copies)...), copies, ignored
 }
 
 // noteTeeCopies records what the copies of an archive came to on its record,
@@ -210,7 +213,7 @@ func syncCopies(ctx context.Context, c *config.CLIConfig, s *config.SurfaceConfi
 	if err != nil {
 		return nil, nil, err
 	}
-	copies := surfaceCopies(ctx, c, s, nodeID, primaryCfg)
+	copies, _ := surfaceCopies(ctx, c, s, nodeID, primaryCfg)
 	if only != "" {
 		var keep []resolvedCopy
 		for _, rc := range copies {
@@ -653,4 +656,33 @@ func noteRunCopies(m *sink.Multi, copies []resolvedCopy, meta *model.SnapshotMet
 		}
 		meta.Copies = append(meta.Copies, sc)
 	}
+}
+
+// hostCopies is every bucket this host writes to beside its own, with its
+// key: the project's, when the remote server names any, else the config's.
+// A config copy whose key cannot be resolved is said and left out.
+func hostCopies(ctx context.Context, c *config.CLIConfig) []resolvedCopy {
+	out := projectCopies(ctx, c, c.Storage)
+	if len(out) == 0 {
+		for _, cp := range c.Copies {
+			st := cp.StorageConfig
+			ok := true
+			for _, f := range []*string{&st.AccessKeyID, &st.SecretAccessKey} {
+				v, err := resolveConfigSecret("copies "+cp.Name+" key", *f)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: copy %s: %v\n", cp.Name, err)
+					ok = false
+					break
+				}
+				*f = v
+			}
+			if ok {
+				out = append(out, resolvedCopy{name: cp.Name, cfg: st})
+			}
+		}
+	}
+	for i := range out {
+		out[i].cfg.NodeID = c.NodeID
+	}
+	return out
 }

@@ -440,6 +440,20 @@ func runDoctorChecks(path string, c *config.CLIConfig) []CheckResult {
 		results = append(results, CheckResult{Name: "Storage Origin", Status: "FAIL", Message: err.Error()})
 	}
 	applyHeldSinkKey(ctx, c, &stCfg)
+	if len(c.Copies) > 0 {
+		if server := projectCopies(ctx, c, stCfg); len(server) > 0 {
+			var mine, theirs []string
+			for _, cp := range c.Copies {
+				mine = append(mine, cp.Name)
+			}
+			for _, rc := range server {
+				theirs = append(theirs, rc.name+" ("+rc.cfg.Bucket+")")
+			}
+			results = append(results, CheckResult{Name: "Copies", Status: "WARN", Message: fmt.Sprintf(
+				"the project's buckets %s replace copies: in this config (%s), which are not written. Remove copies: here, or the buckets under More buckets in the console",
+				strings.Join(theirs, ", "), strings.Join(mine, ", "))})
+		}
+	}
 	if stCfg.Type == config.StorageTypeHosted {
 		probe := *c
 		if l, err := resolveHostedStorage(ctx, &probe, &stCfg, false); err != nil {

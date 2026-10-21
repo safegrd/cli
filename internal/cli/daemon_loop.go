@@ -192,6 +192,7 @@ func sendHeartbeat(ctx context.Context, c *config.CLIConfig, nodeID string, st *
 		WAL:                 walReport(s, st),
 		CopiesBehind:        st.CopiesBehind,
 		CopiesChecked:       st.HasCopies,
+		CopiesIgnored:       st.CopiesIgnored,
 		Update:              hostUpdates.report(tick),
 	}, &resp)
 	if status == http.StatusNotFound && st.ServerNodeID != "" && st.ServerNodeID == nodeID && nodeID != c.NodeID {
@@ -370,7 +371,7 @@ func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, d pendingDrill
 		// drill.source: rotate reads the next of the surface's buckets each
 		// drill, so every copy is restored in turn.
 		if s.Drill != nil && s.Drill.Source == config.DrillSourceRotate {
-			if copies := surfaceCopies(ctx, c, s, nodeID, storageCfg); len(copies) > 0 {
+			if copies, _ := surfaceCopies(ctx, c, s, nodeID, storageCfg); len(copies) > 0 {
 				i := st.DrillRotation % (len(copies) + 1)
 				st.DrillRotation++
 				if i > 0 {
