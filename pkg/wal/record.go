@@ -30,8 +30,8 @@ type recordEnvelope struct {
 // copySuffix names a record's second copy.
 const copySuffix = ".copy"
 
-// sealRecord is v as one copy's bytes.
-func sealRecord(v any) ([]byte, error) {
+// SealRecord is v as one copy's bytes: the record and its SHA-256.
+func SealRecord(v any) ([]byte, error) {
 	rec, err := json.Marshal(v)
 	if err != nil {
 		return nil, err
@@ -66,7 +66,7 @@ func OpenRecord(body []byte) (json.RawMessage, error) {
 // writeRecord writes v at key and at key.copy, each locked until lock, and
 // returns the lock the first was given.
 func (a *Archive) writeRecord(ctx context.Context, key string, v any, lock time.Time) (time.Time, error) {
-	body, err := sealRecord(v)
+	body, err := SealRecord(v)
 	if err != nil {
 		return time.Time{}, err
 	}
