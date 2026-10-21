@@ -244,6 +244,9 @@ func (d *NativeDumper) Dump(ctx context.Context, databaseName string, dst io.Wri
 		return nil, fmt.Errorf("could not connect to the database: %w", err)
 	}
 	defer conn.Close(context.Background())
+	if err := refuseTransactionPooler(ctx, conn, d.databaseURL); err != nil {
+		return nil, err
+	}
 
 	// Supabase's sign-in hands out cli_login_<role>, a member of <role> that
 	// does not inherit its privileges: Supabase's own CLI dumps with
