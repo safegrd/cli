@@ -102,6 +102,19 @@ type NativeDumper struct {
 	// Erasures, when set, goes into the manifest: where the surface's
 	// erasure record is kept and what it covers.
 	Erasures *model.ErasureRecord
+	// Parallel, above 1, with Rows set, reads the tables' rows over that
+	// many connections at once, each importing the backup's snapshot, and
+	// hands each table's binary COPY stream to Rows instead of writing it
+	// into the archive. Largest table first. An incremental run sets it;
+	// an archive is one stream and reads one table at a time.
+	Parallel int
+	// Rows takes one table's rows: it calls copy with where to write them
+	// and returns once they are stored. It may be called from several
+	// goroutines at once.
+	Rows func(ctx context.Context, schema, table string, copy func(w io.Writer) (int64, error)) error
+	// ReadAtOnce is how many tables the last Dump read over several
+	// connections at once; 0 when it read them in order.
+	ReadAtOnce int
 }
 
 // NewNativeDumper creates a dumper for databaseURL.
@@ -526,7 +539,15 @@ func (d *NativeDumper) Dump(ctx context.Context, databaseName string, dst io.Wri
 	// The rows. The count is the one COPY reports, inside the snapshot, so it
 	// is exact: an estimate here made every drill of a busy table a coin toss.
 	pgConn := conn.PgConn()
+	if d.Parallel > 1 && d.Rows != nil {
+		if err := d.readRowsParallel(ctx, tx, meta, carry); err != nil {
+			return nil, err
+		}
+	}
 	for i := range meta.TableStats {
+		if d.Parallel > 1 && d.Rows != nil {
+			break
+		}
 		t := &meta.TableStats[i]
 		if n, ok := carry[t.Schema+"."+t.TableName]; ok {
 			t.RowCount, t.Carried = n, true
@@ -1872,4 +1893,102 @@ func loadTablesParallel(ctx context.Context, targetURL string, tables []TableDat
 	close(work)
 	wg.Wait()
 	return counts, first
+}
+
+// readRowsParallel reads every table not carried over d.Parallel
+// connections, each in tx's snapshot, largest table first, and records each
+// table's row count on meta. It returns the first failure.
+func (d *NativeDumper) readRowsParallel(ctx context.Context, tx pgx.Tx, meta *model.SnapshotMetadata, carry map[string]int64) error {
+	var snapshot string
+	if err := tx.QueryRow(ctx, "SELECT pg_export_snapshot()").Scan(&snapshot); err != nil {
+		return fmt.Errorf("failed to export the snapshot the rows are read in: %w", err)
+	}
+	var todo []int
+	for i := range meta.TableStats {
+		t := &meta.TableStats[i]
+		if n, ok := carry[t.Schema+"."+t.TableName]; ok {
+			t.RowCount, t.Carried = n, true
+			continue
+		}
+		todo = append(todo, i)
+	}
+	sort.SliceStable(todo, func(a, b int) bool { return meta.TableStats[todo[a]].SizeBytes > meta.TableStats[todo[b]].SizeBytes })
+	d.ReadAtOnce = len(todo)
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var mu sync.Mutex
+	var first error
+	fail := func(err error) {
+		mu.Lock()
+		if first == nil {
+			first = err
+		}
+		mu.Unlock()
+		cancel()
+	}
+	work := make(chan int)
+	var wg sync.WaitGroup
+	for n := 0; n < min(d.Parallel, len(todo)); n++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			drain := func() {
+				for range work {
+				}
+			}
+			conn, err := connectPostgres(ctx, d.databaseURL)
+			if err != nil {
+				fail(fmt.Errorf("opening a connection to read rows: %w", err))
+				drain()
+				return
+			}
+			defer conn.Close(context.Background())
+			dbrole.TakeLoginRole(ctx, conn)
+			if _, err := conn.Exec(ctx, "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY"); err != nil {
+				fail(fmt.Errorf("starting a reading transaction: %w", err))
+				drain()
+				return
+			}
+			if _, err := conn.Exec(ctx, "SET TRANSACTION SNAPSHOT "+quoteLiteral(snapshot)); err != nil {
+				fail(fmt.Errorf("importing the backup's snapshot: %w", err))
+				drain()
+				return
+			}
+			for i := range work {
+				if ctx.Err() != nil {
+					continue
+				}
+				t := &meta.TableStats[i]
+				var rows int64
+				err := d.Rows(ctx, t.Schema, t.TableName, func(w io.Writer) (int64, error) {
+					tag, err := conn.PgConn().CopyTo(ctx, w, "COPY "+pgx.Identifier{t.Schema, t.TableName}.Sanitize()+" TO STDOUT (FORMAT binary)")
+					if err != nil {
+						if words := damagedPage(t.Schema, t.TableName, err); words != nil {
+							return 0, words
+						}
+						return 0, fmt.Errorf("failed to copy %s.%s: %w", t.Schema, t.TableName, err)
+					}
+					rows = tag.RowsAffected()
+					return rows, nil
+				})
+				if err != nil {
+					fail(err)
+					continue
+				}
+				mu.Lock()
+				t.RowCount = rows
+				mu.Unlock()
+			}
+		}()
+	}
+	for _, i := range todo {
+		if ctx.Err() != nil {
+			break
+		}
+		work <- i
+	}
+	close(work)
+	wg.Wait()
+	return first
 }

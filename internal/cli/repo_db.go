@@ -121,6 +121,9 @@ type repoDBParams struct {
 	Copies []resolvedCopy
 	// Compression is the zstd level, 1 to 19; 0 is the default.
 	Compression int
+	// Parallel is how many connections read a PostgreSQL database's tables
+	// at once; 0 is 4, 1 reads them one at a time.
+	Parallel int
 	// ServerCache keeps the writer's cache on the remote server between
 	// runs, for a run on a machine that does not outlive it.
 	ServerCache bool
@@ -217,6 +220,13 @@ func runRepoDatabaseBackup(ctx context.Context, p repoDBParams) (*model.Snapshot
 	default:
 		dumper = dump.NewNativeDumper(p.DatabaseURL)
 		dumper.RolesWithoutPasswords = p.RolesWithoutPasswords
+		// The tables are read over several connections at once, each in the
+		// backup's snapshot: parallel, default 4, capped by the server.
+		dumper.Parallel = p.Parallel
+		if dumper.Parallel == 0 {
+			dumper.Parallel = 4
+		}
+		dumper.Parallel = dump.ParallelLimit(ctx, p.DatabaseURL, dumper.Parallel)
 		if len(p.Erasures) > 0 {
 			dumper.Erasures = prepareErasures(ctx, erasureParams{
 				SurfaceID: p.SurfaceID, NodeID: p.NodeID, DatabaseURL: p.DatabaseURL, StorageCfg: p.StorageCfg,
@@ -381,6 +391,10 @@ func runRepoDatabaseBackup(ctx context.Context, p repoDBParams) (*model.Snapshot
 	}
 	if res.RecoveryWarning != "" {
 		fmt.Fprintf(os.Stderr, "Warning: %s %s\n", label, res.RecoveryWarning)
+	}
+	if dumper != nil && dumper.ReadAtOnce > 0 {
+		fmt.Fprintf(out, "%s Read %d %s over %d connections at once, in one snapshot.\n", label, dumper.ReadAtOnce,
+			pluralWord(int64(dumper.ReadAtOnce), "table", "tables"), dumper.Parallel)
 	}
 	fmt.Fprintf(out, "%s %d %s, %s %s, %s read, %s stored in %d %s, %s.\n", label, meta.TotalTables,
 		pluralWord(int64(meta.TotalTables), tableWord, tablesWord), formatNumber(meta.TotalRows), rowsWord, formatBytes(res.ReadBytes),

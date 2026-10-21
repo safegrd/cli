@@ -169,3 +169,40 @@ func TestASourceThatFailsPublishesNoSnapshot(t *testing.T) {
 		}
 	}
 }
+
+// A source may emit from several goroutines at once, as a database backup
+// that reads its tables over several connections does: every file reads
+// back byte for byte and the run checks.
+func TestASourceEmittingFromSeveralGoroutinesReadsBack(t *testing.T) {
+	h := newHarness(t)
+	rng := rand.New(rand.NewSource(11))
+	files := map[string][]byte{"pre-data.sql": []byte("CREATE TABLE t (id int);\n")}
+	for i := 0; i < 8; i++ {
+		files["data/public/t"+string(rune('a'+i))+".copy"] = randomBytes(rng, (i+1)<<20)
+	}
+	concurrent := func(ctx context.Context, emit func(write.Entry) error) error {
+		errs := make(chan error, len(files))
+		for p, b := range files {
+			go func(p string, b []byte) { errs <- emit(write.Entry{Path: p, Reader: bytes.NewReader(b)}) }(p, b)
+		}
+		for range files {
+			if err := <-errs; err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	res := h.backup(func(o *write.Options) { o.Roots, o.Source = nil, concurrent })
+	got := h.catAll(res.Epoch.EpochID, res.Snapshot.SnapshotID)
+	if len(got) != len(files) {
+		t.Fatalf("%d files read back, %d emitted", len(got), len(files))
+	}
+	for p, want := range files {
+		if !bytes.Equal(got[p], want) {
+			t.Fatalf("%s did not read back as written", p)
+		}
+	}
+	if rep := h.check(res.Epoch.EpochID, res.Snapshot.SnapshotID, true); !rep.OK() {
+		t.Fatalf("check: %v", rep.Err())
+	}
+}

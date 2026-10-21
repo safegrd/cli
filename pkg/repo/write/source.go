@@ -35,7 +35,9 @@ const (
 )
 
 // source stores every file the source emits, then walks each mount into
-// the tree, and returns the root tree.
+// the tree, and returns the root tree. A source may emit from several
+// goroutines at once: each stream is read and chunked on its own, and what
+// they share is taken under w.mu.
 func (w *walker) source(src Source, mounts []Mount, started time.Time) (format.ID, error) {
 	top := newSourceDir()
 	err := src(w.ctx, func(e Entry) error {
@@ -49,6 +51,13 @@ func (w *walker) source(src Source, mounts []Mount, started time.Time) (format.I
 		if e.Reader == nil && !e.Carry {
 			return fmt.Errorf("source entry %s has no reader", e.Path)
 		}
+		w.mu.Lock()
+		locked := true
+		defer func() {
+			if locked {
+				w.mu.Unlock()
+			}
+		}()
 		d := top
 		for _, s := range segs[:len(segs)-1] {
 			if _, clash := d.files[s]; clash {
@@ -72,7 +81,14 @@ func (w *walker) source(src Source, mounts []Mount, started time.Time) (format.I
 		if e.Carry {
 			n, err = w.carry(e.Path, name, started)
 		} else {
+			// Reserved, so a second emit of the path is refused, and
+			// streamed without the lock.
+			d.files[name] = format.Node{}
+			w.mu.Unlock()
+			locked = false
 			n, err = w.stream(e.Path, name, e.Reader, started)
+			w.mu.Lock()
+			locked = true
 		}
 		if err != nil {
 			return err
@@ -153,20 +169,28 @@ func sourcePath(p string) ([]string, error) {
 	return segs, nil
 }
 
-// stream chunks one emitted file, storing every chunk the epoch lacks.
+// stream chunks one emitted file, storing every chunk the epoch lacks. It
+// is called without w.mu, with its own chunker, and takes the lock for
+// what the run shares.
 func (w *walker) stream(rel, name string, r io.Reader, started time.Time) (format.Node, error) {
 	n := format.Node{Name: name, Type: format.NodeFile, Mode: sourceFileMode, ModTime: started.UTC()}
+	ch, err := w.newChunker()
+	if err != nil {
+		return n, err
+	}
 	h := sha256.New()
+	w.mu.Lock()
 	if w.newBytes == nil {
 		w.newBytes = map[string]int64{}
 	}
 	w.newBytes[rel] = 0
-	w.ch.Reset(r)
+	w.mu.Unlock()
+	ch.Reset(r)
 	for {
 		if err := w.ctx.Err(); err != nil {
 			return n, err
 		}
-		b, err := w.ch.Next()
+		b, err := ch.Next()
 		if err == io.EOF {
 			break
 		}
@@ -175,18 +199,22 @@ func (w *walker) stream(rel, name string, r io.Reader, started time.Time) (forma
 		}
 		h.Write(b)
 		n.Size += int64(len(b))
-		w.readBytes += int64(len(b))
 		id := format.Hash(b)
 		n.Content = append(n.Content, id)
+		w.mu.Lock()
+		w.readBytes += int64(len(b))
 		added, err := w.storeNew(w.data, id, b)
-		if err != nil {
-			return n, err
-		}
 		if added {
 			w.newBytes[rel] += int64(len(b))
 		}
+		w.mu.Unlock()
+		if err != nil {
+			return n, err
+		}
 	}
 	n.SHA256 = hex.EncodeToString(h.Sum(nil))
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	w.changed++
 	row := cache.FileRow{Path: rel, Size: n.Size, MTimeNs: n.ModTime.UnixNano(), Mode: n.Mode, SHA256: n.SHA256, Blobs: n.Content}
 	if err := w.cache.PutFile(row, w.runID); err != nil {

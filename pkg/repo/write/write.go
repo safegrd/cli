@@ -439,13 +439,14 @@ func Run(ctx context.Context, b sink.Backend, o Options) (*Result, error) {
 	up := newUploader(runCtx, cancel, b, cur, e, res.Class, runID, o.Concurrency)
 	w := &walker{
 		ctx: runCtx, cache: cur, ch: ch, up: up, runID: runID,
-		data:    newPacker(format.BlobData, e.PackTargetBytes, rec, o.Compression),
-		trees:   newPacker(format.BlobTree, e.PackTargetBytes, rec, o.Compression),
-		inRun:   map[format.ID]bool{},
-		rescan:  res.Rescanned || res.Class == format.ClassOpening,
-		exclude: o.Excludes,
-		skip:    map[string]bool{},
-		buf:     make([]byte, 0, 1<<20),
+		newChunker: func() (*chunk.Chunker, error) { return chunk.New(cur.Polynomial(), e.Chunker) },
+		data:       newPacker(format.BlobData, e.PackTargetBytes, rec, o.Compression),
+		trees:      newPacker(format.BlobTree, e.PackTargetBytes, rec, o.Compression),
+		inRun:      map[format.ID]bool{},
+		rescan:     res.Rescanned || res.Class == format.ClassOpening,
+		exclude:    o.Excludes,
+		skip:       map[string]bool{},
+		buf:        make([]byte, 0, 1<<20),
 	}
 	oneFS := false
 	for _, r := range roots {
@@ -875,6 +876,10 @@ type walker struct {
 	skipped      []format.Skipped
 	inconsistent []format.RawPath
 	newBytes     map[string]int64
+	// mu guards everything above for a Source that emits from several
+	// goroutines at once; newChunker makes each stream its own chunker.
+	mu         sync.Mutex
+	newChunker func() (*chunk.Chunker, error)
 }
 
 type rootNode struct {

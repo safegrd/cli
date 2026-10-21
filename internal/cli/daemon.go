@@ -1762,7 +1762,7 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 				SurfaceID: s.ID, DatabaseURL: dbURL, StorageCfg: storageCfg, NodeID: nodeID, Recipient: pubKey,
 				Retention: policy.Retention{Days: storageCfg.RetentionDays, KeepDaily: tiers.Days, KeepWeekly: tiers.Weeks, KeepMonthly: tiers.Months},
 				Tier:      plan.Tier, Planned: plan.Until, SnapshotID: snapshotID, StateDir: stateDir, Out: os.Stdout,
-				NewEpoch: st.newEpoch, RecoverySealTo: recoveryDocSealTo(s, pubKey), Kept: kept, Copies: st.copies, Compression: level,
+				NewEpoch: st.newEpoch, RecoverySealTo: recoveryDocSealTo(s, pubKey), Kept: kept, Copies: st.copies, Compression: level, Parallel: s.Parallel,
 			},
 			Root: root, Excludes: s.Excludes, Rescan: st.rescan, MigrationsTable: s.MigrationsTable,
 		})
@@ -1908,7 +1908,7 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 				Retention: policy.Retention{Days: storageCfg.RetentionDays, KeepDaily: tiers.Days, KeepWeekly: tiers.Weeks, KeepMonthly: tiers.Months},
 				Tier:      plan.Tier, Planned: plan.Until, SnapshotID: snapshotID, StateDir: stateDir, Out: os.Stdout,
 				NewEpoch: st.newEpoch, ChangeLog: s.ChangeLog, RolesWithoutPasswords: s.RolesWithoutPasswords,
-				RecoverySealTo: recoveryDocSealTo(s, pubKey), Kept: kept, Copies: st.copies, Compression: level,
+				RecoverySealTo: recoveryDocSealTo(s, pubKey), Kept: kept, Copies: st.copies, Compression: level, Parallel: s.Parallel,
 				Erasures: s.Erasures, ErasuresRetainUntil: planRetention(time.Now(), storageCfg.RetentionDays, tiers, nil).Until,
 			})
 			st.newEpoch, st.rescan = false, false

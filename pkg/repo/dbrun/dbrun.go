@@ -59,6 +59,21 @@ func Source(d dump.Dumper, database string, meta **model.SnapshotMetadata) write
 	return func(ctx context.Context, emit func(write.Entry) error) error {
 		ctx, cancel := context.WithCancel(ctx)
 		defer cancel()
+		// A PostgreSQL dumper reading over several connections hands each
+		// table's rows here, and they are stored as they are read, beside
+		// the rest of the stream.
+		if nd, ok := d.(*dump.NativeDumper); ok && nd.Parallel > 1 {
+			nd.Rows = func(ctx context.Context, schema, table string, copy func(io.Writer) (int64, error)) error {
+				pr, pw := io.Pipe()
+				go func() {
+					_, err := copy(pw)
+					_ = pw.CloseWithError(err)
+				}()
+				err := emit(write.Entry{Path: dump.TablePath(schema, table), Reader: pr})
+				_ = pr.CloseWithError(io.ErrClosedPipe)
+				return err
+			}
+		}
 		pr, pw := io.Pipe()
 		type result struct {
 			meta *model.SnapshotMetadata
