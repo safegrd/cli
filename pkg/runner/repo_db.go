@@ -240,6 +240,10 @@ func (v *Verifier) RunRepoDatabaseDrill(ctx context.Context, d RepoDrill, privat
 		return fail("RestoreIntegrity", "the sandbox can be counted", err.Error(), "sandbox inspection failed: "+err.Error())
 	}
 	allPassed := sandboxAssertions(report, meta, restored)
+	if a := dataCheck(ctx, kind, sandboxURL); a.Name != "" {
+		report.Assertions = append(report.Assertions, a)
+		allPassed = allPassed && a.Holds()
+	}
 	if a, ok := cronJobsAssertion(meta, cronJobs); ok {
 		report.Assertions = append(report.Assertions, a)
 		allPassed = allPassed && a.Passed

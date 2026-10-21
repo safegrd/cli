@@ -24,9 +24,21 @@ type AssertionResult struct {
 	Actual   string `json:"actual" yaml:"actual"`
 	Message  string `json:"message,omitempty" yaml:"message,omitempty"`
 	// Kind is AssertionKindCheck for a check the customer wrote
-	// (drill.checks), and empty for SafeGrd's own assertions.
+	// (drill.checks), AssertionKindData for the database's own check of
+	// the restored data, and empty for SafeGrd's other assertions.
 	Kind string `json:"kind,omitempty" yaml:"kind,omitempty"`
+	// NotRun is a check the sandbox could not run: recorded, and neither
+	// passed nor failed. Passed is false and does not fail the drill.
+	NotRun bool `json:"not_run,omitempty" yaml:"not_run,omitempty"`
 }
+
+// AssertionKindData marks the database's own check of the data restored
+// into the sandbox: amcheck, CHECK TABLE, validate, integrity_check.
+const AssertionKindData = "data"
+
+// Holds reports whether the assertion lets the drill pass: it passed, or
+// it could not run.
+func (a AssertionResult) Holds() bool { return a.Passed || a.NotRun }
 
 // AssertionKindCheck marks an assertion that is one of the customer's own
 // drill checks: a query and its expected value, or a command, run against the
@@ -113,9 +125,10 @@ func (v *VerificationReport) StoredObjectsDamaged() (string, bool) {
 	}
 	for _, a := range v.Assertions {
 		// A check the customer wrote reports what its own query or command
-		// printed ("table not found", "psql: command not found"), which says
-		// nothing about the stored objects.
-		if a.Passed || a.Kind == AssertionKindCheck {
+		// printed ("table not found", "psql: command not found"), and the
+		// database's check of the sandbox reports on the sandbox: neither
+		// says anything about the stored objects.
+		if a.Passed || a.Kind == AssertionKindCheck || a.Kind == AssertionKindData {
 			continue
 		}
 		text := a.Actual + " " + a.Message

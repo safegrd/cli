@@ -189,6 +189,10 @@ func (v *Verifier) RunFireDrill(ctx context.Context, snapshotID, privateKey, san
 	}
 
 	allPassed := sandboxAssertions(report, meta, restoredMeta)
+	if a := dataCheck(ctx, kind, sandboxTargetURL); a.Name != "" {
+		report.Assertions = append(report.Assertions, a)
+		allPassed = allPassed && a.Holds()
+	}
 	if a, ok := cronJobsAssertion(meta, cronJobs); ok {
 		report.Assertions = append(report.Assertions, a)
 		allPassed = allPassed && a.Passed
@@ -676,6 +680,9 @@ func computeCertificateHash(r *model.VerificationReport) string {
 	// the signed record fixes what each check returned.
 	if d := checksDigest(r); d != "" {
 		payload += ":CHECKS:" + d
+	}
+	if d := dataChecksDigest(r); d != "" {
+		payload += ":DATA:" + d
 	}
 	if r.External != nil {
 		payload += ":EXTERNAL:" + r.External.URI + ":" + r.ExternalSha256

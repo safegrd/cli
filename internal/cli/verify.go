@@ -279,7 +279,7 @@ not reported as a drill.
 				if report.Status == model.VerificationStatusPassed {
 					fmt.Println("Assertions:")
 					for _, a := range report.Assertions {
-						fmt.Printf("   [PASS] %s (Expected: %s, Actual: %s)\n", a.Name, a.Expected, a.Actual)
+						fmt.Printf("   [%s] %s (Expected: %s, Actual: %s)%s\n", assertionWord(a), a.Name, a.Expected, a.Actual, notRunWhy(a))
 					}
 
 					if report.SurfaceType == model.SurfaceTypeFiles {
@@ -331,11 +331,7 @@ not reported as a drill.
 
 				fmt.Printf("Dry restore failed\n")
 				for _, a := range report.Assertions {
-					status := "PASS"
-					if !a.Passed {
-						status = "FAIL"
-					}
-					fmt.Printf("   [%s] %s: %s (Expected: %s, Actual: %s)\n", status, a.Name, a.Message, a.Expected, a.Actual)
+					fmt.Printf("   [%s] %s: %s (Expected: %s, Actual: %s)\n", assertionWord(a), a.Name, a.Message, a.Expected, a.Actual)
 				}
 				return drillFailure(verifier, fmt.Errorf("dry restore of %s failed: %s", snapshotID, report.ErrorMessage))
 			}
@@ -359,16 +355,12 @@ not reported as a drill.
 				fmt.Printf("   Certificate:     %s\n", report.CertificateHash)
 				fmt.Println("\nAssertions:")
 				for _, a := range report.Assertions {
-					fmt.Printf("   [PASS] %s (Expected: %s, Actual: %s)\n", a.Name, a.Expected, a.Actual)
+					fmt.Printf("   [%s] %s (Expected: %s, Actual: %s)%s\n", assertionWord(a), a.Name, a.Expected, a.Actual, notRunWhy(a))
 				}
 			} else {
 				fmt.Printf("Fire Drill Failed\n")
 				for _, a := range report.Assertions {
-					status := "PASS"
-					if !a.Passed {
-						status = "FAIL"
-					}
-					fmt.Printf("   [%s] %s: %s (Expected: %s, Actual: %s)\n", status, a.Name, a.Message, a.Expected, a.Actual)
+					fmt.Printf("   [%s] %s: %s (Expected: %s, Actual: %s)\n", assertionWord(a), a.Name, a.Message, a.Expected, a.Actual)
 				}
 				shown := dump.RedactURL(sandboxURL)
 				if showURL {
@@ -1002,4 +994,23 @@ func loadDrillChecks(path string) ([]model.DrillCheck, error) {
 		return nil, fmt.Errorf("--checks %s: %w", path, err)
 	}
 	return checks, nil
+}
+
+// assertionWord is an assertion's state as verify prints it.
+func assertionWord(a model.AssertionResult) string {
+	switch {
+	case a.NotRun:
+		return "NOT RUN"
+	case a.Passed:
+		return "PASS"
+	}
+	return "FAIL"
+}
+
+// notRunWhy is why a check did not run, after its line.
+func notRunWhy(a model.AssertionResult) string {
+	if !a.NotRun || a.Message == "" {
+		return ""
+	}
+	return ": " + a.Message
 }
