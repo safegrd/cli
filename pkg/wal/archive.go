@@ -160,21 +160,25 @@ func (a *Archive) Bundles(ctx context.Context) ([]BundleIndex, error) {
 		return nil, err
 	}
 	var out []BundleIndex
+	seen := map[string]bool{}
 	for _, o := range objs {
-		id, ok := strings.CutSuffix(path.Base(o.Key), ".json")
-		if !ok || !bundleRe.MatchString(id) {
+		name := strings.TrimSuffix(path.Base(o.Key), copySuffix)
+		id, ok := strings.CutSuffix(name, ".json")
+		if !ok || !bundleRe.MatchString(id) || seen[id] {
 			continue
 		}
-		body, err := a.readIndex(ctx, id, o.Key)
+		seen[id] = true
+		key := a.indexKey(id)
+		body, err := a.readIndex(ctx, id, key)
 		if err != nil {
 			return nil, err
 		}
 		var ix BundleIndex
 		if err := json.Unmarshal(body, &ix); err != nil {
-			return nil, fmt.Errorf("%s does not parse: %w", o.Key, err)
+			return nil, fmt.Errorf("%s does not parse: %w", key, err)
 		}
 		if ix.BundleID != id || ix.SystemID != a.SystemID {
-			return nil, fmt.Errorf("%s names bundle %s of system %s", o.Key, ix.BundleID, ix.SystemID)
+			return nil, fmt.Errorf("%s names bundle %s of system %s", key, ix.BundleID, ix.SystemID)
 		}
 		out = append(out, ix)
 	}
@@ -193,7 +197,7 @@ func (a *Archive) readIndex(ctx context.Context, id, key string) ([]byte, error)
 			return body, nil
 		}
 	}
-	body, err := a.readAll(ctx, key)
+	body, err := a.readRecordRaw(ctx, key)
 	if err != nil || cached == "" {
 		return body, err
 	}
@@ -320,11 +324,7 @@ func (a *Archive) Bundle(ctx context.Context) (BundleResult, error) {
 		if err := a.verifyBundle(ctx, id, files); err != nil {
 			return res, err
 		}
-		body, err := json.MarshalIndent(ix, "", "  ")
-		if err != nil {
-			return res, err
-		}
-		if _, err := a.Store.Put(ctx, a.indexKey(id), bytes.NewReader(body), ix.LockedUntil); err != nil {
+		if _, err := a.writeRecord(ctx, a.indexKey(id), ix, ix.LockedUntil); err != nil {
 			return res, fmt.Errorf("writing the index of bundle %s: %w", id, err)
 		}
 		res.BundleID, res.Files, res.Bytes, res.LockedUntil = id, len(files), n, ix.LockedUntil

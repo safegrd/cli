@@ -316,11 +316,7 @@ func (a *Archive) Base(ctx context.Context, o BaseOptions) (BaseInfo, error) {
 	}
 
 	info.EndedAt = a.now()
-	body, err := json.MarshalIndent(info, "", "  ")
-	if err != nil {
-		return info, err
-	}
-	if _, err := a.Store.Put(ctx, a.baseKey(info.BaseID, "base.json"), bytes.NewReader(body), info.LockedUntil); err != nil {
+	if _, err := a.writeRecord(ctx, a.baseKey(info.BaseID, "base.json"), info, info.LockedUntil); err != nil {
 		return info, fmt.Errorf("writing base %s's record: %w", info.BaseID, err)
 	}
 	return info, nil
@@ -499,6 +495,7 @@ func (a *Archive) Bases(ctx context.Context) (complete []BaseInfo, incomplete []
 		return nil, nil, err
 	}
 	tars := map[string]bool{}
+	records := map[string]bool{}
 	for _, o := range objs {
 		dir, file := path.Split(o.Key)
 		id := path.Base(dir)
@@ -508,20 +505,29 @@ func (a *Archive) Bases(ctx context.Context) (complete []BaseInfo, incomplete []
 		switch file {
 		case "base.tar.zst.age", "base.db.zst.age":
 			tars[id] = true
-		case "base.json":
-			body, err := a.readAll(ctx, o.Key)
-			if err != nil {
-				return nil, nil, err
-			}
-			var b BaseInfo
-			if err := json.Unmarshal(body, &b); err != nil {
-				return nil, nil, fmt.Errorf("%s does not parse: %w", o.Key, err)
-			}
-			if b.BaseID != id || b.SystemID != a.SystemID {
-				return nil, nil, fmt.Errorf("%s names base %s of system %s", o.Key, b.BaseID, b.SystemID)
-			}
-			complete = append(complete, b)
+		case "base.json", "base.json" + copySuffix:
+			records[id] = true
 		}
+	}
+	ids := make([]string, 0, len(records))
+	for id := range records {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		key := a.baseKey(id, "base.json")
+		rec, err := a.readRecordRaw(ctx, key)
+		if err != nil {
+			return nil, nil, fmt.Errorf("base %s: %w", id, err)
+		}
+		var b BaseInfo
+		if err := json.Unmarshal(rec, &b); err != nil {
+			return nil, nil, fmt.Errorf("%s does not parse: %w", key, err)
+		}
+		if b.BaseID != id || b.SystemID != a.SystemID {
+			return nil, nil, fmt.Errorf("%s names base %s of system %s", key, b.BaseID, b.SystemID)
+		}
+		complete = append(complete, b)
 	}
 	done := map[string]bool{}
 	for _, b := range complete {

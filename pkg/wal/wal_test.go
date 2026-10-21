@@ -3,6 +3,7 @@ package wal
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -168,7 +169,11 @@ func writeBase(t *testing.T, a *Archive, b BaseInfo) {
 	body := []byte(`{"version":1,"base_id":"` + b.BaseID + `","surface_id":"db","system_id":"` + b.SystemID +
 		`","started_at":"` + b.StartedAt.Format(time.RFC3339) + `","ended_at":"` + b.EndedAt.Format(time.RFC3339) +
 		`","server_version_num":160004,"wal_segment_size":16777216,"timeline":1,"start_wal":"` + b.StartWAL + `","end_wal":"` + b.EndWAL + `"}`)
-	if _, err := a.Store.Put(context.Background(), a.baseKey(b.BaseID, "base.json"), bytes.NewReader(body), time.Time{}); err != nil {
+	var rec BaseInfo
+	if err := json.Unmarshal(body, &rec); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.writeRecord(context.Background(), a.baseKey(b.BaseID, "base.json"), rec, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -241,13 +246,16 @@ func TestAFetchReadsABundleIndexFromTheCache(t *testing.T) {
 	if err := a.Fetch(ctx, n, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
-	// The store's copy of the index goes bad; the cached one is read.
+	// Both of the store's copies of the index go bad; the cached one is
+	// read.
 	p := a.Store.(*DirStore).Describe() + "/" + strings.TrimPrefix(a.indexKey(res.BundleID), a.Store.Root()+"/")
-	if err := os.Chmod(p, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(p, []byte("not json"), 0o600); err != nil {
-		t.Fatal(err)
+	for _, f := range []string{p, p + copySuffix} {
+		if err := os.Chmod(f, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(f, []byte("not json"), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	var out bytes.Buffer
 	if err := a.Fetch(ctx, n, &out); err != nil {
@@ -400,5 +408,40 @@ func TestABaseBackupKeepsThePasswordOffTheCommandLine(t *testing.T) {
 	}
 	if strings.Contains(s, "PGPASSWORD=") {
 		t.Fatalf("the shell's PGPASSWORD reached pg_basebackup, and libpq reads it before PGPASSFILE:\n%s", s)
+	}
+}
+
+// A bundle's index and a base's record are each kept twice: one copy
+// damaged, the other is read, and CheckRecords names the pair.
+func TestARecordWithOneDamagedCopyIsReadFromTheOther(t *testing.T) {
+	ctx := context.Background()
+	a, _ := testArchive(t)
+	n := "000000010000000000000001"
+	if err := a.Push(ctx, n, bytes.NewReader(walFile(1))); err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.Bundle(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if probs, err := a.CheckRecords(ctx); err != nil || len(probs) != 0 {
+		t.Fatalf("a fresh archive: %v %v", probs, err)
+	}
+	p := a.Store.(*DirStore).Describe() + "/" + strings.TrimPrefix(a.indexKey(res.BundleID), a.Store.Root()+"/")
+	if err := os.Chmod(p, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := os.ReadFile(p)
+	body[len(body)/2] ^= 1
+	if err := os.WriteFile(p, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := a.Fetch(ctx, n, &out); err != nil || !bytes.Equal(out.Bytes(), walFile(1)) {
+		t.Fatalf("fetch with the first copy damaged: %v", err)
+	}
+	probs, err := a.CheckRecords(ctx)
+	if err != nil || len(probs) != 1 || !strings.Contains(probs[0].Problem, "the first copy is unreadable") {
+		t.Fatalf("check: %+v %v", probs, err)
 	}
 }

@@ -443,11 +443,7 @@ func (f *SQLiteFollower) pushBase(ctx context.Context, gen string, h SQLiteWALHe
 		return err
 	}
 	info.EndedAt = a.now()
-	body, err := json.MarshalIndent(info, "", "  ")
-	if err != nil {
-		return err
-	}
-	if _, err := a.Store.Put(ctx, a.baseKey(info.BaseID, "base.json"), bytes.NewReader(body), info.LockedUntil); err != nil {
+	if _, err := a.writeRecord(ctx, a.baseKey(info.BaseID, "base.json"), info, info.LockedUntil); err != nil {
 		return err
 	}
 	f.logf("%s: base %s (%s) for generation %s", f.Path, info.BaseID, fmtBytes(info.StoredBytes), gen)

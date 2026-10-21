@@ -570,7 +570,7 @@ func walBundleAll(ctx context.Context, a *wal.Archive, systems []string) ([]stri
 
 func newWALStatusCmd() *cobra.Command {
 	var surfaceID, systemID, node string
-	var jsonOut bool
+	var jsonOut, check bool
 	cmd := &cobra.Command{
 		Use:   "status",
 		Short: "Show a surface's WAL archive: its base backups, its window and any gap",
@@ -615,6 +615,21 @@ WAL file is missing.`,
 				if len(st.Gaps) > 0 {
 					problems = append(problems, fmt.Sprintf("system %s is missing WAL from %s", sys, st.Gaps[0].First))
 				}
+				if check {
+					probs, err := a.CheckRecords(ctx)
+					if err != nil {
+						return storageFailure(err)
+					}
+					for _, p := range probs {
+						if !jsonOut {
+							fmt.Printf("   Record:        %s: %s\n", p.Key, p.Problem)
+						}
+						problems = append(problems, fmt.Sprintf("%s: %s", p.Key, p.Problem))
+					}
+					if len(probs) == 0 && !jsonOut {
+						fmt.Printf("   Records:       every base record and bundle index has two whole, matching copies\n")
+					}
+				}
 			}
 			if jsonOut {
 				enc := json.NewEncoder(os.Stdout)
@@ -632,6 +647,7 @@ WAL file is missing.`,
 	cmd.Flags().StringVar(&surfaceID, "surface", "", "Surface id from the config (required)")
 	cmd.Flags().StringVar(&systemID, "system", "", "Show only this cluster's archive")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print the status as JSON")
+	cmd.Flags().BoolVar(&check, "check", false, "Also read both copies of every base record and bundle index, and name any pair that is not whole and alike")
 	cmd.Flags().StringVar(&node, "node", "", "On hosted storage, show the archive another host of the organization wrote")
 	return cmd
 }
