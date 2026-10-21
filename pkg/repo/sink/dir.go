@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/safegrd/cli/pkg/diskspace"
 )
 
 // Dir is a store in a local directory. It has no lock: objects are written
@@ -53,6 +55,13 @@ func (d *Dir) Put(_ context.Context, key string, body []byte, _ [16]byte, _ time
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return err
+	}
+	// A directory is often on the disk the host's own database and logs
+	// live on. A write stops before it would leave that filesystem with
+	// less than the share diskspace keeps free, rather than fill it.
+	if err := diskspace.CheckFreeSpace(filepath.Dir(p), int64(len(body)), "a backup to the local sink "+d.base,
+		"free some space, move local_path to a larger disk, or back up to a bucket"); err != nil {
 		return err
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(p), ".put-*")
