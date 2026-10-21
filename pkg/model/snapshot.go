@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"regexp"
 	"time"
 )
 
@@ -284,6 +285,10 @@ type SnapshotMetadata struct {
 	// the host wrote them with the snapshot and as its catch-up writes them
 	// later. Empty for a surface with one bucket.
 	Copies []SnapshotCopy `json:"copies,omitempty" yaml:"copies,omitempty"`
+	// Notes are key=value pairs on the snapshot, such as release=v2.3:
+	// given with the backup or added later. The remote server keeps them,
+	// not the locked archive or its sidecar, so they can change.
+	Notes map[string]string `json:"notes,omitempty" yaml:"notes,omitempty"`
 	// DatabaseSettings are the settings set on the PostgreSQL database
 	// itself (ALTER DATABASE ... SET), as "name=value", which no pg_dump
 	// section carries: a restore applies them to its target.
@@ -503,4 +508,28 @@ func (e *ExternalBackup) MadeBy() string {
 		return "another tool"
 	}
 	return e.Tool
+}
+
+// MaxNotes is how many notes a snapshot holds.
+const MaxNotes = 20
+
+var noteKeyRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,39}$`)
+
+// ValidNote refuses a note key or value the console and alert emails could
+// not show as written: a key of lowercase letters, digits, '_', '.' and
+// '-', up to 40, and a value of up to 200 characters with no control
+// characters.
+func ValidNote(key, value string) error {
+	if !noteKeyRe.MatchString(key) {
+		return fmt.Errorf("note key %q: 1 to 40 lowercase letters, digits, '_', '.' or '-', starting with a letter or digit", key)
+	}
+	if len(value) > 200 {
+		return fmt.Errorf("note %s: the value is %d characters; 200 at most", key, len(value))
+	}
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("note %s: the value holds a control character", key)
+		}
+	}
+	return nil
 }

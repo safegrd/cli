@@ -43,6 +43,7 @@ func newBackupCmd() *cobra.Command {
 		sourceSecretKey string
 		fileFmt         string
 		compression     string
+		noteArgs        []string
 		newEpoch        bool
 		// serverCache: see repoDBParams.ServerCache.
 		serverCache bool
@@ -79,6 +80,9 @@ and never leaves this host.`,
 			level, err := config.ParseCompression(compression)
 			if err != nil {
 				return fmt.Errorf("--compression: %w", err)
+			}
+			if pendingNotes, err = parseNotes(noteArgs); err != nil {
+				return fmt.Errorf("--note: %w", err)
 			}
 			ctx := cmd.Context()
 
@@ -750,6 +754,7 @@ and never leaves this host.`,
 	cmd.Flags().StringVar(&sourceAccessKey, "source-access-key", "", "With --files s3://…: the store's access key id, as env:VAR or file:/path")
 	cmd.Flags().StringVar(&sourceSecretKey, "source-secret-key", "", "With --files s3://…: the store's secret access key, as env:VAR or file:/path")
 	cmd.Flags().StringSliceVar(&excludes, "exclude", nil, "Glob patterns to leave out of --files (e.g. '*.tmp,node_modules/*')")
+	cmd.Flags().StringArrayVar(&noteArgs, "note", nil, "A note on the snapshot, key=value (repeatable), such as release=v2.3. The remote server keeps it; 'safegrd note' changes it")
 	cmd.Flags().StringVar(&compression, "compression", "", "How hard to compress: zstd:1 (fastest) to zstd:19 (smallest). A restore needs no setting")
 	cmd.Flags().StringVar(&fileFmt, "format", formatRepo, "How the backup is stored: repo (incremental: each run uploads only what changed) or tar (one archive per backup). Repo is the default")
 	cmd.Flags().BoolVar(&newEpoch, "new-epoch", false, "With --format repo, or --surface of a repo surface: start a new epoch now, uploading everything once")
@@ -820,6 +825,11 @@ func sendMetadataToServer(ctx context.Context, serverURL, token string, meta *mo
 // so it is not. The daemon keeps retryable records and sends them once the
 // remote server answers (unsent.go).
 func deliverSnapshotRecord(ctx context.Context, serverURL, token string, meta *model.SnapshotMetadata, verbose bool) (reason string, retry bool) {
+	// Notes given with --note ride on the record, not in the sidecar: the
+	// sidecar is written already, and locked.
+	if len(pendingNotes) > 0 && meta != nil && meta.Notes == nil {
+		meta.Notes = pendingNotes
+	}
 	warn := func(format string, args ...any) {
 		// Printed even when quiet. --json suppresses the decorative lines
 		// above; it must not suppress "the remote server does not know about

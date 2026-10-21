@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -62,6 +63,18 @@ other line to stderr, so the output can be piped to jq.`,
 			shadowed := warnAboutShadowedSnapshots(ctx, storageProvider)
 
 			repoRows := listRepoSnapshots(ctx, storageCfg)
+			// Last, after both tables: each snapshot's notes, from the
+			// remote server.
+			shown := map[string]bool{}
+			nodeIDs := map[string]bool{cfg.NodeID: true}
+			for _, id := range snapshots {
+				shown[id] = true
+			}
+			for _, r := range repoRows {
+				shown[r.Meta.SnapshotID] = true
+				nodeIDs[r.Meta.NodeID] = true
+			}
+			defer func() { printNotes(ctx, shown, nodeIDs) }()
 			if len(repoRows) > 0 {
 				defer printRepoTable(repoRows, storageCfg)
 			}
@@ -86,6 +99,7 @@ other line to stderr, so the output can be piped to jq.`,
 			var undescribed int
 			for _, snapID := range snapshots {
 				node, known := nodes[snapID]
+				nodeIDs[node] = true
 				if known && canSetNode {
 					setNode.SetNodeID(node)
 				}
@@ -156,11 +170,13 @@ other line to stderr, so the output can be piped to jq.`,
 // output's contract with scripts and hooks; add fields, never rename them.
 type listedSnapshot struct {
 	SnapshotID string `json:"snapshot_id"`
-	NodeID     string `json:"node_id,omitempty"`
-	Surface    string `json:"surface,omitempty"`
-	Database   string `json:"database,omitempty"`
-	Status     string `json:"status,omitempty"`
-	CreatedAt  string `json:"created_at,omitempty"`
+	// Notes are the snapshot's notes on the remote server.
+	Notes     map[string]string `json:"notes,omitempty"`
+	NodeID    string            `json:"node_id,omitempty"`
+	Surface   string            `json:"surface,omitempty"`
+	Database  string            `json:"database,omitempty"`
+	Status    string            `json:"status,omitempty"`
+	CreatedAt string            `json:"created_at,omitempty"`
 	// CompletedAt is when the upload finished.
 	CompletedAt        string `json:"completed_at,omitempty"`
 	EncryptedSizeBytes int64  `json:"encrypted_size_bytes"`
@@ -411,6 +427,14 @@ func listedSnapshots(ctx context.Context) ([]listedSnapshot, error) {
 		}
 		entries = append(entries, e)
 	}
+	nodeIDs := map[string]bool{cfg.NodeID: true}
+	for _, e := range entries {
+		nodeIDs[e.NodeID] = true
+	}
+	notes := serverNotes(ctx, nodeIDs)
+	for i := range entries {
+		entries[i].Notes = notes[entries[i].SnapshotID]
+	}
 	return entries, nil
 }
 
@@ -513,4 +537,61 @@ func noSnapshotsLine(c config.StorageConfig) string {
 		return fmt.Sprintf("No snapshots in %s.", c.LocalPath)
 	}
 	return "No snapshots found in storage."
+}
+
+// serverNotes is the notes on the snapshots of nodes, from the remote server,
+// by snapshot id. A host that cannot ask lists without them.
+func serverNotes(ctx context.Context, nodeIDs map[string]bool) map[string]map[string]string {
+	out := map[string]map[string]string{}
+	if !hostIsEnrolled(cfg) {
+		return out
+	}
+	for node := range nodeIDs {
+		if node == "" {
+			continue
+		}
+		var resp struct {
+			Snapshots map[string]map[string]string `json:"snapshots"`
+		}
+		if _, err := getJSON(ctx, cfg, "/api/v1/nodes/"+url.PathEscape(node)+"/notes", &resp); err != nil {
+			continue
+		}
+		for id, n := range resp.Snapshots {
+			out[id] = n
+		}
+	}
+	return out
+}
+
+// printNotes lists the notes on the snapshots shown, one line each.
+func printNotes(ctx context.Context, shown, nodeIDs map[string]bool) {
+	notes := serverNotes(ctx, nodeIDs)
+	var ids []string
+	for id := range notes {
+		if shown[id] {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	sort.Strings(ids)
+	fmt.Println("\nNotes:")
+	for _, id := range ids {
+		fmt.Printf("   %s  %s\n", id, noteWords(notes[id]))
+	}
+}
+
+// noteWords is notes as key=value, by key.
+func noteWords(n map[string]string) string {
+	keys := make([]string, 0, len(n))
+	for k := range n {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, k+"="+n[k])
+	}
+	return strings.Join(parts, " ")
 }
