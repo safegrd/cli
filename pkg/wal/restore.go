@@ -240,6 +240,12 @@ func untar(r io.Reader, dir string) error {
 // target and promote. Archiving is turned off on it: a restored cluster
 // that archived would push a new timeline into the archive it came from.
 func writeRecovery(dir, fetch string, o RestoreOptions) error {
+	// A base taken from a standby carries standby.signal and the standby's
+	// primary_conninfo: restored as is, the cluster stays a standby,
+	// streaming from the live primary, and never promotes.
+	if err := os.Remove(filepath.Join(dir, "standby.signal")); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
 	if err := os.WriteFile(filepath.Join(dir, "recovery.signal"), nil, 0o600); err != nil {
 		return err
 	}
@@ -264,8 +270,8 @@ func writeRecovery(dir, fetch string, o RestoreOptions) error {
 	if o.Timeline != "" {
 		target += "recovery_target_timeline = " + confQuote(o.Timeline) + "\n"
 	}
-	_, err = fmt.Fprintf(f, "\n# Written by safegrd wal restore\nrestore_command = %s\n%srecovery_target_action = 'promote'\narchive_mode = 'off'\n",
-		confQuote(fetch), target)
+	_, err = fmt.Fprintf(f, "\n# Written by safegrd wal restore\nrestore_command = %s\n%srecovery_target_action = 'promote'\narchive_mode = 'off'\n"+
+		"primary_conninfo = ''\nprimary_slot_name = ''\n", confQuote(fetch), target)
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}

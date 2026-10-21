@@ -436,6 +436,9 @@ The surface's role needs the REPLICATION attribute, and pg_hba.conf a
 			fmt.Printf("Base backup %s (%s, %s), %s\n", info.BaseID, formatBytes(info.StoredBytes),
 				info.EndedAt.Sub(info.StartedAt).Round(time.Second), walLockLine(a, info.LockedUntil))
 			fmt.Printf("   WAL from %s to %s, PostgreSQL %d, system %s\n", info.StartWAL, info.EndWAL, info.Major(), info.SystemID)
+			if from := info.SourceWords(); from != "" {
+				fmt.Printf("   Taken from %s; its WAL comes from the primary's archive\n", from)
+			}
 			warnChecksumFailures(info)
 			return nil
 		},

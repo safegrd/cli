@@ -54,6 +54,13 @@ type BaseInfo struct {
 	// file. The base holds those pages as they were read.
 	ChecksumFailures int            `json:"checksum_failures,omitempty"`
 	ChecksumFiles    map[string]int `json:"checksum_files,omitempty"`
+	// Source is the server the base was taken from, as host:port, and
+	// FromStandby says it was a standby: its WAL comes from the primary's
+	// archive. ReplayLagSeconds is how far the standby's replay was behind
+	// its primary's last commit when the base began.
+	Source           string   `json:"source,omitempty"`
+	FromStandby      bool     `json:"from_standby,omitempty"`
+	ReplayLagSeconds *float64 `json:"replay_lag_seconds,omitempty"`
 
 	// Kind is "sqlite" for a SQLite generation's base, a copy of the
 	// database file; TarBytes and TarSha256 are then the file's. The
@@ -76,6 +83,9 @@ type Server struct {
 	Timeline   uint32
 	VersionNum int
 	SegSize    uint64
+	// Standby is a server in recovery: a standby, whose WAL its primary
+	// archives.
+	Standby bool
 }
 
 // Identify asks the cluster at connURL who it is, over a replication
@@ -130,11 +140,18 @@ func Identify(ctx context.Context, connURL string) (Server, error) {
 	if s.SegSize, err = ParseSegmentSize(seg); err != nil {
 		return s, err
 	}
+	// A standby replays its primary's WAL, which the primary archives; its
+	// own archive_mode is about WAL it would write itself.
+	if hs, err := show("in_hot_standby"); err == nil {
+		s.Standby = hs == "on"
+	} else if ro, err := show("transaction_read_only"); err == nil {
+		s.Standby = ro == "on"
+	}
 	mode, err := show("archive_mode")
 	if err != nil {
 		return s, err
 	}
-	if mode == "off" {
+	if mode == "off" && !s.Standby {
 		return s, fmt.Errorf("archive_mode is off on this cluster, so no WAL reaches the archive and a base backup could not be restored. Set archive_mode = on and archive_command, and restart PostgreSQL")
 	}
 	return s, ValidSystemID(s.SystemID)
@@ -169,7 +186,13 @@ func (a *Archive) Base(ctx context.Context, o BaseOptions) (BaseInfo, error) {
 	}
 	started := a.now()
 	info := BaseInfo{Version: 1, BaseID: newID("b", started, randomHex()), SurfaceID: a.SurfaceID, SystemID: srv.SystemID,
-		StartedAt: started, ServerVersionNum: srv.VersionNum, SegmentSize: srv.SegSize}
+		StartedAt: started, ServerVersionNum: srv.VersionNum, SegmentSize: srv.SegSize, FromStandby: srv.Standby}
+	if cfg, err := pgconn.ParseConfig(o.ConnURL); err == nil {
+		info.Source = fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
+	}
+	if srv.Standby {
+		info.ReplayLagSeconds = replayLag(ctx, o.ConnURL)
+	}
 	// The lock is set when the upload starts, before the end is known: the
 	// base has to outlive the window's oldest moment until the next base
 	// ends, a base interval and the base's own duration later.
@@ -562,4 +585,39 @@ func FindPgBasebackup(ctx context.Context, minMajor int) (string, error) {
 		return "", fmt.Errorf("no pg_basebackup on this host. Install the PostgreSQL %d client tools, or set SAFEGRD_PG_BINDIR", minMajor)
 	}
 	return "", fmt.Errorf("the server is PostgreSQL %d and this host has only %s. Install pg_basebackup %d or newer, or set SAFEGRD_PG_BINDIR", minMajor, strings.Join(found, ", "), minMajor)
+}
+
+// replayLag is how many seconds a standby's replay is behind the last
+// commit its primary sent, nil when it cannot say (nothing replayed yet).
+func replayLag(ctx context.Context, connURL string) *float64 {
+	conn, err := pgconn.Connect(ctx, connURL)
+	if err != nil {
+		return nil
+	}
+	defer conn.Close(context.Background())
+	rows, err := conn.Exec(ctx, "SELECT EXTRACT(epoch FROM now() - pg_last_xact_replay_timestamp())::float8").ReadAll()
+	if err != nil || len(rows) != 1 || len(rows[0].Rows) != 1 || rows[0].Rows[0][0] == nil {
+		return nil
+	}
+	lag, err := strconv.ParseFloat(string(rows[0].Rows[0][0]), 64)
+	if err != nil {
+		return nil
+	}
+	if lag < 0 {
+		lag = 0
+	}
+	return &lag
+}
+
+// SourceWords says where a base came from: "the standby db-2:5432, 0.4s
+// behind its primary", or "" for a primary.
+func (b BaseInfo) SourceWords() string {
+	if !b.FromStandby {
+		return ""
+	}
+	w := "the standby " + b.Source
+	if b.ReplayLagSeconds != nil {
+		w += fmt.Sprintf(", %.1fs behind its primary", *b.ReplayLagSeconds)
+	}
+	return w
 }
