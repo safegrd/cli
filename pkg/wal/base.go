@@ -149,6 +149,9 @@ type BaseOptions struct {
 	// WaitForWAL bounds how long the archive is polled for the base's last
 	// WAL file after pg_basebackup returns.
 	WaitForWAL time.Duration
+	// BeforeWALCheck, when set, runs before each look for the base's WAL
+	// in the archive: a host that spools its WAL uploads the spool there.
+	BeforeWALCheck func(context.Context)
 }
 
 // Base takes a base backup with pg_basebackup and streams it into the
@@ -269,6 +272,9 @@ func (a *Archive) Base(ctx context.Context, o BaseOptions) (BaseInfo, error) {
 	}
 	deadline := time.Now().Add(wait)
 	for {
+		if o.BeforeWALCheck != nil {
+			o.BeforeWALCheck(ctx)
+		}
 		missing, err := a.missingWAL(ctx, need)
 		if err != nil {
 			return info, err

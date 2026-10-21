@@ -323,6 +323,21 @@ type WALConfig struct {
 	// CheckpointMB is the size a SQLite database's WAL reaches before the
 	// daemon checkpoints it. Zero means 4.
 	CheckpointMB int `yaml:"checkpoint_mb,omitempty" json:"checkpoint_mb,omitempty"`
+	// Spool has wal push return once a WAL file is copied into the spool
+	// and synced to disk; the daemon uploads the spool Parallel files at a
+	// time. Off: wal push uploads each file before it returns.
+	Spool bool `yaml:"spool,omitempty" json:"spool,omitempty"`
+	// SpoolDir is where the spool is. Empty means wal-spool under the state
+	// directory. The user PostgreSQL runs as writes it, and the daemon's
+	// user reads and empties it.
+	SpoolDir string `yaml:"spool_dir,omitempty" json:"spool_dir,omitempty"`
+	// Parallel is how many spooled WAL files the daemon uploads at once,
+	// and how many a restore fetches ahead of PostgreSQL. Zero means 4.
+	Parallel int `yaml:"parallel,omitempty" json:"parallel,omitempty"`
+	// QueueMax bounds the WAL waiting to leave the host, as "8GB". Past it
+	// wal push reports the oldest WAL archived without storing it, and says
+	// so, because a full pg_wal stops the database. Empty: no bound.
+	QueueMax string `yaml:"queue_max,omitempty" json:"queue_max,omitempty"`
 }
 
 // ObjectStoreSourceConfig is where a files surface's bucket is and how to

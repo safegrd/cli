@@ -97,3 +97,17 @@ func ParseSegmentSize(s string) (uint64, error) {
 	}
 	return size, nil
 }
+
+// NextSegments is the n WAL files after name on its timeline, for a
+// restore that fetches ahead. Nothing for a name that is not a segment.
+func NextSegments(name string, segSize uint64, n int) []string {
+	tli, segno, err := parseSegName(name, segSize)
+	if err != nil {
+		return nil
+	}
+	out := make([]string, 0, n)
+	for i := 1; i <= n; i++ {
+		out = append(out, segName(tli, segno+uint64(i), segSize))
+	}
+	return out
+}

@@ -1,13 +1,16 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -35,7 +38,7 @@ joins them into one locked object and deletes the unlocked ones.
 'safegrd wal base' takes the base backup a restore starts from (the daemon
 takes one a week).`,
 	}
-	cmd.AddCommand(newWALPushCmd(), newWALFetchCmd(), newWALBaseCmd(), newWALBundleCmd(), newWALStatusCmd(), newWALRestoreCmd(), newWALPointCmd(), newWALDrillCmd())
+	cmd.AddCommand(newWALPushCmd(), newWALDrainCmd(), newWALFetchCmd(), newWALBaseCmd(), newWALBundleCmd(), newWALStatusCmd(), newWALRestoreCmd(), newWALPointCmd(), newWALDrillCmd())
 	return cmd
 }
 
@@ -231,7 +234,13 @@ PostgreSQL logs whatever an archive_command writes.
   archive_command = 'safegrd wal push --surface <id> %p'
 
 The cluster's system identifier is read from global/pg_control under the
-current directory, which is the data directory when PostgreSQL runs it.`,
+current directory, which is the data directory when PostgreSQL runs it.
+
+With wal.spool on, it returns once the file is copied into the spool and
+synced to disk, and the daemon uploads the spool (safegrd wal drain). With
+wal.queue_max set, the oldest WAL waiting to leave the host past that size
+is let go without being archived, and said, so a full pg_wal does not stop
+the database.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			a, s, err := walArchive(cmd.Context(), cfg, surfaceID, "")
@@ -251,12 +260,7 @@ current directory, which is the data directory when PostgreSQL runs it.`,
 			if !filepath.IsAbs(p) {
 				p = filepath.Join(pgdata, p)
 			}
-			f, err := os.Open(p)
-			if err != nil {
-				return err
-			}
-			defer f.Close()
-			if err := a.Push(cmd.Context(), filepath.Base(p), f); err != nil {
+			if err := walPushFile(cmd.Context(), a, s, pgdata, p); err != nil {
 				return storageFailure(err)
 			}
 			return nil
@@ -310,9 +314,16 @@ const (
 // walFetch writes one archived WAL file to dst, trying again after a
 // failure that is not the archive lacking the file.
 func walFetch(ctx context.Context, name, dst, surfaceID, systemID, keyPath, privKey, node string) error {
-	a, _, err := walArchive(ctx, cfg, surfaceID, "")
+	a, s, err := walArchive(ctx, cfg, surfaceID, "")
 	if err != nil {
 		return err
+	}
+	// A file fetched ahead by the call before is already here.
+	ahead := filepath.Join(filepath.Dir(dst), ".safegrd-prefetch")
+	if wal.IsSegment(name) {
+		if err := os.Rename(filepath.Join(ahead, name), dst); err == nil {
+			return nil
+		}
 	}
 	if err := walReadFrom(a, node); err != nil {
 		return err
@@ -325,7 +336,11 @@ func walFetch(ctx context.Context, name, dst, surfaceID, systemID, keyPath, priv
 	}
 	for attempt := 0; ; attempt++ {
 		err = walFetchOnce(ctx, a, name, dst)
-		if err == nil || errors.Is(err, wal.ErrNotFound) || attempt+1 >= walFetchAttempts {
+		if err == nil {
+			walFetchAhead(ctx, a, name, dst, ahead, walParallel(s))
+			return nil
+		}
+		if errors.Is(err, wal.ErrNotFound) || attempt+1 >= walFetchAttempts {
 			return err
 		}
 		select {
@@ -334,6 +349,42 @@ func walFetch(ctx context.Context, name, dst, surfaceID, systemID, keyPath, priv
 		case <-time.After(walFetchBackoff << attempt):
 		}
 	}
+}
+
+// walFetchAhead fetches the n WAL files after name into dir, at once, so
+// PostgreSQL's next restore_command calls find them there. Files before
+// name are removed; a file the archive does not hold yet ends nothing,
+// since the next call fetches it itself.
+func walFetchAhead(ctx context.Context, a *wal.Archive, name, dst, dir string, n int) {
+	if !wal.IsSegment(name) || n < 1 {
+		return
+	}
+	info, err := os.Stat(dst)
+	if err != nil || info.Size() <= 0 {
+		return
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return
+	}
+	if old, err := os.ReadDir(dir); err == nil {
+		for _, e := range old {
+			if e.Name() <= name {
+				os.Remove(filepath.Join(dir, e.Name()))
+			}
+		}
+	}
+	var wg sync.WaitGroup
+	for _, next := range wal.NextSegments(name, uint64(info.Size()), n) {
+		if _, err := os.Stat(filepath.Join(dir, next)); err == nil {
+			continue
+		}
+		wg.Add(1)
+		go func(next string) {
+			defer wg.Done()
+			_ = walFetchOnce(ctx, a, next, filepath.Join(dir, next)) // a miss is fetched by its own call
+		}(next)
+	}
+	wg.Wait()
 }
 
 // walFetchOnce writes the file beside dst and renames it into place, so a
@@ -399,7 +450,23 @@ func walBase(ctx context.Context, c *config.CLIConfig, a *wal.Archive, s *config
 	if err != nil {
 		return wal.BaseInfo{}, err
 	}
-	return a.Base(ctx, wal.BaseOptions{ConnURL: connURL, Server: srv})
+	return a.Base(ctx, walBaseOptions(a, s, connURL, srv))
+}
+
+// walBaseOptions are a base backup's options. With a spool, the base is
+// complete once its WAL is in the archive, and that WAL waits on this host
+// until it is uploaded, so the wait uploads the spool.
+func walBaseOptions(a *wal.Archive, s *config.SurfaceConfig, connURL string, srv wal.Server) wal.BaseOptions {
+	o := wal.BaseOptions{ConnURL: connURL, Server: srv}
+	if s.WAL != nil && s.WAL.Spool {
+		o.BeforeWALCheck = func(ctx context.Context) {
+			b := *a
+			if _, _, err := walDrain(ctx, &b, s); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: Surface %s: uploading the spool: %v\n", s.ID, err)
+			}
+		}
+	}
+	return o
 }
 
 // walServer connects to the surface's database for replication and says
@@ -537,6 +604,7 @@ WAL file is missing.`,
 				all = append(all, st)
 				if !jsonOut {
 					printWALStatus(a, st)
+					printWALQueue(s, sys)
 				}
 				if !st.HasWindow {
 					problems = append(problems, fmt.Sprintf("system %s has no base backup with unbroken WAL after it", sys))
@@ -563,6 +631,38 @@ WAL file is missing.`,
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print the status as JSON")
 	cmd.Flags().StringVar(&node, "node", "", "On hosted storage, show the archive another host of the organization wrote")
 	return cmd
+}
+
+// printWALQueue says what waits in the surface's spool and what WAL of
+// system sys was let go past wal.queue_max, from this host's record.
+func printWALQueue(s *config.SurfaceConfig, sys string) {
+	if s.WAL == nil || (!s.WAL.Spool && s.WAL.QueueMax == "") {
+		return
+	}
+	sp := walSpool(cfg, s)
+	if files, err := sp.List(); err == nil && len(files) > 0 {
+		var n int64
+		for _, f := range files {
+			n += f.Size
+		}
+		fmt.Printf("   Spooled:       %d WAL %s (%s) wait to be uploaded\n", len(files), pluralWord(int64(len(files)), "file", "files"), formatBytes(n))
+	}
+	dropped, err := sp.Dropped()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
+		return
+	}
+	var mine []wal.Dropped
+	for _, d := range dropped {
+		if d.System == sys {
+			mine = append(mine, d)
+		}
+	}
+	if len(mine) > 0 {
+		last := mine[len(mine)-1]
+		fmt.Printf("   Let go:        %d WAL %s past wal.queue_max, newest %s at %s. No restore replays past one; the window starts at the next base backup after it\n",
+			len(mine), pluralWord(int64(len(mine)), "file", "files"), last.Name, last.At.UTC().Format("2006-01-02 15:04:05 UTC"))
+	}
 }
 
 func printWALStatus(a *wal.Archive, st wal.Status) {
@@ -842,4 +942,138 @@ func walRestoreSQLite(ctx context.Context, a *wal.Archive, target time.Time, toP
 		fmt.Printf("   Holds every transaction committed by %s, the last segment at or before %s\n", ts(res.ReachedAt), ts(target))
 	}
 	return nil
+}
+
+// walSpool is a surface's spool, and the record of WAL let go past
+// wal.queue_max beside it.
+func walSpool(c *config.CLIConfig, s *config.SurfaceConfig) wal.Spool {
+	root := s.WAL.SpoolDir
+	if root == "" {
+		root = filepath.Join(resolveStateDir("", c), "wal-spool")
+	}
+	return wal.Spool{Dir: filepath.Join(root, s.ID)}
+}
+
+// walParallel is wal.parallel, or 4.
+func walParallel(s *config.SurfaceConfig) int {
+	if s.WAL.Parallel > 0 {
+		return s.WAL.Parallel
+	}
+	return 4
+}
+
+// walQueueMax is wal.queue_max in bytes, 0 when it is not set.
+func walQueueMax(s *config.SurfaceConfig) (int64, error) {
+	given := strings.TrimSpace(s.WAL.QueueMax)
+	if given == "" {
+		return 0, nil
+	}
+	num, mult := given, int64(1)
+	for _, u := range []struct {
+		suffix string
+		m      int64
+	}{{"TB", 1 << 40}, {"GB", 1 << 30}, {"MB", 1 << 20}, {"kB", 1 << 10}} {
+		if strings.HasSuffix(given, u.suffix) {
+			num, mult = strings.TrimSpace(strings.TrimSuffix(given, u.suffix)), u.m
+			break
+		}
+	}
+	n, err := strconv.ParseInt(num, 10, 64)
+	if err != nil || n <= 0 || mult == 1 {
+		return 0, fmt.Errorf("wal.queue_max %q is not a size such as 8GB or 512MB", given)
+	}
+	return n * mult, nil
+}
+
+// walPushFile archives one WAL file as wal push does: into the spool when
+// wal.spool is on, else straight to the archive. Past wal.queue_max the
+// oldest WAL waiting is let go, said on stderr and recorded.
+func walPushFile(ctx context.Context, a *wal.Archive, s *config.SurfaceConfig, pgdata, path string) error {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	name := filepath.Base(path)
+	max, err := walQueueMax(s)
+	if err != nil {
+		return err
+	}
+	sp := walSpool(cfg, s)
+	if s.WAL.Spool {
+		if max > 0 && wal.IsSegment(name) {
+			dropped, derr := sp.DropOldest(max, int64(len(body)))
+			sayDropped(sp, s, max, dropped, "the spool is full and the daemon has not uploaded it")
+			if derr != nil {
+				return derr
+			}
+		}
+		return sp.Add(a.SystemID, name, body)
+	}
+	err = a.Push(ctx, name, bytes.NewReader(body))
+	if err == nil || max == 0 || !wal.IsSegment(name) {
+		return err
+	}
+	// PostgreSQL archives in order, so the file it asks for while others
+	// wait is the oldest.
+	queued, qerr := wal.ReadyBytes(pgdata, int64(len(body)))
+	if qerr != nil || queued <= max {
+		return err
+	}
+	sayDropped(sp, s, max, []wal.Dropped{{System: a.SystemID, Name: name, At: time.Now().UTC()}}, "the archive cannot be reached: "+err.Error())
+	return nil
+}
+
+// sayDropped records WAL let go past wal.queue_max and says it on stderr,
+// which PostgreSQL writes to its log for archive_command.
+func sayDropped(sp wal.Spool, s *config.SurfaceConfig, max int64, dropped []wal.Dropped, why string) {
+	if len(dropped) == 0 {
+		return
+	}
+	if err := sp.RecordDropped(dropped...); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: surface %s: the record of WAL let go could not be written: %v\n", s.ID, err)
+	}
+	names := make([]string, 0, len(dropped))
+	for _, d := range dropped {
+		names = append(names, d.Name)
+	}
+	fmt.Fprintf(os.Stderr, "Warning: surface %s: %d WAL %s let go without being archived (%s), because the WAL waiting to leave this host passed wal.queue_max (%s) and %s. "+
+		"A restore cannot replay past them: the point-in-time window starts again at the next base backup (safegrd wal base --surface %s).\n",
+		s.ID, len(dropped), pluralWord(int64(len(dropped)), "file was", "files were"), strings.Join(names, ", "), formatBytes(max), why, s.ID)
+}
+
+func newWALDrainCmd() *cobra.Command {
+	var surfaceID string
+	cmd := &cobra.Command{
+		Use:   "drain",
+		Short: "Upload the WAL waiting in a surface's spool (wal.spool)",
+		Long: `Uploads the WAL files wal push left in the surface's spool, wal.parallel at a
+time, and removes each once the archive holds it. The daemon does this on every
+pass; this runs it now.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			a, s, err := walArchive(cmd.Context(), cfg, surfaceID, "")
+			if err != nil {
+				return err
+			}
+			n, left, err := walDrain(cmd.Context(), a, s)
+			fmt.Printf("Uploaded %d WAL %s from the spool; %d %s.\n", n, pluralWord(int64(n), "file", "files"), left, pluralWord(int64(left), "waits", "wait"))
+			if err != nil {
+				return storageFailure(err)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&surfaceID, "surface", "", "Surface id from the config (required)")
+	return cmd
+}
+
+// walDrain uploads a surface's spool and says how many files are left.
+func walDrain(ctx context.Context, a *wal.Archive, s *config.SurfaceConfig) (pushed, left int, err error) {
+	sp := walSpool(cfg, s)
+	pushed, err = wal.Drain(ctx, a, sp, walParallel(s))
+	l, lerr := sp.List()
+	if err == nil {
+		err = lerr
+	}
+	return pushed, len(l), err
 }

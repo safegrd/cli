@@ -101,6 +101,7 @@ func checkWALArchiver(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 // WAL when that is due. It returns false when either failed; each failure
 // is said, and tried again an hour later.
 func runWALWork(ctx context.Context, c *config.CLIConfig, s *config.SurfaceConfig, st *SurfaceState, lockDir string, now time.Time) bool {
+	walDaemonSpool(ctx, c, s, st)
 	baseEvery := walDays(s.WAL.BaseEveryDays)
 	// A SQLite database's follower takes its own bases and points.
 	baseDue := !walIsSQLite(s) && now.Sub(st.WALLastBase) >= baseEvery && now.Sub(st.WALBaseFailedAt) >= walRetry
@@ -180,6 +181,38 @@ func runWALWork(ctx context.Context, c *config.CLIConfig, s *config.SurfaceConfi
 		walRefreshStatus(ctx, a, s, st, now)
 	}
 	return ok
+}
+
+// walDaemonSpool uploads the surface's spool on every pass, and reads the
+// record of WAL let go past wal.queue_max for the heartbeat. A failed upload
+// is said; the files stay in the spool for the next pass.
+func walDaemonSpool(ctx context.Context, c *config.CLIConfig, s *config.SurfaceConfig, st *SurfaceState) {
+	if s.WAL == nil || walIsSQLite(s) || (!s.WAL.Spool && s.WAL.QueueMax == "") {
+		return
+	}
+	sp := walSpool(c, s)
+	w := walState(st)
+	if dropped, err := sp.Dropped(); err == nil && len(dropped) > 0 {
+		last := dropped[len(dropped)-1]
+		at := last.At
+		w.Dropped, w.DroppedCount, w.DroppedAt = last.Name, len(dropped), &at
+	}
+	if !s.WAL.Spool {
+		return
+	}
+	a, _, err := walArchive(ctx, c, s.ID, "")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: Surface %s: WAL spool: %v\n", s.ID, err)
+		return
+	}
+	n, left, err := walDrain(ctx, a, s)
+	w.Spooled = left
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: Surface %s: %d WAL %s still in the spool: %v. The next pass tries again.\n", s.ID, left,
+			pluralWord(int64(left), "file is", "files are"), err)
+	} else if n > 0 {
+		fmt.Printf("Surface %s: uploaded %d WAL %s from the spool.\n", s.ID, n, pluralWord(int64(n), "file", "files"))
+	}
 }
 
 // walStatusEvery is how often the daemon reads the archive's window for the
@@ -337,7 +370,7 @@ func walDaemonBase(ctx context.Context, c *config.CLIConfig, a *wal.Archive, s *
 		return nil
 	}
 	fmt.Printf("Surface %s: taking a base backup for its WAL archive.\n", s.ID)
-	info, err := a.Base(ctx, wal.BaseOptions{ConnURL: connURL, Server: srv})
+	info, err := a.Base(ctx, walBaseOptions(a, s, connURL, srv))
 	if err != nil {
 		return err
 	}

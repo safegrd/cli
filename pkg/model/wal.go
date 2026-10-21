@@ -34,6 +34,14 @@ type WALStatus struct {
 	// WAL; empty while it follows.
 	FollowError string    `json:"follow_error,omitempty"`
 	Drill       *WALDrill `json:"drill,omitempty"`
+	// Dropped is the newest WAL file let go unarchived because the WAL
+	// waiting to leave the host passed wal.queue_max, DroppedCount how
+	// many have been, and DroppedAt when the newest was.
+	Dropped      string     `json:"dropped,omitempty"`
+	DroppedCount int        `json:"dropped_count,omitempty"`
+	DroppedAt    *time.Time `json:"dropped_at,omitempty"`
+	// Spooled is how many WAL files wait in the host's spool.
+	Spooled int `json:"spooled,omitempty"`
 }
 
 // WALDrill is one point-in-time drill: a restore to a restore point whose
