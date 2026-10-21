@@ -385,6 +385,7 @@ The surface's role needs the REPLICATION attribute, and pg_hba.conf a
 			fmt.Printf("Base backup %s (%s, %s), %s\n", info.BaseID, formatBytes(info.StoredBytes),
 				info.EndedAt.Sub(info.StartedAt).Round(time.Second), walLockLine(a, info.LockedUntil))
 			fmt.Printf("   WAL from %s to %s, PostgreSQL %d, system %s\n", info.StartWAL, info.EndWAL, info.Major(), info.SystemID)
+			warnChecksumFailures(info)
 			return nil
 		},
 	}
@@ -592,6 +593,11 @@ func printWALStatus(a *wal.Archive, st wal.Status) {
 		}
 	}
 	fmt.Println()
+	for _, b := range st.Bases {
+		if b.ChecksumFailures > 0 {
+			fmt.Printf("   Damaged pages: base %s, %s (failed their checksum)\n", b.BaseID, b.ChecksumWords())
+		}
+	}
 	for _, id := range st.Incomplete {
 		fmt.Printf("   Incomplete:    %s (its WAL never all arrived, or the run stopped)\n", id)
 	}
@@ -712,6 +718,11 @@ so use latest for the newest state.`,
 				fmt.Printf("   Copy postgresql.conf, pg_hba.conf and pg_ident.conf into %s, take data_directory, hba_file and ident_file out of the copy, set a free port, then:\n", dir)
 			}
 			fmt.Printf("   pg_ctl -D %s start\n", dir)
+			if res.CheckpointKept != "" {
+				fmt.Fprintf(os.Stderr, "Warning: %s. Its checkpoint was left as the base had it: keep backup_label in %s, or the cluster starts from the wrong place.\n", res.CheckpointKept, dir)
+			} else {
+				fmt.Printf("   It starts only with backup_label in place: keep that file.\n")
+			}
 			fmt.Printf("   Archiving is off on it (postgresql.auto.conf). Turn it on once this is the database you keep.\n")
 			return nil
 		},

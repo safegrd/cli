@@ -38,6 +38,10 @@ type RestoreResult struct {
 	// NoConf is a base with no postgresql.conf in it: the cluster kept its
 	// configuration outside the data directory, as Debian and Ubuntu do.
 	NoConf bool
+	// CheckpointKept says why pg_control's checkpoint was left as the base
+	// had it, so the cluster could start without its backup_label; "" when
+	// it was cleared.
+	CheckpointKept string
 }
 
 // Restore unpacks the newest complete base backup that ends before the
@@ -98,6 +102,15 @@ func (a *Archive) Restore(ctx context.Context, o RestoreOptions) (RestoreResult,
 	}
 	if err := a.unpackBase(ctx, *pick, o.PGData); err != nil {
 		return res, err
+	}
+	if _, err := os.Stat(filepath.Join(o.PGData, "backup_label")); err != nil {
+		return res, fmt.Errorf("base %s holds no backup_label, and a cluster restored from it would start from the wrong checkpoint: %w", pick.BaseID, err)
+	}
+	switch err := InvalidateCheckpoint(o.PGData); {
+	case errors.Is(err, ErrControlUnknown):
+		res.CheckpointKept = err.Error()
+	case err != nil:
+		return res, fmt.Errorf("clearing the checkpoint in pg_control, so the cluster starts only from its backup_label: %w", err)
 	}
 	if err := writeRecovery(o.PGData, o.FetchCommand, o); err != nil {
 		return res, err
@@ -163,14 +176,18 @@ func (a *Archive) unpackBase(ctx context.Context, b BaseInfo, dir string) error 
 
 func untar(r io.Reader, dir string) error {
 	tr := tar.NewReader(r)
+	manifestRead := false
 	for {
 		h, err := tr.Next()
-		if err == io.EOF {
+		if err == io.EOF || (errors.Is(err, io.ErrUnexpectedEOF) && manifestRead) {
+			// PostgreSQL 13 and 14 end the tar right after the manifest's
+			// last byte (scanTar).
 			return nil
 		}
 		if err != nil {
 			return err
 		}
+		manifestRead = false
 		name := path.Clean(strings.TrimPrefix(h.Name, "./"))
 		if name == "." {
 			continue
@@ -199,6 +216,7 @@ func untar(r io.Reader, dir string) error {
 			if err := f.Close(); err != nil {
 				return err
 			}
+			manifestRead = name == "backup_manifest"
 		case tar.TypeSymlink:
 			// pg_basebackup -Ft writes pg_wal as a directory and refuses
 			// tablespaces on stdout, so a link here is not PostgreSQL's.
