@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -915,6 +916,17 @@ type NativeRestorer struct {
 	// checks the stream's digest there, so a snapshot that fails it never
 	// becomes a database.
 	BeforeCommit func() error
+	// Parallel, above 1, with ParallelTables, loads the tables' rows over
+	// that many connections at once, once the schema is in and before the
+	// indexes and constraints are built, as pg_restore -j does. The stream
+	// then carries no rows. The restore is no longer one transaction: the
+	// schema commits first, each table's rows commit as they load, and a
+	// failure leaves what was loaded. A --schema restore stays sequential.
+	Parallel       int
+	ParallelTables []TableData
+	// LoadedInParallel is set once the rows started loading over several
+	// connections: from then on a failure leaves what was loaded.
+	LoadedInParallel bool
 	// CronJobsActive creates pg_cron's jobs as they were at backup time.
 	// Unset, each is created turned off.
 	CronJobsActive bool
@@ -1050,6 +1062,8 @@ func (r *NativeRestorer) Restore(ctx context.Context, src io.Reader) (*model.Sna
 	if err := exec("starting the restore transaction", "BEGIN"); err != nil {
 		return nil, err
 	}
+	parallel := r.Parallel > 1 && len(r.ParallelTables) > 0 && !filtered
+	parallelDone := false
 	committed := false
 	defer func() {
 		if !committed {
@@ -1081,6 +1095,26 @@ func (r *NativeRestorer) Restore(ctx context.Context, src io.Reader) (*model.Sna
 	loOwners := map[uint32]string{}
 	loLoaded := loObjects{}
 	var cronJobs []CronJob
+
+	// loadAll commits the schema and loads every table's rows at once over
+	// r.Parallel connections, then opens the transaction the rest of the
+	// restore runs in.
+	loadAll := func() error {
+		parallelDone = true
+		r.LoadedInParallel = true
+		if err := exec("committing the schema before the rows load", "COMMIT"); err != nil {
+			return err
+		}
+		counts, err := loadTablesParallel(ctx, r.targetURL, r.ParallelTables, r.Parallel)
+		for k, n := range counts {
+			loaded[k] += n
+		}
+		if err != nil {
+			return fmt.Errorf("%w. The rows load over %d connections at once, outside one transaction, so the target holds the schema and what loaded before this. "+
+				"Drop the target database, create it empty, and restore again", err, r.Parallel)
+		}
+		return exec("starting the rest of the restore", "BEGIN")
+	}
 
 	streams := &tableStreams{
 		consume: func(schema, table string, rd io.Reader) error {
@@ -1189,6 +1223,11 @@ func (r *NativeRestorer) Restore(ctx context.Context, src io.Reader) (*model.Sna
 				}
 				return r.createRoles(ctx, conn, parseRolesSQL(data), super)
 			case entryPreData, entrySchema, entryPostData, entrySequences:
+				if parallel && !parallelDone && (hdr.Name == entryPostData || hdr.Name == entrySequences) {
+					if err := loadAll(); err != nil {
+						return err
+					}
+				}
 				data, err := io.ReadAll(rd)
 				if err != nil {
 					return err
@@ -1296,6 +1335,11 @@ func (r *NativeRestorer) Restore(ctx context.Context, src io.Reader) (*model.Sna
 		if d := loLoaded.digest(); d.n != manifest.LargeObjects-manifest.LargeObjectsLeftOut || d.hex() != manifest.LargeObjectsDigest {
 			return nil, fmt.Errorf("the large objects loaded are not the snapshot's: %s with digest %s, where the snapshot recorded %s with %s; nothing was committed",
 				largeObjectsWords(d.n), shortDigest(d.hex()), largeObjectsWords(manifest.LargeObjects-manifest.LargeObjectsLeftOut), shortDigest(manifest.LargeObjectsDigest))
+		}
+	}
+	if parallel && !parallelDone {
+		if err := loadAll(); err != nil {
+			return nil, err
 		}
 	}
 	if err := r.dropChangeLog(ctx, conn, exec); err != nil {
@@ -1745,4 +1789,87 @@ func replicaRead(ctx context.Context, tx pgx.Tx) (*model.ReplicaRead, error) {
 		r.LagSeconds = *lag
 	}
 	return r, nil
+}
+
+// TableData is one table's rows for a parallel restore: Open writes its
+// binary COPY stream to w.
+type TableData struct {
+	Schema, Table string
+	Open          func(w io.Writer) error
+}
+
+// ParallelLimit caps n by the connections the server has free, keeping two
+// for everyone else; at least 1.
+func ParallelLimit(ctx context.Context, targetURL string, n int) int {
+	if n <= 1 {
+		return 1
+	}
+	conn, err := connectPostgres(ctx, targetURL)
+	if err != nil {
+		return 1
+	}
+	defer conn.Close(context.Background())
+	var free int
+	if err := conn.QueryRow(ctx, "SELECT current_setting('max_connections')::int - (SELECT count(*) FROM pg_stat_activity)::int").Scan(&free); err != nil {
+		return n
+	}
+	if free-2 < n {
+		n = free - 2
+	}
+	return max(n, 1)
+}
+
+// loadTablesParallel loads each table's rows over its own connection, n at
+// a time, and returns the rows each loaded, by schema.table. The first
+// failure stops the tables not yet started.
+func loadTablesParallel(ctx context.Context, targetURL string, tables []TableData, n int) (map[string]int64, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var mu sync.Mutex
+	counts := map[string]int64{}
+	var first error
+	work := make(chan TableData)
+	var wg sync.WaitGroup
+	for i := 0; i < min(n, len(tables)); i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			conn, err := connectPostgres(ctx, targetURL)
+			if err != nil {
+				mu.Lock()
+				if first == nil {
+					first = fmt.Errorf("opening a connection to load rows: %w", err)
+				}
+				mu.Unlock()
+				cancel()
+				for range work {
+				}
+				return
+			}
+			defer conn.Close(context.Background())
+			for t := range work {
+				if ctx.Err() != nil {
+					continue
+				}
+				pr, pw := io.Pipe()
+				go func() { pw.CloseWithError(t.Open(pw)) }()
+				tag, err := conn.PgConn().CopyFrom(ctx, pr, "COPY "+pgx.Identifier{t.Schema, t.Table}.Sanitize()+" FROM STDIN (FORMAT binary)")
+				pr.CloseWithError(io.ErrClosedPipe)
+				mu.Lock()
+				if err != nil && first == nil {
+					first = fmt.Errorf("loading %s.%s: %w", t.Schema, t.Table, err)
+					cancel()
+				} else if err == nil {
+					counts[t.Schema+"."+t.Table] += tag.RowsAffected()
+				}
+				mu.Unlock()
+			}
+		}()
+	}
+	for _, t := range tables {
+		work <- t
+	}
+	close(work)
+	wg.Wait()
+	return counts, first
 }

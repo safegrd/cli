@@ -503,7 +503,7 @@ func restoreRepo(ctx context.Context, rs *repoSnapshot, privateKey, targetDir, t
 			return fmt.Errorf("snapshot %s is a %s snapshot; --target must be an empty %s database", id, kind, kind)
 		}
 		fmt.Printf("Restoring %s (epoch %s, %s) into %s\n", id, rs.Epoch.Epoch.EpochID, rs.SurfaceID, dump.RedactURL(targetURL))
-		return restoreRepoEngine(ctx, rs, privateKey, targetURL)
+		return restoreRepoEngine(ctx, rs, privateKey, targetURL, db.Parallel)
 	}
 	if dump.SurfaceTypeOfURL(targetURL) != model.SurfaceTypePostgres {
 		return fmt.Errorf("snapshot %s is a PostgreSQL snapshot; --target must be a PostgreSQL database", id)
@@ -727,14 +727,27 @@ func restoreRepoDatabase(ctx context.Context, rs *repoSnapshot, privateKey, targ
 		return err
 	}
 	started := time.Now()
+	// Several connections load the tables at once, outside one transaction;
+	// an erasure record's replay has to land in the same transaction as the
+	// rows it erases, so a restore that replays one loads them in order.
+	parallel := 1
+	if replay == nil {
+		parallel = dump.ParallelLimit(ctx, targetURL, db.Parallel)
+	}
+	streamFiles := files
+	var tables []dump.TableData
+	if parallel > 1 {
+		streamFiles, tables = dbrun.SplitRows(ctx, r, idx, files)
+	}
 	pr, pw := io.Pipe()
 	archived := make(chan error, 1)
 	go func() {
-		err := dbrun.Archive(ctx, r, idx, files, pw)
+		err := dbrun.Archive(ctx, r, idx, streamFiles, pw)
 		_ = pw.CloseWithError(err)
 		archived <- err
 	}()
 	restorer := dump.NewNativeRestorer(targetURL)
+	restorer.Parallel, restorer.ParallelTables = parallel, tables
 	restorer.NoOwner = db.NoOwner
 	restorer.CronJobsActive = db.KeepCronActive
 	restorer.DatabaseSettings = true
@@ -756,10 +769,16 @@ func restoreRepoDatabase(ctx context.Context, rs *repoSnapshot, privateKey, targ
 		<-archived
 	}
 	if err != nil {
+		if restorer.LoadedInParallel {
+			return fmt.Errorf("restore failed: %w", err)
+		}
 		return fmt.Errorf("restore failed, and the target was rolled back: %w", err)
 	}
 	if restorer.ChangeLogRemoved {
 		got = dump.WithoutChangeLog(got)
+	}
+	if restorer.LoadedInParallel {
+		fmt.Printf("   Loaded:         %d tables at once over %d connections, then the indexes and constraints\n", len(tables), parallel)
 	}
 	var rows int64
 	for _, t := range got.TableStats {
@@ -834,7 +853,7 @@ func restoreRepoSQLite(ctx context.Context, rs *repoSnapshot, privateKey, target
 // MySQL commits each statement as it goes and mongorestore each document,
 // so a failure part way leaves what loaded in the target, which the
 // restorer's own error says.
-func restoreRepoEngine(ctx context.Context, rs *repoSnapshot, privateKey, targetURL string) error {
+func restoreRepoEngine(ctx context.Context, rs *repoSnapshot, privateKey, targetURL string, parallel int) error {
 	id := rs.Meta.SnapshotID
 	r, idx, files, err := openRun(ctx, rs, privateKey)
 	if err != nil {
@@ -848,7 +867,11 @@ func restoreRepoEngine(ctx context.Context, rs *repoSnapshot, privateKey, target
 		_ = pw.CloseWithError(err)
 		archived <- err
 	}()
-	got, err := dump.NewRestorer(dump.EngineTypeNative, targetURL).Restore(ctx, pr)
+	restorer := dump.NewRestorer(dump.EngineTypeNative, targetURL)
+	if p, ok := restorer.(interface{ SetParallel(int) }); ok {
+		p.SetParallel(parallel)
+	}
+	got, err := restorer.Restore(ctx, pr)
 	_, _ = io.Copy(io.Discard, pr) // the rest of the run, checked to its end
 	if aerr := <-archived; aerr != nil && err == nil {
 		err = fmt.Errorf("reading the snapshot back: %w", aerr)

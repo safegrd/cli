@@ -52,6 +52,10 @@ type Verifier struct {
 	// SourceBucket names the copy this verifier reads, when it reads one of
 	// the surface's other buckets; the report and its hash name it.
 	SourceBucket string
+	// Parallel is how many connections a sandbox drill of an incremental
+	// PostgreSQL run loads its tables over, as a restore does; 0 is 4, 1
+	// loads them in one transaction.
+	Parallel int
 }
 
 // StorageError is a drill that could not read its snapshot from storage.

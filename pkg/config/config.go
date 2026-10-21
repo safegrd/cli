@@ -257,6 +257,11 @@ type SurfaceConfig struct {
 	// "zstd:1" (fastest) to "zstd:19" (smallest). Empty keeps the default.
 	// The format is the same at every level, so a restore needs no setting.
 	Compression string `yaml:"compression,omitempty" json:"compression,omitempty"`
+	// Parallel is how many connections a restore and a sandbox drill of
+	// the surface's incremental PostgreSQL runs load tables over at once,
+	// capped by the server's free connections. Zero means 4; 1 loads them
+	// in one transaction.
+	Parallel int `yaml:"parallel,omitempty" json:"parallel,omitempty"`
 	// OneFilesystem keeps a repo surface's walk on each root's filesystem.
 	// Unset means yes when a root is "/", no otherwise.
 	OneFilesystem *bool `yaml:"one_filesystem,omitempty" json:"one_filesystem,omitempty"`

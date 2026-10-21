@@ -391,6 +391,7 @@ func runUnattendedDrill(ctx context.Context, c *config.CLIConfig, d pendingDrill
 	verifier := runner.NewVerifier(provider, c.ServerURL)
 	verifier.SetServerToken(c.ServerToken)
 	verifier.KeepFailedSandbox = keep
+	verifier.Parallel = s.Parallel
 	verifier.SourceBucket = source
 	var checks []model.DrillCheck
 	if s.Drill != nil {

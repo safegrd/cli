@@ -648,7 +648,13 @@ func InspectMongoArchive(ctx context.Context, src io.Reader) (*DryRestoreResult,
 type MongoRestorer struct {
 	targetURL string
 	Warn      func(string)
+	// Parallel is how many insertion workers mongorestore runs per
+	// collection (--numInsertionWorkersPerCollection); 0 or 1 is one.
+	Parallel int
 }
+
+// SetParallel sets how many insertion workers load each collection.
+func (r *MongoRestorer) SetParallel(n int) { r.Parallel = n }
 
 // NewMongoRestorer creates a restorer for a mongodb:// URL.
 func NewMongoRestorer(targetURL string) *MongoRestorer {
@@ -703,8 +709,11 @@ func (r *MongoRestorer) Restore(ctx context.Context, src io.Reader) (*model.Snap
 			_, _ = io.Copy(io.Discard, pr)
 			statsCh <- s
 		}()
-		cmd := exec.CommandContext(ctx, tool.Path, "--config="+cfgPath, "--archive", "--stopOnError",
-			"--nsFrom="+sourceDB+".*", "--nsTo="+targetDB+".*")
+		args := []string{"--config=" + cfgPath, "--archive", "--stopOnError", "--nsFrom=" + sourceDB + ".*", "--nsTo=" + targetDB + ".*"}
+		if r.Parallel > 1 {
+			args = append(args, fmt.Sprintf("--numInsertionWorkersPerCollection=%d", r.Parallel))
+		}
+		cmd := exec.CommandContext(ctx, tool.Path, args...)
 		cmd.Stdin = io.TeeReader(br, pw)
 		cmd.Stderr = &stderr
 		runErr := cmd.Run()

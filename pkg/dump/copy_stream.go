@@ -298,3 +298,9 @@ func writeTarEntry(tw *tar.Writer, name string, content []byte) error {
 	_, err := tw.Write(content)
 	return err
 }
+
+// ParseTableEntry reports which table and chunk an archive or run entry
+// holds: data/<schema>/<table>.copy, or .copy.N for a later chunk.
+func ParseTableEntry(name string) (schema, table string, part int, ok bool) {
+	return parseCopyEntry(name)
+}

@@ -81,6 +81,7 @@ files: each upload writes or updates the file's row in storage.objects.`,
 	cmd.Flags().BoolVar(&f.salvage, "salvage", false, "Incremental files snapshot: restore every file that verifies and list the ones a damaged or missing pack leaves out, instead of restoring nothing. Exits non-zero when any is left out")
 	cmd.Flags().BoolVar(&f.withoutErasures, "without-erasures", false, "PostgreSQL: restore even when the surface's erasure record cannot be read. Rows erased after the backup may come back")
 	cmd.Flags().BoolVar(&f.keepCron, "keep-cron-active", false, "PostgreSQL: create pg_cron's jobs as they were at backup time. By default each is created turned off")
+	cmd.Flags().IntVar(&f.parallel, "parallel", 4, "PostgreSQL, incremental backups: how many connections load the tables at once, capped by the server's free connections. 1 loads them in one transaction")
 	cmd.Flags().BoolVar(&f.noOwner, "no-owner", false, "PostgreSQL: restore without ownership and privileges, so every object belongs to the restoring role. The roles the schema names are still created")
 	cmd.Flags().StringArrayVar(&f.tables, "table", nil, "Restore only this table (schema.table, either part quoted as psql prints it) of a PostgreSQL snapshot into --target: into an empty table of the same definition, or created as the snapshot defined it, with its schema, when the target has none (repeatable)")
 	cmd.Flags().StringVar(&f.surfaceSel, "surface", "", "With --path or --table and no --snapshot: the surface whose repository holds it")
@@ -253,7 +254,7 @@ func executeRestore(ctx context.Context, f *restoreFlags) error {
 			if bucketTarget {
 				return errRepoToBucket(snapshotID)
 			}
-			return restoreRepo(ctx, rs, resolvedKey, targetDir, targetURL, toSQL, paths, tables, dbRestoreOptions{NoOwner: noOwner, KeepCronActive: keepCron, WithoutErasures: withoutErasures}, salvage)
+			return restoreRepo(ctx, rs, resolvedKey, targetDir, targetURL, toSQL, paths, tables, dbRestoreOptions{Parallel: f.parallel, NoOwner: noOwner, KeepCronActive: keepCron, WithoutErasures: withoutErasures}, salvage)
 		}
 	}
 	if salvage && fromDir != "" {
@@ -320,7 +321,7 @@ func executeRestore(ctx context.Context, f *restoreFlags) error {
 			if bucketTarget {
 				return errRepoToBucket(snapshotID)
 			}
-			return restoreRepo(ctx, rs, resolvedKey, targetDir, targetURL, toSQL, paths, tables, dbRestoreOptions{NoOwner: noOwner, KeepCronActive: keepCron, WithoutErasures: withoutErasures}, salvage)
+			return restoreRepo(ctx, rs, resolvedKey, targetDir, targetURL, toSQL, paths, tables, dbRestoreOptions{Parallel: f.parallel, NoOwner: noOwner, KeepCronActive: keepCron, WithoutErasures: withoutErasures}, salvage)
 		}
 		if salvage {
 			return fmt.Errorf("--salvage restores what verifies of an incremental files snapshot; %s is not one", snapshotID)
@@ -654,6 +655,9 @@ func printObjectRestore(res *dump.ObjectRestoreResult) {
 // dbRestoreOptions are the choices a database restore takes from the
 // restore command's flags.
 type dbRestoreOptions struct {
+	// Parallel is how many connections load an incremental PostgreSQL
+	// run's tables at once; 1 loads them in one transaction.
+	Parallel        int
 	NoOwner         bool
 	KeepCronActive  bool
 	WithoutErasures bool

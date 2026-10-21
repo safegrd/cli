@@ -366,3 +366,65 @@ func ReadManifest(ctx context.Context, r *read.Repo, idx read.Index, files []rea
 	}
 	return nil, fmt.Errorf("the run has no manifest")
 }
+
+// SplitRows takes a PostgreSQL run's table files out of files, for a
+// restore that loads them over several connections at once: rest is what
+// the stream still carries, and each table's Open writes its chunks in
+// order. Largest first, so the longest load starts first. Another shape of
+// run is returned whole, with no tables.
+func SplitRows(ctx context.Context, r *read.Repo, idx read.Index, files []read.Item) (rest []read.Item, tables []dump.TableData) {
+	if ShapeOf(files) != ShapePostgres {
+		return files, nil
+	}
+	type tableFiles struct {
+		schema, table string
+		parts         map[int]read.Item
+		size          int64
+	}
+	byTable := map[string]*tableFiles{}
+	for _, it := range files {
+		schema, table, part, ok := dump.ParseTableEntry(it.Path)
+		if !ok {
+			rest = append(rest, it)
+			continue
+		}
+		k := schema + "." + table
+		tf := byTable[k]
+		if tf == nil {
+			tf = &tableFiles{schema: schema, table: table, parts: map[int]read.Item{}}
+			byTable[k] = tf
+		}
+		tf.parts[part] = it
+		tf.size += it.Node.Size
+	}
+	list := make([]*tableFiles, 0, len(byTable))
+	for _, tf := range byTable {
+		list = append(list, tf)
+	}
+	sort.Slice(list, func(i, j int) bool {
+		if list[i].size != list[j].size {
+			return list[i].size > list[j].size
+		}
+		return list[i].schema+"."+list[i].table < list[j].schema+"."+list[j].table
+	})
+	for _, tf := range list {
+		parts := make([]int, 0, len(tf.parts))
+		for p := range tf.parts {
+			parts = append(parts, p)
+		}
+		sort.Ints(parts)
+		items := make([]read.Item, 0, len(parts))
+		for _, p := range parts {
+			items = append(items, tf.parts[p])
+		}
+		tables = append(tables, dump.TableData{Schema: tf.schema, Table: tf.table, Open: func(w io.Writer) error {
+			for _, it := range items {
+				if err := r.Cat(ctx, idx, it.Node, w); err != nil {
+					return err
+				}
+			}
+			return nil
+		}})
+	}
+	return rest, tables
+}

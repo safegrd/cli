@@ -26,6 +26,7 @@ type restoreFlags struct {
 	surfaceSel                                                                     string
 	tables, schemas, dataOnly                                                      []string
 	noOwner, keepCron                                                              bool
+	parallel                                                                       int
 	// withoutErasures restores a snapshot whose erasure record cannot be
 	// read, and says erased rows may be back.
 	withoutErasures, salvage bool
@@ -222,7 +223,7 @@ func restoreFlagsOf(plan *model.RestorePlan) (*restoreFlags, error) {
 	}
 	f := &restoreFlags{snapshotID: plan.SnapshotID, engineStr: "native", targetResolved: true,
 		schemas: plan.Scope.Schemas, dataOnly: plan.Scope.DataOnlySchemas, tables: plan.Scope.Tables, paths: plan.Scope.Paths,
-		noOwner: plan.Options.NoOwner, keepCron: plan.Options.KeepCronActive, withoutErasures: plan.Options.WithoutErasures}
+		noOwner: plan.Options.NoOwner, keepCron: plan.Options.KeepCronActive, withoutErasures: plan.Options.WithoutErasures, parallel: 4}
 	t := plan.Target
 	switch t.Kind {
 	case model.RestoreTargetDatabase:

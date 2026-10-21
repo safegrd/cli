@@ -136,10 +136,25 @@ func (v *Verifier) RunRepoDatabaseDrill(ctx context.Context, d RepoDrill, privat
 	if err != nil {
 		return fail("RestoreIntegrity", "a database run", err.Error(), err.Error())
 	}
+	// A sandbox drill of a PostgreSQL run loads its tables the way a
+	// restore does, over several connections at once, so its restore time
+	// is the one a restore takes.
+	streamFiles := files
+	var tables []dump.TableData
+	parallel := 1
+	if sandboxURL != "" && kind == model.SurfaceTypePostgres {
+		want := v.Parallel
+		if want == 0 {
+			want = 4
+		}
+		if parallel = dump.ParallelLimit(ctx, sandboxURL, want); parallel > 1 {
+			streamFiles, tables = dbrun.SplitRows(ctx, r, idx, files)
+		}
+	}
 	pr, pw := io.Pipe()
 	archived := make(chan error, 1)
 	go func() {
-		err := dbrun.Archive(ctx, r, idx, files, pw)
+		err := dbrun.Archive(ctx, r, idx, streamFiles, pw)
 		_ = pw.CloseWithError(err)
 		archived <- err
 	}()
@@ -208,9 +223,18 @@ func (v *Verifier) RunRepoDatabaseDrill(ctx context.Context, d RepoDrill, privat
 	case model.SurfaceTypeMySQL, model.SurfaceTypeMongoDB:
 		// Each reads the whole archive, loading as it goes, and counts the
 		// target against the manifest.
-		_, restoreErr = dump.NewRestorer(dump.EngineTypeNative, sandboxURL).Restore(ctx, pr)
+		restorer := dump.NewRestorer(dump.EngineTypeNative, sandboxURL)
+		if p, ok := restorer.(interface{ SetParallel(int) }); ok {
+			want := v.Parallel
+			if want == 0 {
+				want = 4
+			}
+			p.SetParallel(want)
+		}
+		_, restoreErr = restorer.Restore(ctx, pr)
 	default:
 		restorer := dump.NewNativeRestorer(sandboxURL)
+		restorer.Parallel, restorer.ParallelTables = parallel, tables
 		restorer.BeforeCommit = func() error {
 			drained = true
 			archiveErr = drain()
