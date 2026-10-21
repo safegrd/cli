@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"io"
+	"sync"
 
 	"filippo.io/age"
 	"github.com/klauspost/compress/zstd"
@@ -102,12 +103,28 @@ func (s *Sealer) seal(plaintext, ad []byte) ([]byte, error) {
 	return s.aead.Seal(out, out[:format.NonceLen], plaintext, ad), nil
 }
 
-var encoder, _ = zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedDefault), zstd.WithEncoderConcurrency(1))
+// encoders holds one zstd encoder per level asked for; EncodeAll is safe
+// for concurrent use.
+var encoders sync.Map
+
+func encoderAt(level zstd.EncoderLevel) *zstd.Encoder {
+	if e, ok := encoders.Load(level); ok {
+		return e.(*zstd.Encoder)
+	}
+	e, _ := zstd.NewWriter(nil, zstd.WithEncoderLevel(level), zstd.WithEncoderConcurrency(1))
+	actual, _ := encoders.LoadOrStore(level, e)
+	return actual.(*zstd.Encoder)
+}
 
 // Payload returns the bytes a blob record seals and its type byte: the
 // plaintext compressed with zstd when that is smaller, otherwise as it is.
 func Payload(kind byte, plaintext []byte) ([]byte, byte) {
-	c := encoder.EncodeAll(plaintext, make([]byte, 0, len(plaintext)/2))
+	return PayloadAt(kind, plaintext, zstd.SpeedDefault)
+}
+
+// PayloadAt is Payload at a zstd level.
+func PayloadAt(kind byte, plaintext []byte, level zstd.EncoderLevel) ([]byte, byte) {
+	c := encoderAt(level).EncodeAll(plaintext, make([]byte, 0, len(plaintext)/2))
 	if len(c) < len(plaintext) {
 		return c, kind | format.Compressed
 	}

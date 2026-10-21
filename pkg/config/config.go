@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -252,6 +253,10 @@ type SurfaceConfig struct {
 	// snapshot with the surface's recipient. By default it is plain text,
 	// so it can be read after SafeGrd is gone; it holds no secret.
 	RecoveryDocSealed bool `yaml:"recovery_doc_sealed,omitempty" json:"recovery_doc_sealed,omitempty"`
+	// Compression is how hard the surface's backups are compressed:
+	// "zstd:1" (fastest) to "zstd:19" (smallest). Empty keeps the default.
+	// The format is the same at every level, so a restore needs no setting.
+	Compression string `yaml:"compression,omitempty" json:"compression,omitempty"`
 	// OneFilesystem keeps a repo surface's walk on each root's filesystem.
 	// Unset means yes when a root is "/", no otherwise.
 	OneFilesystem *bool `yaml:"one_filesystem,omitempty" json:"one_filesystem,omitempty"`
@@ -1077,4 +1082,20 @@ func (c *CLIConfig) CopiesOf(s *SurfaceConfig) []CopyConfig {
 		}
 	}
 	return out
+}
+
+// ParseCompression reads a compression setting: "" or "zstd" for the
+// default (0), "zstd:N" for level N from 1 to 19.
+func ParseCompression(s string) (int, error) {
+	v := strings.ToLower(strings.TrimSpace(s))
+	if v == "" || v == "zstd" {
+		return 0, nil
+	}
+	lvl, ok := strings.CutPrefix(v, "zstd:")
+	if ok {
+		if n, err := strconv.Atoi(lvl); err == nil && n >= 1 && n <= 19 {
+			return n, nil
+		}
+	}
+	return 0, fmt.Errorf("compression %q is not zstd:1 to zstd:19", s)
 }

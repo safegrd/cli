@@ -97,6 +97,9 @@ type Options struct {
 	// Result.Skipped says so. A backend that records the run before it
 	// writes (a hosted run) must not ask for it.
 	SkipIfUnchanged bool
+	// Compression is the zstd level packs are compressed at, 1 to 19; 0 is
+	// the default. Readers need no setting.
+	Compression int
 }
 
 // Source supplies a snapshot's files as streams: a database dump, one entry
@@ -436,8 +439,8 @@ func Run(ctx context.Context, b sink.Backend, o Options) (*Result, error) {
 	up := newUploader(runCtx, cancel, b, cur, e, res.Class, runID, o.Concurrency)
 	w := &walker{
 		ctx: runCtx, cache: cur, ch: ch, up: up, runID: runID,
-		data:    newPacker(format.BlobData, e.PackTargetBytes, rec),
-		trees:   newPacker(format.BlobTree, e.PackTargetBytes, rec),
+		data:    newPacker(format.BlobData, e.PackTargetBytes, rec, o.Compression),
+		trees:   newPacker(format.BlobTree, e.PackTargetBytes, rec, o.Compression),
 		inRun:   map[format.ID]bool{},
 		rescan:  res.Rescanned || res.Class == format.ClassOpening,
 		exclude: o.Excludes,

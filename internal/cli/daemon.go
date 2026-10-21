@@ -1592,6 +1592,10 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 	if s.Encryption != nil && s.Encryption.PublicKey != "" {
 		pubKey = s.Encryption.PublicKey
 	}
+	level, err := config.ParseCompression(s.Compression)
+	if err != nil {
+		return nil, plan, stageErr(model.BackupReasonConfig, fmt.Errorf("surface %s: %w", s.ID, err))
+	}
 	if pubKey == "" {
 		return nil, plan, stageErr(model.BackupReasonConfig, fmt.Errorf("encryption public key missing for surface %s", s.ID))
 	}
@@ -1652,7 +1656,7 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 				NodeID: nodeID, Recipient: pubKey,
 				Retention: policy.Retention{Days: storageCfg.RetentionDays, KeepDaily: tiers.Days, KeepWeekly: tiers.Weeks, KeepMonthly: tiers.Months},
 				Tier:      plan.Tier, Planned: plan.Until, SnapshotID: snapshotID, StateDir: stateDir, Out: os.Stdout,
-				NewEpoch: st.newEpoch, Rescan: st.rescan, RecoverySealTo: recoveryDocSealTo(s, pubKey), Kept: kept, Copies: st.copies,
+				NewEpoch: st.newEpoch, Rescan: st.rescan, RecoverySealTo: recoveryDocSealTo(s, pubKey), Kept: kept, Copies: st.copies, Compression: level,
 			})
 			st.newEpoch, st.rescan = false, false
 			if err != nil {
@@ -1699,7 +1703,7 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 		errChan := make(chan error, 1)
 
 		go func() {
-			m, encErr := crypto.EncryptStream(rawStream, cipherWriter, pubKey)
+			m, encErr := crypto.EncryptStreamLevel(rawStream, cipherWriter, pubKey, level)
 			if encErr != nil {
 				_ = cipherWriter.CloseWithError(encErr)
 				errChan <- encErr
@@ -1758,7 +1762,7 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 				SurfaceID: s.ID, DatabaseURL: dbURL, StorageCfg: storageCfg, NodeID: nodeID, Recipient: pubKey,
 				Retention: policy.Retention{Days: storageCfg.RetentionDays, KeepDaily: tiers.Days, KeepWeekly: tiers.Weeks, KeepMonthly: tiers.Months},
 				Tier:      plan.Tier, Planned: plan.Until, SnapshotID: snapshotID, StateDir: stateDir, Out: os.Stdout,
-				NewEpoch: st.newEpoch, RecoverySealTo: recoveryDocSealTo(s, pubKey), Kept: kept, Copies: st.copies,
+				NewEpoch: st.newEpoch, RecoverySealTo: recoveryDocSealTo(s, pubKey), Kept: kept, Copies: st.copies, Compression: level,
 			},
 			Root: root, Excludes: s.Excludes, Rescan: st.rescan, MigrationsTable: s.MigrationsTable,
 		})
@@ -1823,7 +1827,7 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 		errChan := make(chan error, 1)
 
 		go func() {
-			m, encErr := crypto.EncryptStream(rawStream, cipherWriter, pubKey)
+			m, encErr := crypto.EncryptStreamLevel(rawStream, cipherWriter, pubKey, level)
 			if encErr != nil {
 				_ = cipherWriter.CloseWithError(encErr)
 				errChan <- encErr
@@ -1904,7 +1908,7 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 				Retention: policy.Retention{Days: storageCfg.RetentionDays, KeepDaily: tiers.Days, KeepWeekly: tiers.Weeks, KeepMonthly: tiers.Months},
 				Tier:      plan.Tier, Planned: plan.Until, SnapshotID: snapshotID, StateDir: stateDir, Out: os.Stdout,
 				NewEpoch: st.newEpoch, ChangeLog: s.ChangeLog, RolesWithoutPasswords: s.RolesWithoutPasswords,
-				RecoverySealTo: recoveryDocSealTo(s, pubKey), Kept: kept, Copies: st.copies,
+				RecoverySealTo: recoveryDocSealTo(s, pubKey), Kept: kept, Copies: st.copies, Compression: level,
 				Erasures: s.Erasures, ErasuresRetainUntil: planRetention(time.Now(), storageCfg.RetentionDays, tiers, nil).Until,
 			})
 			st.newEpoch, st.rescan = false, false
@@ -1952,7 +1956,7 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 		metricsChan := make(chan *crypto.StreamMetrics, 1)
 		encErrChan := make(chan error, 1)
 		go func() {
-			m, encErr := crypto.EncryptStream(dumpReader, cipherWriter, pubKey)
+			m, encErr := crypto.EncryptStreamLevel(dumpReader, cipherWriter, pubKey, level)
 			if encErr != nil {
 				_ = cipherWriter.CloseWithError(encErr)
 				encErrChan <- encErr

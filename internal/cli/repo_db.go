@@ -119,6 +119,8 @@ type repoDBParams struct {
 	Kept *sink.KeptRule
 	// Copies are the other buckets the run is written to as it goes.
 	Copies []resolvedCopy
+	// Compression is the zstd level, 1 to 19; 0 is the default.
+	Compression int
 	// ServerCache keeps the writer's cache on the remote server between
 	// runs, for a run on a machine that does not outlive it.
 	ServerCache bool
@@ -305,7 +307,7 @@ func runRepoDatabaseBackup(ctx context.Context, p repoDBParams) (*model.Snapshot
 	setRunCopyDocs(multi, p.Copies, p.NodeID, p.SurfaceID, p.RecoverySealTo, func() *model.SnapshotMetadata { return meta })
 	res, err := write.Run(ctx, wb, write.Options{
 		SurfaceID: p.SurfaceID, StateDir: p.StateDir, Recipient: p.Recipient, Retention: p.Retention,
-		Tier: p.Tier, Planned: p.Planned, NewEpoch: p.NewEpoch, Host: host, SnapshotID: p.SnapshotID, SkipIfUnchanged: p.SkipIfUnchanged,
+		Tier: p.Tier, Planned: p.Planned, NewEpoch: p.NewEpoch, Host: host, SnapshotID: p.SnapshotID, SkipIfUnchanged: p.SkipIfUnchanged, Compression: p.Compression,
 		// Every run reads every table: a dump has no file times to skip by.
 		Rescan:  true,
 		Chunker: &format.DatabaseChunker,

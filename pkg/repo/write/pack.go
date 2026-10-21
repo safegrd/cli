@@ -3,6 +3,8 @@ package write
 import (
 	"crypto/md5"
 	"fmt"
+	"github.com/klauspost/compress/zstd"
+	"github.com/safegrd/cli/pkg/crypto"
 
 	"filippo.io/age"
 	"github.com/safegrd/cli/pkg/repo/format"
@@ -13,6 +15,7 @@ import (
 // random key, wrapped to the recipient in the header and forgotten once the
 // pack is closed.
 type packer struct {
+	level   zstd.EncoderLevel
 	kind    byte
 	target  int
 	rec     age.Recipient
@@ -30,8 +33,8 @@ type sealedPack struct {
 	entries []format.BlobEntry
 }
 
-func newPacker(kind byte, target int, rec age.Recipient) *packer {
-	return &packer{kind: kind, target: target, rec: rec}
+func newPacker(kind byte, target int, rec age.Recipient, level int) *packer {
+	return &packer{kind: kind, target: target, rec: rec, level: crypto.ZstdLevel(level)}
 }
 
 func (p *packer) start() error {
@@ -64,7 +67,7 @@ func (p *packer) add(id format.ID, plain []byte) error {
 			return err
 		}
 	}
-	payload, tb := seal.Payload(p.kind, plain)
+	payload, tb := seal.PayloadAt(p.kind, plain, p.level)
 	rec, err := p.sealer.Record(id, tb, payload)
 	if err != nil {
 		return err

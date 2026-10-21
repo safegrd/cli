@@ -42,6 +42,7 @@ func newBackupCmd() *cobra.Command {
 		sourceAccessKey string
 		sourceSecretKey string
 		fileFmt         string
+		compression     string
 		newEpoch        bool
 		// serverCache: see repoDBParams.ServerCache.
 		serverCache bool
@@ -75,6 +76,10 @@ func newBackupCmd() *cobra.Command {
 and writes it to locked (WORM) storage. The unencrypted data is never written to disk
 and never leaves this host.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			level, err := config.ParseCompression(compression)
+			if err != nil {
+				return fmt.Errorf("--compression: %w", err)
+			}
 			ctx := cmd.Context()
 
 			// With nothing named on the command line, a config with one
@@ -82,7 +87,7 @@ and never leaves this host.`,
 			// database as a surface, and `safegrd backup` is the next step the
 			// docs give. With several, one has to be named.
 			oneOffFlag := ""
-			for _, f := range []string{"tag", "retention-days", "s3-bucket", "s3-prefix", "s3-region", "s3-endpoint", "s3-access-key", "s3-secret-key", "format", "one-filesystem", "source-endpoint", "source-region", "source-access-key", "source-secret-key"} {
+			for _, f := range []string{"tag", "retention-days", "s3-bucket", "s3-prefix", "s3-region", "s3-endpoint", "s3-access-key", "s3-secret-key", "format", "compression", "one-filesystem", "source-endpoint", "source-region", "source-access-key", "source-secret-key"} {
 				if oneOffFlag == "" && cmd.Flags().Changed(f) {
 					oneOffFlag = f
 				}
@@ -109,7 +114,7 @@ and never leaves this host.`,
 				}
 			}
 			if surfaceID != "" {
-				for _, f := range []string{"database-url", "files", "email", "tag", "retention-days", "s3-bucket", "s3-prefix", "s3-region", "s3-endpoint", "s3-access-key", "s3-secret-key", "format", "one-filesystem", "source-endpoint", "source-region", "source-access-key", "source-secret-key"} {
+				for _, f := range []string{"database-url", "files", "email", "tag", "retention-days", "s3-bucket", "s3-prefix", "s3-region", "s3-endpoint", "s3-access-key", "s3-secret-key", "format", "compression", "one-filesystem", "source-endpoint", "source-region", "source-access-key", "source-secret-key"} {
 					if cmd.Flags().Changed(f) {
 						return fmt.Errorf("--surface backs up the surface as the config defines it; leave out --%s", f)
 					}
@@ -243,7 +248,8 @@ and never leaves this host.`,
 						storageCfg.NodeID = node
 					}
 					meta, _, err := runRepoBackup(ctx, repoParams{
-						SurfaceID: repoSurfaceID([]string{filesPath}), Roots: []string{filesPath}, Excludes: excludes, OneFS: oneFSFlag,
+						Compression: level,
+						SurfaceID:   repoSurfaceID([]string{filesPath}), Roots: []string{filesPath}, Excludes: excludes, OneFS: oneFSFlag,
 						StorageCfg: storageCfg, NodeID: cfg.NodeID, Recipient: cfg.Encryption.PublicKey,
 						Retention: policy.Retention{Days: storageCfg.RetentionDays}, Tier: format.TierBase, Planned: retentionUntil,
 						NewEpoch: newEpoch, Rescan: rescan, SnapshotID: snapshotID, StateDir: resolveStateDir("", cfg), Out: out,
@@ -303,7 +309,7 @@ and never leaves this host.`,
 				cryptoErrChan := make(chan error, 1)
 
 				go func() {
-					metrics, err := crypto.EncryptStream(rawStream, cipherWriter, cfg.Encryption.PublicKey)
+					metrics, err := crypto.EncryptStreamLevel(rawStream, cipherWriter, cfg.Encryption.PublicKey, level)
 					if err != nil {
 						_ = cipherWriter.CloseWithError(err)
 						cryptoErrChan <- err
@@ -440,7 +446,7 @@ and never leaves this host.`,
 				cryptoErrChan := make(chan error, 1)
 
 				go func() {
-					metrics, err := crypto.EncryptStream(rawStream, cipherWriter, cfg.Encryption.PublicKey)
+					metrics, err := crypto.EncryptStreamLevel(rawStream, cipherWriter, cfg.Encryption.PublicKey, level)
 					if err != nil {
 						_ = cipherWriter.CloseWithError(err)
 						cryptoErrChan <- err
@@ -575,7 +581,8 @@ and never leaves this host.`,
 					storageCfg.NodeID = cfg.NodeID
 				}
 				meta, _, err := runRepoDatabaseBackup(ctx, repoDBParams{
-					SurfaceID: adhocDatabaseSurfaceID(cfg), DatabaseURL: cfg.DatabaseURL,
+					Compression: level,
+					SurfaceID:   adhocDatabaseSurfaceID(cfg), DatabaseURL: cfg.DatabaseURL,
 					StorageCfg: storageCfg, NodeID: cfg.NodeID, Recipient: cfg.Encryption.PublicKey,
 					Retention: policy.Retention{Days: storageCfg.RetentionDays}, Tier: format.TierBase, Planned: retentionUntil,
 					NewEpoch: newEpoch, SnapshotID: snapshotID, StateDir: resolveStateDir("", cfg), Out: out,
@@ -648,7 +655,7 @@ and never leaves this host.`,
 			cryptoErrChan := make(chan error, 1)
 
 			go func() {
-				metrics, err := crypto.EncryptStream(dumpReader, cipherWriter, cfg.Encryption.PublicKey)
+				metrics, err := crypto.EncryptStreamLevel(dumpReader, cipherWriter, cfg.Encryption.PublicKey, level)
 				if err != nil {
 					_ = cipherWriter.CloseWithError(err)
 					cryptoErrChan <- err
@@ -743,6 +750,7 @@ and never leaves this host.`,
 	cmd.Flags().StringVar(&sourceAccessKey, "source-access-key", "", "With --files s3://…: the store's access key id, as env:VAR or file:/path")
 	cmd.Flags().StringVar(&sourceSecretKey, "source-secret-key", "", "With --files s3://…: the store's secret access key, as env:VAR or file:/path")
 	cmd.Flags().StringSliceVar(&excludes, "exclude", nil, "Glob patterns to leave out of --files (e.g. '*.tmp,node_modules/*')")
+	cmd.Flags().StringVar(&compression, "compression", "", "How hard to compress: zstd:1 (fastest) to zstd:19 (smallest). A restore needs no setting")
 	cmd.Flags().StringVar(&fileFmt, "format", formatRepo, "How the backup is stored: repo (incremental: each run uploads only what changed) or tar (one archive per backup). Repo is the default")
 	cmd.Flags().BoolVar(&newEpoch, "new-epoch", false, "With --format repo, or --surface of a repo surface: start a new epoch now, uploading everything once")
 	cmd.Flags().BoolVar(&rescan, "rescan", false, "With --format repo, or --surface of a repo surface: read every file, not only those whose size or times changed")

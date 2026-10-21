@@ -142,6 +142,8 @@ type repoParams struct {
 	Kept *sink.KeptRule
 	// Copies are the other buckets the run is written to as it goes.
 	Copies []resolvedCopy
+	// Compression is the zstd level, 1 to 19; 0 is the default.
+	Compression int
 	// SkipIfUnchanged writes nothing when nothing changed (write.Options).
 	SkipIfUnchanged bool
 }
@@ -255,7 +257,7 @@ func runRepoBackup(ctx context.Context, p repoParams) (*model.SnapshotMetadata, 
 	res, err := write.Run(ctx, wb, write.Options{
 		SurfaceID: p.SurfaceID, Roots: p.Roots, Excludes: p.Excludes, OneFilesystem: p.OneFS, SkipPaths: skip,
 		StateDir: p.StateDir, Recipient: p.Recipient, Retention: p.Retention, Tier: p.Tier, Planned: p.Planned,
-		NewEpoch: p.NewEpoch, Rescan: p.Rescan, Host: host, SnapshotID: p.SnapshotID, SkipIfUnchanged: p.SkipIfUnchanged,
+		NewEpoch: p.NewEpoch, Rescan: p.Rescan, Host: host, SnapshotID: p.SnapshotID, SkipIfUnchanged: p.SkipIfUnchanged, Compression: p.Compression,
 		OnStart: func(r *write.Result) {
 			if r.Opened {
 				fmt.Fprintf(out, "%s Epoch %s opened (%s). Every file is uploaded%s.\n", label, r.Epoch.EpochID, openedWhy(r), onceThisMonth(r.Epoch))

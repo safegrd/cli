@@ -78,6 +78,21 @@ func (cr *countingReader) SumHex() string {
 // EncryptStream streams plaintext from src, compresses with zstd, encrypts with Age,
 // and writes ciphertext to dst. No unencrypted data is written to disk.
 func EncryptStream(src io.Reader, dst io.Writer, publicKey string) (*StreamMetrics, error) {
+	return EncryptStreamLevel(src, dst, publicKey, 0)
+}
+
+// ZstdLevel is zstd's level n, 1 to 19, as the encoder takes it; 0 or out
+// of range is the default.
+func ZstdLevel(n int) zstd.EncoderLevel {
+	if n < 1 || n > 19 {
+		return zstd.SpeedDefault
+	}
+	return zstd.EncoderLevelFromZstd(n)
+}
+
+// EncryptStreamLevel is EncryptStream at zstd level, 1 to 19; 0 is the
+// default. A reader needs no setting: the format is the same at every level.
+func EncryptStreamLevel(src io.Reader, dst io.Writer, publicKey string, level int) (*StreamMetrics, error) {
 	recipient, err := ParseRecipient(publicKey)
 	if err != nil {
 		return nil, fmt.Errorf("invalid recipient key: %w", err)
@@ -93,7 +108,7 @@ func EncryptStream(src io.Reader, dst io.Writer, publicKey string) (*StreamMetri
 	}
 
 	// zstd compression writer targeting ageWriter
-	zstdWriter, err := zstd.NewWriter(ageWriter, zstd.WithEncoderLevel(zstd.SpeedDefault))
+	zstdWriter, err := zstd.NewWriter(ageWriter, zstd.WithEncoderLevel(ZstdLevel(level)))
 	if err != nil {
 		ageWriter.Close()
 		return nil, fmt.Errorf("failed to initialize zstd compressor: %w", err)
