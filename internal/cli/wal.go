@@ -718,7 +718,8 @@ func printWALStatus(a *wal.Archive, st wal.Status) {
 }
 
 func newWALRestoreCmd() *cobra.Command {
-	var surfaceID, systemID, to, toPoint, pgdata, out, keyPath, privKey, node string
+	var surfaceID, systemID, to, toPoint, toLSN, toXID, timeline, pgdata, out, keyPath, privKey, node string
+	var exclusive bool
 	cmd := &cobra.Command{
 		Use:   "restore",
 		Short: "Restore a PostgreSQL surface to a point in time into an empty data directory",
@@ -738,16 +739,35 @@ transaction committed up to the last segment pushed at or before --to.
 or "latest": every archived WAL file is replayed, which is the restore after a
 lost host. A time at or after the last commit in the archive is refused by
 PostgreSQL ("recovery ended before configured recovery target was reached"),
-so use latest for the newest state.`,
+so use latest for the newest state.
+
+--to-lsn 16/B374D848 replays to a position in the WAL, and --to-xid 1234567 to
+just after a transaction commits; --exclusive stops just before either, or
+before --to's moment. --timeline follows a timeline other than the newest
+(latest, current or its number); the archive's history of it is checked
+before anything is written.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
 			var target time.Time
 			var err error
 			latest := strings.EqualFold(strings.TrimSpace(to), "latest")
+			targets := 0
+			for _, t := range []string{to, toPoint, toLSN, toXID} {
+				if t != "" {
+					targets++
+				}
+			}
 			switch {
-			case to != "" && toPoint != "":
-				return errors.New("--to and --to-point are two targets; give one")
+			case targets > 1:
+				return errors.New("--to, --to-point, --to-lsn and --to-xid are each a target; give one")
+			case exclusive && (latest || toPoint != ""):
+				return errors.New("--exclusive stops before a time, a position or a transaction, not before a restore point or the end of the archive")
+			case toLSN != "":
+				if _, err := wal.ParseLSN(toLSN); err != nil {
+					return fmt.Errorf("--to-lsn: %w; give it as PostgreSQL prints it, such as 16/B374D848", err)
+				}
+			case toXID != "":
 			case toPoint == "" && !latest:
 				if target, err = parseWALTarget(to); err != nil {
 					return err
@@ -767,6 +787,9 @@ so use latest for the newest state.`,
 				return err
 			}
 			if walIsSQLite(s) {
+				if toLSN != "" || toXID != "" || timeline != "" || exclusive {
+					return errors.New("--to-lsn, --to-xid, --exclusive and --timeline are PostgreSQL's; a SQLite surface restores to a time or a restore point")
+				}
 				return walRestoreSQLite(ctx, a, target, toPoint, out)
 			}
 			if pgdata == "" {
@@ -780,7 +803,8 @@ so use latest for the newest state.`,
 			if err != nil {
 				return err
 			}
-			o := wal.RestoreOptions{Target: target, PGData: dir, FetchCommand: fetch}
+			o := wal.RestoreOptions{Target: target, PGData: dir, FetchCommand: fetch, TargetLSN: strings.TrimSpace(toLSN),
+				TargetXID: strings.TrimSpace(toXID), Exclusive: exclusive, Timeline: strings.TrimSpace(timeline)}
 			if toPoint != "" {
 				points, err := a.RestorePoints(ctx)
 				if err != nil {
@@ -805,8 +829,18 @@ so use latest for the newest state.`,
 			switch {
 			case toPoint != "":
 				goal = "restore point " + toPoint
+			case toLSN != "":
+				goal = "WAL position " + toLSN
+			case toXID != "":
+				goal = "transaction " + toXID
 			case latest:
 				goal = fmt.Sprintf("the end of the archive (pushed %s)", res.ArchiveEnd.UTC().Format("2006-01-02 15:04:05 UTC"))
+			}
+			if exclusive {
+				goal = "just before " + goal
+			}
+			if timeline != "" {
+				goal += " on timeline " + timeline
 			}
 			fmt.Printf("   Replays WAL to %s and promotes, when PostgreSQL %d starts on it:\n", goal, res.Base.Major())
 			if res.NoConf {
@@ -831,6 +865,10 @@ so use latest for the newest state.`,
 	cmd.Flags().StringVar(&systemID, "system", "", "The cluster's system identifier, when the archive holds more than one")
 	cmd.Flags().StringVar(&to, "to", "", "The moment to restore to, or latest for the end of the archive")
 	cmd.Flags().StringVar(&toPoint, "to-point", "", "A restore point to restore to, as 'safegrd wal point' named it")
+	cmd.Flags().StringVar(&toLSN, "to-lsn", "", "A WAL position to restore to, such as 16/B374D848")
+	cmd.Flags().StringVar(&toXID, "to-xid", "", "A transaction id to restore to, just after it commits")
+	cmd.Flags().BoolVar(&exclusive, "exclusive", false, "Stop just before the target instead of just after it")
+	cmd.Flags().StringVar(&timeline, "timeline", "", "The timeline to follow: latest (the default), current, or its number")
 	cmd.Flags().StringVar(&pgdata, "pgdata", "", "PostgreSQL: an empty directory to restore into")
 	cmd.Flags().StringVar(&out, "out", "", "SQLite: the database file to write; it must not exist")
 	cmd.Flags().StringVar(&keyPath, "key-path", "", "Path to the age identity (default encryption.key_path)")

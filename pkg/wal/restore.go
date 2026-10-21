@@ -2,6 +2,7 @@ package wal
 
 import (
 	"archive/tar"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"path"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,7 +26,16 @@ type RestoreOptions struct {
 	Target time.Time
 	// TargetName is a restore point to replay to.
 	TargetName string
-	PGData     string
+	// TargetLSN ("16/B374D848") and TargetXID are a position in the WAL and
+	// a transaction to replay to, instead of a time.
+	TargetLSN string
+	TargetXID string
+	// Exclusive stops just before the target instead of just after it.
+	Exclusive bool
+	// Timeline is the timeline to follow: "latest" (PostgreSQL's default),
+	// "current", or a number the archive holds the history of.
+	Timeline string
+	PGData   string
 	// FetchCommand is restore_command, with %f and %p for PostgreSQL to
 	// fill in.
 	FetchCommand string
@@ -56,14 +67,12 @@ func (a *Archive) Restore(ctx context.Context, o RestoreOptions) (RestoreResult,
 	if len(bases) == 0 {
 		return res, fmt.Errorf("the archive at %s holds no complete base backup. Take one with 'safegrd wal base'", a.Describe())
 	}
-	var pick *BaseInfo
-	for i := range bases {
-		if o.Target.IsZero() || bases[i].EndedAt.Before(o.Target) {
-			pick = &bases[i]
-		}
+	pick, err := a.pickBase(ctx, bases, o)
+	if err != nil {
+		return res, err
 	}
-	if pick == nil {
-		return res, fmt.Errorf("no base backup ends before %s; the oldest ends at %s", stamp(o.Target), stamp(bases[0].EndedAt))
+	if err := a.checkTimeline(ctx, *pick, o.Timeline); err != nil {
+		return res, err
 	}
 	have, err := a.archivedNames(ctx)
 	if err != nil {
@@ -242,8 +251,18 @@ func writeRecovery(dir, fetch string, o RestoreOptions) error {
 	switch {
 	case o.TargetName != "":
 		target = "recovery_target_name = " + confQuote(o.TargetName) + "\n"
+	case o.TargetLSN != "":
+		target = "recovery_target_lsn = " + confQuote(o.TargetLSN) + "\n"
+	case o.TargetXID != "":
+		target = "recovery_target_xid = " + confQuote(o.TargetXID) + "\n"
 	case !o.Target.IsZero():
 		target = "recovery_target_time = " + confQuote(o.Target.UTC().Format("2006-01-02 15:04:05.999999")+"+00") + "\n"
+	}
+	if target != "" && o.Exclusive {
+		target += "recovery_target_inclusive = 'off'\n"
+	}
+	if o.Timeline != "" {
+		target += "recovery_target_timeline = " + confQuote(o.Timeline) + "\n"
 	}
 	_, err = fmt.Fprintf(f, "\n# Written by safegrd wal restore\nrestore_command = %s\n%srecovery_target_action = 'promote'\narchive_mode = 'off'\n",
 		confQuote(fetch), target)
@@ -255,3 +274,107 @@ func writeRecovery(dir, fetch string, o RestoreOptions) error {
 
 // confQuote quotes a value for postgresql.conf.
 func confQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
+
+// pickBase is the base a restore starts from. For a time, the newest that
+// ended before it; for a WAL position, the newest that ended at or before
+// it; for a transaction id, which no base records, the oldest whose WAL
+// reaches the end of the archive unbroken, so the transaction is after it
+// wherever in the window it is.
+func (a *Archive) pickBase(ctx context.Context, bases []BaseInfo, o RestoreOptions) (*BaseInfo, error) {
+	var pick *BaseInfo
+	switch {
+	case o.TargetLSN != "":
+		target, err := ParseLSN(o.TargetLSN)
+		if err != nil {
+			return nil, err
+		}
+		for i := range bases {
+			end, err := ParseLSN(bases[i].EndLSN)
+			if err == nil && end <= target {
+				pick = &bases[i]
+			}
+		}
+		if pick == nil {
+			return nil, fmt.Errorf("no base backup ends at or before %s; the oldest ends at %s. Restore to a later position", target, bases[0].EndLSN)
+		}
+	case o.TargetXID != "":
+		if _, err := strconv.ParseUint(strings.TrimSpace(o.TargetXID), 10, 64); err != nil {
+			return nil, fmt.Errorf("--to-xid %q is not a transaction id", o.TargetXID)
+		}
+		st, err := a.Status(ctx)
+		if err != nil {
+			return nil, err
+		}
+		broken := map[string]bool{}
+		for _, g := range st.Gaps {
+			for _, b := range g.Breaks {
+				broken[b] = true
+			}
+		}
+		for i := range bases {
+			if !broken[bases[i].BaseID] {
+				pick = &bases[i]
+				break
+			}
+		}
+		if pick == nil {
+			return nil, fmt.Errorf("every base backup's WAL stops at a missing file, so no restore can be sure to reach transaction %s. Restore to a time instead", o.TargetXID)
+		}
+	default:
+		for i := range bases {
+			if o.Target.IsZero() || bases[i].EndedAt.Before(o.Target) {
+				pick = &bases[i]
+			}
+		}
+		if pick == nil {
+			return nil, fmt.Errorf("no base backup ends before %s; the oldest ends at %s", stamp(o.Target), stamp(bases[0].EndedAt))
+		}
+	}
+	return pick, nil
+}
+
+// checkTimeline holds a timeline asked for to the archive's history before
+// anything is written: a numbered timeline other than the base's needs its
+// history file in the archive, and the base's timeline among its parents,
+// branched off after the base ended.
+func (a *Archive) checkTimeline(ctx context.Context, b BaseInfo, timeline string) error {
+	switch timeline {
+	case "", "latest", "current":
+		return nil
+	}
+	n, err := strconv.ParseUint(timeline, 10, 32)
+	if err != nil || n == 0 {
+		return fmt.Errorf("--timeline %q is not latest, current or a timeline number", timeline)
+	}
+	if uint32(n) == b.Timeline {
+		return nil
+	}
+	name := fmt.Sprintf("%08X.history", n)
+	var hist bytes.Buffer
+	if err := a.Fetch(ctx, name, &hist); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return fmt.Errorf("the archive holds no history for timeline %d (%s), so PostgreSQL could not follow it. Base %s is on timeline %d", n, name, b.BaseID, b.Timeline)
+		}
+		return fmt.Errorf("reading %s: %w", name, err)
+	}
+	end, err := ParseLSN(b.EndLSN)
+	if err != nil {
+		return err
+	}
+	for _, line := range strings.Split(hist.String(), "\n") {
+		f := strings.Fields(line)
+		if len(f) < 2 || strings.HasPrefix(f[0], "#") {
+			continue
+		}
+		parent, err1 := strconv.ParseUint(f[0], 10, 32)
+		switchAt, err2 := ParseLSN(f[1])
+		if err1 != nil || err2 != nil || uint32(parent) != b.Timeline {
+			continue
+		}
+		if switchAt < end {
+			return fmt.Errorf("timeline %d branched off timeline %d at %s, before base %s ended at %s, so no replay from it reaches timeline %d", n, b.Timeline, switchAt, b.BaseID, end, n)
+		}
+		return nil
+	}
+	return fmt.Errorf("timeline %d does not descend from timeline %d, which base %s is on (%s)", n, b.Timeline, b.BaseID, name)
+}
