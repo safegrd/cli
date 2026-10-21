@@ -52,6 +52,9 @@ type CopyResult struct {
 type Multi struct {
 	First  *Direct
 	copies []*multiCopy
+	// copyDoc, when set, renders the recovery document beside one copy so
+	// it names that copy's bucket; without it a copy gets the first store's.
+	copyDoc func(name string, e format.Epoch, until time.Time) ([]byte, error)
 
 	mu    sync.Mutex
 	epoch format.Epoch
@@ -59,9 +62,12 @@ type Multi struct {
 
 type multiCopy struct {
 	Named
-	until     time.Time
-	slots     map[string]Slot
-	held      []heldPut
+	until time.Time
+	slots map[string]Slot
+	held  []heldPut
+	// noDoc is a recovery document's key left out of this copy because it
+	// could not be rendered for it.
+	noDoc     map[string]bool
 	err       error
 	behind    bool
 	published bool
@@ -79,6 +85,13 @@ func NewMulti(first *Direct, copies ...Named) *Multi {
 		m.copies = append(m.copies, &multiCopy{Named: c, slots: map[string]Slot{}})
 	}
 	return m
+}
+
+// SetCopyRecoveryDoc renders each copy's own recovery document, sealed as
+// the first store's is. A copy whose document cannot be rendered is written
+// without one.
+func (m *Multi) SetCopyRecoveryDoc(render func(name string, e format.Epoch, until time.Time) ([]byte, error)) {
+	m.copyDoc = render
 }
 
 // Primary is the store every read goes to.
@@ -231,8 +244,25 @@ func (m *Multi) Put(ctx context.Context, slot Slot, body []byte) error {
 			continue
 		}
 		if slot.Kind == KindMeta || slot.Kind == KindRecovery || slot.Kind == KindRecoverySealed {
+			own := append([]byte(nil), body...)
+			if slot.Kind != KindMeta && m.copyDoc != nil {
+				m.mu.Lock()
+				e, until := m.epoch, c.until
+				m.mu.Unlock()
+				doc, err := m.copyDoc(c.Name, e, until)
+				if err != nil {
+					m.mu.Lock()
+					if c.noDoc == nil {
+						c.noDoc = map[string]bool{}
+					}
+					c.noDoc[cs.Key] = true
+					m.mu.Unlock()
+					continue
+				}
+				own = doc
+			}
 			m.mu.Lock()
-			c.held = append(c.held, heldPut{slot: cs, body: append([]byte(nil), body...)})
+			c.held = append(c.held, heldPut{slot: cs, body: own})
 			m.mu.Unlock()
 			continue
 		}
@@ -281,7 +311,7 @@ func (m *Multi) Commit(ctx context.Context, e format.Epoch, c RunCommit) error {
 				continue
 			}
 			ck := prefix + strings.TrimPrefix(k, firstPrefix)
-			if !heldKeys[ck] && !have[ck] {
+			if !heldKeys[ck] && !have[ck] && !cp.noDoc[ck] {
 				missing = true
 				break
 			}

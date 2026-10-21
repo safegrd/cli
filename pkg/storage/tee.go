@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/safegrd/cli/pkg/config"
 	"github.com/safegrd/cli/pkg/model"
 )
 
@@ -20,6 +21,8 @@ type NamedCopy struct {
 	// RetentionDays locks the copy for this many days from the backup; zero
 	// keeps the primary's date.
 	RetentionDays int
+	// Config is the copy's storage, for what is said about where it is.
+	Config config.StorageConfig
 }
 
 // CopyResult is what one copy of one snapshot came to.
@@ -29,6 +32,9 @@ type CopyResult struct {
 	WORMMode    string
 	RetainUntil time.Time
 	Err         error
+	// DocErr is why the recovery document beside the copy was not written;
+	// the copy holds the snapshot either way.
+	DocErr error
 }
 
 // Tee writes each snapshot to the primary and to every copy at once, from one
@@ -39,6 +45,9 @@ type CopyResult struct {
 type Tee struct {
 	StorageProvider
 	copies []NamedCopy
+	// copyDoc, when set, renders the recovery document beside one copy,
+	// naming that copy's own bucket. Without it a copy gets the primary's.
+	copyDoc func(name string, r CopyResult) ([]byte, error)
 
 	mu      sync.Mutex
 	results map[string][]CopyResult // by snapshot id
@@ -161,6 +170,9 @@ func (t *Tee) UploadMetadata(ctx context.Context, snapshotID string, meta *model
 	t.eachHeld(snapshotID, func(c NamedCopy, r *CopyResult) {
 		m := *meta
 		m.StorageURI = r.StorageURI
+		if c.WORMMode != "" {
+			m.WORMMode = c.WORMMode
+		}
 		if !r.RetainUntil.IsZero() {
 			m.WORMRetentionUntil = r.RetainUntil
 		}
@@ -171,15 +183,34 @@ func (t *Tee) UploadMetadata(ctx context.Context, snapshotID string, meta *model
 	return nil
 }
 
+// SetCopyRecoveryDoc renders the recovery document beside each copy, so it
+// names the bucket it sits in. The render returns the document sealed as
+// the primary's is.
+func (t *Tee) SetCopyRecoveryDoc(render func(name string, r CopyResult) ([]byte, error)) {
+	t.copyDoc = render
+}
+
 // UploadRecoveryDoc writes the recovery document beside each copy as beside
 // the primary. A copy that cannot take it keeps its snapshot; the document
-// is a convenience, and the copy still restores.
+// is a convenience, and the copy still restores. Its failure is kept in
+// DocErrs.
 func (t *Tee) UploadRecoveryDoc(ctx context.Context, snapshotID string, doc []byte, sealed bool, retainUntil time.Time) error {
 	if err := t.StorageProvider.UploadRecoveryDoc(ctx, snapshotID, doc, sealed, retainUntil); err != nil {
 		return err
 	}
 	t.eachHeld(snapshotID, func(c NamedCopy, r *CopyResult) {
-		_ = c.Provider.UploadRecoveryDoc(ctx, snapshotID, doc, sealed, r.RetainUntil)
+		body := doc
+		if t.copyDoc != nil {
+			own, err := t.copyDoc(c.Name, *r)
+			if err != nil {
+				r.DocErr = err
+				return
+			}
+			body = own
+		}
+		if err := c.Provider.UploadRecoveryDoc(ctx, snapshotID, body, sealed, r.RetainUntil); err != nil {
+			r.DocErr = err
+		}
 	})
 	return nil
 }
@@ -213,6 +244,15 @@ func providersOf(cs []NamedCopy) []StorageProvider {
 	out := make([]StorageProvider, 0, len(cs))
 	for _, c := range cs {
 		out = append(out, c.Provider)
+	}
+	return out
+}
+
+// CopyConfigs is each copy's storage, by name.
+func (t *Tee) CopyConfigs() map[string]config.StorageConfig {
+	out := map[string]config.StorageConfig{}
+	for _, c := range t.copies {
+		out[c.Name] = c.Config
 	}
 	return out
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path"
 	"sort"
 	"strings"
 	"sync"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/safegrd/cli/pkg/config"
 	"github.com/safegrd/cli/pkg/model"
+	"github.com/safegrd/cli/pkg/repo/format"
 	"github.com/safegrd/cli/pkg/repo/sink"
 	"github.com/safegrd/cli/pkg/storage"
 )
@@ -139,7 +141,7 @@ func openCopies(ctx context.Context, copies []resolvedCopy) []storage.NamedCopy 
 				s.SetNodeID(rc.cfg.NodeID)
 			}
 		}
-		out = append(out, storage.NamedCopy{Name: rc.name, Provider: p, WORMMode: string(rc.cfg.WORMMode), RetentionDays: rc.cfg.RetentionDays})
+		out = append(out, storage.NamedCopy{Name: rc.name, Provider: p, WORMMode: string(rc.cfg.WORMMode), RetentionDays: rc.cfg.RetentionDays, Config: rc.cfg})
 	}
 	return out
 }
@@ -172,6 +174,9 @@ func noteTeeCopies(provider storage.StorageProvider, meta *model.SnapshotMetadat
 			sc.State, sc.Error, sc.StorageURI = model.CopyFailed, r.Err.Error(), ""
 			fmt.Fprintf(os.Stderr, "Warning: copy to %s failed: %v; the catch-up will retry\n", r.Name, r.Err)
 		} else {
+			if r.DocErr != nil {
+				fmt.Fprintf(os.Stderr, "Warning: the recovery document beside copy %s was not written: %v. The copy holds the backup and its manifest.\n", r.Name, r.DocErr)
+			}
 			fmt.Printf("   Copy %s:%s%s, %s\n", r.Name, strings.Repeat(" ", max(1, 11-len(r.Name))), r.StorageURI, copyLockWords(sc))
 		}
 		meta.Copies = append(meta.Copies, sc)
@@ -620,6 +625,34 @@ func runCopies(ctx context.Context, b sink.Backend, copies []resolvedCopy) (sink
 	}
 	m := sink.NewMulti(d, named...)
 	return m, m
+}
+
+// setRunCopyDocs has each copy of a run get its own recovery document,
+// naming the copy's bucket, its address of the epoch and its own lock.
+func setRunCopyDocs(m *sink.Multi, copies []resolvedCopy, nodeID, surfaceID, sealTo string, meta func() *model.SnapshotMetadata) {
+	if m == nil {
+		return
+	}
+	cfgs := map[string]config.StorageConfig{}
+	for _, rc := range copies {
+		cfgs[rc.name] = rc.cfg
+	}
+	m.SetCopyRecoveryDoc(func(name string, e format.Epoch, until time.Time) ([]byte, error) {
+		mm := meta()
+		if mm == nil {
+			return nil, fmt.Errorf("the run recorded no metadata")
+		}
+		cfg := cfgs[name]
+		c := *mm
+		loc := recoveryLocation(cfg, nodeID)
+		loc.Prefix = path.Join(loc.Prefix, "repo", surfaceID, e.EpochID)
+		c.StorageURI, c.WORMMode, c.WORMRetentionUntil = copyRepoURI(cfg, loc.Prefix), string(cfg.WORMMode), time.Time{}
+		if cfg.WORMMode != config.WORMModeNone {
+			c.WORMRetentionUntil = until
+		}
+		doc, _, err := renderRecoveryDoc(&c, loc, sealTo)
+		return doc, err
+	})
 }
 
 // noteRunCopies records on a run's record what each copy came to, and says

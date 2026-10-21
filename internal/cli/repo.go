@@ -251,6 +251,7 @@ func runRepoBackup(ctx context.Context, p repoParams) (*model.SnapshotMetadata, 
 	started := time.Now()
 	var meta *model.SnapshotMetadata
 	host, _ := os.Hostname()
+	setRunCopyDocs(multi, p.Copies, p.NodeID, p.SurfaceID, p.RecoverySealTo, func() *model.SnapshotMetadata { return meta })
 	res, err := write.Run(ctx, wb, write.Options{
 		SurfaceID: p.SurfaceID, Roots: p.Roots, Excludes: p.Excludes, OneFilesystem: p.OneFS, SkipPaths: skip,
 		StateDir: p.StateDir, Recipient: p.Recipient, Retention: p.Retention, Tier: p.Tier, Planned: p.Planned,

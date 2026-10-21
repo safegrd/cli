@@ -26,6 +26,20 @@ func uploadSidecars(ctx context.Context, provider storage.StorageProvider, stora
 	// What the copies came to goes on the record the remote server gets,
 	// after the sidecars, which describe the snapshot and not its copies.
 	defer noteTeeCopies(provider, meta)
+	if tee, ok := provider.(*storage.Tee); ok {
+		// Each copy's document names the bucket it sits in, its own lock
+		// date and its own address of the snapshot.
+		cfgs := tee.CopyConfigs()
+		tee.SetCopyRecoveryDoc(func(name string, r storage.CopyResult) ([]byte, error) {
+			m := *meta
+			m.StorageURI, m.WORMMode = r.StorageURI, r.WORMMode
+			if !r.RetainUntil.IsZero() {
+				m.WORMRetentionUntil = r.RetainUntil
+			}
+			doc, _, err := renderRecoveryDoc(&m, recoveryLocation(cfgs[name], meta.NodeID), sealTo)
+			return doc, err
+		})
+	}
 	warnIfManifestFailed(provider.UploadMetadata(ctx, snapshotID, meta), snapshotID)
 	doc, sealed, err := renderRecoveryDoc(meta, recoveryLocation(storageCfg, meta.NodeID), sealTo)
 	if err != nil {
