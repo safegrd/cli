@@ -72,11 +72,17 @@ func postgresAmcheck(ctx context.Context, sandboxURL string) model.AssertionResu
 		if _, err := conn.Exec(ctx, "CREATE SCHEMA safegrd_amcheck; CREATE EXTENSION amcheck SCHEMA safegrd_amcheck", simple); err != nil {
 			return notRun(name, expected, "the sandbox role may not create the amcheck extension: "+err.Error())
 		}
-		schema, created = "safegrd_amcheck", true
+		created = true
+		// Some servers place an extension where they choose (Supabase puts
+		// every extension in its extensions schema): read where it went.
+		if err := conn.QueryRow(ctx, "SELECT n.nspname FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace WHERE e.extname = 'amcheck'", simple).Scan(&schema); err != nil {
+			return notRun(name, expected, "amcheck was created and cannot be found: "+err.Error())
+		}
 	}
 	if created {
 		defer func() {
-			_, _ = conn.Exec(context.Background(), "DROP SCHEMA safegrd_amcheck CASCADE", simple) // the sandbox is reset after the drill either way
+			// The sandbox is reset after the drill either way.
+			_, _ = conn.Exec(context.Background(), "DROP EXTENSION IF EXISTS amcheck; DROP SCHEMA IF EXISTS safegrd_amcheck CASCADE", simple)
 		}()
 	}
 	q := pgx.Identifier{schema}.Sanitize()
@@ -107,8 +113,8 @@ func postgresAmcheck(ctx context.Context, sandboxURL string) model.AssertionResu
 		for _, r := range rels {
 			var n int64
 			if err := conn.QueryRow(ctx, "SELECT count(*) FROM "+q+".verify_heapam($1::oid::regclass)", r.oid).Scan(&n); err != nil {
-				if pgDenied(err) {
-					return notRun(name, expected, "the sandbox role may not run amcheck's functions: "+err.Error())
+				if !pgCorrupt(err) {
+					return notRun(name, expected, "amcheck could not run: "+err.Error())
 				}
 				bad = append(bad, r.name+" ("+err.Error()+")")
 			} else if n > 0 {
@@ -137,8 +143,8 @@ func postgresAmcheck(ctx context.Context, sandboxURL string) model.AssertionResu
 	rows.Close()
 	for _, r := range idx {
 		if _, err := conn.Exec(ctx, "SELECT "+q+".bt_index_check($1::oid::regclass)", r.oid); err != nil {
-			if pgDenied(err) {
-				return notRun(name, expected, "the sandbox role may not run amcheck's functions: "+err.Error())
+			if !pgCorrupt(err) {
+				return notRun(name, expected, "amcheck could not run: "+err.Error())
 			}
 			bad = append(bad, r.name+" ("+err.Error()+")")
 		}
@@ -262,10 +268,12 @@ func mongoValidate(ctx context.Context, sandboxURL string) model.AssertionResult
 	return a
 }
 
-// pgDenied is PostgreSQL refusing for want of a privilege.
-func pgDenied(err error) bool {
+// pgCorrupt is amcheck's error for data it found damaged: data_corrupted
+// (XX001) or index_corrupted (XX002). Anything else (a privilege, a function
+// the server does not have) is amcheck not running, not the data failing.
+func pgCorrupt(err error) bool {
 	var pe *pgconn.PgError
-	return errors.As(err, &pe) && pe.Code == "42501"
+	return errors.As(err, &pe) && (pe.Code == "XX001" || pe.Code == "XX002")
 }
 
 // dataChecksDigest is the SHA-256 of the data checks' results, which the

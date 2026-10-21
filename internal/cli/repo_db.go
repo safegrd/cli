@@ -892,10 +892,7 @@ func verifyRepoDatabase(ctx context.Context, rs *repoSnapshot, privateKey, sandb
 	}
 	noteDrillDamage(resolveStateDir("", cfg), rs.SurfaceID, rs, report)
 	for _, a := range report.Assertions {
-		status := "PASS"
-		if !a.Passed {
-			status = "FAIL"
-		}
+		status := assertionWord(a)
 		fmt.Printf("   [%s] %s (Expected: %s, Actual: %s)\n", status, a.Name, a.Expected, a.Actual)
 		if !a.Passed && a.Message != "" {
 			fmt.Printf("          %s\n", a.Message)

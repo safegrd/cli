@@ -257,10 +257,7 @@ func verifyWatchedSurface(ctx context.Context, surfaceID, sandboxURL string) err
 		return err
 	}
 	for _, a := range report.Assertions {
-		status := "PASS"
-		if !a.Passed {
-			status = "FAIL"
-		}
+		status := assertionWord(a)
 		if a.Message != "" {
 			fmt.Printf("   [%s] %s: %s (Expected: %s, Actual: %s)\n", status, a.Name, a.Message, a.Expected, a.Actual)
 		} else {
