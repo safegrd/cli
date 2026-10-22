@@ -837,7 +837,19 @@ func InspectMySQLArchive(ctx context.Context, src io.Reader) (*DryRestoreResult,
 type MySQLRestorer struct {
 	targetURL string
 	Warn      func(string)
+	// Parallel, above 1, with Sections set, loads each section over its own
+	// connection, that many at a time, each replaying Head first for the
+	// dump's session settings; then the stream (the tail: routines,
+	// events, views) over one more, behind Head too.
+	Parallel int
+	Head     []byte
+	Sections []TableData
+	// LoadedInParallel is set once the sections started loading at once.
+	LoadedInParallel bool
 }
+
+// SetParallel sets how many connections load the sections at once.
+func (r *MySQLRestorer) SetParallel(n int) { r.Parallel = n }
 
 // NewMySQLRestorer creates a restorer for a mysql:// URL.
 func NewMySQLRestorer(targetURL string) *MySQLRestorer {
@@ -876,20 +888,41 @@ func (r *MySQLRestorer) Restore(ctx context.Context, src io.Reader) (*model.Snap
 	defer cleanup()
 
 	counter := newMySQLDumpCounter()
-	var stderr bytes.Buffer
-	var definers *definerRewriter
-	manifest, sawDump, err := mysqlArchive(src, func(dump io.Reader) error {
+	var mu sync.Mutex
+	rewritten := 0
+	// load runs the client over in, a dump or part of one, every DEFINER in
+	// it set to the restoring user.
+	load := func(in io.Reader, what string) error {
+		var stderr bytes.Buffer
 		cmd := exec.CommandContext(ctx, tool.Path, "--defaults-extra-file="+cnf,
 			"--binary-mode", "--default-character-set=utf8mb4", "--database="+target.Database)
-		definers = newDefinerRewriter(io.TeeReader(dump, counter))
+		definers := newDefinerRewriter(in)
 		cmd.Stdin = definers
 		cmd.Stderr = &stderr
-		if err := cmd.Run(); err != nil {
+		err := cmd.Run()
+		mu.Lock()
+		rewritten += definers.rewritten
+		mu.Unlock()
+		if err != nil {
 			msg := toolMessage(stderr.String())
 			if len(msg) > 500 {
 				msg = msg[:500] + "..."
 			}
-			return fmt.Errorf("%s failed: %v: %s. The target may now hold part of the snapshot; drop and recreate it before retrying", tool, err, msg)
+			return fmt.Errorf("%s failed%s: %v: %s. The target may now hold part of the snapshot; drop and recreate it before retrying", tool, what, err, msg)
+		}
+		return nil
+	}
+	manifest, sawDump, err := mysqlArchive(src, func(dump io.Reader) error {
+		in := io.Reader(io.TeeReader(dump, counter))
+		if r.Parallel > 1 && len(r.Sections) > 0 {
+			r.LoadedInParallel = true
+			if err := r.loadSections(ctx, load); err != nil {
+				return err
+			}
+			in = io.MultiReader(bytes.NewReader(r.Head), in)
+		}
+		if err := load(in, ""); err != nil {
+			return err
 		}
 		// Drain what the client did not read, so the archive can be finished.
 		_, err := io.Copy(counter, dump)
@@ -913,11 +946,54 @@ func (r *MySQLRestorer) Restore(ctx context.Context, src io.Reader) (*model.Snap
 			return nil, fmt.Errorf("%s loaded %d rows; the snapshot recorded %d", t.TableName, counts[t.TableName], t.RowCount)
 		}
 	}
-	if definers != nil && definers.rewritten > 0 && r.Warn != nil {
+	if rewritten > 0 && r.Warn != nil {
 		r.Warn(fmt.Sprintf("%d view, trigger, routine or event definer(s) were set to the restoring user: they now run as it, "+
-			"not as the account that created them. Recreating another account's definer needs SET_USER_ID, which managed servers do not grant", definers.rewritten))
+			"not as the account that created them. Recreating another account's definer needs SET_USER_ID, which managed servers do not grant", rewritten))
 	}
 	return manifest, nil
+}
+
+// loadSections loads r.Sections over r.Parallel connections at once, each
+// behind the head. The first failure stops the sections not yet started.
+func (r *MySQLRestorer) loadSections(ctx context.Context, load func(io.Reader, string) error) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var mu sync.Mutex
+	var first error
+	work := make(chan TableData)
+	var wg sync.WaitGroup
+	for n := 0; n < min(r.Parallel, len(r.Sections)); n++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for s := range work {
+				if ctx.Err() != nil {
+					continue
+				}
+				pr, pw := io.Pipe()
+				go func() { _ = pw.CloseWithError(s.Open(pw)) }()
+				err := load(io.MultiReader(bytes.NewReader(r.Head), pr), " loading "+s.Table)
+				_ = pr.CloseWithError(io.ErrClosedPipe)
+				if err != nil {
+					mu.Lock()
+					if first == nil {
+						first = err
+					}
+					mu.Unlock()
+					cancel()
+				}
+			}
+		}()
+	}
+	for _, s := range r.Sections {
+		if ctx.Err() != nil {
+			break
+		}
+		work <- s
+	}
+	close(work)
+	wg.Wait()
+	return first
 }
 
 var definerRe = regexp.MustCompile("DEFINER=`(?:[^`]|``)*`@`(?:[^`]|``)*`")

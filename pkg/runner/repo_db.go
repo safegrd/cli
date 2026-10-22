@@ -151,6 +151,21 @@ func (v *Verifier) RunRepoDatabaseDrill(ctx context.Context, d RepoDrill, privat
 			streamFiles, tables = dbrun.SplitRows(ctx, r, idx, files)
 		}
 	}
+	// So does a MySQL run's, a section per connection behind the dump's head.
+	var mysqlHead []byte
+	var mysqlSections []dump.TableData
+	if sandboxURL != "" && kind == model.SurfaceTypeMySQL {
+		want := v.Parallel
+		if want == 0 {
+			want = 4
+		}
+		if parallel = dump.MySQLParallelLimit(ctx, sandboxURL, want); parallel > 1 {
+			var err error
+			if streamFiles, mysqlHead, mysqlSections, err = dbrun.SplitMySQL(ctx, r, idx, files); err != nil {
+				return fail("RestoreIntegrity", "every file of the run matches its SHA-256", err.Error(), "the run could not be read back: "+err.Error())
+			}
+		}
+	}
 	pr, pw := io.Pipe()
 	archived := make(chan error, 1)
 	go func() {
@@ -229,7 +244,13 @@ func (v *Verifier) RunRepoDatabaseDrill(ctx context.Context, d RepoDrill, privat
 			if want == 0 {
 				want = 4
 			}
+			if kind == model.SurfaceTypeMySQL {
+				want = parallel
+			}
 			p.SetParallel(want)
+		}
+		if my, ok := restorer.(*dump.MySQLRestorer); ok {
+			my.Head, my.Sections = mysqlHead, mysqlSections
 		}
 		_, restoreErr = restorer.Restore(ctx, pr)
 	default:

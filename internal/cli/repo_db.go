@@ -900,16 +900,32 @@ func restoreRepoEngine(ctx context.Context, rs *repoSnapshot, privateKey, target
 		return err
 	}
 	started := time.Now()
+	// A MySQL run's tables load over several connections at once, each
+	// replaying the dump's head; the routines, events and views after.
+	streamFiles := files
+	var head []byte
+	var sections []dump.TableData
+	if rs.Meta.SurfaceType == model.SurfaceTypeMySQL {
+		if parallel = dump.MySQLParallelLimit(ctx, targetURL, parallel); parallel > 1 {
+			if streamFiles, head, sections, err = dbrun.SplitMySQL(ctx, r, idx, files); err != nil {
+				return fmt.Errorf("reading the snapshot back: %w", err)
+			}
+		}
+	}
 	pr, pw := io.Pipe()
 	archived := make(chan error, 1)
 	go func() {
-		err := dbrun.Archive(ctx, r, idx, files, pw)
+		err := dbrun.Archive(ctx, r, idx, streamFiles, pw)
 		_ = pw.CloseWithError(err)
 		archived <- err
 	}()
 	restorer := dump.NewRestorer(dump.EngineTypeNative, targetURL)
 	if p, ok := restorer.(interface{ SetParallel(int) }); ok {
 		p.SetParallel(parallel)
+	}
+	my, _ := restorer.(*dump.MySQLRestorer)
+	if my != nil {
+		my.Head, my.Sections = head, sections
 	}
 	got, err := restorer.Restore(ctx, pr)
 	_, _ = io.Copy(io.Discard, pr) // the rest of the run, checked to its end
@@ -918,6 +934,9 @@ func restoreRepoEngine(ctx context.Context, rs *repoSnapshot, privateKey, target
 	}
 	if err != nil {
 		return fmt.Errorf("restore failed: %w", err)
+	}
+	if my != nil && my.LoadedInParallel {
+		fmt.Printf("   Loaded:         %d tables and views at once over %d connections, then the routines, events and final views\n", len(sections), parallel)
 	}
 	_, tableWord, tablesWord, rowsWord := runUnit(rs.Meta.SurfaceType)
 	var rows int64

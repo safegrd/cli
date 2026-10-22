@@ -406,6 +406,47 @@ func ReadManifest(ctx context.Context, r *read.Repo, idx read.Index, files []rea
 	return nil, fmt.Errorf("the run has no manifest")
 }
 
+// SplitMySQL takes a MySQL run's object sections out of files, for a
+// restore that loads them over several connections at once: rest is what
+// the stream still carries (the tail and the manifest), head is the dump's
+// head, which every connection replays first for its session settings, and
+// each section's Open writes it. Largest first. A run of another shape, or
+// one with no tail, is returned whole with no sections.
+func SplitMySQL(ctx context.Context, r *read.Repo, idx read.Index, files []read.Item) (rest []read.Item, head []byte, sections []dump.TableData, err error) {
+	if ShapeOf(files) != ShapeMySQL {
+		return files, nil, nil, nil
+	}
+	var headItem *read.Item
+	var tail bool
+	var items []read.Item
+	for i, it := range files {
+		switch {
+		case it.Path == dump.MySQLHeadEntry:
+			headItem = &files[i]
+		case dump.MySQLRunTable(it.Path) != "":
+			items = append(items, it)
+		default:
+			tail = tail || it.Path == dump.MySQLTailEntry
+			rest = append(rest, it)
+		}
+	}
+	if headItem == nil || !tail || len(items) == 0 {
+		return files, nil, nil, nil
+	}
+	var b bytes.Buffer
+	if err := r.Cat(ctx, idx, headItem.Node, &b); err != nil {
+		return nil, nil, nil, err
+	}
+	sort.SliceStable(items, func(i, j int) bool { return items[i].Node.Size > items[j].Node.Size })
+	for _, it := range items {
+		node := it.Node
+		sections = append(sections, dump.TableData{Table: dump.MySQLRunTable(it.Path), Open: func(w io.Writer) error {
+			return r.Cat(ctx, idx, node, w)
+		}})
+	}
+	return rest, b.Bytes(), sections, nil
+}
+
 // SplitRows takes a PostgreSQL run's table files out of files, for a
 // restore that loads them over several connections at once: rest is what
 // the stream still carries, and each table's Open writes its chunks in
