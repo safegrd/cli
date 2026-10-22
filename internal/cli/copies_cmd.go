@@ -21,6 +21,7 @@ surface's own storage holds within the copy's retention the copy lacks.
 'copies sync' writes them, from the surface's own storage to the copy, as the
 daemon's catch-up does: an archive is checked for first and never written
 twice, and a run of an incremental repository is copied object by object.
+Each snapshot it writes gets a recovery document naming the copy's bucket.
 Reading back out of a bucket costs what its provider charges for egress.`,
 	}
 	var surfaceID, copyName string

@@ -362,6 +362,16 @@ func exportEpoch(ctx context.Context, src sink.Backend, e sink.EpochInfo, dst *s
 // exportEpochLocked is exportEpoch with the lock each copied object gets,
 // at least a day from now.
 func exportEpochLocked(ctx context.Context, src sink.Backend, e sink.EpochInfo, dst *sink.Direct, surface string, lock time.Time) (copied, already int, err error) {
+	return exportEpochObjects(ctx, src, e, dst, surface, lock, nil)
+}
+
+// exportEpochObjects is exportEpochLocked with own, which may write an
+// object of the destination's own in place of the source's: for a source
+// key own returns a render, or nil to copy the source's bytes. An object of
+// its own is written once and never over one already there (under Object
+// Lock a second write is a second locked version). A render that fails
+// leaves that key out and the rest copied; the render says it.
+func exportEpochObjects(ctx context.Context, src sink.Backend, e sink.EpochInfo, dst *sink.Direct, surface string, lock time.Time, own func(key string) func() ([]byte, error)) (copied, already int, err error) {
 	objs, err := src.List(ctx, e, "")
 	if err != nil {
 		return 0, 0, err
@@ -382,6 +392,23 @@ func exportEpochLocked(ctx context.Context, src sink.Backend, e sink.EpochInfo, 
 	for _, o := range objs {
 		rel := strings.TrimPrefix(o.Key, e.Prefix)
 		key := dstPrefix + rel
+		if own != nil {
+			if render := own(o.Key); render != nil {
+				if _, ok := have[key]; ok {
+					already++
+					continue
+				}
+				body, rerr := render()
+				if rerr != nil {
+					continue
+				}
+				if err := dst.S.Put(ctx, key, body, md5.Sum(body), lock); err != nil {
+					return copied, already, fmt.Errorf("%s: %w", key, err)
+				}
+				copied++
+				continue
+			}
+		}
 		if size, ok := have[key]; ok && size == o.Size {
 			already++
 			continue

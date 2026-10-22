@@ -238,6 +238,9 @@ func syncCopies(ctx context.Context, c *config.CLIConfig, s *config.SurfaceConfi
 	if err != nil {
 		return nil, nil, fmt.Errorf("opening the surface's own storage: %w", err)
 	}
+	// Each copy gets its own recovery document, naming its own bucket,
+	// sealed to the surface's recipient where the surface seals them.
+	pubKey := surfacePublicKey(c, s)
 	var behind []copyBehind
 	var reported []model.SnapshotCopy
 	for _, rc := range copies {
@@ -249,13 +252,13 @@ func syncCopies(ctx context.Context, c *config.CLIConfig, s *config.SurfaceConfi
 			continue
 		}
 		setNode(dst, nodeID, nodeID)
-		missing, wrote, err := syncArchives(ctx, primary, dst, rc, dryRun)
+		missing, wrote, err := syncArchives(ctx, primary, dst, rc, nodeID, recoveryDocSealTo(s, pubKey), dryRun)
 		b.missing += missing
 		reported = append(reported, wrote...)
 		if err != nil {
 			b.err = err
 		}
-		rmissing, rwrote, err := syncRepos(ctx, c, primaryCfg, rc, s.ID, nodeID, dryRun)
+		rmissing, rwrote, err := syncRepos(ctx, c, primaryCfg, rc, s.ID, nodeID, pubKey, dryRun)
 		b.missing += rmissing
 		reported = append(reported, rwrote...)
 		if err != nil && b.err == nil {
@@ -267,7 +270,9 @@ func syncCopies(ctx context.Context, c *config.CLIConfig, s *config.SurfaceConfi
 }
 
 // syncArchives copies the archives the primary holds and the copy lacks.
-func syncArchives(ctx context.Context, primary, dst storage.StorageProvider, rc resolvedCopy, dryRun bool) (missing int, wrote []model.SnapshotCopy, err error) {
+// sealTo is the recipient each copy's recovery document is sealed to, or ""
+// to write it as text.
+func syncArchives(ctx context.Context, primary, dst storage.StorageProvider, rc resolvedCopy, nodeID, sealTo string, dryRun bool) (missing int, wrote []model.SnapshotCopy, err error) {
 	ids, err := primary.ListSnapshots(ctx)
 	if err != nil {
 		return 0, nil, fmt.Errorf("listing the surface's own storage: %w", err)
@@ -299,7 +304,7 @@ func syncArchives(ctx context.Context, primary, dst storage.StorageProvider, rc 
 		if dryRun {
 			continue
 		}
-		sc, cerr := copyArchive(ctx, primary, dst, id, rc, taken)
+		sc, cerr := copyArchive(ctx, primary, dst, id, rc, nodeID, sealTo, taken)
 		wrote = append(wrote, sc)
 		if cerr != nil {
 			err = cerr
@@ -312,8 +317,11 @@ func syncArchives(ctx context.Context, primary, dst storage.StorageProvider, rc 
 
 // copyArchive writes one archive and its manifest into a copy, locked from
 // when the snapshot was taken for the copy's retention, and holds it to the
-// digest recorded at backup time.
-func copyArchive(ctx context.Context, src, dst storage.StorageProvider, id string, rc resolvedCopy, taken time.Time) (model.SnapshotCopy, error) {
+// digest recorded at backup time. The copy's manifest and recovery document
+// name the copy's bucket and its own lock, not the primary's. A recovery
+// document that cannot be written is said and leaves the copy held: the
+// copy restores without it.
+func copyArchive(ctx context.Context, src, dst storage.StorageProvider, id string, rc resolvedCopy, nodeID, sealTo string, taken time.Time) (model.SnapshotCopy, error) {
 	sc := model.SnapshotCopy{SnapshotID: id, Bucket: rc.name, WORMMode: string(rc.cfg.WORMMode), State: model.CopyFailed}
 	until := taken.AddDate(0, 0, rc.cfg.RetentionDays)
 	if !until.After(time.Now().Add(time.Minute)) {
@@ -339,20 +347,35 @@ func copyArchive(ctx context.Context, src, dst storage.StorageProvider, id strin
 	}
 	m := *meta
 	m.StorageURI = uri
+	if rc.cfg.WORMMode != "" {
+		m.WORMMode = string(rc.cfg.WORMMode)
+	}
 	if !until.IsZero() {
 		m.WORMRetentionUntil = until
+	}
+	if rc.cfg.WORMMode == config.WORMModeNone {
+		m.WORMRetentionUntil = time.Time{}
 	}
 	if err := dst.UploadMetadata(ctx, id, &m); err != nil {
 		sc.Error = "writing its manifest: " + err.Error()
 		return sc, fmt.Errorf("%s: %s", id, sc.Error)
 	}
 	sc.State, sc.StorageURI = model.CopyHeld, uri
+	doc, sealed, derr := renderRecoveryDoc(&m, recoveryLocation(rc.cfg, nodeID), sealTo)
+	if derr == nil {
+		derr = dst.UploadRecoveryDoc(ctx, id, doc, sealed, until)
+	}
+	if derr != nil {
+		fmt.Fprintf(os.Stderr, "Warning: the recovery document of %s beside copy %s was not written: %v. The copy holds the backup and its manifest.\n", id, rc.name, derr)
+	}
 	return sc, nil
 }
 
 // syncRepos copies the epochs of the surface's incremental repository the
-// copy does not hold in full.
-func syncRepos(ctx context.Context, c *config.CLIConfig, primaryCfg config.StorageConfig, rc resolvedCopy, surfaceID, nodeID string, dryRun bool) (missing int, wrote []model.SnapshotCopy, err error) {
+// copy does not hold in full. Each snapshot's recovery document is rendered
+// for the copy, naming its bucket, instead of copied from the primary;
+// pubKey seals the one the primary holds sealed.
+func syncRepos(ctx context.Context, c *config.CLIConfig, primaryCfg config.StorageConfig, rc resolvedCopy, surfaceID, nodeID, pubKey string, dryRun bool) (missing int, wrote []model.SnapshotCopy, err error) {
 	src, err := repoBackend(ctx, c, primaryCfg)
 	if err != nil {
 		return 0, nil, nil // no repository here
@@ -377,6 +400,15 @@ func syncRepos(ctx context.Context, c *config.CLIConfig, primaryCfg config.Stora
 		if lerr != nil {
 			return missing, wrote, lerr
 		}
+		var snaps []string
+		metas := map[string]*model.SnapshotMetadata{}
+		for _, r := range rows {
+			if r.SurfaceID == surfaceID && r.Epoch.Epoch.EpochID == e.Epoch.EpochID {
+				snaps = append(snaps, r.Meta.SnapshotID)
+				metas[r.Meta.SnapshotID] = r.Meta
+			}
+		}
+		docs := recoveryDocKeys(e.Prefix, snaps)
 		have := map[string]int64{}
 		prefix := sink.EpochPrefix(dst.S.Root(), surfaceID, e.Epoch.EpochID)
 		if existing, lerr := dst.S.List(ctx, prefix+"/"); lerr == nil {
@@ -386,18 +418,15 @@ func syncRepos(ctx context.Context, c *config.CLIConfig, primaryCfg config.Stora
 		}
 		lacking := 0
 		for _, o := range objs {
-			if size, ok := have[prefix+strings.TrimPrefix(o.Key, e.Prefix)]; !ok || size != o.Size {
+			size, ok := have[prefix+strings.TrimPrefix(o.Key, e.Prefix)]
+			// A copy's recovery document is its own, so its size is not
+			// the primary's.
+			if _, doc := docs[o.Key]; !ok || (!doc && size != o.Size) {
 				lacking++
 			}
 		}
 		if lacking == 0 {
 			continue
-		}
-		var snaps []string
-		for _, r := range rows {
-			if r.SurfaceID == surfaceID && r.Epoch.Epoch.EpochID == e.Epoch.EpochID {
-				snaps = append(snaps, r.Meta.SnapshotID)
-			}
 		}
 		missing += max(len(snaps), 1)
 		if dryRun {
@@ -410,7 +439,28 @@ func syncRepos(ctx context.Context, c *config.CLIConfig, primaryCfg config.Stora
 		if until.Before(e.Epoch.OpeningRetainUntil) {
 			until = e.Epoch.OpeningRetainUntil
 		}
-		_, _, cerr := exportEpochLocked(ctx, src, e, dst, surfaceID, until)
+		_, _, cerr := exportEpochObjects(ctx, src, e, dst, surfaceID, until, func(key string) func() ([]byte, error) {
+			d, ok := docs[key]
+			if !ok {
+				return nil
+			}
+			return func() ([]byte, error) {
+				sealTo, err := "", error(nil)
+				if d.sealed {
+					if sealTo = pubKey; pubKey == "" {
+						err = fmt.Errorf("the surface has no public key to seal it to")
+					}
+				}
+				var body []byte
+				if err == nil {
+					body, err = copyRepoDoc(rc.cfg, nodeID, surfaceID, e.Epoch, until, metas[d.id], sealTo)
+				}
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: the recovery document of %s beside copy %s was not written: %v. The copy holds the backup and its manifest.\n", d.id, rc.name, err)
+				}
+				return body, err
+			}
+		})
 		state, msg := model.CopyHeld, ""
 		if cerr != nil {
 			state, msg, err = model.CopyFailed, cerr.Error(), cerr
@@ -638,21 +688,55 @@ func setRunCopyDocs(m *sink.Multi, copies []resolvedCopy, nodeID, surfaceID, sea
 		cfgs[rc.name] = rc.cfg
 	}
 	m.SetCopyRecoveryDoc(func(name string, e format.Epoch, until time.Time) ([]byte, error) {
-		mm := meta()
-		if mm == nil {
-			return nil, fmt.Errorf("the run recorded no metadata")
-		}
-		cfg := cfgs[name]
-		c := *mm
-		loc := recoveryLocation(cfg, nodeID)
-		loc.Prefix = path.Join(loc.Prefix, "repo", surfaceID, e.EpochID)
-		c.StorageURI, c.WORMMode, c.WORMRetentionUntil = copyRepoURI(cfg, loc.Prefix), string(cfg.WORMMode), time.Time{}
-		if cfg.WORMMode != config.WORMModeNone {
-			c.WORMRetentionUntil = until
-		}
-		doc, _, err := renderRecoveryDoc(&c, loc, sealTo)
-		return doc, err
+		return copyRepoDoc(cfgs[name], nodeID, surfaceID, e, until, meta(), sealTo)
 	})
+}
+
+// copyRepoDoc is the recovery document of a snapshot in a run of a
+// repository, beside its copy in cfg's bucket: that bucket's address of the
+// epoch and its own lock until until, never a lock under worm_mode NONE.
+func copyRepoDoc(cfg config.StorageConfig, nodeID, surfaceID string, e format.Epoch, until time.Time, mm *model.SnapshotMetadata, sealTo string) ([]byte, error) {
+	if mm == nil {
+		return nil, fmt.Errorf("the run recorded no metadata")
+	}
+	c := *mm
+	loc := recoveryLocation(cfg, nodeID)
+	loc.Prefix = path.Join(loc.Prefix, "repo", surfaceID, e.EpochID)
+	c.StorageURI, c.WORMMode, c.WORMRetentionUntil = copyRepoURI(cfg, loc.Prefix), string(cfg.WORMMode), time.Time{}
+	if cfg.WORMMode != config.WORMModeNone {
+		c.WORMRetentionUntil = until
+	}
+	doc, _, err := renderRecoveryDoc(&c, loc, sealTo)
+	return doc, err
+}
+
+// recoveryDoc names a recovery document's snapshot and whether it is sealed.
+type recoveryDoc struct {
+	id     string
+	sealed bool
+}
+
+// recoveryDocKeys is where each snapshot's recovery document sits in an
+// epoch at prefix, in either form.
+func recoveryDocKeys(prefix string, ids []string) map[string]recoveryDoc {
+	out := map[string]recoveryDoc{}
+	for _, id := range ids {
+		if k, err := sink.ObjectKey(prefix, sink.KindRecovery, id); err == nil {
+			out[k] = recoveryDoc{id: id}
+		}
+		if k, err := sink.ObjectKey(prefix, sink.KindRecoverySealed, id); err == nil {
+			out[k] = recoveryDoc{id: id, sealed: true}
+		}
+	}
+	return out
+}
+
+// surfacePublicKey is the recipient a surface's backups are sealed to.
+func surfacePublicKey(c *config.CLIConfig, s *config.SurfaceConfig) string {
+	if s != nil && s.Encryption != nil && s.Encryption.PublicKey != "" {
+		return s.Encryption.PublicKey
+	}
+	return c.Encryption.PublicKey
 }
 
 // noteRunCopies records on a run's record what each copy came to, and says
