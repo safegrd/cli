@@ -473,7 +473,7 @@ func describeContents(meta *model.SnapshotMetadata) string {
 // The column was previously printed unconditionally. A snapshot written
 // at worm_mode NONE has no WORM lock applied.
 func describeRetention(meta *model.SnapshotMetadata, storageCfg config.StorageConfig) string {
-	if storageCfg.Type == config.StorageTypeLocal && !meta.WORMRetentionUntil.IsZero() {
+	if (storageCfg.Type == config.StorageTypeLocal || storageCfg.Type == config.StorageTypeSFTP) && !meta.WORMRetentionUntil.IsZero() {
 		// A directory enforces nothing, whatever the sidecar says (older
 		// ones say COMPLIANCE, the config's default; newer ones NONE): the
 		// date is only safegrd's own refusal to delete before it.
@@ -535,6 +535,8 @@ func noSnapshotsLine(c config.StorageConfig) string {
 			c.Bucket, strings.Trim(c.Prefix, "/"))
 	case config.StorageTypeLocal:
 		return fmt.Sprintf("No snapshots in %s.", c.LocalPath)
+	case config.StorageTypeSFTP:
+		return fmt.Sprintf("No snapshots in %s. If the server holds backups in another directory, set storage.sftp.path to it.", sftpWhere(c))
 	}
 	return "No snapshots found in storage."
 }

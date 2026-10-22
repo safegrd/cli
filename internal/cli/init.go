@@ -135,6 +135,11 @@ they are, so it can run after 'safegrd enroll'.`,
 						"  (back up the key it currently names first)", targetPath)
 			}
 
+			if config.StorageType(storageType) == config.StorageTypeSFTP {
+				return fmt.Errorf("--storage sftp: init does not write an SFTP storage block. Run init with --storage local, " +
+					"then replace the storage block in the config with the sftp one at safegrd.dev/docs/storage. Nothing was written")
+			}
+
 			configDir, err := setupDir()
 			if err != nil {
 				return err

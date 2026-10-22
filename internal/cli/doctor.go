@@ -152,8 +152,13 @@ func runValidationChecks(path string, c *config.CLIConfig) []CheckResult {
 			"never the last known good one). The key needs s3:DeleteObjectVersion and s3:GetObjectRetention; " +
 			"run 'safegrd prune --dry-run' to see what it would do"
 		status := "PASS"
-		if c.Storage.Type != config.StorageTypeS3 {
-			status, msg = "WARN", "set, but storage.type is not s3: only your own S3 bucket is pruned"
+		switch c.Storage.Type {
+		case config.StorageTypeS3:
+		case config.StorageTypeSFTP:
+			msg = "on: the daemon deletes snapshots from the SFTP server a day after the date each one is kept until " +
+				"(never the newest, never the last known good one); run 'safegrd prune --dry-run' to see what it would do"
+		default:
+			status, msg = "WARN", "set, but storage.type is not s3 or sftp: only your own S3 bucket or SFTP server is pruned"
 		}
 		results = append(results, CheckResult{Name: "Expire after lock", Status: status, Message: msg})
 	}
@@ -213,6 +218,15 @@ func runValidationChecks(path string, c *config.CLIConfig) []CheckResult {
 			Status:  "PASS",
 			Message: "SafeGrd hosted storage (the remote server leases it for each run)",
 		})
+	} else if c.Storage.Type == config.StorageTypeSFTP {
+		if err := c.Storage.ValidateSFTP("storage"); err != nil {
+			results = append(results, CheckResult{Name: "Storage Configuration", Status: "FAIL", Message: err.Error()})
+		} else {
+			results = append(results, CheckResult{Name: "Storage Configuration", Status: "PASS",
+				Message: fmt.Sprintf("SFTP server %s", sftpWhere(c.Storage))})
+			results = append(results, CheckResult{Name: "Object Lock", Status: "WARN",
+				Message: "an SFTP server has no Object Lock, so nothing locks these backups; each is kept until the date it records"})
+		}
 	} else if _, err := os.Stat(resolvedPath); err != nil {
 		// No config: the directory is a default nobody chose, and a PASS
 		// read as if backups had somewhere to go.

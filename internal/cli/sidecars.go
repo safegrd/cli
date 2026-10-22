@@ -98,6 +98,16 @@ func recoveryLocation(c config.StorageConfig, nodeID string) dump.Location {
 			p = path.Join(p, nodeID)
 		}
 		return dump.Location{Kind: "local", Prefix: p}
+	case config.StorageTypeSFTP:
+		if c.SFTP == nil {
+			return dump.Location{Kind: "sftp"}
+		}
+		p := strings.TrimSuffix(c.SFTP.Path, "/")
+		if nodeID != "" {
+			p = path.Join(p, nodeID)
+		}
+		return dump.Location{Kind: "sftp", Host: c.SFTP.Host, Port: c.SFTP.Port, User: c.SFTP.User,
+			Prefix: p, ConfigPrefix: c.SFTP.Path}
 	}
 	configPrefix := strings.Trim(c.Prefix, "/")
 	prefix := configPrefix

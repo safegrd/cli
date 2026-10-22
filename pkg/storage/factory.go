@@ -25,6 +25,8 @@ func NewProvider(ctx context.Context, cfg config.StorageConfig) (StorageProvider
 		return prov, nil
 	case config.StorageTypeS3:
 		return NewS3Storage(ctx, cfg)
+	case config.StorageTypeSFTP:
+		return NewSFTPStorage(cfg)
 	case config.StorageTypeHosted:
 		return nil, fmt.Errorf("hosted storage is leased from the remote server at run time, and this " +
 			"command did not get a lease: enroll the host (`safegrd enroll`) so it has a node token")

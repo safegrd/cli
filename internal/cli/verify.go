@@ -260,6 +260,8 @@ not reported as a drill.
 					fmt.Printf("   Storage:        s3://%s\n", storageCfg.Bucket)
 				case config.StorageTypeHosted:
 					fmt.Printf("   Storage:        SafeGrd hosted storage\n")
+				case config.StorageTypeSFTP:
+					fmt.Printf("   Storage:        %s\n", sftpWhere(storageCfg))
 				default:
 					fmt.Printf("   Storage:        %s (a directory on this host)\n", storageCfg.LocalPath)
 				}

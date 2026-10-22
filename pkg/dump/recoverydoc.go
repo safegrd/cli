@@ -17,7 +17,7 @@ import (
 
 // Location is where a snapshot is, with nothing that opens it.
 type Location struct {
-	// Kind is "s3", "local" or "hosted".
+	// Kind is "s3", "local", "sftp" or "hosted".
 	Kind     string
 	Bucket   string
 	Endpoint string
@@ -27,8 +27,12 @@ type Location struct {
 	// epoch's folder. For a directory, the directory.
 	Prefix string
 	// ConfigPrefix is the storage prefix as a config names it, without the
-	// node segment the CLI adds.
+	// node segment the CLI adds. For an SFTP server, the directory.
 	ConfigPrefix string
+	// Host, Port and User name an SFTP server; Port 0 is 22.
+	Host string
+	Port int
+	User string
 }
 
 // RenderRecoveryDoc writes the recovery document for meta at loc.
@@ -67,6 +71,13 @@ func RenderRecoveryDoc(meta *model.SnapshotMetadata, loc Location) []byte {
 	case "local":
 		w("Directory: %s", loc.Prefix)
 		w("on the host that took the backup.")
+	case "sftp":
+		w("SFTP server: %s", loc.Host)
+		if loc.Port != 0 && loc.Port != 22 {
+			w("Port:        %d", loc.Port)
+		}
+		w("User:        %s", loc.User)
+		w("Directory:   %s/", strings.TrimSuffix(loc.Prefix, "/"))
 	default:
 		w("Bucket:   %s", loc.Bucket)
 		if loc.Endpoint != "" {
@@ -92,6 +103,8 @@ func RenderRecoveryDoc(meta *model.SnapshotMetadata, loc Location) []byte {
 		}
 	}
 	switch {
+	case loc.Kind == "sftp":
+		w("Not locked: an SFTP server has no Object Lock.")
 	case meta.WORMMode == "NONE":
 		w("Not locked: this storage has no Object Lock.")
 	case !meta.WORMRetentionUntil.IsZero():
@@ -161,6 +174,27 @@ func RenderRecoveryDoc(meta *model.SnapshotMetadata, loc Location) []byte {
 		if meta.NodeID != "" {
 			w("    node_id: %s", meta.NodeID)
 		}
+		w("Then run:")
+	case "sftp":
+		w("On the host that took the backup, its config already names this storage.")
+		w("Elsewhere, put this in ~/.safegrd/config.yaml, with the account's password")
+		w("in SFTP_PASSWORD (or private_key: file:/path/to/key in its place), and the")
+		w("server's host key in ~/.ssh/known_hosts:")
+		w("  storage:")
+		w("    type: sftp")
+		w("    worm_mode: NONE")
+		if meta.NodeID != "" {
+			w("    node_id: %s", meta.NodeID)
+		}
+		w("    sftp:")
+		w("      host: %s", loc.Host)
+		if loc.Port != 0 && loc.Port != 22 {
+			w("      port: %d", loc.Port)
+		}
+		w("      user: %s", loc.User)
+		w("      path: %s", loc.ConfigPrefix)
+		w("      password: env:SFTP_PASSWORD")
+		w("      known_hosts: ~/.ssh/known_hosts")
 		w("Then run:")
 	case "local":
 		w("On the host that took the backup, run:")

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -28,6 +29,9 @@ const (
 	// leases a credential for this organization's prefix at run time, so the
 	// config holds no bucket and no secret.
 	StorageTypeHosted StorageType = "hosted"
+	// StorageTypeSFTP is a directory on an SSH server, written over SFTP.
+	// It has no Object Lock, so it takes worm_mode: NONE and nothing else.
+	StorageTypeSFTP StorageType = "sftp"
 )
 
 // WORMMode specifies Object Lock enforcement level.
@@ -84,6 +88,91 @@ type StorageConfig struct {
 	// bucket's own key and no remote server: Prefix is the organization's
 	// folder, orgs/<org-id>/safegrd. It only reads; a backup is refused.
 	Layout string `yaml:"layout,omitempty" json:"layout,omitempty"`
+	// SFTP is the server a type: sftp storage writes to.
+	SFTP *SFTPConfig `yaml:"sftp,omitempty" json:"sftp,omitempty"`
+}
+
+// SFTPConfig is an SSH server that keeps the backups in a directory.
+//
+// The server's host key is always checked, against KnownHosts or the pinned
+// HostKey; a server that matches neither is refused. Password and
+// PrivateKey take env:VAR or file:/path, like every secret in the config.
+type SFTPConfig struct {
+	Host string `yaml:"host" json:"host"`
+	// Port is 22 when unset.
+	Port int    `yaml:"port,omitempty" json:"port,omitempty"`
+	User string `yaml:"user" json:"user"`
+	// Path is the directory backups go in, absolute or relative to the
+	// user's login directory.
+	Path     string `yaml:"path" json:"path"`
+	Password string `yaml:"password,omitempty" json:"-"`
+	// PrivateKey is the key itself (OpenSSH or PEM), usually file:/path to
+	// it. A key protected by a passphrase is not read.
+	PrivateKey string `yaml:"private_key,omitempty" json:"-"`
+	// KnownHosts is an OpenSSH known_hosts file that lists the server.
+	KnownHosts string `yaml:"known_hosts,omitempty" json:"known_hosts,omitempty"`
+	// HostKey pins the server's key by its SHA256 fingerprint, as
+	// `ssh-keygen -lf` prints it: SHA256:...
+	HostKey string `yaml:"host_key,omitempty" json:"host_key,omitempty"`
+}
+
+// URL names the server and directory, with no secret:
+// sftp://user@host:port/path, the path after ~/ when it is relative to the
+// login directory.
+func (s *SFTPConfig) URL() string {
+	port := s.Port
+	if port == 0 {
+		port = 22
+	}
+	p := strings.TrimSuffix(s.Path, "/")
+	if !strings.HasPrefix(p, "/") {
+		p = "/~/" + p
+	}
+	return fmt.Sprintf("sftp://%s@%s%s", s.User, net.JoinHostPort(s.Host, strconv.Itoa(port)), p)
+}
+
+// ValidateSFTP refuses an sftp storage block that cannot be written as
+// configured: no server, no way to sign in, no way to check the server's
+// key, or a worm_mode other than NONE. An SFTP server has no Object Lock, so
+// a lock mode would promise something nothing enforces. It returns nil for
+// any other storage type.
+func (c *StorageConfig) ValidateSFTP(where string) error {
+	if c.Type != StorageTypeSFTP {
+		if c.SFTP != nil {
+			return fmt.Errorf("%s.sftp is set, but %s.type is %q: set type: sftp, or remove the sftp block", where, where, c.Type)
+		}
+		return nil
+	}
+	if c.WORMMode != WORMModeNone {
+		mode := string(c.WORMMode)
+		if mode == "" {
+			mode = "unset"
+		}
+		return fmt.Errorf("%s.worm_mode is %s: an SFTP server has no Object Lock, so nothing there can lock a backup. "+
+			"Set %s.worm_mode: NONE to back up to it without a lock", where, mode, where)
+	}
+	s := c.SFTP
+	if s == nil {
+		return fmt.Errorf("%s.type is sftp, and there is no %s.sftp block naming the server (host, user, path)", where, where)
+	}
+	switch {
+	case strings.TrimSpace(s.Host) == "":
+		return fmt.Errorf("%s.sftp.host is required", where)
+	case strings.TrimSpace(s.User) == "":
+		return fmt.Errorf("%s.sftp.user is required", where)
+	case strings.TrimSpace(s.Path) == "":
+		return fmt.Errorf("%s.sftp.path is required: the directory on the server the backups go in", where)
+	case s.Port < 0 || s.Port > 65535:
+		return fmt.Errorf("%s.sftp.port %d is not a port", where, s.Port)
+	case s.Password == "" && s.PrivateKey == "":
+		return fmt.Errorf("%s.sftp needs password or private_key (each takes env:VAR or file:/path)", where)
+	case s.KnownHosts == "" && s.HostKey == "":
+		return fmt.Errorf("%s.sftp needs known_hosts or host_key, so the server's key is checked before anything is sent: "+
+			"host_key: SHA256:... is the fingerprint `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` prints on the server", where)
+	case s.HostKey != "" && !strings.HasPrefix(s.HostKey, "SHA256:"):
+		return fmt.Errorf("%s.sftp.host_key %q is not a SHA256 fingerprint: write it as `ssh-keygen -lf` prints it, SHA256:...", where, s.HostKey)
+	}
+	return nil
 }
 
 // StorageLayoutHosted is storage.layout's one value: the keys hosted storage
@@ -460,7 +549,7 @@ var unknownFieldRe = regexp.MustCompile(`line (\d+): field (\S+) not found in ty
 // so a key inside a surface's own storage block is named "storage." too; the
 // line number says which.
 var sectionOfType = map[string]string{
-	"CLIConfig": "", "RemoteServerConfig": "server.", "NodeIdentity": "node.", "StorageConfig": "storage.", "EncryptionConfig": "encryption.",
+	"CLIConfig": "", "RemoteServerConfig": "server.", "NodeIdentity": "node.", "StorageConfig": "storage.", "SFTPConfig": "storage.sftp.", "EncryptionConfig": "encryption.",
 	"DaemonConfig": "daemon.", "DefaultsConfig": "defaults.", "SurfaceConfig": "surfaces[].", "DrillConfig": "surfaces[].drill.", "WALConfig": "surfaces[].wal.", "CopyConfig": "copies[].",
 }
 
@@ -739,6 +828,18 @@ func LoadCLIConfig(path string) (*CLIConfig, error) {
 		cfg.Storage.SecretAccessKey = secKey
 	}
 
+	if err := cfg.Storage.ValidateSFTP("storage"); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	for _, sf := range cfg.Surfaces {
+		if sf.Storage == nil {
+			continue
+		}
+		if err := sf.Storage.ValidateSFTP("surface " + sf.ID + ": storage"); err != nil {
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+	}
+
 	// A database named by SAFEGRD_DATABASE_URL, with no surfaces in the
 	// file, is a surface of its own for this run: the Docker image and the
 	// Helm chart back up one database that way. It is never written to the
@@ -891,6 +992,9 @@ func (c *CLIConfig) ValidateForBackup() error {
 	if c.Storage.Type == StorageTypeLocal && c.Storage.LocalPath == "" {
 		return fmt.Errorf("storage.local_path is required for local storage")
 	}
+	if err := c.Storage.ValidateSFTP("storage"); err != nil {
+		return err
+	}
 	if _, err := c.Storage.ResolveWORMMode(); err != nil {
 		return err
 	}
@@ -913,6 +1017,9 @@ func (c *CLIConfig) ValidateForFileBackup() error {
 	}
 	if c.Storage.Type == StorageTypeLocal && c.Storage.LocalPath == "" {
 		return fmt.Errorf("storage.local_path is required for local storage")
+	}
+	if err := c.Storage.ValidateSFTP("storage"); err != nil {
+		return err
 	}
 	if _, err := c.Storage.ResolveWORMMode(); err != nil {
 		return err

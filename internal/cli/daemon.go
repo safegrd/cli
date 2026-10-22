@@ -1321,7 +1321,7 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 	for _, cp := range c.Copies {
 		copyExpiry = copyExpiry || cp.ExpireAfterLock
 	}
-	ownExpiry := c.Storage.ExpireAfterLock && c.Storage.Type == config.StorageTypeS3
+	ownExpiry := c.Storage.ExpireAfterLock && (c.Storage.Type == config.StorageTypeS3 || c.Storage.Type == config.StorageTypeSFTP)
 	if (ownExpiry || copyExpiry) && time.Since(daemonState.LastPrune) >= pruneEvery {
 		daemonState.LastPrune = time.Now().UTC()
 		out := pruneWriters{Out: os.Stdout, Err: os.Stderr}

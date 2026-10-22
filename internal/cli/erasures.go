@@ -39,7 +39,11 @@ func erasureObjects(ctx context.Context, storageCfg config.StorageConfig) (stora
 	if storageCfg.Type == config.StorageTypeHosted || hostedLayout(storageCfg) {
 		return nil, errErasuresOnHosted
 	}
-	p, err := storage.NewProvider(ctx, storageCfg)
+	resolved, err := resolveSFTPSecrets(storageCfg)
+	if err != nil {
+		return nil, err
+	}
+	p, err := storage.NewProvider(ctx, resolved)
 	if err != nil {
 		return nil, err
 	}

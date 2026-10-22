@@ -174,6 +174,9 @@ func wormLabel(storageCfg config.StorageConfig) string {
 		// owner of the account can remove a read-only file.
 		return "no Object Lock: a directory on this host"
 	}
+	if storageCfg.Type == config.StorageTypeSFTP {
+		return "no Object Lock: an SFTP server"
+	}
 	if mode, err := storageCfg.ResolveWORMMode(); err == nil && mode == config.WORMModeNone {
 		return "NO Object Lock"
 	}
@@ -189,7 +192,8 @@ func recordRetention(meta *model.SnapshotMetadata, storageCfg config.StorageConf
 	meta.WORMRetentionUntil = retainUntil
 	// A directory on the host has no Object Lock, whatever worm_mode says:
 	// the date is when safegrd may delete it, and nothing stops its owner.
-	if storageCfg.Type == config.StorageTypeLocal {
+	// Nor does an SFTP server.
+	if storageCfg.Type == config.StorageTypeLocal || storageCfg.Type == config.StorageTypeSFTP {
 		meta.WORMMode = string(config.WORMModeNone)
 		return
 	}
@@ -207,6 +211,10 @@ func printRetentionLine(storageCfg config.StorageConfig, meta *model.SnapshotMet
 	retainUntil := meta.WORMRetentionUntil
 	if meta.Unlocked {
 		fmt.Printf("   Kept until:      %s, not locked. This project locks the day's first backup and the weekly and monthly copies.\n", retainUntil.UTC().Format("2006-01-02 15:04:05 UTC"))
+		return
+	}
+	if storageCfg.Type == config.StorageTypeSFTP {
+		fmt.Printf("   Kept until:      %s, not locked: an SFTP server has no Object Lock.\n", retainUntil.UTC().Format("2006-01-02 15:04:05 UTC"))
 		return
 	}
 	if mode, err := storageCfg.ResolveWORMMode(); err == nil && mode == config.WORMModeNone {

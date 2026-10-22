@@ -132,6 +132,8 @@ func walStore(ctx context.Context, c *config.CLIConfig, s *config.SurfaceConfig)
 		return wal.NewS3Store(client, bucket, prefix, mode), nil
 	case config.StorageTypeHosted:
 		return newWALHostedStore(c, s)
+	case config.StorageTypeSFTP:
+		return nil, errors.New("WAL archiving is not available on SFTP storage: give the surface a storage block with a bucket, hosted storage or a local directory for its WAL")
 	}
 	return nil, fmt.Errorf("storage type %q holds no WAL archive", sc.Type)
 }

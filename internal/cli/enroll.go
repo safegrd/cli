@@ -673,6 +673,8 @@ func localStorageKind(st config.StorageConfig, createdByEnroll, chosenByFlag boo
 		return "hosted"
 	case st.Type == config.StorageTypeS3 && st.Bucket != "":
 		return "s3"
+	case st.Type == config.StorageTypeSFTP && st.SFTP != nil:
+		return "sftp"
 	case st.Type == config.StorageTypeLocal && (!createdByEnroll || chosenByFlag):
 		return "local"
 	}

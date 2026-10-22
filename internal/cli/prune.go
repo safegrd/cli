@@ -438,9 +438,12 @@ func pruneStorage(ctx context.Context, c *config.CLIConfig, storageCfg config.St
 	if hostedLayout(storageCfg) {
 		return pruneReport{}, errHostedLayoutReadOnly
 	}
+	if storageCfg.Type == config.StorageTypeSFTP {
+		return pruneSFTP(ctx, c, storageCfg, grace, minKeep, dryRun, out)
+	}
 	if storageCfg.Type != config.StorageTypeS3 {
-		return pruneReport{}, fmt.Errorf("prune works on your own S3 bucket (storage.type: s3), not %q: hosted storage expires on its own, "+
-			"and a local directory has no lock or clock to judge by", storageCfg.Type)
+		return pruneReport{}, fmt.Errorf("prune works on your own S3 bucket (storage.type: s3) or SFTP server (storage.type: sftp), not %q: "+
+			"hosted storage expires on its own, and a local directory has no lock or clock to judge by", storageCfg.Type)
 	}
 	sp, err := openStorage(ctx, c, storageCfg)
 	if err != nil {
@@ -473,6 +476,34 @@ func pruneStorage(ctx context.Context, c *config.CLIConfig, storageCfg config.St
 	return r, err
 }
 
+// pruneSFTP prunes an SFTP server. It has no lock, so each snapshot's
+// recorded "kept until" date decides, read against the server's clock.
+func pruneSFTP(ctx context.Context, c *config.CLIConfig, storageCfg config.StorageConfig, grace time.Duration, minKeep int, dryRun bool, out pruneWriters) (pruneReport, error) {
+	sp, err := openStorage(ctx, c, storageCfg)
+	if err != nil {
+		return pruneReport{}, err
+	}
+	b, ok := sp.(*storage.SFTPStorageProvider)
+	if !ok {
+		return pruneReport{}, errors.New("prune needs the SFTP provider")
+	}
+	defer b.Close()
+	retainUntil := func(metaKey string) (time.Time, error) { return b.RecordedRetainUntil(ctx, metaKey) }
+	keepFor := func(node string) (map[string]bool, error) { return serverKeepList(ctx, c, node) }
+	drills := serverDrills(ctx, c)
+	r, err := runPruneWithGrace(ctx, b, keepFor, drills, retainUntil, grace, minKeep, dryRun, out)
+	if err != nil {
+		return r, err
+	}
+	now, err := b.BucketNow(ctx)
+	if err != nil {
+		return r, err
+	}
+	st := &sink.SFTP{Conn: b.Conn(), Base: b.Prefix()}
+	err = pruneRepos(ctx, st, keepFor, drills, now, grace, minKeep, dryRun, out, &r)
+	return r, err
+}
+
 func newPruneCmd() *cobra.Command {
 	var dryRun bool
 	var grace time.Duration
@@ -482,7 +513,8 @@ func newPruneCmd() *cobra.Command {
 		Use:   "prune",
 		Short: "Delete snapshots from your own bucket once their Object Lock has ended",
 		Long: `Delete snapshots from your own S3 bucket whose Object Lock ended more than a day ago,
-by the bucket's clock. Never a surface's newest --min-keep snapshots (3 by default), and
+by the bucket's clock. On an SFTP server, which has no lock, each snapshot goes a day after
+the date it records it is kept until, by the server's clock. Never a surface's newest --min-keep snapshots (3 by default), and
 never the last known good one the remote server keeps while Threat Shield has an open
 anomaly on it.
 

@@ -141,6 +141,12 @@ func routeProjectSink(ctx context.Context, cfg *config.CLIConfig, storageCfg *co
 		return nil
 	}
 	ownBucket := storageCfg.Type == config.StorageTypeS3 && storageCfg.Bucket != ""
+	if storageCfg.Type == config.StorageTypeSFTP && sinkResp.Configured && sinkResp.Sink != nil && sinkResp.Sink.Bucket != "" {
+		return fmt.Errorf("project '%s' keeps its backups in s3://%s, set up on the remote server, and this host's config "+
+			"names the SFTP server %s. A project's backups go to one place: remove the sftp storage from this host's config "+
+			"so it uses the project's bucket, or remove the project's bucket on the remote server",
+			sinkResp.ProjectName, sinkResp.Sink.Bucket, sftpWhere(*storageCfg))
+	}
 	if !sinkResp.Configured || sinkResp.Sink == nil || sinkResp.Sink.Bucket == "" {
 		if ownBucket && register {
 			return registerOwnBucket(ctx, cfg, storageCfg, sinkResp.FingerprintSalt)

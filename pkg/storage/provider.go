@@ -46,6 +46,6 @@ type StorageProvider interface {
 	// Strictly refuses deletion if WORM retention period is still active.
 	DeleteSnapshot(ctx context.Context, snapshotID string) error
 
-	// Type returns the provider backend name ("s3" or "local").
+	// Type returns the provider backend name ("s3", "local" or "sftp").
 	Type() string
 }

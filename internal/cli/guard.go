@@ -382,6 +382,8 @@ func snapshotLocked(meta *model.SnapshotMetadata, now time.Time) (bool, string) 
 	switch {
 	case strings.HasPrefix(meta.StorageURI, "file://"):
 		return false, "it is in a directory on this host, which has no Object Lock"
+	case strings.HasPrefix(meta.StorageURI, "sftp://"):
+		return false, "it is on an SFTP server, which has no Object Lock"
 	case meta.WORMMode == string(config.WORMModeNone):
 		return false, "worm_mode is NONE, so the bucket applies no Object Lock"
 	case meta.Unlocked:

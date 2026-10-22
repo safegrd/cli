@@ -140,6 +140,20 @@ func probeSink(ctx context.Context, c *config.CLIConfig, s *config.SurfaceConfig
 		}
 		_, err = p.BucketNow(pctx)
 		return true, err
+	case config.StorageTypeSFTP:
+		resolved, err := resolveSFTPSecrets(cfg)
+		if err != nil {
+			return false, nil
+		}
+		p, err := storage.NewSFTPStorage(resolved)
+		if err != nil {
+			return true, err
+		}
+		defer p.Close()
+		pctx, cancel := context.WithTimeout(ctx, probeTimeout)
+		defer cancel()
+		_, err = p.BucketNow(pctx)
+		return true, err
 	}
 	return false, nil
 }

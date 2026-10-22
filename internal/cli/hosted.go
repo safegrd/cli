@@ -104,7 +104,11 @@ func openStorage(ctx context.Context, cfg *config.CLIConfig, storageCfg config.S
 		if err := checkHostedLayout(storageCfg); err != nil {
 			return nil, err
 		}
-		return storage.NewProvider(ctx, storageCfg)
+		resolved, err := resolveSFTPSecrets(storageCfg)
+		if err != nil {
+			return nil, err
+		}
+		return storage.NewProvider(ctx, resolved)
 	}
 	c, err := newHostedClient(cfg)
 	if err != nil {

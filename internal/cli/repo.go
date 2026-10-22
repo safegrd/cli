@@ -97,6 +97,12 @@ func repoBackend(ctx context.Context, c *config.CLIConfig, storageCfg config.Sto
 		return sink.NewDirect(&sink.S3{Client: client, Bucket: bucket, Prefix: prefix, Mode: mode}), nil
 	case config.StorageTypeHosted:
 		return newHostedRepo(c, storageCfg)
+	case config.StorageTypeSFTP:
+		st, err := sftpRepoStore(storageCfg, node)
+		if err != nil {
+			return nil, err
+		}
+		return sink.NewDirect(st), nil
 	}
 	return nil, fmt.Errorf("storage type %q holds no repository", storageCfg.Type)
 }

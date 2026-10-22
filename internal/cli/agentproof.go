@@ -61,6 +61,19 @@ func accountCheck(c *config.CLIConfig, st config.StorageConfig) CheckResult {
 		return CheckResult{Name: name, Status: "FAIL",
 			Message: fmt.Sprintf("backups are in a directory on this host (%s), which anything running here can reach", st.LocalPath),
 			Fix:     "safegrd enroll --storage hosted, or a bucket with Object Lock in another account (safegrd.dev/docs/storage)"}
+	case config.StorageTypeSFTP:
+		host := ""
+		if st.SFTP != nil {
+			host = st.SFTP.Host
+		}
+		for _, u := range databaseURLs(c) {
+			if h := urlHost(u); h != "" && host != "" && strings.EqualFold(h, host) {
+				return CheckResult{Name: name, Status: "FAIL",
+					Message: fmt.Sprintf("the SFTP server %s is the database's own host", host),
+					Fix:     "back up to an SFTP server on another machine, or to hosted storage (safegrd.dev/docs/storage)"}
+			}
+		}
+		return CheckResult{Name: name, Status: "PASS", Message: fmt.Sprintf("backups go to the SFTP server %s, not the database's host", host)}
 	}
 	bucketHost := "s3.amazonaws.com"
 	if st.Endpoint != "" {
@@ -163,6 +176,12 @@ func storageAgentChecks(ctx context.Context, c *config.CLIConfig, st config.Stor
 		return []CheckResult{
 			{Name: keyName, Status: "FAIL", Message: fmt.Sprintf("any process on this host that can write %s can delete the backups in it", st.LocalPath), Fix: fix},
 			{Name: lockName, Status: "FAIL", Message: "a directory on this host has no Object Lock", Fix: fix},
+		}
+	case config.StorageTypeSFTP:
+		fix := "safegrd enroll --storage hosted, or a bucket with Object Lock (safegrd.dev/docs/storage)"
+		return []CheckResult{
+			{Name: keyName, Status: "FAIL", Message: "the SFTP account backups are written with can also delete them", Fix: fix},
+			{Name: lockName, Status: "FAIL", Message: "an SFTP server has no Object Lock", Fix: fix},
 		}
 	}
 
