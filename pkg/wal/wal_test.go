@@ -390,7 +390,8 @@ func TestABaseBackupKeepsThePasswordOffTheCommandLine(t *testing.T) {
 	}
 	t.Setenv("PGPASSWORD", "from-the-shell")
 	_, err := a.Base(ctx, BaseOptions{ConnURL: "postgres://walrep:s3cret-pw@127.0.0.1:5432/app?sslmode=disable",
-		Server: Server{SystemID: a.SystemID, VersionNum: 160004, SegSize: seg16}, PgBasebackup: script})
+		Server: Server{SystemID: a.SystemID, VersionNum: 160004, SegSize: seg16}, PgBasebackup: script,
+		ListTablespaces: func(context.Context, string) ([]Tablespace, error) { return nil, nil }})
 	if err == nil {
 		t.Fatal("a pg_basebackup that wrote nothing was taken as a base backup")
 	}
@@ -443,5 +444,40 @@ func TestARecordWithOneDamagedCopyIsReadFromTheOther(t *testing.T) {
 	probs, err := a.CheckRecords(ctx)
 	if err != nil || len(probs) != 1 || !strings.Contains(probs[0].Problem, "the first copy is unreadable") {
 		t.Fatalf("check: %+v %v", probs, err)
+	}
+}
+
+// A cluster with a tablespace outside its data directory is refused before
+// pg_basebackup runs, so the archive holds nothing for the attempt.
+func TestABaseOfAClusterWithTablespacesIsRefusedBeforeItStarts(t *testing.T) {
+	ctx := context.Background()
+	a, _ := testArchive(t)
+	dir := t.TempDir()
+	ran := filepath.Join(dir, "ran")
+	script := filepath.Join(dir, "pg_basebackup")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\ntouch "+ran+"\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, err := a.Base(ctx, BaseOptions{ConnURL: "postgres://walrep@127.0.0.1:5432/app",
+		Server: Server{SystemID: a.SystemID, VersionNum: 160004, SegSize: seg16}, PgBasebackup: script,
+		ListTablespaces: func(context.Context, string) ([]Tablespace, error) {
+			return []Tablespace{{Name: "fast", Location: "/mnt/fast"}}, nil
+		}})
+	var ts *TablespaceError
+	if !errors.As(err, &ts) {
+		t.Fatalf("a cluster with a tablespace was not refused: %v", err)
+	}
+	if !strings.Contains(err.Error(), "fast at /mnt/fast") || !strings.Contains(err.Error(), "logical backups") {
+		t.Fatalf("the refusal does not name the tablespace and the logical backups: %v", err)
+	}
+	if _, err := os.Stat(ran); err == nil {
+		t.Fatal("pg_basebackup ran for a cluster that was refused")
+	}
+	objs, err := a.Store.List(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(objs) != 0 {
+		t.Fatalf("the refused base left %d object(s) in the archive: %v", len(objs), objs)
 	}
 }

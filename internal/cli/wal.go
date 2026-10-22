@@ -417,7 +417,9 @@ and encrypted, into the archive as one locked object. The base is complete
 once every WAL file it needs is archived; the command waits for that.
 
 The surface's role needs the REPLICATION attribute, and pg_hba.conf a
-'replication' line for this host.`,
+'replication' line for this host. A cluster with tablespaces outside its
+data directory is refused before anything is uploaded. Its logical
+backups cover it.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
@@ -455,7 +457,11 @@ func walBase(ctx context.Context, c *config.CLIConfig, a *wal.Archive, s *config
 	if err != nil {
 		return wal.BaseInfo{}, err
 	}
-	return a.Base(ctx, walBaseOptions(a, s, connURL, srv))
+	info, err := a.Base(ctx, walBaseOptions(a, s, connURL, srv))
+	if ts := (*wal.TablespaceError)(nil); errors.As(err, &ts) {
+		return info, classed(exitSource, err)
+	}
+	return info, err
 }
 
 // walBaseOptions are a base backup's options. With a spool, the base is

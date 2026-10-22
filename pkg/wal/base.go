@@ -169,17 +169,32 @@ type BaseOptions struct {
 	// BeforeWALCheck, when set, runs before each look for the base's WAL
 	// in the archive: a host that spools its WAL uploads the spool there.
 	BeforeWALCheck func(context.Context)
+	// ListTablespaces, when set, stands in for Tablespaces.
+	ListTablespaces func(ctx context.Context, connURL string) ([]Tablespace, error)
 }
 
 // Base takes a base backup with pg_basebackup and streams it into the
 // archive as one locked object. The base is complete, and base.json written,
 // only once every WAL file from its start to its end is archived.
 func (a *Archive) Base(ctx context.Context, o BaseOptions) (BaseInfo, error) {
+	// pg_basebackup writes one tar to stdout only for a cluster whose data
+	// all lives in its data directory. Asked first, so a cluster with other
+	// tablespaces is refused before anything is written to the archive.
+	list := o.ListTablespaces
+	if list == nil {
+		list = Tablespaces
+	}
+	spaces, err := list(ctx, o.ConnURL)
+	if err != nil {
+		return BaseInfo{}, err
+	}
+	if len(spaces) > 0 {
+		return BaseInfo{}, &TablespaceError{Spaces: spaces}
+	}
 	srv := o.Server
 	a.SystemID = srv.SystemID
 	bin := o.PgBasebackup
 	if bin == "" {
-		var err error
 		if bin, err = FindPgBasebackup(ctx, srv.VersionNum/10000); err != nil {
 			return BaseInfo{}, err
 		}
@@ -320,6 +335,62 @@ func (a *Archive) Base(ctx context.Context, o BaseOptions) (BaseInfo, error) {
 		return info, fmt.Errorf("writing base %s's record: %w", info.BaseID, err)
 	}
 	return info, nil
+}
+
+// Tablespace is a tablespace of the cluster other than pg_default and
+// pg_global, and the directory it lives in.
+type Tablespace struct {
+	Name     string
+	Location string
+}
+
+// Tablespaces lists the cluster's tablespaces other than pg_default and
+// pg_global. It reads the catalog over an ordinary connection: a
+// replication connection takes no SQL.
+func Tablespaces(ctx context.Context, connURL string) ([]Tablespace, error) {
+	conn, err := pgconn.Connect(ctx, connURL)
+	if err != nil {
+		return nil, fmt.Errorf("connecting to check the cluster's tablespaces before a base backup: %w", err)
+	}
+	defer conn.Close(context.Background())
+	rows, err := conn.Exec(ctx, "SELECT spcname, pg_tablespace_location(oid) FROM pg_tablespace WHERE spcname NOT IN ('pg_default', 'pg_global') ORDER BY spcname").ReadAll()
+	if err != nil {
+		return nil, fmt.Errorf("listing the cluster's tablespaces before a base backup: %w", err)
+	}
+	var out []Tablespace
+	for _, r := range rows {
+		for _, row := range r.Rows {
+			if len(row) < 2 {
+				continue
+			}
+			out = append(out, Tablespace{Name: string(row[0]), Location: string(row[1])})
+		}
+	}
+	return out, nil
+}
+
+// TablespaceError refuses a base backup of a cluster with tablespaces
+// outside its data directory: pg_basebackup streams only the data
+// directory to stdout, and a base without the tablespaces would not
+// restore.
+type TablespaceError struct {
+	Spaces []Tablespace
+}
+
+func (e *TablespaceError) Error() string {
+	names := make([]string, len(e.Spaces))
+	for i, s := range e.Spaces {
+		names[i] = s.Name
+		if s.Location != "" {
+			names[i] += " at " + s.Location
+		}
+	}
+	return fmt.Sprintf("this cluster keeps data in %d tablespace(s) outside its data directory: %s. "+
+		"A base backup takes only the data directory, so no base was taken and nothing was uploaded, and point-in-time recovery is not available for this cluster. "+
+		"The surface's logical backups (safegrd backup) cover every tablespace. "+
+		"To use point-in-time recovery, move those tables to pg_default (ALTER TABLE ... SET TABLESPACE pg_default) and drop the tablespaces. "+
+		"Otherwise remove the surface's wal: block",
+		len(e.Spaces), strings.Join(names, ", "))
 }
 
 type countWriter struct {
