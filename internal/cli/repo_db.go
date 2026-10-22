@@ -204,6 +204,8 @@ func runRepoDatabaseBackup(ctx context.Context, p repoDBParams) (*model.Snapshot
 	var dumpMeta, meta *model.SnapshotMetadata
 	var source write.Source
 	var dumper *dump.NativeDumper
+	var mysqlDumper *dump.MySQLDumper
+	var mongoDumper *dump.MongoDumper
 	switch kind {
 	case model.SurfaceTypeSQLite:
 		sd := dump.NewSQLiteDumper(p.DatabaseURL)
@@ -212,10 +214,25 @@ func runRepoDatabaseBackup(ctx context.Context, p repoDBParams) (*model.Snapshot
 	case model.SurfaceTypeMySQL:
 		md := dump.NewMySQLDumper(p.DatabaseURL)
 		md.PerTable = true
+		// The tables are read over several connections, each in one
+		// snapshot started while the tables are locked: parallel, default
+		// 4, capped by the server.
+		md.Parallel = p.Parallel
+		if md.Parallel == 0 {
+			md.Parallel = 4
+		}
+		md.Parallel = dump.MySQLParallelLimit(ctx, p.DatabaseURL, md.Parallel)
+		mysqlDumper = md
 		source = dbrun.Source(md, "", &dumpMeta)
 	case model.SurfaceTypeMongoDB:
 		md := dump.NewMongoDumper(p.DatabaseURL)
 		md.PerCollection = true
+		// mongodump reads parallel collections at once, default 4.
+		md.Parallel = p.Parallel
+		if md.Parallel == 0 {
+			md.Parallel = 4
+		}
+		mongoDumper = md
 		source = dbrun.Source(md, "", &dumpMeta)
 	default:
 		dumper = dump.NewNativeDumper(p.DatabaseURL)
@@ -395,6 +412,15 @@ func runRepoDatabaseBackup(ctx context.Context, p repoDBParams) (*model.Snapshot
 	if dumper != nil && dumper.ReadAtOnce > 0 {
 		fmt.Fprintf(out, "%s Read %d %s over %d connections at once, in one snapshot.\n", label, dumper.ReadAtOnce,
 			pluralWord(int64(dumper.ReadAtOnce), "table", "tables"), dumper.Parallel)
+	}
+	if mongoDumper != nil && mongoDumper.ReadAtOnce > 0 {
+		fmt.Fprintf(out, "%s Read %d %s, %d at a time.\n", label, mongoDumper.ReadAtOnce,
+			pluralWord(int64(mongoDumper.ReadAtOnce), "collection", "collections"), mongoDumper.Parallel)
+	}
+	if mysqlDumper != nil && mysqlDumper.ReadAtOnce > 0 {
+		fmt.Fprintf(out, "%s Read %d %s over %d connections at once, in one snapshot. Writes to the database waited %s while it was taken.\n",
+			label, mysqlDumper.ReadAtOnce, pluralWord(int64(mysqlDumper.ReadAtOnce), "table", "tables"), mysqlDumper.ReadOver,
+			shortDuration(mysqlDumper.LockHeld))
 	}
 	fmt.Fprintf(out, "%s %d %s, %s %s, %s read, %s stored in %d %s, %s.\n", label, meta.TotalTables,
 		pluralWord(int64(meta.TotalTables), tableWord, tablesWord), formatNumber(meta.TotalRows), rowsWord, formatBytes(res.ReadBytes),

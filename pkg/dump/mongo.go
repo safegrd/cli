@@ -414,6 +414,14 @@ type MongoDumper struct {
 	// PerCollection writes the dump as the entries of a run (mongo_run.go),
 	// one per collection, instead of one mongo/dump.archive stream.
 	PerCollection bool
+	// Parallel, above 1, with PerCollection and Streams set, has mongodump
+	// read that many collections at once; each collection is written to
+	// the stream Streams opens for its entry instead of the archive.
+	Parallel int
+	Streams  func(entry string) (w io.WriteCloser, wait func() error)
+	// ReadAtOnce is how many collections the last Dump read Parallel at a
+	// time; zero when it read one at a time.
+	ReadAtOnce int
 }
 
 // NewMongoDumper creates a dumper for a mongodb:// URL.
@@ -453,13 +461,22 @@ func (d *MongoDumper) Dump(ctx context.Context, databaseName string, dst io.Writ
 		io.Writer
 		Close() error
 	} = &chunkWriter{tw: tw, name: mongoChunkName}
+	var rw *mongoRunWriter
+	d.ReadAtOnce = 0
 	if d.PerCollection {
-		// One collection at a time, so each collection's parts are written
-		// one after another; a run's reader joins an entry's parts in order
-		// and refuses parts of two entries interleaved.
-		args = append(args, "--numParallelCollections=1")
-		rw := newMongoRunWriter(tw)
+		rw = newMongoRunWriter(tw)
 		sink, cw = rw, rw
+		if d.Parallel > 1 && d.Streams != nil {
+			// Several collections at once, their documents interleaved in
+			// the archive: each goes to a stream of its own.
+			args = append(args, fmt.Sprintf("--numParallelCollections=%d", d.Parallel))
+			rw.stream = d.Streams
+		} else {
+			// One collection at a time, so each collection's parts are
+			// written one after another; a run's reader joins an entry's
+			// parts in order and refuses parts of two entries interleaved.
+			args = append(args, "--numParallelCollections=1")
+		}
 	}
 	cmd := exec.CommandContext(ctx, tool.Path, args...)
 	pr, pw := io.Pipe()
@@ -478,6 +495,9 @@ func (d *MongoDumper) Dump(ctx context.Context, databaseName string, dst io.Writ
 	stderr, runErr := runDumpTool(cmd, tool, out)
 	_ = pw.Close() // ends the parser's input; it has no error to give
 	st, parseErr := <-statsCh, <-parseErrCh
+	if rw != nil && (runErr != nil || parseErr != nil) {
+		rw.abort(fmt.Errorf("the dump stopped"))
+	}
 	if runErr != nil {
 		return nil, runErr
 	}
@@ -485,6 +505,9 @@ func (d *MongoDumper) Dump(ctx context.Context, databaseName string, dst io.Writ
 		return nil, fmt.Errorf("%s wrote an archive SafeGrd cannot read: %w", tool, parseErr)
 	}
 	if missing := st.missingEnds(); len(missing) > 0 {
+		if rw != nil {
+			rw.abort(fmt.Errorf("the dump is incomplete"))
+		}
 		return nil, fmt.Errorf("%s exited cleanly but the archive never finished %s: the dump is incomplete", tool, strings.Join(missing, ", "))
 	}
 	if msg := mongoNotable(stderr); msg != "" {
@@ -492,6 +515,9 @@ func (d *MongoDumper) Dump(ctx context.Context, databaseName string, dst io.Writ
 	}
 	if err := cw.Close(); err != nil {
 		return nil, err
+	}
+	if rw != nil && rw.stream != nil {
+		d.ReadAtOnce = len(st.Collections)
 	}
 
 	meta := &model.SnapshotMetadata{

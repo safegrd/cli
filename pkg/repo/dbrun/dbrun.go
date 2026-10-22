@@ -59,19 +59,43 @@ func Source(d dump.Dumper, database string, meta **model.SnapshotMetadata) write
 	return func(ctx context.Context, emit func(write.Entry) error) error {
 		ctx, cancel := context.WithCancel(ctx)
 		defer cancel()
-		// A PostgreSQL dumper reading over several connections hands each
-		// table's rows here, and they are stored as they are read, beside
-		// the rest of the stream.
+		// A dumper reading over several connections hands each table's
+		// rows (PostgreSQL) or section (MySQL) here, and they are stored as
+		// they are read, beside the rest of the stream.
+		stream := func(path string, fill func(io.Writer) error) error {
+			pr, pw := io.Pipe()
+			go func() {
+				_ = pw.CloseWithError(fill(pw))
+			}()
+			err := emit(write.Entry{Path: path, Reader: pr})
+			_ = pr.CloseWithError(io.ErrClosedPipe)
+			return err
+		}
 		if nd, ok := d.(*dump.NativeDumper); ok && nd.Parallel > 1 {
 			nd.Rows = func(ctx context.Context, schema, table string, copy func(io.Writer) (int64, error)) error {
+				return stream(dump.TablePath(schema, table), func(w io.Writer) error {
+					_, err := copy(w)
+					return err
+				})
+			}
+		}
+		if gd, ok := d.(*dump.MongoDumper); ok && gd.Parallel > 1 {
+			// mongodump's archive interleaves the collections it reads at
+			// once; each is stored from a stream of its own.
+			gd.Streams = func(entry string) (io.WriteCloser, func() error) {
 				pr, pw := io.Pipe()
+				done := make(chan error, 1)
 				go func() {
-					_, err := copy(pw)
-					_ = pw.CloseWithError(err)
+					err := emit(write.Entry{Path: entry, Reader: pr})
+					_ = pr.CloseWithError(io.ErrClosedPipe)
+					done <- err
 				}()
-				err := emit(write.Entry{Path: dump.TablePath(schema, table), Reader: pr})
-				_ = pr.CloseWithError(io.ErrClosedPipe)
-				return err
+				return pw, func() error { return <-done }
+			}
+		}
+		if md, ok := d.(*dump.MySQLDumper); ok && md.Parallel > 1 {
+			md.Sections = func(ctx context.Context, entry string, fill func(io.Writer) error) error {
+				return stream(entry, fill)
 			}
 		}
 		pr, pw := io.Pipe()

@@ -70,14 +70,21 @@ func MongoRunCollection(name string) string {
 type mongoRunWriter struct {
 	tw      *tar.Writer
 	views   map[string]bool
-	open    map[string]*chunkWriter
+	open    map[string]io.WriteCloser
 	closed  map[string]bool
 	current string
 	order   []string
+	// stream, when set, opens each collection's entry as a stream of its
+	// own, for a dump that reads several collections at once: their
+	// documents arrive interleaved, each goes to its own stream, and a
+	// collection is complete when its namespace ends. wait returns once
+	// the stream is stored; waits are collected and checked at Close.
+	stream func(entry string) (w io.WriteCloser, wait func() error)
+	waits  []func() error
 }
 
 func newMongoRunWriter(tw *tar.Writer) *mongoRunWriter {
-	return &mongoRunWriter{tw: tw, views: map[string]bool{}, open: map[string]*chunkWriter{}, closed: map[string]bool{}}
+	return &mongoRunWriter{tw: tw, views: map[string]bool{}, open: map[string]io.WriteCloser{}, closed: map[string]bool{}}
 }
 
 func (w *mongoRunWriter) prelude(raw []byte, collections, views []string) error {
@@ -87,7 +94,7 @@ func (w *mongoRunWriter) prelude(raw []byte, collections, views []string) error 
 	return writeTarEntry(w.tw, MongoPreludeEntry, raw)
 }
 
-func (w *mongoRunWriter) writer(ns string) (*chunkWriter, error) {
+func (w *mongoRunWriter) writer(ns string) (io.WriteCloser, error) {
 	if cw, ok := w.open[ns]; ok {
 		return cw, nil
 	}
@@ -96,6 +103,15 @@ func (w *mongoRunWriter) writer(ns string) (*chunkWriter, error) {
 		// a reader would take the first for the whole collection.
 		return nil, fmt.Errorf("mongodump wrote %s in two parts with another collection between them: the run cannot be written", ns)
 	}
+	_, coll, _ := strings.Cut(ns, ".")
+	entry := MongoCollectionEntry(coll)
+	if w.stream != nil {
+		sw, wait := w.stream(entry)
+		w.open[ns] = sw
+		w.waits = append(w.waits, wait)
+		w.order = append(w.order, ns)
+		return sw, nil
+	}
 	if w.current != "" && w.current != ns {
 		// mongodump was told to dump one collection at a time, so documents
 		// of another namespace mean this one is complete.
@@ -103,8 +119,6 @@ func (w *mongoRunWriter) writer(ns string) (*chunkWriter, error) {
 			return nil, err
 		}
 	}
-	_, coll, _ := strings.Cut(ns, ".")
-	entry := MongoCollectionEntry(coll)
 	cw := &chunkWriter{tw: w.tw, name: func(part int) string { return chunkedName(entry, part) }}
 	w.open[ns], w.current = cw, ns
 	w.order = append(w.order, ns)
@@ -153,14 +167,39 @@ func (w *mongoRunWriter) close(ns string) error {
 // parser hands the sink, so they are dropped here.
 func (w *mongoRunWriter) Write(p []byte) (int, error) { return len(p), nil }
 
-// Close finishes any collection the archive never ended.
+// Close finishes any collection the archive never ended, then waits for
+// every collection's stream to be stored.
 func (w *mongoRunWriter) Close() error {
+	var first error
 	for ns := range w.open {
-		if err := w.close(ns); err != nil {
-			return err
+		if err := w.close(ns); err != nil && first == nil {
+			first = err
 		}
 	}
-	return nil
+	for _, wait := range w.waits {
+		if err := wait(); err != nil && first == nil {
+			first = err
+		}
+	}
+	w.waits = nil
+	return first
+}
+
+// abort ends every open stream with err, so what reads them stops, and
+// waits for them.
+func (w *mongoRunWriter) abort(err error) {
+	for ns, sw := range w.open {
+		if p, ok := sw.(interface{ CloseWithError(error) error }); ok {
+			_ = p.CloseWithError(err)
+		} else {
+			_ = sw.Close()
+		}
+		delete(w.open, ns)
+	}
+	for _, wait := range w.waits {
+		_ = wait()
+	}
+	w.waits = nil
 }
 
 // MongoRunPart is one collection's documents as a run holds them.

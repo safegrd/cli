@@ -352,6 +352,18 @@ type MySQLDumper struct {
 	// PerTable writes the dump as the sections of a run (mysql_run.go)
 	// instead of one mysql/dump.sql stream.
 	PerTable bool
+	// Parallel, above 1, with PerTable and Sections set, reads the tables
+	// over that many connections at once, in one snapshot
+	// (mysql_parallel.go). Each table's section is handed to Sections, which
+	// write fills, instead of the archive.
+	Parallel int
+	Sections func(ctx context.Context, entry string, write func(io.Writer) error) error
+	// ReadAtOnce and ReadOver are how many tables the last Dump read over
+	// several connections and over how many; zero when it read over one.
+	// LockHeld is how long writes to the database waited while the readers
+	// started.
+	ReadAtOnce, ReadOver int
+	LockHeld             time.Duration
 }
 
 // NewMySQLDumper creates a dumper for a mysql:// URL.
@@ -481,8 +493,41 @@ func (d *MySQLDumper) Dump(ctx context.Context, databaseName string, dst io.Writ
 	if skipMaskingPolicies(ctx, tool, version, mariaDB) {
 		args = append(args, "--skip-masking-policies")
 	}
-	cmd := exec.CommandContext(ctx, tool.Path, append(args, target.Database)...)
 	tw := tar.NewWriter(dst)
+	newMeta := func(tables []string, rows map[string]int64) *model.SnapshotMetadata {
+		meta := &model.SnapshotMetadata{
+			SurfaceType:   model.SurfaceTypeMySQL,
+			CreatedAt:     started,
+			DatabaseName:  databaseName,
+			ServerVersion: version,
+			SchemaSource:  tool.String(),
+		}
+		if meta.DatabaseName == "" {
+			meta.DatabaseName = target.Database
+		}
+		for _, t := range tables {
+			meta.TableStats = append(meta.TableStats, model.TableStat{
+				Schema: target.Database, TableName: t, RowCount: rows[t], SizeBytes: sizes[t],
+				Columns: columns[t], SchemaHash: model.ColumnsHash(columns[t]),
+			})
+		}
+		return meta
+	}
+	d.ReadAtOnce, d.ReadOver, d.LockHeld = 0, 0, 0
+	if d.PerTable && d.Parallel > 1 && d.Sections != nil {
+		rows, schema, ok, err := d.dumpParallel(ctx, target, db, tool, args, tw, sizes)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			meta := newMeta(schema.created, rows)
+			if err := finishArchive(tw, meta, start); err != nil {
+				return nil, err
+			}
+			return meta, nil
+		}
+	}
+	cmd := exec.CommandContext(ctx, tool.Path, append(args, target.Database)...)
 	var cw interface {
 		io.Writer
 		Close() error
@@ -495,13 +540,7 @@ func (d *MySQLDumper) Dump(ctx context.Context, databaseName string, dst io.Writ
 	if err != nil {
 		return nil, err
 	}
-	// mysqldump reports some failures on stderr and still exits 0. Pass them on.
-	if msg := stderr; strings.Contains(msg, "when trying to dump masking policies") {
-		d.Warn(fmt.Sprintf("%s could not read the server's masking policies as this account, so the snapshot has the tables "+
-			"and data but not the policies. Grant it SELECT on mysql.column_masking_policy to back them up. It said: %s", tool, msg))
-	} else if msg != "" {
-		d.Warn(fmt.Sprintf("%s said, while succeeding: %s", tool, msg))
-	}
+	d.passOn(tool, stderr)
 	if !counter.Completed {
 		return nil, fmt.Errorf("%s exited cleanly but its output ends before %q: the dump is incomplete", tool, mysqlDumpDone)
 	}
@@ -509,26 +548,22 @@ func (d *MySQLDumper) Dump(ctx context.Context, databaseName string, dst io.Writ
 		return nil, err
 	}
 
-	meta := &model.SnapshotMetadata{
-		SurfaceType:   model.SurfaceTypeMySQL,
-		CreatedAt:     started,
-		DatabaseName:  databaseName,
-		ServerVersion: version,
-		SchemaSource:  tool.String(),
-	}
-	if meta.DatabaseName == "" {
-		meta.DatabaseName = target.Database
-	}
-	for _, t := range counter.Tables() {
-		meta.TableStats = append(meta.TableStats, model.TableStat{
-			Schema: target.Database, TableName: t, RowCount: counter.Rows[t], SizeBytes: sizes[t],
-			Columns: columns[t], SchemaHash: model.ColumnsHash(columns[t]),
-		})
-	}
+	meta := newMeta(counter.Tables(), counter.Rows)
 	if err := finishArchive(tw, meta, start); err != nil {
 		return nil, err
 	}
 	return meta, nil
+}
+
+// passOn says what the dump tool wrote on stderr while succeeding: it
+// reports some failures there and still exits 0.
+func (d *MySQLDumper) passOn(tool *MySQLTool, msg string) {
+	if strings.Contains(msg, "when trying to dump masking policies") {
+		d.Warn(fmt.Sprintf("%s could not read the server's masking policies as this account, so the snapshot has the tables "+
+			"and data but not the policies. Grant it SELECT on mysql.column_masking_policy to back them up. It said: %s", tool, msg))
+	} else if msg != "" {
+		d.Warn(fmt.Sprintf("%s said, while succeeding: %s", tool, msg))
+	}
 }
 
 func mysqlChunkName(part int) string {
