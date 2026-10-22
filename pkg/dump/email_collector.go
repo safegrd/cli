@@ -3,6 +3,7 @@ package dump
 import (
 	"archive/tar"
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
@@ -96,10 +97,37 @@ type FetchedEmail struct {
 	Subject   string
 	From      string
 	Date      time.Time
-	Body      []byte
-	Sha256    string
-	Labels    []string
+	// Body is the message, or nil once it is held in the backup's spool,
+	// size bytes from at.
+	Body   []byte
+	Sha256 string
+	Labels []string
+	spool  *emailSpool
+	at     int64
+	size   int64
 }
+
+// Size is the message's length in bytes.
+func (em FetchedEmail) Size() int64 {
+	if em.spool != nil {
+		return em.size
+	}
+	return int64(len(em.Body))
+}
+
+// writeBody writes the message to w.
+func (em FetchedEmail) writeBody(w io.Writer) error {
+	if em.spool != nil {
+		_, err := io.Copy(w, em.spool.open(em.at, em.size))
+		return err
+	}
+	_, err := w.Write(em.Body)
+	return err
+}
+
+// emailHeaderMax is how much of a spooled message is kept to read its
+// headers from.
+const emailHeaderMax = 256 << 10
 
 // IMAPSource abstracts the IMAP connection to enable hermetic testing and modularity.
 type IMAPSource interface {
@@ -136,6 +164,8 @@ type StandardIMAPClient struct {
 	FolderHighestUID  map[string]uint32
 	gmail             bool
 	allMail           string
+	// spool, when set, takes each body as it is read instead of memory.
+	spool *emailSpool
 	// junkOrTrash are the mailboxes the server flags \Junk or \Trash
 	// (RFC 6154), which a backup leaves out unless the surface names them.
 	junkOrTrash map[string]bool
@@ -449,9 +479,23 @@ func (c *StandardIMAPClient) FetchFolderMessages(ctx context.Context, folder str
 
 			if matches := bodyLiteralRegex.FindStringSubmatch(line); len(matches) == 2 {
 				litSize, _ := strconv.ParseInt(matches[1], 10, 64)
-				body := make([]byte, litSize)
-				if _, err := io.ReadFull(c.reader, body); err != nil {
-					return nil, fmt.Errorf("failed reading message body literal (%d bytes): %w", litSize, err)
+				var body []byte
+				var at int64
+				sum := sha256.New()
+				head := &headerPrefix{max: emailHeaderMax}
+				if c.spool != nil {
+					// Straight to disk: the body is hashed and its headers
+					// kept as it passes.
+					if at, err = c.spool.add(io.TeeReader(c.reader, io.MultiWriter(sum, head)), litSize); err != nil {
+						return nil, fmt.Errorf("failed holding a message of %d bytes on disk: %w", litSize, err)
+					}
+				} else {
+					body = make([]byte, litSize)
+					if _, err := io.ReadFull(c.reader, body); err != nil {
+						return nil, fmt.Errorf("failed reading message body literal (%d bytes): %w", litSize, err)
+					}
+					sum.Write(body)
+					head.Write(body)
 				}
 				// The rest of the response: ")" or the items after the body.
 				rest, err := c.reader.ReadString('\n')
@@ -473,8 +517,7 @@ func (c *StandardIMAPClient) FetchFolderMessages(ctx context.Context, folder str
 					continue
 				}
 
-				sum := sha256.Sum256(body)
-				sumHex := hex.EncodeToString(sum[:])
+				sumHex := hex.EncodeToString(sum.Sum(nil))
 
 				var (
 					msgID   = fmt.Sprintf("<%d@safegrd.generated>", uid)
@@ -483,7 +526,7 @@ func (c *StandardIMAPClient) FetchFolderMessages(ctx context.Context, folder str
 					date    = time.Now().UTC()
 				)
 
-				msg, err := mail.ReadMessage(strings.NewReader(string(body)))
+				msg, err := mail.ReadMessage(bytes.NewReader(head.b.Bytes()))
 				if err == nil {
 					if id := msg.Header.Get("Message-ID"); id != "" {
 						msgID = id
@@ -509,6 +552,9 @@ func (c *StandardIMAPClient) FetchFolderMessages(ctx context.Context, folder str
 					Body:      body,
 					Sha256:    sumHex,
 					Labels:    labels,
+					spool:     c.spool,
+					at:        at,
+					size:      litSize,
 				})
 			}
 		}
@@ -530,6 +576,22 @@ func (c *StandardIMAPClient) Close() error {
 func (ec *EmailCollector) ScanAndStream(ctx context.Context, source IMAPSource) (io.Reader, *model.SnapshotMetadata, error) {
 	if source == nil {
 		source = NewStandardIMAPClient(ec.cfg)
+	}
+
+	// Every body is held on disk until the archive is written, not in
+	// memory.
+	spool, err := newEmailSpool()
+	if err != nil {
+		return nil, nil, err
+	}
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			spool.close()
+		}
+	}()
+	if std, ok := source.(*StandardIMAPClient); ok {
+		std.spool = spool
 	}
 
 	if err := source.Connect(ctx); err != nil {
@@ -602,8 +664,18 @@ func (ec *EmailCollector) ScanAndStream(ctx context.Context, source IMAPSource) 
 
 		var fBytes int64
 		for _, m := range msgs {
-			fBytes += int64(len(m.Body))
-			totalRawBytes += int64(len(m.Body))
+			if m.spool == nil {
+				// A source that read the body into memory: it goes to the
+				// spool too, so the mailbox is not held twice over.
+				at, err := spool.add(bytes.NewReader(m.Body), int64(len(m.Body)))
+				if err != nil {
+					_ = source.Close()
+					return nil, nil, fmt.Errorf("failed holding a message of %s on disk: %w", folder, err)
+				}
+				m.spool, m.at, m.size, m.Body = spool, at, int64(len(m.Body)), nil
+			}
+			fBytes += m.Size()
+			totalRawBytes += m.Size()
 
 			if oldestDate == nil || m.Date.Before(*oldestDate) {
 				t := m.Date
@@ -630,6 +702,9 @@ func (ec *EmailCollector) ScanAndStream(ctx context.Context, source IMAPSource) 
 		})
 	}
 	_ = source.Close()
+	if err := spool.finish(); err != nil {
+		return nil, nil, fmt.Errorf("failed holding the messages on disk: %w", err)
+	}
 
 	sort.Slice(allEmails, func(i, j int) bool {
 		if allEmails[i].Folder != allEmails[j].Folder {
@@ -653,7 +728,7 @@ func (ec *EmailCollector) ScanAndStream(ctx context.Context, source IMAPSource) 
 			Subject:   em.Subject,
 			From:      em.From,
 			Date:      em.Date,
-			SizeBytes: int64(len(em.Body)),
+			SizeBytes: em.Size(),
 			Sha256:    em.Sha256,
 			Labels:    em.Labels,
 		})
@@ -694,11 +769,14 @@ func (ec *EmailCollector) ScanAndStream(ctx context.Context, source IMAPSource) 
 
 	pr, pw := io.Pipe()
 
+	handedOff = true
 	go func() {
 		tw := tar.NewWriter(pw)
 		var writeErr error
 
 		defer func() {
+			// Gone before the reader sees the archive end.
+			spool.close()
 			if writeErr != nil {
 				_ = pw.CloseWithError(writeErr)
 			} else {
@@ -751,7 +829,7 @@ func (ec *EmailCollector) ScanAndStream(ctx context.Context, source IMAPSource) 
 			msgHdr := &tar.Header{
 				Name:     entryName,
 				Mode:     0644,
-				Size:     int64(len(em.Body)),
+				Size:     em.Size(),
 				ModTime:  em.Date,
 				Format:   tar.FormatPAX,
 				Typeflag: tar.TypeReg,
@@ -760,7 +838,7 @@ func (ec *EmailCollector) ScanAndStream(ctx context.Context, source IMAPSource) 
 				writeErr = fmt.Errorf("failed writing email header for %s: %w", entryName, err)
 				return
 			}
-			if _, err := tw.Write(em.Body); err != nil {
+			if err := em.writeBody(tw); err != nil {
 				writeErr = fmt.Errorf("failed writing email body for %s: %w", entryName, err)
 				return
 			}
