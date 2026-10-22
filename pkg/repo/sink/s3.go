@@ -337,7 +337,10 @@ func (s *S3) Retention(ctx context.Context, key, versionID string) (time.Time, e
 	out, err := s.Client.GetObjectRetention(ctx, &s3.GetObjectRetentionInput{Bucket: &s.Bucket, Key: &key, VersionId: &versionID})
 	if err != nil {
 		var api smithy.APIError
-		if errors.As(err, &api) && (api.ErrorCode() == "NoSuchObjectLockConfiguration" || api.ErrorCode() == "ObjectLockConfigurationNotFoundError") {
+		// A bucket with no Object Lock answers InvalidRequest ("Bucket is
+		// missing Object Lock Configuration") on S3 and MinIO: no lock.
+		if errors.As(err, &api) && (api.ErrorCode() == "NoSuchObjectLockConfiguration" || api.ErrorCode() == "ObjectLockConfigurationNotFoundError" ||
+			api.ErrorCode() == "InvalidRequest") {
 			return time.Time{}, nil
 		}
 		return time.Time{}, err
