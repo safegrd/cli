@@ -43,6 +43,9 @@ type Archive struct {
 	// read. An index is locked and never changes, so a restore's thousands
 	// of fetches each read only the bundle listing and not every index.
 	IndexCache string
+	// ManifestDir, when set, is where this host keeps each full base's
+	// backup_manifest, which an incremental base is taken against.
+	ManifestDir string
 }
 
 func (a *Archive) now() time.Time {

@@ -58,11 +58,26 @@ func walHostedErr(key string, err error) error {
 }
 
 func (h *walHostedStore) Put(ctx context.Context, key string, body io.Reader, _ time.Time) (time.Time, error) {
+	return h.put(ctx, key, body, "")
+}
+
+// PutChained writes an incremental base's object, which the remote server
+// locks until the full it names is locked.
+func (h *walHostedStore) PutChained(ctx context.Context, key string, body io.Reader, fullID string) (time.Time, error) {
+	t, err := h.put(ctx, key, body, fullID)
+	var he *hostedError
+	if errors.As(err, &he) && he.Status == http.StatusConflict {
+		return t, fmt.Errorf("%w: %v", wal.ErrChainRefused, err)
+	}
+	return t, err
+}
+
+func (h *walHostedStore) put(ctx context.Context, key string, body io.Reader, fullID string) (time.Time, error) {
 	head := make([]byte, walHostedSmall+1)
 	n, err := io.ReadFull(body, head)
 	switch {
 	case err == io.EOF || err == io.ErrUnexpectedEOF:
-		return h.putSmall(ctx, key, head[:n])
+		return h.putSmall(ctx, key, head[:n], fullID)
 	case err != nil:
 		return time.Time{}, err
 	}
@@ -70,7 +85,7 @@ func (h *walHostedStore) Put(ctx context.Context, key string, body io.Reader, _ 
 		return time.Time{}, fmt.Errorf("%s is larger than %d MiB, which hosted storage takes in one piece only for a bundle or a base backup", key, walHostedSmall>>20)
 	}
 	var up hostedUpload
-	if err := h.p.client.callRetry(ctx, http.MethodPost, "/wal/uploads", map[string]any{"key": key, "base_every_days": h.baseEveryDays}, &up); err != nil {
+	if err := h.p.client.callRetry(ctx, http.MethodPost, "/wal/uploads", map[string]any{"key": key, "base_every_days": h.baseEveryDays, "incremental_from": fullID}, &up); err != nil {
 		return time.Time{}, err
 	}
 	if _, err := h.p.sendUpload(ctx, up, key, io.MultiReader(bytes.NewReader(head[:n]), body)); err != nil {
@@ -79,7 +94,7 @@ func (h *walHostedStore) Put(ctx context.Context, key string, body io.Reader, _ 
 	return up.RetainUntil, nil
 }
 
-func (h *walHostedStore) putSmall(ctx context.Context, key string, data []byte) (time.Time, error) {
+func (h *walHostedStore) putSmall(ctx context.Context, key string, data []byte, fullID string) (time.Time, error) {
 	if len(data) == 0 {
 		return time.Time{}, fmt.Errorf("%s is empty", key)
 	}
@@ -93,8 +108,9 @@ func (h *walHostedStore) putSmall(ctx context.Context, key string, data []byte) 
 		} `json:"objects"`
 	}
 	if err := h.p.client.callRetry(ctx, http.MethodPost, "/wal/sign", map[string]any{
-		"objects":         []map[string]any{{"key": key, "size": len(data), "md5": base64.StdEncoding.EncodeToString(sum[:])}},
-		"base_every_days": h.baseEveryDays,
+		"objects":          []map[string]any{{"key": key, "size": len(data), "md5": base64.StdEncoding.EncodeToString(sum[:])}},
+		"base_every_days":  h.baseEveryDays,
+		"incremental_from": fullID,
 	}, &signed); err != nil {
 		return time.Time{}, err
 	}

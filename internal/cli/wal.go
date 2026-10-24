@@ -151,7 +151,8 @@ func walArchive(ctx context.Context, c *config.CLIConfig, surfaceID, systemID st
 	}
 	a := &wal.Archive{Store: st, SurfaceID: s.ID, SystemID: systemID,
 		Window: walDays(s.WAL.WindowDays), BaseEvery: walDays(s.WAL.BaseEveryDays),
-		IndexCache: filepath.Join(resolveStateDir("", c), "cache", "wal")}
+		IndexCache:  filepath.Join(resolveStateDir("", c), "cache", "wal"),
+		ManifestDir: filepath.Join(resolveStateDir("", c), "wal", "manifests", s.ID)}
 	a.Recipient = c.Encryption.PublicKey
 	if s.Encryption != nil && s.Encryption.PublicKey != "" {
 		a.Recipient = s.Encryption.PublicKey
@@ -409,6 +410,7 @@ func walFetchOnce(ctx context.Context, a *wal.Archive, name, dst string) error {
 
 func newWALBaseCmd() *cobra.Command {
 	var surfaceID string
+	var full, incremental bool
 	cmd := &cobra.Command{
 		Use:   "base",
 		Short: "Take a base backup of a PostgreSQL surface into its WAL archive",
@@ -419,10 +421,26 @@ once every WAL file it needs is archived; the command waits for that.
 The surface's role needs the REPLICATION attribute, and pg_hba.conf a
 'replication' line for this host. A cluster with tablespaces outside its
 data directory is refused before anything is uploaded. Its logical
-backups cover it.`,
+backups cover it.
+
+With wal.incremental_every_days set, the base is an incremental one when it
+can be (PostgreSQL 17 and newer, with summarize_wal = on): only the blocks
+changed since the newest full base, locked until that full is. Otherwise it is
+a full base, and the command says why. --full takes a full base;
+--incremental takes an incremental one or exits non-zero with the reason.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
+			if full && incremental {
+				return errors.New("--full and --incremental are each a kind of base; give one")
+			}
+			mode := walBaseAuto
+			switch {
+			case full:
+				mode = walBaseFull
+			case incremental:
+				mode = walBaseIncremental
+			}
 			a, s, err := walArchive(ctx, cfg, surfaceID, "")
 			if err != nil {
 				return err
@@ -433,31 +451,92 @@ backups cover it.`,
 			if a.Recipient == "" {
 				return fmt.Errorf("encryption.public_key is not set, and the base backup is encrypted to it")
 			}
-			info, err := walBase(ctx, cfg, a, s)
+			info, err := walBase(ctx, cfg, a, s, mode)
 			if err != nil {
 				return err
 			}
-			fmt.Printf("Base backup %s (%s, %s), %s\n", info.BaseID, formatBytes(info.StoredBytes),
-				info.EndedAt.Sub(info.StartedAt).Round(time.Second), walLockLine(a, info.LockedUntil))
+			sayWALBase(a, info)
 			fmt.Printf("   WAL from %s to %s, PostgreSQL %d, system %s\n", info.StartWAL, info.EndWAL, info.Major(), info.SystemID)
-			if from := info.SourceWords(); from != "" {
-				fmt.Printf("   Taken from %s; its WAL comes from the primary's archive\n", from)
-			}
-			warnChecksumFailures(info)
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&surfaceID, "surface", "", "Surface id from the config (required)")
+	cmd.Flags().BoolVar(&full, "full", false, "Take a full base backup, even when an incremental one could be taken")
+	cmd.Flags().BoolVar(&incremental, "incremental", false, "Take an incremental base backup, or exit non-zero saying why none can be taken")
 	return cmd
 }
 
-// walBase takes one base backup of the surface.
-func walBase(ctx context.Context, c *config.CLIConfig, a *wal.Archive, s *config.SurfaceConfig) (wal.BaseInfo, error) {
+// walBaseMode is the kind of base backup a run asks for.
+type walBaseMode int
+
+const (
+	// walBaseAuto takes an incremental when wal.incremental_every_days is
+	// set and one can be taken, and a full otherwise.
+	walBaseAuto walBaseMode = iota
+	walBaseFull
+	walBaseIncremental
+)
+
+// sayWALBase prints a finished base backup.
+func sayWALBase(a *wal.Archive, info wal.BaseInfo) {
+	took := info.EndedAt.Sub(info.StartedAt).Round(time.Second)
+	if info.Incremental() {
+		fmt.Printf("Incremental base backup %s from full %s (%s, %s), %s\n", info.BaseID, info.IncrementalFrom,
+			formatBytes(info.StoredBytes), took, walLockLine(a, info.LockedUntil))
+	} else {
+		fmt.Printf("Base backup %s (%s, %s), %s\n", info.BaseID, formatBytes(info.StoredBytes), took, walLockLine(a, info.LockedUntil))
+	}
+	if from := info.SourceWords(); from != "" {
+		fmt.Printf("   Taken from %s; its WAL comes from the primary's archive\n", from)
+	}
+	warnChecksumFailures(info)
+}
+
+// walBase takes one base backup of the surface: an incremental one when
+// the mode and the surface ask for it and one can be taken, and a full one
+// otherwise, saying why.
+func walBase(ctx context.Context, c *config.CLIConfig, a *wal.Archive, s *config.SurfaceConfig, mode walBaseMode) (wal.BaseInfo, error) {
 	connURL, srv, err := walServer(ctx, c, s)
 	if err != nil {
 		return wal.BaseInfo{}, err
 	}
-	info, err := a.Base(ctx, walBaseOptions(a, s, connURL, srv))
+	return walBaseOn(ctx, a, s, connURL, srv, mode)
+}
+
+// walBaseOn is walBase on a server already identified.
+func walBaseOn(ctx context.Context, a *wal.Archive, s *config.SurfaceConfig, connURL string, srv wal.Server, mode walBaseMode) (wal.BaseInfo, error) {
+	o := walBaseOptions(a, s, connURL, srv)
+	wantIncr := mode == walBaseIncremental || (mode == walBaseAuto && s.WAL != nil && s.WAL.IncrementalEveryDays > 0)
+	if wantIncr {
+		plan, err := a.PlanBase(ctx, srv)
+		if err != nil {
+			return wal.BaseInfo{}, storageFailure(err)
+		}
+		if plan.From == nil {
+			if mode == walBaseIncremental {
+				return wal.BaseInfo{}, fmt.Errorf("no incremental base backup taken: %s", plan.Why)
+			}
+			fmt.Fprintf(os.Stderr, "Warning: Surface %s: taking a full base backup, not an incremental one: %s.\n", s.ID, plan.Why)
+		} else {
+			o.From, o.Manifest = plan.From, plan.Manifest
+			info, err := a.Base(ctx, o)
+			var nb *wal.NoBackupError
+			switch {
+			case err == nil:
+				return info, nil
+			case mode == walBaseIncremental:
+				return info, err
+			case errors.As(err, &nb):
+				fmt.Fprintf(os.Stderr, "Warning: Surface %s: taking a full base backup, not an incremental one: PostgreSQL refused it: %s.\n", s.ID, nb.Reason())
+			case errors.Is(err, wal.ErrChainRefused):
+				fmt.Fprintf(os.Stderr, "Warning: Surface %s: taking a full base backup, not an incremental one: %v.\n", s.ID, err)
+			default:
+				return info, err
+			}
+			o.From, o.Manifest = nil, ""
+		}
+	}
+	info, err := a.Base(ctx, o)
 	if ts := (*wal.TablespaceError)(nil); errors.As(err, &ts) {
 		return info, classed(exitSource, err)
 	}
@@ -468,7 +547,9 @@ func walBase(ctx context.Context, c *config.CLIConfig, a *wal.Archive, s *config
 // complete once its WAL is in the archive, and that WAL waits on this host
 // until it is uploaded, so the wait uploads the spool.
 func walBaseOptions(a *wal.Archive, s *config.SurfaceConfig, connURL string, srv wal.Server) wal.BaseOptions {
-	o := wal.BaseOptions{ConnURL: connURL, Server: srv}
+	o := wal.BaseOptions{ConnURL: connURL, Server: srv, Warn: func(w string) {
+		fmt.Fprintf(os.Stderr, "Warning: Surface %s: %s.\n", s.ID, w)
+	}}
 	if s.WAL != nil && s.WAL.Spool {
 		o.BeforeWALCheck = func(ctx context.Context) {
 			b := *a
@@ -623,6 +704,9 @@ WAL file is missing.`,
 				if len(st.Gaps) > 0 {
 					problems = append(problems, fmt.Sprintf("system %s is missing WAL from %s", sys, st.Gaps[0].First))
 				}
+				for _, b := range st.Broken {
+					problems = append(problems, b.Why)
+				}
 				if check {
 					probs, err := a.CheckRecords(ctx)
 					if err != nil {
@@ -711,6 +795,9 @@ func printWALStatus(a *wal.Archive, st wal.Status) {
 		fmt.Printf("   Locked to:     %s\n", ts(st.LockedTo))
 	}
 	fmt.Printf("   Base backups:  %d", len(st.Bases))
+	if incr := st.Incrementals(); incr > 0 {
+		fmt.Printf(" (%d full, %d incremental)", len(st.Bases)-incr, incr)
+	}
 	if n := len(st.Bases); n > 0 {
 		b := st.Bases[n-1]
 		if b.Kind == "sqlite" {
@@ -724,6 +811,9 @@ func printWALStatus(a *wal.Archive, st wal.Status) {
 		if b.ChecksumFailures > 0 {
 			fmt.Printf("   Damaged pages: base %s, %s (failed their checksum)\n", b.BaseID, b.ChecksumWords())
 		}
+	}
+	for _, b := range st.Broken {
+		fmt.Printf("   Broken:        %s; it is left out of the window\n", b.Why)
 	}
 	for _, id := range st.Incomplete {
 		fmt.Printf("   Incomplete:    %s (its WAL never all arrived, or the run stopped)\n", id)
@@ -757,6 +847,10 @@ postgresql.auto.conf. Start PostgreSQL on the directory to run the replay.
 
 Run it as the user PostgreSQL will run as: restore_command calls this CLI
 with the same config and key. Archiving is turned off on the restored cluster.
+
+An incremental base is unpacked with its full into a work directory beside
+--pgdata and combined into it with pg_combinebackup of the base's major
+version, which needs room for both and the result.
 
 A SQLite surface is restored to a new database file instead: --out names it.
 The daemon's segments are about a second apart, so the file holds every
@@ -851,7 +945,14 @@ before anything is written.`,
 			if err != nil {
 				return err
 			}
-			fmt.Printf("Restored base %s (PostgreSQL %d) into %s\n", res.Base.BaseID, res.Base.Major(), dir)
+			if res.Full != nil {
+				fmt.Printf("Restored incremental base %s, combined with full base %s (PostgreSQL %d), into %s\n", res.Base.BaseID, res.Full.BaseID, res.Base.Major(), dir)
+			} else {
+				fmt.Printf("Restored base %s (PostgreSQL %d) into %s\n", res.Base.BaseID, res.Base.Major(), dir)
+			}
+			for _, b := range res.Passed {
+				fmt.Fprintf(os.Stderr, "Warning: passed over %s. The restore starts from the older base %s and replays more WAL.\n", b.Why, res.Base.BaseID)
+			}
 			goal := target.UTC().Format("2006-01-02 15:04:05 UTC")
 			switch {
 			case toPoint != "":

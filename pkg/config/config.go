@@ -409,6 +409,11 @@ type WALConfig struct {
 	// replays every WAL file since its base, so a busy database wants them
 	// more often. Zero means 7.
 	BaseEveryDays int `yaml:"base_every_days,omitempty" json:"base_every_days,omitempty"`
+	// IncrementalEveryDays, when set, has the daemon take an incremental
+	// base backup this often between the full ones (PostgreSQL 17 and newer,
+	// with summarize_wal on): only the blocks changed since the newest full,
+	// so a restore replays less WAL. Zero takes full bases only.
+	IncrementalEveryDays int `yaml:"incremental_every_days,omitempty" json:"incremental_every_days,omitempty"`
 	// BundleMB bundles the unlocked WAL as soon as it passes this size, as
 	// well as once a day. Zero means 1024.
 	BundleMB int `yaml:"bundle_mb,omitempty" json:"bundle_mb,omitempty"`

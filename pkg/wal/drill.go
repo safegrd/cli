@@ -26,6 +26,9 @@ type DrillPlan struct {
 	// to reach it.
 	LastSegment string
 	SegSize     uint64
+	// PointBytes and EndBytes are what each restore unpacks: the base, and
+	// its full when it is an incremental.
+	PointBytes, EndBytes int64
 }
 
 // ReachedEnd says a replay that ended at lsn read the newest archived
@@ -38,11 +41,15 @@ func (p DrillPlan) ReachedEnd(lsn LSN) bool {
 // PlanDrill works out a drill from what the archive holds.
 func (a *Archive) PlanDrill(ctx context.Context) (DrillPlan, error) {
 	var p DrillPlan
-	bases, _, err := a.Bases(ctx)
+	all, _, err := a.Bases(ctx)
 	if err != nil {
 		return p, err
 	}
+	bases, broken := usableBases(all)
 	if len(bases) == 0 {
+		if len(broken) > 0 {
+			return p, fmt.Errorf("no base backup in the archive can be restored: %s", brokenWords(broken))
+		}
 		return p, errors.New("the archive holds no complete base backup")
 	}
 	have, err := a.archivedNames(ctx)
@@ -81,6 +88,8 @@ func (a *Archive) PlanDrill(ctx context.Context) (DrillPlan, error) {
 		}
 	}
 	p.EndFiles = filesFrom(have, p.EndBase, segSize, top)
+	p.EndBytes = ChainBytes(bases, p.EndBase)
+	p.PointBytes = ChainBytes(bases, p.PointBase)
 	if p.Point != nil {
 		lsn, _ := ParseLSN(p.Point.LSN)
 		p.PointFiles = filesFrom(have, p.PointBase, segSize, uint64(lsn)/segSize)

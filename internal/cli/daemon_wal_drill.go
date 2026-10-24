@@ -81,8 +81,13 @@ func runWALDrill(ctx context.Context, c *config.CLIConfig, a *wal.Archive, s *co
 
 	// Each replay reads its WAL from a directory the daemon filled, so the
 	// cluster's user never needs a key.
-	start := func(base wal.BaseInfo, files []string, point *wal.RestorePoint) (*runner.LocalPostgres, error) {
-		need := base.TarBytes*2 + int64(len(files))*int64(base.SegmentSize)
+	// An incremental base is unpacked with its full and combined, so the
+	// disk it needs is both of them unpacked plus the result.
+	start := func(base wal.BaseInfo, unpacked int64, files []string, point *wal.RestorePoint) (*runner.LocalPostgres, error) {
+		need := unpacked + base.TarBytes*2 + int64(len(files))*int64(base.SegmentSize)
+		if !base.Incremental() {
+			need = base.TarBytes*2 + int64(len(files))*int64(base.SegmentSize)
+		}
 		return runner.StartRecoveredPostgres(ctx, srv, stateDir, need, func(dataDir, walDir string) error {
 			o := wal.RestoreOptions{PGData: dataDir, FetchCommand: "cp " + shellQuote(walDir) + "/%f %p"}
 			if point != nil {
@@ -98,7 +103,7 @@ func runWALDrill(ctx context.Context, c *config.CLIConfig, a *wal.Archive, s *co
 
 	if p := plan.Point; p != nil {
 		d.RestorePoint, d.PointAt = p.Name, p.At
-		lp, err := start(plan.PointBase, plan.PointFiles, p)
+		lp, err := start(plan.PointBase, plan.PointBytes, plan.PointFiles, p)
 		if err != nil {
 			return failed("restoring to restore point " + p.Name + ": " + err.Error())
 		}
@@ -119,7 +124,8 @@ func runWALDrill(ctx context.Context, c *config.CLIConfig, a *wal.Archive, s *co
 		}
 	}
 
-	lp, err := start(plan.EndBase, plan.EndFiles, nil)
+	d.Base, d.FullBase = plan.EndBase.BaseID, plan.EndBase.IncrementalFrom
+	lp, err := start(plan.EndBase, plan.EndBytes, plan.EndFiles, nil)
 	if err != nil {
 		return failed("restoring to the end of the archive: " + err.Error())
 	}
@@ -177,6 +183,12 @@ func sayWALDrill(s *config.SurfaceConfig, d *model.WALDrill) {
 			s.ID, d.RestorePoint, d.PointAt.UTC().Format("2006-01-02 15:04 UTC"), d.Tables, d.Exact)
 	case d.Passed:
 		fmt.Printf("Surface %s: point-in-time drill passed: the replay to the end reached the last WAL file. No restore point to count against yet.\n", s.ID)
+	}
+	if d.Passed && d.FullBase != "" {
+		fmt.Printf("Surface %s: the replay to the end started from incremental base %s, combined with full base %s.\n", s.ID, d.Base, d.FullBase)
+	}
+	switch {
+	case d.Passed || d.Blocked != "":
 	default:
 		fmt.Fprintf(os.Stderr, "Error: Surface %s: point-in-time drill failed: %s\n", s.ID, d.Detail)
 	}

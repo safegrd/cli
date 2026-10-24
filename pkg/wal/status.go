@@ -40,6 +40,20 @@ type Status struct {
 	WindowFrom, WindowTo time.Time
 	// Conflicts are names archived twice with different contents.
 	Conflicts []string
+	// Broken are incremental bases whose full the archive no longer holds;
+	// they are left out of the window.
+	Broken []BrokenBase
+}
+
+// Incrementals counts the incremental bases.
+func (st Status) Incrementals() int {
+	n := 0
+	for _, b := range st.Bases {
+		if b.Incremental() {
+			n++
+		}
+	}
+	return n
 }
 
 // Status reads the whole archive and works out its window.
@@ -143,7 +157,9 @@ func (a *Archive) Status(ctx context.Context) (Status, error) {
 	// The window ends where the longest replay ends, and starts at the end
 	// of the oldest base that replays that far.
 	gaps := map[string]*Gap{}
-	for _, b := range st.Bases {
+	usable, broken := usableBases(st.Bases)
+	st.Broken = broken
+	for _, b := range usable {
 		tli, seg, err := parseSegName(b.StartWAL, segSize)
 		if err != nil {
 			continue

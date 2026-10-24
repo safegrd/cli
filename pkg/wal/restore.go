@@ -53,6 +53,11 @@ type RestoreResult struct {
 	// had it, so the cluster could start without its backup_label; "" when
 	// it was cleared.
 	CheckpointKept string
+	// Full is the full base an incremental Base was combined with.
+	Full *BaseInfo
+	// Passed are newer incremental bases the restore could not rebuild,
+	// because their full is gone, and started from an older base instead.
+	Passed []BrokenBase
 }
 
 // Restore unpacks the newest complete base backup that ends before the
@@ -60,16 +65,32 @@ type RestoreResult struct {
 // archive to the target and promote. Starting PostgreSQL does the replay.
 func (a *Archive) Restore(ctx context.Context, o RestoreOptions) (RestoreResult, error) {
 	var res RestoreResult
-	bases, _, err := a.Bases(ctx)
+	all, _, err := a.Bases(ctx)
 	if err != nil {
 		return res, err
 	}
-	if len(bases) == 0 {
+	if len(all) == 0 {
 		return res, fmt.Errorf("the archive at %s holds no complete base backup. Take one with 'safegrd wal base'", a.Describe())
+	}
+	// An incremental whose full is gone cannot be rebuilt. An older base
+	// still reaches the target, with a longer replay.
+	bases, broken := usableBases(all)
+	if len(bases) == 0 {
+		return res, fmt.Errorf("no base backup in the archive can be restored: %s", brokenWords(broken))
 	}
 	pick, err := a.pickBase(ctx, bases, o)
 	if err != nil {
+		if len(broken) > 0 {
+			err = fmt.Errorf("%w. %s", err, brokenWords(broken))
+		}
 		return res, err
+	}
+	for _, b := range broken {
+		for _, x := range all {
+			if x.BaseID == b.BaseID && x.StartedAt.After(pick.StartedAt) && (o.Target.IsZero() || x.EndedAt.Before(o.Target)) {
+				res.Passed = append(res.Passed, b)
+			}
+		}
 	}
 	if err := a.checkTimeline(ctx, *pick, o.Timeline); err != nil {
 		return res, err
@@ -109,9 +130,10 @@ func (a *Archive) Restore(ctx context.Context, o RestoreOptions) (RestoreResult,
 	if err := emptyDir(o.PGData); err != nil {
 		return res, err
 	}
-	if err := a.unpackBase(ctx, *pick, o.PGData); err != nil {
+	if err := a.unpackChain(ctx, bases, *pick, o.PGData); err != nil {
 		return res, err
 	}
+	res.Full, _ = chainFull(bases, *pick)
 	if _, err := os.Stat(filepath.Join(o.PGData, "backup_label")); err != nil {
 		return res, fmt.Errorf("base %s holds no backup_label, and a cluster restored from it would start from the wrong checkpoint: %w", pick.BaseID, err)
 	}
@@ -129,6 +151,15 @@ func (a *Archive) Restore(ctx context.Context, o RestoreOptions) (RestoreResult,
 		res.NoConf = true
 	}
 	return res, nil
+}
+
+// brokenWords says why each incremental base cannot be rebuilt.
+func brokenWords(broken []BrokenBase) string {
+	var w []string
+	for _, b := range broken {
+		w = append(w, b.Why)
+	}
+	return strings.Join(w, "; ")
 }
 
 func stamp(t time.Time) string { return t.UTC().Format("2006-01-02 15:04:05 UTC") }

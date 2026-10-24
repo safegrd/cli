@@ -103,6 +103,9 @@ func checkWALArchiver(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 func runWALWork(ctx context.Context, c *config.CLIConfig, s *config.SurfaceConfig, st *SurfaceState, lockDir string, now time.Time) bool {
 	walDaemonSpool(ctx, c, s, st)
 	baseEvery := walDays(s.WAL.BaseEveryDays)
+	if n := s.WAL.IncrementalEveryDays; n > 0 && time.Duration(n)*24*time.Hour < baseEvery {
+		baseEvery = time.Duration(n) * 24 * time.Hour
+	}
 	// A SQLite database's follower takes its own bases and points.
 	baseDue := !walIsSQLite(s) && now.Sub(st.WALLastBase) >= baseEvery && now.Sub(st.WALBaseFailedAt) >= walRetry
 	bundleDue := now.Sub(st.WALLastBundle) >= walBundleEvery && now.Sub(st.WALBundleFailedAt) >= walRetry
@@ -351,7 +354,10 @@ func walDaemonBundle(ctx context.Context, a *wal.Archive) ([]string, error) {
 }
 
 // walDaemonBase takes a base backup unless the archive already holds one
-// newer than the interval: one taken by hand counts.
+// newer than the interval: one taken by hand counts. A full is due every
+// wal.base_every_days; with wal.incremental_every_days set, an incremental
+// is due that often in between, and walBase takes a full instead when one
+// cannot be taken.
 func walDaemonBase(ctx context.Context, c *config.CLIConfig, a *wal.Archive, s *config.SurfaceConfig, st *SurfaceState, now time.Time) error {
 	if a.Recipient == "" {
 		return errors.New("encryption.public_key is not set, and the base backup is encrypted to it")
@@ -365,22 +371,35 @@ func walDaemonBase(ctx context.Context, c *config.CLIConfig, a *wal.Archive, s *
 	if err != nil {
 		return err
 	}
-	if n := len(bases); n > 0 && now.Sub(bases[n-1].StartedAt) < walDays(s.WAL.BaseEveryDays) {
-		st.WALLastBase, st.WALBaseFailedAt = bases[n-1].StartedAt, time.Time{}
-		return nil
+	var newest, newestFull time.Time
+	for _, b := range bases {
+		if b.StartedAt.After(newest) {
+			newest = b.StartedAt
+		}
+		if !b.Incremental() && b.StartedAt.After(newestFull) {
+			newestFull = b.StartedAt
+		}
 	}
-	fmt.Printf("Surface %s: taking a base backup for its WAL archive.\n", s.ID)
-	info, err := a.Base(ctx, walBaseOptions(a, s, connURL, srv))
+	mode := walBaseFull
+	if !newestFull.IsZero() && now.Sub(newestFull) < walDays(s.WAL.BaseEveryDays) {
+		incr := s.WAL.IncrementalEveryDays
+		if incr <= 0 || now.Sub(newest) < time.Duration(incr)*24*time.Hour {
+			st.WALLastBase, st.WALBaseFailedAt = newest, time.Time{}
+			return nil
+		}
+		mode = walBaseAuto
+	}
+	if mode == walBaseFull {
+		fmt.Printf("Surface %s: taking a base backup for its WAL archive.\n", s.ID)
+	} else {
+		fmt.Printf("Surface %s: taking an incremental base backup for its WAL archive.\n", s.ID)
+	}
+	info, err := walBaseOn(ctx, a, s, connURL, srv, mode)
 	if err != nil {
 		return err
 	}
 	st.WALLastBase, st.WALBaseFailedAt = info.StartedAt, time.Time{}
-	fmt.Printf("Base backup %s (%s, %s), %s\n", info.BaseID, formatBytes(info.StoredBytes),
-		info.EndedAt.Sub(info.StartedAt).Round(time.Second), walLockLine(a, info.LockedUntil))
-	if from := info.SourceWords(); from != "" {
-		fmt.Printf("   Taken from %s; its WAL comes from the primary's archive\n", from)
-	}
-	warnChecksumFailures(info)
+	sayWALBase(a, info)
 	return nil
 }
 

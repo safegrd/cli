@@ -70,7 +70,21 @@ type BaseInfo struct {
 	WALSalt1   uint32 `json:"wal_salt1,omitempty"`
 	WALSalt2   uint32 `json:"wal_salt2,omitempty"`
 	PageSize   uint32 `json:"page_size,omitempty"`
+
+	// IncrementalFrom is the full base an incremental base was taken from
+	// (pg_basebackup --incremental, PostgreSQL 17 and newer); "" for a full.
+	// IncrementalFromLSN and IncrementalFromTLI are where the incremental's
+	// backup_label says that full starts.
+	IncrementalFrom    string `json:"incremental_from,omitempty"`
+	IncrementalFromLSN string `json:"incremental_from_lsn,omitempty"`
+	IncrementalFromTLI uint32 `json:"incremental_from_tli,omitempty"`
+	// ManifestSha256 is the SHA-256 of the base's backup_manifest, which the
+	// host keeps for a full so it can take incrementals from it.
+	ManifestSha256 string `json:"manifest_sha256,omitempty"`
 }
+
+// Incremental says the base holds only the blocks changed since its full.
+func (b BaseInfo) Incremental() bool { return b.IncrementalFrom != "" }
 
 // Major is the PostgreSQL major version the base was taken from.
 func (b BaseInfo) Major() int { return b.ServerVersionNum / 10000 }
@@ -86,6 +100,8 @@ type Server struct {
 	// Standby is a server in recovery: a standby, whose WAL its primary
 	// archives.
 	Standby bool
+	// SummarizeWAL is summarize_wal, which an incremental base needs.
+	SummarizeWAL bool
 }
 
 // Identify asks the cluster at connURL who it is, over a replication
@@ -147,6 +163,11 @@ func Identify(ctx context.Context, connURL string) (Server, error) {
 	} else if ro, err := show("transaction_read_only"); err == nil {
 		s.Standby = ro == "on"
 	}
+	if s.VersionNum >= 170000 {
+		if sw, err := show("summarize_wal"); err == nil {
+			s.SummarizeWAL = sw == "on"
+		}
+	}
 	mode, err := show("archive_mode")
 	if err != nil {
 		return s, err
@@ -171,6 +192,12 @@ type BaseOptions struct {
 	BeforeWALCheck func(context.Context)
 	// ListTablespaces, when set, stands in for Tablespaces.
 	ListTablespaces func(ctx context.Context, connURL string) ([]Tablespace, error)
+	// From, when set, makes the base an incremental from that full, whose
+	// backup_manifest is at Manifest on this host. PlanBase sets both.
+	From     *BaseInfo
+	Manifest string
+	// Warn hears what went wrong without failing the base.
+	Warn func(string)
 }
 
 // Base takes a base backup with pg_basebackup and streams it into the
@@ -214,6 +241,16 @@ func (a *Archive) Base(ctx context.Context, o BaseOptions) (BaseInfo, error) {
 	if a.Store.Locks() {
 		info.LockedUntil = started.Add(a.Window + a.BaseEvery + lockSlack)
 	}
+	// An incremental is locked until its full is, never longer: it cannot
+	// be rebuilt once the full is gone.
+	args := []string{"-D", "-", "-Ft", "-X", "none", "--checkpoint=fast", "--no-password"}
+	if o.From != nil {
+		info.IncrementalFrom = o.From.BaseID
+		if a.Store.Locks() {
+			info.LockedUntil = o.From.LockedUntil
+		}
+		args = append(args, "--incremental="+o.Manifest)
+	}
 
 	// The password travels in a 0600 file named by PGPASSFILE, never on
 	// the command line, which every user on the host reads from the
@@ -223,7 +260,7 @@ func (a *Archive) Base(ctx context.Context, o BaseOptions) (BaseInfo, error) {
 		return info, err
 	}
 	defer cleanup()
-	cmd := exec.CommandContext(ctx, bin, "-d", dsn, "-D", "-", "-Ft", "-X", "none", "--checkpoint=fast", "--no-password")
+	cmd := exec.CommandContext(ctx, bin, append([]string{"-d", dsn}, args...)...)
 	cmd.Env = env
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -239,7 +276,7 @@ func (a *Archive) Base(ctx context.Context, o BaseOptions) (BaseInfo, error) {
 	tarStream := bufio.NewReaderSize(stdout, 64<<10)
 	if _, err := tarStream.Peek(512); err != nil {
 		waitErr := cmd.Wait()
-		return info, fmt.Errorf("pg_basebackup wrote no backup: %v\n%s", errors.Join(waitErr, err), strings.TrimSpace(stderr.String()))
+		return info, &NoBackupError{Stderr: strings.TrimSpace(stderr.String()), Err: errors.Join(waitErr, err)}
 	}
 
 	scanR, scanW := io.Pipe()
@@ -256,7 +293,7 @@ func (a *Archive) Base(ctx context.Context, o BaseOptions) (BaseInfo, error) {
 	}
 	put := make(chan putResult, 1)
 	go func() {
-		lock, err := a.Store.Put(ctx, a.baseKey(info.BaseID, "base.tar.zst.age"), upR, info.LockedUntil)
+		lock, err := a.put(ctx, a.baseKey(info.BaseID, "base.tar.zst.age"), upR, info)
 		upR.CloseWithError(io.ErrClosedPipe)
 		put <- putResult{lock, err}
 	}()
@@ -264,6 +301,11 @@ func (a *Archive) Base(ctx context.Context, o BaseOptions) (BaseInfo, error) {
 	m, encErr := crypto.EncryptStream(io.TeeReader(tarStream, scanW), stored, a.Recipient)
 	scanW.Close()
 	upW.CloseWithError(encErr)
+	if encErr != nil {
+		// Nothing reads pg_basebackup's output any more; left running it
+		// would block on a full pipe and Wait would never return.
+		_ = cmd.Process.Kill()
+	}
 	waitErr := cmd.Wait()
 	pr := <-put
 	putErr := pr.err
@@ -299,6 +341,10 @@ func (a *Archive) Base(ctx context.Context, o BaseOptions) (BaseInfo, error) {
 	if err != nil {
 		return info, err
 	}
+	info.ManifestSha256 = sha256Hex(facts.manifest)
+	if err := checkIncrementalLabel(&info, facts.label, o.From); err != nil {
+		return info, err
+	}
 	first, last := ranges[0], ranges[len(ranges)-1]
 	info.Timeline, info.StartLSN, info.EndLSN = last.Timeline, first.Start.String(), last.End.String()
 	need := neededWAL(ranges, srv.SegSize)
@@ -331,8 +377,15 @@ func (a *Archive) Base(ctx context.Context, o BaseOptions) (BaseInfo, error) {
 	}
 
 	info.EndedAt = a.now()
-	if _, err := a.writeRecord(ctx, a.baseKey(info.BaseID, "base.json"), info, info.LockedUntil); err != nil {
+	if _, err := a.writeBaseRecord(ctx, info); err != nil {
 		return info, fmt.Errorf("writing base %s's record: %w", info.BaseID, err)
+	}
+	if info.IncrementalFrom == "" {
+		if err := a.keepManifest(info, facts.manifest); err != nil && o.Warn != nil {
+			// The base is whole; without the manifest the next base is a
+			// full instead of an incremental.
+			o.Warn(fmt.Sprintf("could not keep base %s's manifest on this host, so the next base backup is a full one: %v", info.BaseID, err))
+		}
 	}
 	return info, nil
 }
@@ -617,15 +670,20 @@ func (a *Archive) Bases(ctx context.Context) (complete []BaseInfo, incomplete []
 var pgToolVersionRe = regexp.MustCompile(`\(PostgreSQL\)\s+(\d+)`)
 
 // FindPgBasebackup returns a pg_basebackup of at least minMajor, the newest
-// installed: SAFEGRD_PG_BINDIR, then PATH, then the directories distributions
-// install PostgreSQL under. A pg_basebackup reads servers of its own major
-// and older.
+// installed. A pg_basebackup reads servers of its own major and older.
 func FindPgBasebackup(ctx context.Context, minMajor int) (string, error) {
+	return FindPgTool(ctx, "pg_basebackup", minMajor, false)
+}
+
+// FindPgTool returns PostgreSQL's tool name of major minMajor, or with
+// exact false of at least it, the newest installed: SAFEGRD_PG_BINDIR, then
+// PATH, then the directories distributions install PostgreSQL under.
+func FindPgTool(ctx context.Context, name string, minMajor int, exact bool) (string, error) {
 	var dirs []string
 	if d := os.Getenv("SAFEGRD_PG_BINDIR"); d != "" {
 		dirs = []string{d}
 	} else {
-		if p, err := exec.LookPath("pg_basebackup"); err == nil {
+		if p, err := exec.LookPath(name); err == nil {
 			dirs = append(dirs, filepath.Dir(p))
 		}
 		globs := []string{"/usr/lib/postgresql/*/bin", "/usr/pgsql-*/bin", "/usr/local/pgsql/bin", "/usr/libexec/postgresql*"}
@@ -640,7 +698,7 @@ func FindPgBasebackup(ctx context.Context, minMajor int) (string, error) {
 	best, bestMajor := "", 0
 	var found []string
 	for _, d := range dirs {
-		p := filepath.Join(d, "pg_basebackup")
+		p := filepath.Join(d, name)
 		out, err := exec.CommandContext(ctx, p, "--version").Output()
 		if err != nil {
 			continue
@@ -651,7 +709,7 @@ func FindPgBasebackup(ctx context.Context, minMajor int) (string, error) {
 		}
 		major, _ := strconv.Atoi(m[1])
 		found = append(found, fmt.Sprintf("%s (%d)", p, major))
-		if major >= minMajor && major > bestMajor {
+		if major >= minMajor && major > bestMajor && (!exact || major == minMajor) {
 			best, bestMajor = p, major
 		}
 	}
@@ -659,9 +717,12 @@ func FindPgBasebackup(ctx context.Context, minMajor int) (string, error) {
 		return best, nil
 	}
 	if len(found) == 0 {
-		return "", fmt.Errorf("no pg_basebackup on this host. Install the PostgreSQL %d client tools, or set SAFEGRD_PG_BINDIR", minMajor)
+		return "", fmt.Errorf("no %s on this host. Install the PostgreSQL %d client tools, or set SAFEGRD_PG_BINDIR", name, minMajor)
 	}
-	return "", fmt.Errorf("the server is PostgreSQL %d and this host has only %s. Install pg_basebackup %d or newer, or set SAFEGRD_PG_BINDIR", minMajor, strings.Join(found, ", "), minMajor)
+	if exact {
+		return "", fmt.Errorf("this needs %s %d, and this host has only %s. Install PostgreSQL %d's, or set SAFEGRD_PG_BINDIR", name, minMajor, strings.Join(found, ", "), minMajor)
+	}
+	return "", fmt.Errorf("the server is PostgreSQL %d and this host has only %s. Install %s %d or newer, or set SAFEGRD_PG_BINDIR", minMajor, strings.Join(found, ", "), name, minMajor)
 }
 
 // replayLag is how many seconds a standby's replay is behind the last

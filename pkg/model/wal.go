@@ -61,6 +61,10 @@ type WALDrill struct {
 	// ReachedEnd says the replay to the end of the archive reached its last
 	// WAL file.
 	ReachedEnd bool `json:"reached_end"`
+	// Base is the base backup the replay to the end started from, and
+	// FullBase the full it was combined with when it is an incremental.
+	Base     string `json:"base,omitempty"`
+	FullBase string `json:"full_base,omitempty"`
 	// Detail is why it failed, or what it could not check.
 	Detail string `json:"detail,omitempty"`
 	// Blocked is why the host could not run the drill at all (no server of
