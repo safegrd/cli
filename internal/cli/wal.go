@@ -477,6 +477,16 @@ const (
 	walBaseIncremental
 )
 
+// errNoIncremental is an incremental base asked for that cannot be taken.
+var errNoIncremental = errors.New("no incremental base backup taken")
+
+// cannotIncrement says err is an incremental that could not be taken,
+// rather than a base that failed.
+func cannotIncrement(err error) bool {
+	var nb *wal.NoBackupError
+	return errors.Is(err, errNoIncremental) || errors.Is(err, wal.ErrChainRefused) || errors.As(err, &nb)
+}
+
 // sayWALBase prints a finished base backup.
 func sayWALBase(a *wal.Archive, info wal.BaseInfo) {
 	took := info.EndedAt.Sub(info.StartedAt).Round(time.Second)
@@ -514,7 +524,7 @@ func walBaseOn(ctx context.Context, a *wal.Archive, s *config.SurfaceConfig, con
 		}
 		if plan.From == nil {
 			if mode == walBaseIncremental {
-				return wal.BaseInfo{}, fmt.Errorf("no incremental base backup taken: %s", plan.Why)
+				return wal.BaseInfo{}, fmt.Errorf("%w: %s", errNoIncremental, plan.Why)
 			}
 			fmt.Fprintf(os.Stderr, "Warning: Surface %s: taking a full base backup, not an incremental one: %s.\n", s.ID, plan.Why)
 		} else {
@@ -1027,8 +1037,8 @@ func sayDelta(d *wal.DeltaResult, dir string) {
 	if d == nil {
 		return
 	}
-	fmt.Printf("   Rewrote %d %s (%s); %d unchanged (%s read and compared)\n", len(d.Rewritten), pluralWord(int64(len(d.Rewritten)), "file", "files"),
-		formatBytes(d.RewrittenBytes), d.Unchanged, formatBytes(d.ReadBytes))
+	fmt.Printf("   Rewrote %d %s (%s written); %d unchanged (%s read and compared)\n", len(d.Rewritten), pluralWord(int64(len(d.Rewritten)), "file", "files"),
+		formatBytes(d.WrittenBytes), d.Unchanged, formatBytes(d.ReadBytes))
 	if n := len(d.Rewritten); n > 0 && n <= 20 {
 		fmt.Printf("   Rewritten: %s\n", strings.Join(d.Rewritten, ", "))
 	}

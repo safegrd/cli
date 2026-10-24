@@ -387,7 +387,10 @@ func walDaemonBase(ctx context.Context, c *config.CLIConfig, a *wal.Archive, s *
 			st.WALLastBase, st.WALBaseFailedAt = newest, time.Time{}
 			return nil
 		}
-		mode = walBaseAuto
+		// The daemon asks for an incremental and nothing else here: a full
+		// taken in its place every incremental_every_days would be locked
+		// for the window and a full interval each time.
+		mode = walBaseIncremental
 	}
 	if mode == walBaseFull {
 		fmt.Printf("Surface %s: taking a base backup for its WAL archive.\n", s.ID)
@@ -395,6 +398,12 @@ func walDaemonBase(ctx context.Context, c *config.CLIConfig, a *wal.Archive, s *
 		fmt.Printf("Surface %s: taking an incremental base backup for its WAL archive.\n", s.ID)
 	}
 	info, err := walBaseOn(ctx, a, s, connURL, srv, mode)
+	if mode == walBaseIncremental && cannotIncrement(err) {
+		st.WALLastBase, st.WALBaseFailedAt = now, time.Time{}
+		fmt.Fprintf(os.Stderr, "Warning: Surface %s: %v. No base is taken until the next full one is due, %s.\n", s.ID, err,
+			newestFull.Add(walDays(s.WAL.BaseEveryDays)).UTC().Format("2006-01-02 15:04 UTC"))
+		return nil
+	}
 	if err != nil {
 		return err
 	}

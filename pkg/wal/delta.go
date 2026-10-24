@@ -28,9 +28,10 @@ import (
 // DeltaResult is what a delta restore did to the target.
 type DeltaResult struct {
 	// Rewritten are the files written, because they were missing, of
-	// another size, or held other bytes; RewrittenBytes their size.
-	Rewritten      []string
-	RewrittenBytes int64
+	// another size, or held other bytes; WrittenBytes what was written to
+	// them, from the first byte that differed.
+	Rewritten    []string
+	WrittenBytes int64
 	// Unchanged counts the files that matched the base, ReadBytes their size.
 	Unchanged int
 	ReadBytes int64
@@ -175,9 +176,9 @@ func (d *deltaWriter) file(rel string, size int64, r io.Reader) error {
 		}
 		err = os.ErrNotExist
 	}
-	rewritten := func() {
+	rewritten := func(from int64) {
 		d.res.Rewritten = append(d.res.Rewritten, rel)
-		d.res.RewrittenBytes += size
+		d.res.WrittenBytes += size - from
 	}
 	if errors.Is(err, os.ErrNotExist) {
 		f, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
@@ -188,7 +189,7 @@ func (d *deltaWriter) file(rel string, size int64, r io.Reader) error {
 		if cerr := f.Close(); err == nil {
 			err = cerr
 		}
-		rewritten()
+		rewritten(0)
 		return err
 	}
 	if err != nil {
@@ -211,7 +212,7 @@ func (d *deltaWriter) file(rel string, size int64, r io.Reader) error {
 		if _, err := io.Copy(f, r); err != nil {
 			return err
 		}
-		rewritten()
+		rewritten(0)
 		return f.Close()
 	}
 	// The same size: compare to the end, and rewrite from the first byte
@@ -243,7 +244,7 @@ func (d *deltaWriter) file(rel string, size int64, r io.Reader) error {
 		if _, err := io.Copy(f, r); err != nil {
 			return err
 		}
-		rewritten()
+		rewritten(off + int64(i))
 		return f.Close()
 	}
 	d.res.Unchanged++

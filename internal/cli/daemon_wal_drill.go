@@ -82,11 +82,12 @@ func runWALDrill(ctx context.Context, c *config.CLIConfig, a *wal.Archive, s *co
 	// Each replay reads its WAL from a directory the daemon filled, so the
 	// cluster's user never needs a key.
 	// An incremental base is unpacked with its full and combined, so the
-	// disk it needs is both of them unpacked plus the result.
+	// disk it needs is both of them unpacked plus the result, which is
+	// about the two together again.
 	start := func(base wal.BaseInfo, unpacked int64, files []string, point *wal.RestorePoint) (*runner.LocalPostgres, error) {
-		need := unpacked + base.TarBytes*2 + int64(len(files))*int64(base.SegmentSize)
-		if !base.Incremental() {
-			need = base.TarBytes*2 + int64(len(files))*int64(base.SegmentSize)
+		need := base.TarBytes*2 + int64(len(files))*int64(base.SegmentSize)
+		if base.Incremental() {
+			need = unpacked*2 + int64(len(files))*int64(base.SegmentSize)
 		}
 		return runner.StartRecoveredPostgres(ctx, srv, stateDir, need, func(dataDir, walDir string) error {
 			o := wal.RestoreOptions{PGData: dataDir, FetchCommand: "cp " + shellQuote(walDir) + "/%f %p"}
