@@ -422,8 +422,13 @@ type WALConfig struct {
 	// Zero means 7.
 	DrillEveryDays int `yaml:"drill_every_days,omitempty" json:"drill_every_days,omitempty"`
 	// IntervalSeconds is how often the daemon copies a SQLite database's
-	// newly committed WAL frames. Zero means 1.
+	// newly committed WAL frames (zero means 1), or pushes what a MySQL
+	// binary log or MongoDB oplog committed (zero means 5).
 	IntervalSeconds int `yaml:"interval_seconds,omitempty" json:"interval_seconds,omitempty"`
+	// ServerID is the replica id the daemon gives a MySQL server when it
+	// reads its binary log. Zero derives one from the surface id; set it
+	// when that collides with a replica's own server_id.
+	ServerID uint32 `yaml:"server_id,omitempty" json:"server_id,omitempty"`
 	// CheckpointMB is the size a SQLite database's WAL reaches before the
 	// daemon checkpoints it. Zero means 4.
 	CheckpointMB int `yaml:"checkpoint_mb,omitempty" json:"checkpoint_mb,omitempty"`

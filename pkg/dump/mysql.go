@@ -255,6 +255,9 @@ func findMySQLTool(ctx context.Context, kind string, serverIsMariaDB bool) (*MyS
 	if kind == "client" {
 		env, names = "SAFEGRD_MYSQL", []string{"mysql", "mariadb"}
 	}
+	if kind == "binlog" {
+		env, names = "SAFEGRD_MYSQLBINLOG", []string{"mysqlbinlog", "mariadb-binlog"}
+	}
 	var candidates []string
 	if p := os.Getenv(env); p != "" {
 		candidates = []string{p}
@@ -295,7 +298,10 @@ func findMySQLTool(ctx context.Context, kind string, serverIsMariaDB bool) (*MyS
 		if m := mysqlToolVersionRe.FindStringSubmatch(string(out)); m != nil {
 			v = m[1]
 		}
-		found = append(found, &MySQLTool{Path: p, Version: v, MariaDB: strings.Contains(string(out), "MariaDB")})
+		// MariaDB's mysqlbinlog says only "Ver 3.5", so where it is
+		// installed tells it apart.
+		maria := strings.Contains(string(out), "MariaDB") || strings.Contains(strings.ToLower(real), "mariadb")
+		found = append(found, &MySQLTool{Path: p, Version: v, MariaDB: maria})
 	}
 	if len(found) == 0 {
 		if p := os.Getenv(env); p != "" {
@@ -358,6 +364,11 @@ type MySQLDumper struct {
 	// write fills, instead of the archive.
 	Parallel int
 	Sections func(ctx context.Context, entry string, write func(io.Writer) error) error
+	// WithPosition has the dump tool write the binary log position its
+	// snapshot sits at (mysql_pitr.go), and Position is what it wrote. A
+	// dump without one fails.
+	WithPosition bool
+	Position     MySQLPosition
 	// ReadAtOnce and ReadOver are how many tables the last Dump read over
 	// several connections and over how many; zero when it read over one.
 	// LockHeld is how long writes to the database waited while the readers
@@ -493,6 +504,9 @@ func (d *MySQLDumper) Dump(ctx context.Context, databaseName string, dst io.Writ
 	if skipMaskingPolicies(ctx, tool, version, mariaDB) {
 		args = append(args, "--skip-masking-policies")
 	}
+	if d.WithPosition {
+		args = append(args, mysqlPositionArgs(ctx, tool)...)
+	}
 	tw := tar.NewWriter(dst)
 	newMeta := func(tables []string, rows map[string]int64) *model.SnapshotMetadata {
 		meta := &model.SnapshotMetadata{
@@ -514,7 +528,7 @@ func (d *MySQLDumper) Dump(ctx context.Context, databaseName string, dst io.Writ
 		return meta
 	}
 	d.ReadAtOnce, d.ReadOver, d.LockHeld = 0, 0, 0
-	if d.PerTable && d.Parallel > 1 && d.Sections != nil {
+	if d.PerTable && d.Parallel > 1 && d.Sections != nil && !d.WithPosition {
 		rows, schema, ok, err := d.dumpParallel(ctx, target, db, tool, args, tw, sizes)
 		if err != nil {
 			return nil, err
@@ -536,9 +550,16 @@ func (d *MySQLDumper) Dump(ctx context.Context, databaseName string, dst io.Writ
 		cw = newMySQLSectionWriter(tw)
 	}
 	counter := newMySQLDumpCounter()
-	stderr, err := runDumpTool(cmd, tool, io.MultiWriter(cw, counter))
+	posScan := &mysqlPositionScanner{}
+	stderr, err := runDumpTool(cmd, tool, io.MultiWriter(cw, counter, posScan))
 	if err != nil {
 		return nil, err
+	}
+	if d.WithPosition {
+		if posScan.pos.File == "" {
+			return nil, fmt.Errorf("%s wrote no binary log position at the head of the dump. Check that log_bin is on and that the account has REPLICATION CLIENT (BINLOG MONITOR on MariaDB) and, on MySQL, FLUSH_TABLES", tool)
+		}
+		d.Position = posScan.pos
 	}
 	d.passOn(tool, stderr)
 	if !counter.Completed {

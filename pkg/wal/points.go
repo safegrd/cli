@@ -44,6 +44,8 @@ type RestorePoint struct {
 	Generation string `json:"generation,omitempty"`
 	WALSalt1   uint32 `json:"wal_salt1,omitempty"`
 	WALOffset  int64  `json:"wal_offset,omitempty"`
+	// Stream is a MySQL or MongoDB point's place in its log (stream.go).
+	Stream *StreamPos `json:"stream,omitempty"`
 }
 
 func (a *Archive) pointKey(name string) string { return path.Join(a.prefix(), "points", name+".json") }

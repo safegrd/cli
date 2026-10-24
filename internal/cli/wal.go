@@ -23,7 +23,7 @@ import (
 func newWALCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "wal",
-		Short: "Archive a PostgreSQL surface's WAL and restore it to a point in time",
+		Short: "Archive a database's WAL or log and restore it to a point in time",
 		Long: `Archives the write-ahead log of a PostgreSQL surface that has a wal: block, so
 it restores to any moment inside its window and not only to its last backup.
 
@@ -36,7 +36,12 @@ Each WAL file is compressed and encrypted on this host and written to the
 surface's storage, unlocked. 'safegrd wal bundle' (the daemon runs it daily)
 joins them into one locked object and deletes the unlocked ones.
 'safegrd wal base' takes the base backup a restore starts from (the daemon
-takes one a week).`,
+takes one a week).
+
+A MySQL or MongoDB surface with a wal: block has its binary log or oplog
+followed by the resident daemon ('safegrd daemon run') into the same
+archive. 'safegrd wal restore --target-url' loads a base backup into an
+empty database and replays the log to a moment.`,
 	}
 	cmd.AddCommand(newWALPushCmd(), newWALDrainCmd(), newWALFetchCmd(), newWALBaseCmd(), newWALBundleCmd(), newWALStatusCmd(), newWALRestoreCmd(), newWALPointCmd(), newWALDrillCmd())
 	return cmd
@@ -54,7 +59,7 @@ func walSurface(c *config.CLIConfig, id string) (*config.SurfaceConfig, error) {
 		if s.ID != id {
 			continue
 		}
-		if s.Type != "" && !strings.EqualFold(s.Type, "postgres") && !strings.EqualFold(s.Type, "sqlite") {
+		if s.Type != "" && !strings.EqualFold(s.Type, "postgres") && !strings.EqualFold(s.Type, "sqlite") && !walIsStream(&s) {
 			return nil, fmt.Errorf("surface %s is %s; WAL archiving is for a PostgreSQL or SQLite surface", id, s.Type)
 		}
 		if s.WAL == nil {
@@ -195,7 +200,7 @@ func walSystems(ctx context.Context, a *wal.Archive, named string) ([]string, er
 		return nil, storageFailure(err)
 	}
 	if len(ids) == 0 {
-		return nil, fmt.Errorf("surface %s has no WAL archive in %s yet. Set archive_command, and take a base backup with 'safegrd wal base --surface %s'", a.SurfaceID, a.Store.Describe(), a.SurfaceID)
+		return nil, fmt.Errorf("surface %s has no WAL archive in %s yet. On PostgreSQL set archive_command; SQLite, MySQL and MongoDB are followed by the resident daemon. Then take a base backup with 'safegrd wal base --surface %s'", a.SurfaceID, a.Store.Describe(), a.SurfaceID)
 	}
 	return ids, nil
 }
@@ -451,6 +456,14 @@ a full base, and the command says why. --full takes a full base;
 			if a.Recipient == "" {
 				return fmt.Errorf("encryption.public_key is not set, and the base backup is encrypted to it")
 			}
+			if walIsStream(s) {
+				info, err := walStreamBase(ctx, cfg, a, s)
+				if err != nil {
+					return err
+				}
+				printStreamBase(a, info)
+				return nil
+			}
 			info, err := walBase(ctx, cfg, a, s, mode)
 			if err != nil {
 				return err
@@ -699,6 +712,9 @@ WAL file is missing.`,
 				if sqlite {
 					status = a.SQLiteStatus
 				}
+				if engine := walStreamEngine(s); engine != "" {
+					status = func(ctx context.Context) (wal.Status, error) { return a.StreamStatus(ctx, engine) }
+				}
 				st, err := status(ctx)
 				if err != nil {
 					return storageFailure(err)
@@ -812,6 +828,8 @@ func printWALStatus(a *wal.Archive, st wal.Status) {
 		b := st.Bases[n-1]
 		if b.Kind == "sqlite" {
 			fmt.Printf(", newest %s ended %s (generation %s)", b.BaseID, ts(b.EndedAt), b.Generation)
+		} else if b.Stream != nil {
+			fmt.Printf(", newest %s ended %s (database %s)", b.BaseID, ts(b.EndedAt), b.Stream.Database)
 		} else {
 			fmt.Printf(", newest %s ended %s (PostgreSQL %d)", b.BaseID, ts(b.EndedAt), b.Major())
 		}
@@ -845,7 +863,7 @@ func printWALStatus(a *wal.Archive, st wal.Status) {
 }
 
 func newWALRestoreCmd() *cobra.Command {
-	var surfaceID, systemID, to, toPoint, toLSN, toXID, timeline, pgdata, out, keyPath, privKey, node string
+	var surfaceID, systemID, to, toPoint, toLSN, toXID, timeline, pgdata, out, keyPath, privKey, node, targetURL string
 	var exclusive, delta bool
 	cmd := &cobra.Command{
 		Use:   "restore",
@@ -880,6 +898,12 @@ or "latest": every archived WAL file is replayed, which is the restore after a
 lost host. A time at or after the last commit in the archive is refused by
 PostgreSQL ("recovery ended before configured recovery target was reached"),
 so use latest for the newest state.
+
+A MySQL or MongoDB surface is restored into an empty database instead:
+--target-url names it (a URL, env:VAR or file:/path). The newest base backup
+from before --to is loaded, and the binary log or oplog of the surface's
+database is replayed to the moment with the server's own mysqlbinlog or
+mongorestore.
 
 --to-lsn 16/B374D848 replays to a position in the WAL, and --to-xid 1234567 to
 just after a transaction commits; --exclusive stops just before either, or
@@ -925,6 +949,12 @@ before anything is written.`,
 			}
 			if a.Identity, err = resolveIdentity(ctx, keyPath, privKey); err != nil {
 				return err
+			}
+			if walIsStream(s) {
+				if toLSN != "" || toXID != "" || timeline != "" || exclusive || delta {
+					return errors.New("--to-lsn, --to-xid, --exclusive, --timeline and --delta are PostgreSQL's; a MySQL or MongoDB surface restores to a time or a restore point")
+				}
+				return walStreamRestore(ctx, a, s, target, toPoint, targetURL)
 			}
 			if walIsSQLite(s) {
 				if delta {
@@ -1026,6 +1056,7 @@ before anything is written.`,
 	cmd.Flags().StringVar(&pgdata, "pgdata", "", "PostgreSQL: an empty directory to restore into, or with --delta the data directory to restore over")
 	cmd.Flags().BoolVar(&delta, "delta", false, "PostgreSQL: restore over an existing data directory of the same cluster, writing only the files that differ")
 	cmd.Flags().StringVar(&out, "out", "", "SQLite: the database file to write; it must not exist")
+	cmd.Flags().StringVar(&targetURL, "target-url", "", "MySQL or MongoDB: an empty database to restore into, as a URL, env:VAR or file:/path")
 	cmd.Flags().StringVar(&keyPath, "key-path", "", "Path to the age identity (default encryption.key_path)")
 	cmd.Flags().StringVar(&privKey, "private-key", "", "The age identity, as env:VAR or file:/path")
 	cmd.Flags().StringVar(&node, "node", "", "On hosted storage, restore from the archive another host of the organization wrote (a host that replaces a lost one)")

@@ -40,7 +40,7 @@ var (
 // timeline history, a backup history or a segment left partial by a
 // promotion.
 func ValidName(name string) error {
-	if segmentRe.MatchString(name) || historyRe.MatchString(name) || backupRe.MatchString(name) || partialRe.MatchString(name) || sqliteSegRe.MatchString(name) {
+	if segmentRe.MatchString(name) || historyRe.MatchString(name) || backupRe.MatchString(name) || partialRe.MatchString(name) || sqliteSegRe.MatchString(name) || streamSegName(name) {
 		return nil
 	}
 	return fmt.Errorf("%q is not a WAL file name PostgreSQL archives (a segment, a .history, a .backup or a .partial), nor a SQLite segment", name)

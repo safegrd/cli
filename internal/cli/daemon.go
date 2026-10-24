@@ -316,8 +316,10 @@ exits at once.`,
 
 			if once {
 				warnSQLiteOnce(cfg)
+				warnStreamOnce(cfg)
 			} else {
 				startSQLiteFollowers(ctx, cfg)
+				startStreamFollowers(ctx, cfg)
 			}
 
 			// Surfaces registered with the remote server during this process:
@@ -1297,12 +1299,15 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 			break
 		}
 		st := daemonState.Surfaces[surface.ID]
-		if surface.WAL == nil || st == nil || st.Retired != "" || !(surface.Type == "" || surfaceIsPostgres(&surface) || walIsSQLite(&surface)) {
+		if surface.WAL == nil || st == nil || st.Retired != "" || !(surface.Type == "" || surfaceIsPostgres(&surface) || walIsSQLite(&surface) || walIsStream(&surface)) {
 			continue
 		}
 		archiving := true
 		if walIsSQLite(&surface) {
 			walState(st).FollowError = sqliteFollowError(surface.ID)
+			archiving = st.WAL.FollowError == ""
+		} else if walIsStream(&surface) {
+			walState(st).FollowError = streamFollowError(surface.ID)
 			archiving = st.WAL.FollowError == ""
 		} else {
 			archiving = checkWALArchiver(ctx, c, &surface, st)

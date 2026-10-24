@@ -107,7 +107,7 @@ func runWALWork(ctx context.Context, c *config.CLIConfig, s *config.SurfaceConfi
 		baseEvery = time.Duration(n) * 24 * time.Hour
 	}
 	// A SQLite database's follower takes its own bases and points.
-	baseDue := !walIsSQLite(s) && now.Sub(st.WALLastBase) >= baseEvery && now.Sub(st.WALBaseFailedAt) >= walRetry
+	baseDue := !walIsSQLite(s) && (now.Sub(st.WALLastBase) >= baseEvery || streamGapSince(s.ID, st.WALLastBase)) && now.Sub(st.WALBaseFailedAt) >= walRetry
 	bundleDue := now.Sub(st.WALLastBundle) >= walBundleEvery && now.Sub(st.WALBundleFailedAt) >= walRetry
 	// A surface paused in the console keeps archiving its WAL, but its
 	// scheduled point-in-time drill waits like any other drill.
@@ -170,6 +170,8 @@ func runWALWork(ctx context.Context, c *config.CLIConfig, s *config.SurfaceConfi
 			var d *model.WALDrill
 			if walIsSQLite(s) {
 				d = runSQLiteDrill(ctx, c, a, resolveStateDir("", c))
+			} else if walIsStream(s) {
+				d = runStreamDrill(ctx, c, a, s)
 			} else {
 				d = runWALDrill(ctx, c, a, s, st, resolveStateDir("", c))
 			}
@@ -261,6 +263,10 @@ func walRefreshStatus(ctx context.Context, a *wal.Archive, s *config.SurfaceConf
 	if walIsSQLite(s) {
 		read = a.SQLiteStatus
 	}
+	if engine := walStreamEngine(s); engine != "" {
+		read = func(ctx context.Context) (wal.Status, error) { return a.StreamStatus(ctx, engine) }
+		walState(st).Engine = engine
+	}
 	status, err := read(ctx)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: Surface %s: could not read the WAL archive's window: %v\n", a.SurfaceID, err)
@@ -297,6 +303,15 @@ func walDaemonPoint(ctx context.Context, c *config.CLIConfig, a *wal.Archive, s 
 		return
 	}
 	a.SystemID = sys
+	if walIsStream(s) {
+		rp, err := walStreamPoint(ctx, c, a, s)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: Surface %s: no restore point before the bundle: %v\n", s.ID, err)
+			return
+		}
+		fmt.Printf("Surface %s: restore point %s, %d tables counted.\n", s.ID, rp.Name, len(rp.Tables))
+		return
+	}
 	dbURL, err := walDBURL(ctx, c, s, st)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: Surface %s: no restore point before the bundle: %v\n", s.ID, err)
@@ -361,6 +376,16 @@ func walDaemonBundle(ctx context.Context, a *wal.Archive) ([]string, error) {
 func walDaemonBase(ctx context.Context, c *config.CLIConfig, a *wal.Archive, s *config.SurfaceConfig, st *SurfaceState, now time.Time) error {
 	if a.Recipient == "" {
 		return errors.New("encryption.public_key is not set, and the base backup is encrypted to it")
+	}
+	if walIsStream(s) {
+		fmt.Printf("Surface %s: taking a base backup for its point-in-time archive.\n", s.ID)
+		info, err := walStreamBase(ctx, c, a, s)
+		if err != nil {
+			return err
+		}
+		st.WALLastBase, st.WALBaseFailedAt = info.StartedAt, time.Time{}
+		printStreamBase(a, info)
+		return nil
 	}
 	connURL, srv, err := walServer(ctx, c, s)
 	if err != nil {

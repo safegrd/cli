@@ -81,6 +81,9 @@ type BaseInfo struct {
 	// ManifestSha256 is the SHA-256 of the base's backup_manifest, which the
 	// host keeps for a full so it can take incrementals from it.
 	ManifestSha256 string `json:"manifest_sha256,omitempty"`
+
+	// Stream is where a MySQL or MongoDB base sits in its log (stream.go).
+	Stream *StreamPos `json:"stream,omitempty"`
 }
 
 // Incremental says the base holds only the blocks changed since its full.

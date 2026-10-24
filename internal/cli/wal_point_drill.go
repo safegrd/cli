@@ -35,6 +35,15 @@ The surface's role needs: GRANT EXECUTE ON FUNCTION pg_create_restore_point(text
 			if err := refuseSQLite(s, "it records a restore point every day, under its write lock, where the counts are exact"); err != nil {
 				return err
 			}
+			if walIsStream(s) {
+				rp, err := walStreamPoint(ctx, cfg, a, s)
+				if err != nil {
+					return err
+				}
+				fmt.Printf("Restore point %s at %s (%s), %d tables counted\n", rp.Name, rp.At.Format("2006-01-02 15:04:05 UTC"), rp.LSN, len(rp.Tables))
+				fmt.Printf("   Restore to it: safegrd wal restore --surface %s --to-point %s --target-url <empty database>\n", s.ID, rp.Name)
+				return nil
+			}
 			connURL, srv, err := walServer(ctx, cfg, s)
 			if err != nil {
 				return err
@@ -82,6 +91,8 @@ the drill fails or cannot run.`,
 			var d *model.WALDrill
 			if walIsSQLite(s) {
 				d = runSQLiteDrill(ctx, cfg, a, resolveStateDir("", cfg))
+			} else if walIsStream(s) {
+				d = runStreamDrill(ctx, cfg, a, s)
 			} else {
 				d = runWALDrill(ctx, cfg, a, s, st, resolveStateDir("", cfg))
 			}

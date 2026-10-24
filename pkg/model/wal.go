@@ -32,8 +32,11 @@ type WALStatus struct {
 	ArchiverFailures int64  `json:"archiver_failures,omitempty"`
 	// FollowError is why the daemon is not following a SQLite database's
 	// WAL; empty while it follows.
-	FollowError string    `json:"follow_error,omitempty"`
-	Drill       *WALDrill `json:"drill,omitempty"`
+	FollowError string `json:"follow_error,omitempty"`
+	// Engine is "mysql" or "mongodb" for an archive of a binary log or an
+	// oplog; empty for PostgreSQL and SQLite.
+	Engine string    `json:"engine,omitempty"`
+	Drill  *WALDrill `json:"drill,omitempty"`
 	// Dropped is the newest WAL file let go unarchived because the WAL
 	// waiting to leave the host passed wal.queue_max, DroppedCount how
 	// many have been, and DroppedAt when the newest was.
