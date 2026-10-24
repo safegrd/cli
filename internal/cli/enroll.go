@@ -172,7 +172,7 @@ file:/path, which keeps the token out of 'ps' and shell history.`,
 				case !hostAlreadyHadNodeID:
 					return fmt.Errorf("a node token authenticates one existing node, and this host "+
 						"has no node id of its own yet, so there is nothing to attach the token to.\n"+
-						"  Pass --node-id <id> (the console shows it beside the token) or enrol with a\n"+
+						"  Pass --node-id <id> (the console shows it beside the token) or enroll with a\n"+
 						"  personal access token (sg_pat_...), which registers a new node and issues its\n"+
 						"  own token.\n"+
 						"  Nothing was changed: the local key at %s is untouched and no config was written",
@@ -282,14 +282,14 @@ file:/path, which keeps the token out of 'ps' and shell history.`,
 							keyCustody = "local"
 						}
 						// A key already on the host is never sent, whatever the
-						// console chose; enrolment says so below.
+						// console chose; enrollment says so below.
 						claimChoseSafeGrd = keyCustody == "safegrd"
 					}
 				}
 
 				// A key already here stays here. Refused only when the flag asked
 				// for SafeGrd to hold it; a claim's answer covers keys it
-				// generates, and enrolment states that this one was not sent.
+				// generates, and enrollment states that this one was not sent.
 				if claimChoseSafeGrd && keyExistedBeforeEnroll {
 					keyCustody = "local"
 				}
@@ -323,7 +323,7 @@ file:/path, which keeps the token out of 'ps' and shell history.`,
 					OrgID:     orgID,
 					ProjectID: projectID,
 					Name:      name,
-					// No database is known at enrolment: the first backup
+					// No database is known at enrollment: the first backup
 					// names it. Every host was registered as "postgres", and
 					// a SQLite host read "SQLITE postgres" in the console.
 					DatabaseName:  "",
@@ -410,7 +410,7 @@ file:/path, which keeps the token out of 'ps' and shell history.`,
 				fmt.Printf("Enrolled node %s as '%s'\n", regResp.NodeID, name)
 				// Only enough of the token to tell it apart: the whole of it
 				// would stay in terminal scrollback, and in the job log when
-				// enrolment runs in CI. The config file below holds it.
+				// enrollment runs in CI. The config file below holds it.
 				fmt.Printf("   Node token:  %s (saved to the config file)\n", maskToken(regResp.Token))
 				fmt.Printf("   Key:         %s\n", crypto.Fingerprint(cfg.Encryption.PublicKey))
 
@@ -420,7 +420,7 @@ file:/path, which keeps the token out of 'ps' and shell history.`,
 					fmt.Printf("   Custody:     SafeGrd-managed key\n")
 					fmt.Printf("                SafeGrd keeps this key sealed and releases it only to your enrolled hosts,\n")
 					fmt.Printf("                so you can restore these backups even after losing this host.\n")
-					fmt.Printf("                For a customer-managed key next time, enrol with --key-custody=local.\n")
+					fmt.Printf("                For a customer-managed key next time, enroll with --key-custody=local.\n")
 				case keyExistedBeforeEnroll:
 					fmt.Printf("   Custody:     customer-managed key\n")
 					fmt.Printf("                Only you can decrypt these backups. SafeGrd has the public half.\n")
@@ -491,7 +491,7 @@ file:/path, which keeps the token out of 'ps' and shell history.`,
 		"The node this token belongs to, for --token. The console shows it beside the token. "+
 			"Not needed with a personal access token, which registers a new node.")
 	cmd.Flags().StringVar(&orgID, "org", "",
-		"Organization to enrol this node into. Only needed when the credential can see more than one: "+
+		"Organization to enroll this node into. Only needed when the credential can see more than one: "+
 			"with a single organization it is resolved automatically.")
 	cmd.Flags().StringVar(&claimCode, "claim", "",
 		"The code the console shows for this host. It names the project and the surfaces to protect; "+
@@ -607,7 +607,7 @@ func verifyToken(serverURL, nodeID, token string) (int, error) {
 	return resp.StatusCode, nil
 }
 
-// resolveEnrollmentOrg finds which organization this credential enrols into.
+// resolveEnrollmentOrg finds which organization this credential enrolls into.
 //
 // One organization is the overwhelmingly common case and asking about it would
 // be noise, so it is resolved silently and named in the output. More than one
@@ -626,7 +626,7 @@ func resolveEnrollmentOrg(serverURL, credential string) (string, error) {
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("could not ask %s which organization to enrol into: %w", serverURL, err)
+		return "", fmt.Errorf("could not ask %s which organization to enroll into: %w", serverURL, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
@@ -634,7 +634,7 @@ func resolveEnrollmentOrg(serverURL, credential string) (string, error) {
 			"Check the token, or pass --org if it cannot list organizations", resp.StatusCode)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("could not resolve the organization to enrol into (HTTP %d). "+
+		return "", fmt.Errorf("could not resolve the organization to enroll into (HTTP %d). "+
 			"Pass --org <id> to name it", resp.StatusCode)
 	}
 
@@ -649,7 +649,7 @@ func resolveEnrollmentOrg(serverURL, credential string) (string, error) {
 	switch len(orgs) {
 	case 0:
 		return "", fmt.Errorf("this credential belongs to no organization, so there is nothing to " +
-			"enrol into. Create one in the console first")
+			"enroll into. Create one in the console first")
 	case 1:
 		return orgs[0].ID, nil
 	default:

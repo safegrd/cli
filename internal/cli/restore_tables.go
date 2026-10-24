@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"time"
 
@@ -33,6 +34,13 @@ type tableRestore struct {
 	created map[string]dump.TableDDL
 	rows    int64
 	started time.Time
+
+	// noOwner creates a missing table without its owner and grants. Without
+	// it, a role that is not a superuser creates the table as itself and
+	// then tries each ownership statement on its own; skipped lists the
+	// ones it may not run, as a whole restore does.
+	noOwner bool
+	skipped []string
 }
 
 type tablePick struct {
@@ -103,6 +111,7 @@ func (tr *tableRestore) begin(ctx context.Context, targetURL string) (pgx.Tx, fu
 func (tr *tableRestore) prepare(ctx context.Context, tx pgx.Tx) error {
 	tr.created = map[string]dump.TableDDL{}
 	var sections map[string]string
+	super, superKnown := false, false
 	for _, p := range tr.picks {
 		ident := pgx.Identifier{p.stat.Schema, p.stat.TableName}.Sanitize()
 		hash, ok, err := dump.TableSchemaHash(ctx, tx, p.stat.Schema, p.stat.TableName)
@@ -125,8 +134,38 @@ func (tr *tableRestore) prepare(ctx context.Context, tx pgx.Tx) error {
 			if _, err := tx.Exec(ctx, "CREATE SCHEMA IF NOT EXISTS "+pgx.Identifier{p.stat.Schema}.Sanitize()); err != nil {
 				return fmt.Errorf("creating schema %s for %s: %w; nothing was restored", p.stat.Schema, p.name, err)
 			}
-			if _, err := tx.Exec(ctx, ddl.Create); err != nil {
+			if !superKnown {
+				if err := tx.QueryRow(ctx, "SELECT rolsuper FROM pg_roles WHERE rolname = current_user").Scan(&super); err != nil {
+					return fmt.Errorf("reading whether the restoring role is a superuser: %w", err)
+				}
+				superKnown = true
+			}
+			create, ownership := ddl.Create, []string(nil)
+			switch {
+			case tr.noOwner:
+				create = dump.StripOwnership(create)
+			case !super:
+				// ALTER ... OWNER TO the backup's owner needs the right to
+				// SET ROLE to it, which an ordinary role does not have:
+				// create as this role, then try each statement alone.
+				create, ownership = dump.SplitOwnership(create)
+			}
+			if _, err := tx.Exec(ctx, create); err != nil {
 				return fmt.Errorf("creating %s as %s defines it: %w; nothing was restored", p.name, tr.id, err)
+			}
+			for _, stmt := range ownership {
+				if _, err := tx.Exec(ctx, "SAVEPOINT safegrd_ownership"); err != nil {
+					return err
+				}
+				if _, err := tx.Exec(ctx, stmt); err != nil {
+					if _, err := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT safegrd_ownership"); err != nil {
+						return err
+					}
+					tr.skipped = append(tr.skipped, strings.TrimSuffix(stmt, ";"))
+				}
+				if _, err := tx.Exec(ctx, "RELEASE SAVEPOINT safegrd_ownership"); err != nil {
+					return err
+				}
 			}
 			tr.created[p.name] = ddl
 		}
@@ -199,6 +238,14 @@ func (tr *tableRestore) commit(ctx context.Context, tx pgx.Tx) error {
 		return fmt.Errorf("committing the restore: %w", err)
 	}
 	noteRestored(ctx, len(tr.picks), tr.rows)
+	if n := len(tr.skipped); n > 0 {
+		shown := tr.skipped
+		if len(shown) > 5 {
+			shown = shown[:5]
+		}
+		fmt.Fprintf(os.Stderr, "Warning: %d ownership or privilege statements were skipped: the restoring role is not a superuser and may not run them.\n"+
+			"   Those objects belong to the restoring role. Restore as a superuser to keep every owner and grant.\n     %s\n", n, strings.Join(shown, "\n     "))
+	}
 	fmt.Printf("Restored %d %s, %s rows, from %s in %s. Every table matched its SHA-256 and its row count.\n", len(tr.picks),
 		pluralWord(int64(len(tr.picks)), "table", "tables"), formatNumber(tr.rows), tr.id, shortDuration(time.Since(tr.started)))
 	fmt.Printf("   As of %s. The target's other tables are as they were, and are not consistent with it.\n", tr.asOf.UTC().Format("2006-01-02 15:04:05 UTC"))

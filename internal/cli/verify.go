@@ -85,6 +85,16 @@ not reported as a drill.
 
   safegrd verify --snapshot <id> --query "SELECT * FROM orders WHERE id = 4211" --out order.csv`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// The sandbox URL carries a password, so it takes env:VAR or
+			// file:/path like --target; resolved before anything reads its
+			// scheme.
+			if sandboxURL != "" {
+				resolved, err := ResolveSecretRef("sandbox-target", sandboxURL)
+				if err != nil {
+					return err
+				}
+				sandboxURL = resolved
+			}
 			if surfaceSel != "" {
 				if snapshotID != "" {
 					return fmt.Errorf("--surface drills a watched surface's newest checked backup; leave out --snapshot")
@@ -386,7 +396,7 @@ not reported as a drill.
 	cmd.Flags().BoolVar(&showURL, "show-url", false, "When a sandbox drill fails, print the sandbox's URL with its password")
 	cmd.Flags().BoolVar(&inMemory, "in-memory", false, "Restore in memory only, even with --sandbox-target (the default without it)")
 	cmd.Flags().StringVar(&fromBucket, "from-bucket", "", "Read the snapshot from this copy (copies: name, or the name of a bucket the project writes to beside its own) instead of the surface's own storage")
-	cmd.Flags().StringVar(&sandboxURL, "sandbox-target", "", "An empty database to restore the snapshot into for a full Fire Drill: postgres://…, mysql://…, or sqlite:///path/to/absent.db")
+	cmd.Flags().StringVar(&sandboxURL, "sandbox-target", "", "An empty database to restore the snapshot into for a full Fire Drill: postgres://…, mysql://…, or sqlite:///path/to/absent.db, as the URL, env:VAR or file:/path")
 	cmd.Flags().StringVar(&checksFile, "checks", "", "YAML file of your own checks to run against the sandbox after the restore")
 	cmd.Flags().StringVar(&query, "query", "", "Restore into a sandbox and print this SQL query's rows as CSV; nothing is reported as a drill")
 	cmd.Flags().StringVar(&queryOut, "out", "", "With --query, write the CSV to this file instead of stdout")

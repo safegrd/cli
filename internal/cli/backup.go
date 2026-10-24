@@ -847,8 +847,8 @@ func deliverSnapshotRecord(ctx context.Context, serverURL, token string, meta *m
 	// No token: a standalone host, which the CLI supports without an
 	// account. That is a choice, not a failure, and not a reason to contact
 	// the default remote server. The token is the reliable signal.
-	// `init` writes a node_id with no enrolment at all, so having a
-	// node_id is not alone proof of enrolment.
+	// `init` writes a node_id with no enrollment at all, so having a
+	// node_id is not alone proof of enrollment.
 	if token == "" {
 		warn("not reported: no server.token in this config, so this host is standalone.\n" +
 			"                    Run 'safegrd enroll' to report this host's backups to the console.")

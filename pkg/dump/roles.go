@@ -257,6 +257,15 @@ func splitOwnership(sql string) (rest string, statements []string) {
 	return ownershipLineRe.ReplaceAllString(sql, ""), statements
 }
 
+// StripOwnership removes ownership and privilege statements from SQL a
+// restore runs, for a restore asked to leave them out (--no-owner).
+func StripOwnership(sql string) string { return stripOwnership(sql) }
+
+// SplitOwnership takes the ownership and privilege statements out of SQL a
+// restore runs, so a role that is not a superuser can create the objects
+// first and then try each statement on its own.
+func SplitOwnership(sql string) (rest string, statements []string) { return splitOwnership(sql) }
+
 // ownershipStatementWanted says whether an ownership or privilege statement
 // belongs to a schema keep allows. A statement on no schema (a database, a
 // default privilege for every schema) is not wanted in a filtered restore.

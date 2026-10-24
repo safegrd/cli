@@ -115,7 +115,7 @@ func daemonNextStep() string {
 }
 
 // sayClaimedRoles runs the role check on the PostgreSQL surfaces just added
-// that this host holds the credential for, so the first enrolment says when
+// that this host holds the credential for, so the first enrollment says when
 // the role can write.
 func sayClaimedRoles(path string, add []claimSurface) {
 	only := map[string]bool{}

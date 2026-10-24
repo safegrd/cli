@@ -340,7 +340,7 @@ func executeRestore(ctx context.Context, f *restoreFlags) error {
 		if metaErr != nil {
 			fmt.Fprintf(os.Stderr, "Warning: could not read the metadata for %s: %v\n", snapshotID, metaErr)
 		}
-		return restoreArchiveTables(ctx, storageProvider, meta, snapshotID, resolvedKey, targetURL, tables)
+		return restoreArchiveTables(ctx, storageProvider, meta, snapshotID, resolvedKey, targetURL, tables, noOwner)
 	}
 	// Not where this config looks: a recovery machine rebuilding a lost
 	// host does not know the node id its backups were filed under.

@@ -550,7 +550,7 @@ func restoreRepo(ctx context.Context, rs *repoSnapshot, privateKey, targetDir, t
 	}
 	if len(tables) > 0 {
 		fmt.Printf("Restoring %s from %s (epoch %s, %s) into %s\n", strings.Join(tables, ", "), id, rs.Epoch.Epoch.EpochID, rs.SurfaceID, dump.RedactURL(targetURL))
-		return restoreRepoTables(ctx, rs, privateKey, targetURL, tables)
+		return restoreRepoTables(ctx, rs, privateKey, targetURL, tables, db.NoOwner)
 	}
 	fmt.Printf("Restoring %s (epoch %s, %s) into %s\n", id, rs.Epoch.Epoch.EpochID, rs.SurfaceID, dump.RedactURL(targetURL))
 	return restoreRepoDatabase(ctx, rs, privateKey, targetURL, db)
@@ -656,7 +656,7 @@ func openRun(ctx context.Context, rs *repoSnapshot, privateKey string) (*read.Re
 // restoreRepoTables loads chosen tables of one run into tables of the same
 // definition that are empty in the target, in one transaction
 // (tableRestore).
-func restoreRepoTables(ctx context.Context, rs *repoSnapshot, privateKey, targetURL string, tables []string) error {
+func restoreRepoTables(ctx context.Context, rs *repoSnapshot, privateKey, targetURL string, tables []string, noOwner bool) error {
 	id := rs.Meta.SnapshotID
 	r, idx, files, err := openRun(ctx, rs, privateKey)
 	if err != nil {
@@ -670,7 +670,7 @@ func restoreRepoTables(ctx context.Context, rs *repoSnapshot, privateKey, target
 	for _, f := range files {
 		byPath[f.Path] = f
 	}
-	tr := &tableRestore{id: id, asOf: rs.Meta.CreatedAt, sections: func() (map[string]string, error) {
+	tr := &tableRestore{id: id, asOf: rs.Meta.CreatedAt, noOwner: noOwner, sections: func() (map[string]string, error) {
 		return readRunSections(ctx, r, idx, byPath)
 	}}
 	if err := tr.pick(manifest.TableStats, tables, func(path string) bool { _, ok := byPath[path]; return ok }); err != nil {

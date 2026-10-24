@@ -246,7 +246,7 @@ they are, so it can run after 'safegrd enroll'.`,
 				fmt.Println("   Keep a copy of the private key file somewhere safe. It is the key that opens these backups.")
 				fmt.Println()
 				if cfg.Storage.Type == config.StorageTypeHosted {
-					fmt.Println("Hosted storage is leased from the remote server, so enrol this host before the first backup:")
+					fmt.Println("Hosted storage is leased from the remote server, so enroll this host before the first backup:")
 					fmt.Println("   safegrd login")
 					fmt.Println("   safegrd enroll")
 					return nil
@@ -258,7 +258,7 @@ they are, so it can run after 'safegrd enroll'.`,
 			fmt.Println("   Keep a copy of the private key file somewhere safe. It is the key that opens these backups.")
 			fmt.Println()
 			if cfg.Storage.Type == config.StorageTypeHosted {
-				fmt.Println("   Hosted storage is leased from the remote server, so enrol this host before")
+				fmt.Println("   Hosted storage is leased from the remote server, so enroll this host before")
 				fmt.Println("   the first backup:")
 				fmt.Println("     safegrd login")
 				fmt.Println("     safegrd enroll")
@@ -268,12 +268,12 @@ they are, so it can run after 'safegrd enroll'.`,
 				fmt.Println("   This config names nothing to back up yet. Back up a database or a directory once:")
 				fmt.Println("     safegrd backup --database-url env:DATABASE_URL")
 				fmt.Println("     safegrd backup --files /srv/app/uploads")
-				fmt.Println("   Or add a surface under surfaces: in the config, or enrol and add one in the console:")
+				fmt.Println("   Or add a surface under surfaces: in the config, or enroll and add one in the console:")
 				fmt.Println("     safegrd login")
 				fmt.Println("     safegrd enroll")
 				return nil
 			}
-			fmt.Println("   To manage this host from the console, enrol it:")
+			fmt.Println("   To manage this host from the console, enroll it:")
 			fmt.Println("     safegrd login")
 			fmt.Println("     safegrd enroll")
 			fmt.Println("   Or stay standalone and run a backup right now:")
