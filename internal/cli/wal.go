@@ -836,7 +836,7 @@ func printWALStatus(a *wal.Archive, st wal.Status) {
 
 func newWALRestoreCmd() *cobra.Command {
 	var surfaceID, systemID, to, toPoint, toLSN, toXID, timeline, pgdata, out, keyPath, privKey, node string
-	var exclusive bool
+	var exclusive, delta bool
 	cmd := &cobra.Command{
 		Use:   "restore",
 		Short: "Restore a PostgreSQL surface to a point in time into an empty data directory",
@@ -847,6 +847,15 @@ postgresql.auto.conf. Start PostgreSQL on the directory to run the replay.
 
 Run it as the user PostgreSQL will run as: restore_command calls this CLI
 with the same config and key. Archiving is turned off on the restored cluster.
+
+--delta restores over an existing data directory of the same cluster, with
+PostgreSQL stopped. Every file the base holds is read on the target and
+compared byte for byte; only those that differ are written. Files the base
+does not have are removed inside PostgreSQL's own directories (base, global,
+pg_wal and the other pg_* directories, and its files at the top such as
+postmaster.pid), and kept and listed anywhere else. global/pg_control is
+written last, so a delta restore that stops partway leaves a directory
+PostgreSQL will not start: run it again.
 
 An incremental base is unpacked with its full into a work directory beside
 --pgdata and combined into it with pg_combinebackup of the base's major
@@ -908,12 +917,18 @@ before anything is written.`,
 				return err
 			}
 			if walIsSQLite(s) {
+				if delta {
+					return errors.New("--delta restores over a PostgreSQL data directory; a SQLite surface restores to a new file with --out")
+				}
 				if toLSN != "" || toXID != "" || timeline != "" || exclusive {
 					return errors.New("--to-lsn, --to-xid, --exclusive and --timeline are PostgreSQL's; a SQLite surface restores to a time or a restore point")
 				}
 				return walRestoreSQLite(ctx, a, target, toPoint, out)
 			}
 			if pgdata == "" {
+				if delta {
+					return errors.New("--pgdata is required: the data directory to restore over")
+				}
 				return errors.New("--pgdata is required: an empty directory to restore into")
 			}
 			dir, err := filepath.Abs(pgdata)
@@ -925,7 +940,7 @@ before anything is written.`,
 				return err
 			}
 			o := wal.RestoreOptions{Target: target, PGData: dir, FetchCommand: fetch, TargetLSN: strings.TrimSpace(toLSN),
-				TargetXID: strings.TrimSpace(toXID), Exclusive: exclusive, Timeline: strings.TrimSpace(timeline)}
+				TargetXID: strings.TrimSpace(toXID), Exclusive: exclusive, Timeline: strings.TrimSpace(timeline), Delta: delta}
 			if toPoint != "" {
 				points, err := a.RestorePoints(ctx)
 				if err != nil {
@@ -950,6 +965,7 @@ before anything is written.`,
 			} else {
 				fmt.Printf("Restored base %s (PostgreSQL %d) into %s\n", res.Base.BaseID, res.Base.Major(), dir)
 			}
+			sayDelta(res.Delta, dir)
 			for _, b := range res.Passed {
 				fmt.Fprintf(os.Stderr, "Warning: passed over %s. The restore starts from the older base %s and replays more WAL.\n", b.Why, res.Base.BaseID)
 			}
@@ -997,12 +1013,42 @@ before anything is written.`,
 	cmd.Flags().StringVar(&toXID, "to-xid", "", "A transaction id to restore to, just after it commits")
 	cmd.Flags().BoolVar(&exclusive, "exclusive", false, "Stop just before the target instead of just after it")
 	cmd.Flags().StringVar(&timeline, "timeline", "", "The timeline to follow: latest (the default), current, or its number")
-	cmd.Flags().StringVar(&pgdata, "pgdata", "", "PostgreSQL: an empty directory to restore into")
+	cmd.Flags().StringVar(&pgdata, "pgdata", "", "PostgreSQL: an empty directory to restore into, or with --delta the data directory to restore over")
+	cmd.Flags().BoolVar(&delta, "delta", false, "PostgreSQL: restore over an existing data directory of the same cluster, writing only the files that differ")
 	cmd.Flags().StringVar(&out, "out", "", "SQLite: the database file to write; it must not exist")
 	cmd.Flags().StringVar(&keyPath, "key-path", "", "Path to the age identity (default encryption.key_path)")
 	cmd.Flags().StringVar(&privKey, "private-key", "", "The age identity, as env:VAR or file:/path")
 	cmd.Flags().StringVar(&node, "node", "", "On hosted storage, restore from the archive another host of the organization wrote (a host that replaces a lost one)")
 	return cmd
+}
+
+// sayDelta prints what a delta restore did to the target, one fact a line.
+func sayDelta(d *wal.DeltaResult, dir string) {
+	if d == nil {
+		return
+	}
+	fmt.Printf("   Rewrote %d %s (%s); %d unchanged (%s read and compared)\n", len(d.Rewritten), pluralWord(int64(len(d.Rewritten)), "file", "files"),
+		formatBytes(d.RewrittenBytes), d.Unchanged, formatBytes(d.ReadBytes))
+	if n := len(d.Rewritten); n > 0 && n <= 20 {
+		fmt.Printf("   Rewritten: %s\n", strings.Join(d.Rewritten, ", "))
+	}
+	if n := len(d.Removed); n > 0 {
+		fmt.Printf("   Removed %d %s the base does not have: %s\n", n, pluralWord(int64(n), "entry", "entries"), listSome(d.Removed, 20))
+	}
+	if n := len(d.Kept); n > 0 {
+		fmt.Printf("   Kept %d %s the base does not have, outside PostgreSQL's directories: %s\n", n, pluralWord(int64(n), "entry", "entries"), listSome(d.Kept, 20))
+	}
+	if d.ControlUnread {
+		fmt.Fprintf(os.Stderr, "Warning: %s/global/pg_control could not be read, so the restore could not check the directory was this cluster's. It was rewritten from the base.\n", dir)
+	}
+}
+
+// listSome joins up to n names and counts the rest.
+func listSome(names []string, n int) string {
+	if len(names) <= n {
+		return strings.Join(names, ", ")
+	}
+	return strings.Join(names[:n], ", ") + fmt.Sprintf(" and %d more", len(names)-n)
 }
 
 func parseWALTarget(s string) (time.Time, error) {

@@ -39,6 +39,9 @@ type RestoreOptions struct {
 	// FetchCommand is restore_command, with %f and %p for PostgreSQL to
 	// fill in.
 	FetchCommand string
+	// Delta restores over an existing data directory of the same cluster,
+	// rewriting only the files that differ from the base.
+	Delta bool
 }
 
 // RestoreResult is what a restore wrote.
@@ -55,6 +58,9 @@ type RestoreResult struct {
 	CheckpointKept string
 	// Full is the full base an incremental Base was combined with.
 	Full *BaseInfo
+	// Delta is what a delta restore did; nil for a restore into an empty
+	// directory.
+	Delta *DeltaResult
 	// Passed are newer incremental bases the restore could not rebuild,
 	// because their full is gone, and started from an older base instead.
 	Passed []BrokenBase
@@ -127,11 +133,25 @@ func (a *Archive) Restore(ctx context.Context, o RestoreOptions) (RestoreResult,
 		return res, fmt.Errorf("the archive is missing %s, so a replay from base %s stops at %s. Restore to a time before that, or take a base backup (safegrd wal base) to start an unbroken window after it",
 			g.First, pick.BaseID, stamp(g.Before))
 	}
-	if err := emptyDir(o.PGData); err != nil {
-		return res, err
+	empty := true
+	controlUnread := false
+	if o.Delta {
+		if empty, controlUnread, err = checkDeltaTarget(o.PGData, *pick, a.SystemID); err != nil {
+			return res, err
+		}
 	}
-	if err := a.unpackChain(ctx, bases, *pick, o.PGData); err != nil {
-		return res, err
+	if empty {
+		if err := emptyDir(o.PGData); err != nil {
+			return res, err
+		}
+		if err := a.unpackChain(ctx, bases, *pick, o.PGData); err != nil {
+			return res, err
+		}
+	} else {
+		if res.Delta, err = a.deltaChain(ctx, bases, *pick, o.PGData); err != nil {
+			return res, err
+		}
+		res.Delta.ControlUnread = controlUnread
 	}
 	res.Full, _ = chainFull(bases, *pick)
 	if _, err := os.Stat(filepath.Join(o.PGData, "backup_label")); err != nil {
@@ -180,6 +200,12 @@ func emptyDir(dir string) error {
 }
 
 func (a *Archive) unpackBase(ctx context.Context, b BaseInfo, dir string) error {
+	return a.streamBase(ctx, b, func(r io.Reader) error { return untar(r, dir) })
+}
+
+// streamBase decrypts base b and hands its tar to consume, then checks the
+// bytes were the ones written.
+func (a *Archive) streamBase(ctx context.Context, b BaseInfo, consume func(io.Reader) error) error {
 	rc, err := a.Store.Get(ctx, a.baseKey(b.BaseID, "base.tar.zst.age"))
 	if err != nil {
 		return fmt.Errorf("reading base %s: %w", b.BaseID, err)
@@ -196,7 +222,7 @@ func (a *Archive) unpackBase(ctx context.Context, b BaseInfo, dir string) error 
 		pw.CloseWithError(err)
 		done <- decrypted{m, err}
 	}()
-	untarErr := untar(pr, dir)
+	untarErr := consume(pr)
 	if untarErr == nil {
 		_, untarErr = io.Copy(io.Discard, pr) // the tar's trailing blocks
 	}
