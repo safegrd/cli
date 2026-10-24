@@ -120,7 +120,7 @@ func walStreamRestore(ctx context.Context, a *wal.Archive, s *config.SurfaceConf
 	if targetURL == "" {
 		return fmt.Errorf("--target-url is required for a %s surface: an empty database to restore into", s.Type)
 	}
-	resolved, err := ResolveSecretRef("--target-url", targetURL)
+	resolved, err := ResolveSecretRef("target-url", targetURL)
 	if err != nil {
 		return err
 	}

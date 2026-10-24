@@ -50,7 +50,7 @@ empty database and replays the log to a moment.`,
 // walSurface finds a surface that archives its WAL.
 func walSurface(c *config.CLIConfig, id string) (*config.SurfaceConfig, error) {
 	if id == "" {
-		return nil, errors.New("--surface is required: the id of a PostgreSQL or SQLite surface in the config")
+		return nil, errors.New("--surface is required: the id of a surface in the config that has a wal: block")
 	}
 	var ids []string
 	for i := range c.Surfaces {

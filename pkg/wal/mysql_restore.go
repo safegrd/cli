@@ -264,6 +264,9 @@ func (a *Archive) RestoreMySQL(ctx context.Context, o StreamRestoreOptions) (Str
 		g := txGrouper{fd: fd}
 		var keep []binlogEvent
 		for _, ev := range events {
+			if ev.Type == evTxPayload {
+				return res, fmt.Errorf("%s holds a compressed transaction, which a restore cannot filter to the surface's database", e.Name)
+			}
 			t := g.add(ev)
 			if t == nil {
 				continue

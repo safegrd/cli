@@ -414,6 +414,11 @@ func (s *mysqlStreamState) take(ctx context.Context, raw []byte) error {
 	if err := s.fd.checkCRC(e); err != nil {
 		return err
 	}
+	if e.Type == evTxPayload {
+		return fmt.Errorf("the server wrote a compressed transaction at %s %d (binlog_transaction_compression is on for some session). "+
+			"The follower cannot tell which database it changed, so it stops here rather than archive a log a restore would replay wrongly. "+
+			"Turn binlog_transaction_compression off for every session", s.fileName, e.start())
+	}
 	tx := s.g.add(e)
 	if tx == nil {
 		return nil

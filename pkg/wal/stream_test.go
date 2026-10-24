@@ -1,6 +1,7 @@
 package wal
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -92,5 +93,19 @@ func TestTxGrouperCutsAtTransactions(t *testing.T) {
 		if got := g.add(s.e) != nil; got != s.done {
 			t.Fatalf("step %d: completed %v, want %v", i, got, s.done)
 		}
+	}
+}
+
+// A compressed transaction stops the follower, in words, instead of being
+// archived and then dropped by a restore that cannot see inside it.
+func TestTheFollowerRefusesACompressedTransaction(t *testing.T) {
+	raw := make([]byte, 40)
+	raw[4] = evTxPayload
+	raw[9] = 40
+	raw[13] = 200
+	s := &mysqlStreamState{f: &MySQLFollower{}, haveFD: true, fileName: "binlog.000002"}
+	err := s.take(t.Context(), raw)
+	if err == nil || !strings.Contains(err.Error(), "binlog_transaction_compression") {
+		t.Fatalf("a compressed transaction was taken: %v", err)
 	}
 }
