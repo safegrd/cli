@@ -64,6 +64,9 @@ type nodeCredentialsResponse struct {
 		Prefix          string `json:"prefix"`
 		AccessKeyID     string `json:"access_key_id"`
 		SecretAccessKey string `json:"secret_access_key"`
+		// SessionToken goes with a temporary key, such as the token the
+		// remote server makes for a Supabase project's Storage.
+		SessionToken string `json:"session_token"`
 	} `json:"object_store"`
 }
 
@@ -255,9 +258,10 @@ func resolveCredentials(ctx context.Context, cfg *config.CLIConfig, storageCfg *
 		storageCfg.SecretAccessKey = creds.Sink.SecretAccessKey
 		src.SinkSecret = "remote server"
 	}
-	if o := creds.ObjectStore; surface && cfg.DatabaseURL == "" && o != nil && o.Bucket != "" && o.SecretAccessKey != "" {
+	// An empty bucket with a key is every bucket the key lists.
+	if o := creds.ObjectStore; surface && cfg.DatabaseURL == "" && o != nil && o.SecretAccessKey != "" {
 		src.ObjectStore = &dump.ObjectStoreSource{Endpoint: o.Endpoint, Region: o.Region, Bucket: o.Bucket, Prefix: o.Prefix,
-			AccessKeyID: o.AccessKeyID, SecretAccessKey: o.SecretAccessKey}
+			AccessKeyID: o.AccessKeyID, SecretAccessKey: o.SecretAccessKey, SessionToken: o.SessionToken}
 	}
 	if surface && cfg.Encryption.PublicKey == "" && creds.PublicKey != "" {
 		cfg.Encryption.PublicKey = creds.PublicKey

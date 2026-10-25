@@ -24,8 +24,13 @@ import (
 // directory like any other files snapshot, and its manifest carries each
 // object's content type so it can be uploaded back as it was.
 //
-// The source uses ListObjectsV2 and GetObject only. It needs no versioning,
-// Object Lock or ACLs, none of which Supabase Storage's S3 endpoint has.
+// The source uses ListObjectsV2 and GetObject only, and ListBuckets when it
+// reads every bucket. It needs no versioning, Object Lock or ACLs, none of
+// which Supabase Storage's S3 endpoint has.
+//
+// An empty Bucket means every bucket the key can list (the root s3://*): each
+// object is backed up at bucket/key, so a restore into a bucket target puts
+// it back in the bucket it came from.
 type ObjectStoreSource struct {
 	Endpoint        string
 	Region          string
@@ -33,19 +38,30 @@ type ObjectStoreSource struct {
 	Prefix          string
 	AccessKeyID     string
 	SecretAccessKey string
+	// SessionToken goes with a temporary key: Supabase Storage takes the
+	// project ref as the key id, the anon key as the secret and a JWT here.
+	SessionToken string
 }
 
-// Root is the source as a path: s3://bucket/prefix. It is the manifest's
-// root_path and what the backup prints.
+// AllBucketsRoot is the root of a source that reads every bucket.
+const AllBucketsRoot = "s3://*"
+
+// Root is the source as a path: s3://bucket/prefix, or s3://* for every
+// bucket. It is the manifest's root_path and what the backup prints.
 func (o ObjectStoreSource) Root() string {
-	if p := strings.Trim(o.Prefix, "/"); p != "" {
-		return "s3://" + o.Bucket + "/" + p
+	bucket := o.Bucket
+	if bucket == "" {
+		bucket = "*"
 	}
-	return "s3://" + o.Bucket
+	if p := strings.Trim(o.Prefix, "/"); p != "" {
+		return "s3://" + bucket + "/" + p
+	}
+	return "s3://" + bucket
 }
 
-// ParseObjectStoreRoot reads s3://bucket or s3://bucket/prefix. It reports
-// ok false for any other string, so a local path is never mistaken for one.
+// ParseObjectStoreRoot reads s3://bucket, s3://bucket/prefix, or s3://* for
+// every bucket (bucket comes back empty). It reports ok false for any other
+// string, so a local path is never mistaken for one.
 func ParseObjectStoreRoot(root string) (bucket, prefix string, ok bool) {
 	if !strings.HasPrefix(root, "s3://") {
 		return "", "", false
@@ -55,6 +71,9 @@ func ParseObjectStoreRoot(root string) (bucket, prefix string, ok bool) {
 	if bucket == "" {
 		return "", "", false
 	}
+	if bucket == "*" {
+		bucket = ""
+	}
 	return bucket, strings.Trim(prefix, "/"), true
 }
 
@@ -62,14 +81,11 @@ func ParseObjectStoreRoot(root string) (bucket, prefix string, ok bool) {
 func (o ObjectStoreSource) Client(ctx context.Context) (*s3.Client, error) { return o.client(ctx) }
 
 func (o ObjectStoreSource) client(ctx context.Context) (*s3.Client, error) {
-	if o.Bucket == "" {
-		return nil, errors.New("object store source: bucket is required")
-	}
 	if o.AccessKeyID == "" || o.SecretAccessKey == "" {
 		return nil, errors.New("object store source: access key id and secret access key are required")
 	}
 	opts := []func(*awsconfig.LoadOptions) error{
-		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(o.AccessKeyID, o.SecretAccessKey, "")),
+		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(o.AccessKeyID, o.SecretAccessKey, o.SessionToken)),
 	}
 	region := o.Region
 	if region == "" {
@@ -118,7 +134,9 @@ func (i objectInfo) Sys() any           { return nil }
 
 // scanObjects lists every object under the source's prefix as an item, with
 // the directories its keys imply. A key that ends in "/" is a folder marker
-// some consoles write; it is recorded as a directory, never as a file.
+// some consoles write; it is recorded as a directory, never as a file. With
+// no bucket named, every bucket the key lists is read, and each bucket is a
+// directory at the top of the archive.
 func (fc *FileCollector) scanObjects(ctx context.Context) ([]collectedItem, error) {
 	src := fc.cfg.Source
 	client, err := src.client(ctx)
@@ -142,42 +160,66 @@ func (fc *FileCollector) scanObjects(ctx context.Context) ([]collectedItem, erro
 		}
 	}
 
-	paginator := s3.NewListObjectsV2Paginator(client, &s3.ListObjectsV2Input{
-		Bucket: aws.String(src.Bucket),
-		Prefix: aws.String(listPrefix),
-	})
-	for paginator.HasMorePages() {
-		page, err := paginator.NextPage(ctx)
+	buckets := []string{src.Bucket}
+	if src.Bucket == "" {
+		out, err := client.ListBuckets(ctx, &s3.ListBucketsInput{})
 		if err != nil {
-			return nil, fmt.Errorf("listing %s: %w", src.Root(), err)
+			return nil, fmt.Errorf("listing the buckets of %s: %w", src.Root(), err)
 		}
-		for _, obj := range page.Contents {
-			key := aws.ToString(obj.Key)
-			rel := strings.TrimPrefix(key, listPrefix)
-			if rel == "" {
-				continue
+		buckets = buckets[:0]
+		for _, b := range out.Buckets {
+			if name := aws.ToString(b.Name); name != "" {
+				buckets = append(buckets, name)
 			}
-			modTime := time.Time{}
-			if obj.LastModified != nil {
-				modTime = obj.LastModified.UTC().Truncate(time.Second)
+		}
+		sort.Strings(buckets)
+	}
+	for _, bucket := range buckets {
+		// In an archive of every bucket, each object sits under its bucket.
+		top := ""
+		if src.Bucket == "" {
+			top = bucket + "/"
+			dirs[bucket] = time.Time{}
+		}
+		paginator := s3.NewListObjectsV2Paginator(client, &s3.ListObjectsV2Input{
+			Bucket: aws.String(bucket),
+			Prefix: aws.String(listPrefix),
+		})
+		for paginator.HasMorePages() {
+			page, err := paginator.NextPage(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("listing s3://%s/%s: %w", bucket, listPrefix, err)
 			}
-			if strings.HasSuffix(rel, "/") {
-				d := strings.TrimSuffix(rel, "/")
-				if prev, ok := dirs[d]; !ok || modTime.After(prev) {
-					dirs[d] = modTime
+			for _, obj := range page.Contents {
+				key := aws.ToString(obj.Key)
+				rel := strings.TrimPrefix(key, listPrefix)
+				if rel == "" {
+					continue
 				}
-				noteDir(d, modTime)
-				continue
+				rel = top + rel
+				modTime := time.Time{}
+				if obj.LastModified != nil {
+					modTime = obj.LastModified.UTC().Truncate(time.Second)
+				}
+				if strings.HasSuffix(rel, "/") {
+					d := strings.TrimSuffix(rel, "/")
+					if prev, ok := dirs[d]; !ok || modTime.After(prev) {
+						dirs[d] = modTime
+					}
+					noteDir(d, modTime)
+					continue
+				}
+				if MatchesExclude(rel, fc.cfg.Excludes) {
+					continue
+				}
+				noteDir(rel, modTime)
+				items = append(items, collectedItem{
+					relPath:      rel,
+					objectBucket: bucket,
+					objectKey:    key,
+					info:         objectInfo{name: path.Base(rel), size: aws.ToInt64(obj.Size), modTime: modTime},
+				})
 			}
-			if MatchesExclude(rel, fc.cfg.Excludes) {
-				continue
-			}
-			noteDir(rel, modTime)
-			items = append(items, collectedItem{
-				relPath:   rel,
-				objectKey: key,
-				info:      objectInfo{name: path.Base(rel), size: aws.ToInt64(obj.Size), modTime: modTime},
-			})
 		}
 	}
 	for d, at := range dirs {
@@ -197,8 +239,12 @@ func (fc *FileCollector) scanObjects(ctx context.Context) ([]collectedItem, erro
 // openObject reads one object. The hash pass records the content type the
 // store reports, so the manifest can carry it.
 func (fc *FileCollector) openObject(ctx context.Context, item *collectedItem) (io.ReadCloser, error) {
+	bucket := item.objectBucket
+	if bucket == "" {
+		bucket = fc.cfg.Source.Bucket
+	}
 	out, err := fc.objects.GetObject(ctx, &s3.GetObjectInput{
-		Bucket: aws.String(fc.cfg.Source.Bucket),
+		Bucket: aws.String(bucket),
 		Key:    aws.String(item.objectKey),
 	})
 	if err != nil {

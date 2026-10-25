@@ -53,13 +53,14 @@ left alone, and the whole restore is still one transaction.
 --target s3://bucket/prefix uploads a files snapshot into a bucket over the
 S3 API, with --source-endpoint, --source-region and the source keys as backup
 takes them: one object per file, at prefix/path, with the content type the
-backup recorded. Each file's hash is checked against the sealed manifest as it
+backup recorded. --target s3://* takes a snapshot of every bucket and puts each
+file back in the bucket it came from. Each file's hash is checked against the sealed manifest as it
 is uploaded, and a file that differs is not written. Objects already at a key
 are replaced. For Supabase Storage, restore the database rows first, then the
 files: each upload writes or updates the file's row in storage.objects.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			f.sourceFlagsSet = cmd.Flags().Changed("source-endpoint") || cmd.Flags().Changed("source-region") ||
-				cmd.Flags().Changed("source-access-key") || cmd.Flags().Changed("source-secret-key")
+				cmd.Flags().Changed("source-access-key") || cmd.Flags().Changed("source-secret-key") || cmd.Flags().Changed("source-session-token")
 			if f.requestID != "" {
 				return runRestoreRequest(cmd.Context(), &f)
 			}
@@ -90,6 +91,7 @@ files: each upload writes or updates the file's row in storage.objects.`,
 	cmd.Flags().StringVar(&f.sourceRegion, "source-region", "", "With --target s3://…: the bucket's region as the store shows it")
 	cmd.Flags().StringVar(&f.sourceAccessKey, "source-access-key", "", "With --target s3://…: the store's access key id, as env:VAR or file:/path")
 	cmd.Flags().StringVar(&f.sourceSecretKey, "source-secret-key", "", "With --target s3://…: the store's secret access key, as env:VAR or file:/path")
+	cmd.Flags().StringVar(&f.sourceToken, "source-session-token", "", "With --target s3://…: the session token of a temporary key, as env:VAR or file:/path")
 	cmd.Flags().StringVar(&f.fromBucket, "from-bucket", "", "Read the snapshot from this copy (copies: name, or the name of a bucket the project writes to beside its own) instead of the surface's own storage")
 	cmd.Flags().StringVar(&f.requestID, "request", "", "Run a restore asked for in the console, by its id (rst_...): what to restore and where come from the request, and the outcome is reported back")
 	cmd.Flags().StringVar(&f.fromPath, "from", "", "Restore from an export: the directory 'safegrd export --to-dir' wrote, or one .safegrd file in it")
@@ -103,7 +105,7 @@ func executeRestore(ctx context.Context, f *restoreFlags) error {
 	snapshotID, targetURL, targetDir, toSQL, engineStr, keyPath, privKey, fromPath := f.snapshotID, f.targetURL, f.targetDir, f.toSQL, f.engineStr, f.keyPath, f.privKey, f.fromPath
 	paths, version, surfaceSel, tables, schemas, dataOnly := f.paths, f.version, f.surfaceSel, f.tables, f.schemas, f.dataOnly
 	noOwner, keepCron, withoutErasures, salvage := f.noOwner, f.keepCron, f.withoutErasures, f.salvage
-	sourceEndpoint, sourceRegion, sourceAccessKey, sourceSecretKey := f.sourceEndpoint, f.sourceRegion, f.sourceAccessKey, f.sourceSecretKey
+	sourceEndpoint, sourceRegion, sourceAccessKey, sourceSecretKey, sourceToken := f.sourceEndpoint, f.sourceRegion, f.sourceAccessKey, f.sourceSecretKey, f.sourceToken
 	bucketTarget := false
 	var bucket *dump.ObjectStoreSource
 	if b, prefix, ok := dump.ParseObjectStoreRoot(targetURL); ok {
@@ -117,7 +119,7 @@ func executeRestore(ctx context.Context, f *restoreFlags) error {
 		src := f.bucket
 		if src == nil {
 			var err error
-			if src, err = objectStoreTargetFromFlags(b, prefix, sourceEndpoint, sourceRegion, sourceAccessKey, sourceSecretKey); err != nil {
+			if src, err = objectStoreTargetFromFlags(b, prefix, sourceEndpoint, sourceRegion, sourceAccessKey, sourceSecretKey, sourceToken); err != nil {
 				return err
 			}
 		}
@@ -623,11 +625,11 @@ func executeRestore(ctx context.Context, f *restoreFlags) error {
 
 // objectStoreTargetFromFlags is the bucket restore --target s3:// writes to,
 // with the keys resolved as backup resolves them.
-func objectStoreTargetFromFlags(bucket, prefix, endpoint, region, accessKey, secretKey string) (*dump.ObjectStoreSource, error) {
+func objectStoreTargetFromFlags(bucket, prefix, endpoint, region, accessKey, secretKey, token string) (*dump.ObjectStoreSource, error) {
 	if accessKey == "" || secretKey == "" {
 		return nil, fmt.Errorf("--target s3://%s needs --source-access-key and --source-secret-key (env:VAR or file:/path)", bucket)
 	}
-	return objectStoreSourceFromFlags(bucket, prefix, endpoint, region, accessKey, secretKey)
+	return objectStoreSourceFromFlags(bucket, prefix, endpoint, region, accessKey, secretKey, token)
 }
 
 // errRepoToBucket refuses a bucket target for a run of an incremental

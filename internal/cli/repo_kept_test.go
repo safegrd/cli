@@ -22,7 +22,7 @@ func TestAKeptModeRunSaysWhatTheServerDecided(t *testing.T) {
 		Epoch: format.Epoch{EpochID: "e202610-00000001", OpeningTier: format.TierBase,
 			OpeningRetainUntil: time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC), LaterRetainUntil: time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC)},
 		Class:    format.ClassLater,
-		Decision: sink.RunDecision{Known: true, Locked: false, KeptUntil: created.AddDate(0, 0, 2)},
+		Decision: sink.RunDecision{Known: true, Kept: true, Locked: false, KeptUntil: created.AddDate(0, 0, 2)},
 	}
 	if got := repoKeptUntil(res, true); !got.Equal(created.AddDate(0, 0, 2)) {
 		t.Fatalf("a recent run is recorded until its keep date, got %s", got)
@@ -166,5 +166,30 @@ func TestTheCapLineOnlyFollowsADateThatMoved(t *testing.T) {
 		if got := strings.Contains(out.String(), "capped"); got != tc.wants {
 			t.Errorf("%s: cap line printed %v, want %v:\n%s", tc.name, got, tc.wants, out.String())
 		}
+	}
+}
+
+// A trial's run is unlocked and deleted when the trial ends: the closing
+// line gives that hour, not the epoch's class lock, and says nothing of a
+// cap or of the copies a project locks.
+func TestATrialRunClosesWithTheTrialsDeadline(t *testing.T) {
+	created := time.Date(2026, 10, 25, 9, 30, 0, 0, time.UTC)
+	deadline := created.Add(24 * time.Hour)
+	res := &write.Result{
+		Snapshot: format.Snapshot{SnapshotID: "snap-t", CreatedAt: created, RetainUntil: deadline, Unlocked: true},
+		Epoch: format.Epoch{EpochID: "e202610-00000002", OpeningTier: format.TierBase,
+			OpeningRetainUntil: time.Date(2026, 11, 8, 0, 0, 0, 0, time.UTC), LaterRetainUntil: time.Date(2026, 11, 8, 0, 0, 0, 0, time.UTC)},
+		Class:    format.ClassOpening,
+		Decision: sink.RunDecision{Known: true, KeptUntil: deadline},
+		Capped:   true,
+		Planned:  time.Date(2026, 11, 22, 0, 0, 0, 0, time.UTC),
+	}
+	if got := repoKeptUntil(res, false); !got.Equal(deadline) {
+		t.Fatalf("a trial run is recorded until the trial's deadline, got %s", got)
+	}
+	var out bytes.Buffer
+	printRepoKept(&out, "[s]", res, false)
+	if got, want := out.String(), "[s] Snapshot snap-t complete. Kept until 2026-10-26 09:30 UTC, not locked.\n"; got != want {
+		t.Fatalf("closing line:\n got %q\nwant %q", got, want)
 	}
 }

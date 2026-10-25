@@ -105,6 +105,12 @@ type Node struct {
 	// CredentialHeld is whether the remote server holds a credential for
 	// this node now. Filled in when nodes are listed; never stored.
 	CredentialHeld bool `json:"credential_held,omitempty" yaml:"-"`
+	// PlatformProject is the provider's project this surface belongs to,
+	// as provider:ref (supabase:abcdefghijklmnopqrst), when the remote
+	// server added it from a sign-in there. A project's database and its
+	// Storage are two surfaces that share it, so a console shows them
+	// together.
+	PlatformProject string `json:"platform_project,omitempty" yaml:"platform_project,omitempty"`
 
 	// Set from the console, and never by a host registering its surfaces.
 	// Schedule and WORMRetentionDays are what the host's daemon last said it

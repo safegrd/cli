@@ -41,6 +41,7 @@ func newBackupCmd() *cobra.Command {
 		sourceRegion    string
 		sourceAccessKey string
 		sourceSecretKey string
+		sourceToken     string
 		fileFmt         string
 		compression     string
 		noteArgs        []string
@@ -91,7 +92,7 @@ and never leaves this host.`,
 			// database as a surface, and `safegrd backup` is the next step the
 			// docs give. With several, one has to be named.
 			oneOffFlag := ""
-			for _, f := range []string{"tag", "retention-days", "s3-bucket", "s3-prefix", "s3-region", "s3-endpoint", "s3-access-key", "s3-secret-key", "format", "compression", "one-filesystem", "source-endpoint", "source-region", "source-access-key", "source-secret-key"} {
+			for _, f := range []string{"tag", "retention-days", "s3-bucket", "s3-prefix", "s3-region", "s3-endpoint", "s3-access-key", "s3-secret-key", "format", "compression", "one-filesystem", "source-endpoint", "source-region", "source-access-key", "source-secret-key", "source-session-token"} {
 				if oneOffFlag == "" && cmd.Flags().Changed(f) {
 					oneOffFlag = f
 				}
@@ -118,7 +119,7 @@ and never leaves this host.`,
 				}
 			}
 			if surfaceID != "" {
-				for _, f := range []string{"database-url", "files", "email", "tag", "retention-days", "s3-bucket", "s3-prefix", "s3-region", "s3-endpoint", "s3-access-key", "s3-secret-key", "format", "compression", "one-filesystem", "source-endpoint", "source-region", "source-access-key", "source-secret-key"} {
+				for _, f := range []string{"database-url", "files", "email", "tag", "retention-days", "s3-bucket", "s3-prefix", "s3-region", "s3-endpoint", "s3-access-key", "s3-secret-key", "format", "compression", "one-filesystem", "source-endpoint", "source-region", "source-access-key", "source-secret-key", "source-session-token"} {
 					if cmd.Flags().Changed(f) {
 						return fmt.Errorf("--surface backs up the surface as the config defines it; leave out --%s", f)
 					}
@@ -230,12 +231,12 @@ and never leaves this host.`,
 						return fmt.Errorf("--files %s reads a bucket, which is backed up as one archive per run; leave out --format repo", filesPath)
 					}
 					ff = formatTar
-					source, err = objectStoreSourceFromFlags(bucket, prefix, sourceEndpoint, sourceRegion, sourceAccessKey, sourceSecretKey)
+					source, err = objectStoreSourceFromFlags(bucket, prefix, sourceEndpoint, sourceRegion, sourceAccessKey, sourceSecretKey, sourceToken)
 					if err != nil {
 						return err
 					}
-				} else if cmd.Flags().Changed("source-endpoint") || cmd.Flags().Changed("source-region") || cmd.Flags().Changed("source-access-key") || cmd.Flags().Changed("source-secret-key") {
-					return fmt.Errorf("--source-endpoint, --source-region, --source-access-key and --source-secret-key go with --files s3://bucket/prefix")
+				} else if cmd.Flags().Changed("source-endpoint") || cmd.Flags().Changed("source-region") || cmd.Flags().Changed("source-access-key") || cmd.Flags().Changed("source-secret-key") || cmd.Flags().Changed("source-session-token") {
+					return fmt.Errorf("--source-endpoint, --source-region, --source-access-key, --source-secret-key and --source-session-token go with --files s3://bucket/prefix")
 				}
 				if ff == formatRepo {
 					var oneFSFlag *bool
@@ -748,11 +749,12 @@ and never leaves this host.`,
 
 	// Flags for Files
 	cmd.Flags().StringVar(&surfaceID, "surface", "", "Back up this surface from the config's surfaces now, as the daemon would, whatever its schedule")
-	cmd.Flags().StringVar(&filesPath, "files", "", "Back up this directory tree, or a bucket as s3://bucket/prefix (with --source-endpoint and the source keys)")
+	cmd.Flags().StringVar(&filesPath, "files", "", "Back up this directory tree, or a bucket as s3://bucket/prefix (with --source-endpoint and the source keys); s3://* reads every bucket the key lists")
 	cmd.Flags().StringVar(&sourceEndpoint, "source-endpoint", "", "With --files s3://…: the store's S3 URL (Supabase Storage: https://PROJECT.storage.supabase.co/storage/v1/s3); empty means AWS S3")
 	cmd.Flags().StringVar(&sourceRegion, "source-region", "", "With --files s3://…: the bucket's region as the store shows it")
 	cmd.Flags().StringVar(&sourceAccessKey, "source-access-key", "", "With --files s3://…: the store's access key id, as env:VAR or file:/path")
 	cmd.Flags().StringVar(&sourceSecretKey, "source-secret-key", "", "With --files s3://…: the store's secret access key, as env:VAR or file:/path")
+	cmd.Flags().StringVar(&sourceToken, "source-session-token", "", "With --files s3://…: the session token of a temporary key, as env:VAR or file:/path (Supabase Storage: the key id is the project ref, the secret the anon key, the token a JWT)")
 	cmd.Flags().StringSliceVar(&excludes, "exclude", nil, "Glob patterns to leave out of --files (e.g. '*.tmp,node_modules/*')")
 	cmd.Flags().StringArrayVar(&noteArgs, "note", nil, "A note on the snapshot, key=value (repeatable), such as release=v2.3. The remote server keeps it; 'safegrd note' changes it")
 	cmd.Flags().StringVar(&compression, "compression", "", "How hard to compress: zstd:1 (fastest) to zstd:19 (smallest). A restore needs no setting")
@@ -1054,7 +1056,7 @@ func implicitSurfaceName(cfg *config.CLIConfig) string {
 
 // objectStoreSourceFromFlags builds the bucket a one-off --files s3:// backup
 // reads, resolving the keys like every other secret flag.
-func objectStoreSourceFromFlags(bucket, prefix, endpoint, region, accessKey, secretKey string) (*dump.ObjectStoreSource, error) {
+func objectStoreSourceFromFlags(bucket, prefix, endpoint, region, accessKey, secretKey, token string) (*dump.ObjectStoreSource, error) {
 	if accessKey == "" || secretKey == "" {
 		return nil, fmt.Errorf("--files s3://%s needs --source-access-key and --source-secret-key (env:VAR or file:/path)", bucket)
 	}
@@ -1066,7 +1068,13 @@ func objectStoreSourceFromFlags(bucket, prefix, endpoint, region, accessKey, sec
 	if err != nil {
 		return nil, err
 	}
-	return &dump.ObjectStoreSource{Endpoint: endpoint, Region: region, Bucket: bucket, Prefix: prefix, AccessKeyID: ak, SecretAccessKey: sk}, nil
+	st := ""
+	if token != "" {
+		if st, err = ResolveSecretRef("source-session-token", token); err != nil {
+			return nil, err
+		}
+	}
+	return &dump.ObjectStoreSource{Endpoint: endpoint, Region: region, Bucket: bucket, Prefix: prefix, AccessKeyID: ak, SecretAccessKey: sk, SessionToken: st}, nil
 }
 
 // objectStoreSourceOf is the bucket a configured files surface reads, or nil

@@ -124,12 +124,23 @@ func RestoreArchiveToObjectStore(ctx context.Context, src io.Reader, dst ObjectS
 		if !ok || want.IsDir || want.IsSymlink {
 			return nil, failed(fmt.Errorf("the archive entry %s is not a file in the sealed manifest", hdr.Name))
 		}
-		key := name
+		bucket, key := dst.Bucket, name
+		if bucket == "" {
+			// An archive of every bucket: the first path element is the
+			// bucket the file came from, and it goes back there.
+			var rest string
+			var found bool
+			bucket, rest, found = strings.Cut(name, "/")
+			if !found || bucket == "" || rest == "" {
+				return nil, failed(fmt.Errorf("the archive entry %s names no bucket, and the target s3://* puts each file back in the bucket it came from. Restore it with --target s3://bucket", hdr.Name))
+			}
+			key = rest
+		}
 		if prefix != "" {
-			key = prefix + "/" + name
+			key = prefix + "/" + key
 		}
 		body := &digestReader{r: io.LimitReader(tr, hdr.Size), h: sha256.New(), want: want.Sha256, size: hdr.Size, name: name}
-		in := &s3.PutObjectInput{Bucket: aws.String(dst.Bucket), Key: aws.String(key), Body: body}
+		in := &s3.PutObjectInput{Bucket: aws.String(bucket), Key: aws.String(key), Body: body}
 		if want.ContentType != "" {
 			in.ContentType = aws.String(want.ContentType)
 		}
@@ -138,7 +149,7 @@ func RestoreArchiveToObjectStore(ctx context.Context, src io.Reader, dst ObjectS
 			if errors.As(err, &digest) {
 				return nil, failed(digest)
 			}
-			return nil, failed(fmt.Errorf("uploading %s to s3://%s/%s: %w", name, dst.Bucket, key, err))
+			return nil, failed(fmt.Errorf("uploading %s to s3://%s/%s: %w", name, bucket, key, err))
 		}
 		res.ObjectsWritten++
 		res.BytesWritten += body.read

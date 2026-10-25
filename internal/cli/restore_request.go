@@ -32,8 +32,8 @@ type restoreFlags struct {
 	withoutErasures, salvage bool
 
 	// A bucket to restore a files snapshot into, as backup reads one.
-	sourceEndpoint, sourceRegion, sourceAccessKey, sourceSecretKey string
-	sourceFlagsSet                                                 bool
+	sourceEndpoint, sourceRegion, sourceAccessKey, sourceSecretKey, sourceToken string
+	sourceFlagsSet                                                              bool
 
 	// requestID is a restore asked for in the console (--request).
 	requestID string

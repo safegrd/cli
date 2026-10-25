@@ -117,10 +117,12 @@ type collectedItem struct {
 	isDir    bool
 	isSym    bool
 	linkDest string
-	// For an object store source: the object's key, and the content type
-	// the store reported when the hash pass read it.
-	objectKey   string
-	contentType string
+	// For an object store source: the object's bucket (when the source reads
+	// every bucket) and key, and the content type the store reported when
+	// the hash pass read it.
+	objectBucket string
+	objectKey    string
+	contentType  string
 }
 
 // open reads one item's bytes, from disk or from the bucket.

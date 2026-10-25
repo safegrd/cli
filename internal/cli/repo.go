@@ -418,11 +418,17 @@ func printRepoKept(out io.Writer, label string, res *write.Result, locked bool) 
 		fmt.Fprintf(out, "%s Snapshot %s complete. Locked until %s, kept until %s.\n", label, snap.SnapshotID, until,
 			res.Decision.KeptUntil.UTC().Format("2006-01-02"))
 		return
-	case res.Decision.Known && !res.Decision.Locked:
+	case res.Decision.Known && res.Decision.Kept && !res.Decision.Locked:
 		fmt.Fprintf(out, "%s Snapshot %s complete. Kept until %s, not locked: this project locks %s and the weekly and monthly copies.\n",
 			label, snap.SnapshotID, until, slotFirstWords(res.Decision.Slot))
 	case res.Decision.Known && res.Decision.Scheduled:
 		fmt.Fprintf(out, "%s Snapshot %s complete. Locked until %s (%s).\n", label, snap.SnapshotID, until, slotCopyWords(res.Decision.Slot))
+	case res.Decision.Known && !res.Decision.Locked:
+		// Unlocked and deleted at a time the remote server set, a trial's
+		// end: the hour matters as much as the day.
+		fmt.Fprintf(out, "%s Snapshot %s complete. Kept until %s, not locked.\n", label, snap.SnapshotID,
+			res.Decision.KeptUntil.UTC().Format("2006-01-02 15:04 UTC"))
+		return
 	case !locked:
 		fmt.Fprintf(out, "%s Snapshot %s complete. Kept until %s, not locked.\n", label, snap.SnapshotID, until)
 	case res.Class == format.ClassOpening && res.Epoch.OpeningTier == format.TierMonthly:
