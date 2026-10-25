@@ -1,14 +1,14 @@
 package cli
 
 import (
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"os"
-	"os/exec"
-	"regexp"
-	"runtime"
 	"strings"
 	"sync"
+
+	"github.com/denisbrodbeck/machineid"
 )
 
 // hostMachineHeader names the machine a report comes from, so the remote
@@ -20,44 +20,44 @@ const hostMachineHeader = "X-Safegrd-Host-Machine"
 var (
 	machineOnce  sync.Once
 	machineLabel string
-	ioregUUIDRe  = regexp.MustCompile(`"IOPlatformUUID" = "([^"]+)"`)
+	machineHMAC  string
 )
 
 // hostMachine is this machine's hostname and, where the system has one, the
 // first 12 hex digits of a SHA-256 of its machine id, which tells apart two
 // machines with one hostname without sending the id itself.
 func hostMachine() string {
-	machineOnce.Do(func() {
-		name, _ := os.Hostname()
-		name = strings.TrimSpace(name)
-		if id := machineID(); id != "" {
-			sum := sha256.Sum256([]byte(id))
-			name += " (" + hex.EncodeToString(sum[:])[:12] + ")"
-		}
-		machineLabel = name
-	})
+	machineOnce.Do(readMachine)
 	return machineLabel
 }
 
-// machineID is the operating system's id for this machine, or "" when it has
-// none to give. A container usually has none, and its hostname is its own.
-func machineID() string {
-	switch runtime.GOOS {
-	case "linux":
-		for _, p := range []string{"/etc/machine-id", "/var/lib/dbus/machine-id"} {
-			if b, err := os.ReadFile(p); err == nil {
-				if id := strings.TrimSpace(string(b)); id != "" {
-					return id
-				}
-			}
-		}
-	case "darwin":
-		out, err := exec.Command("ioreg", "-rd1", "-c", "IOPlatformExpertDevice").Output()
-		if err == nil {
-			if m := ioregUUIDRe.FindSubmatch(out); m != nil {
-				return string(m[1])
-			}
-		}
+// machineFingerprint is an HMAC-SHA256 of the operating system's machine id
+// keyed by the product name, as hex, or "" where the system has none to give
+// (a container usually has none). It is stable across reboots and updates,
+// names no hardware, and cannot be turned back into the id. `safegrd try`
+// sends it so the remote server can tell one machine's trials from another's.
+func machineFingerprint() string {
+	machineOnce.Do(readMachine)
+	return machineHMAC
+}
+
+func readMachine() {
+	name, _ := os.Hostname()
+	name = strings.TrimSpace(name)
+	// Linux reads /etc/machine-id or D-Bus's copy, macOS the IOPlatformUUID,
+	// Windows the MachineGuid, the BSDs kern.hostuuid; none needs privileges.
+	// SAFEGRD_MACHINE_ID stands in for the system's id on machines cloned
+	// from one image, which share it.
+	id, err := machineid.ID()
+	if override := strings.TrimSpace(os.Getenv("SAFEGRD_MACHINE_ID")); override != "" {
+		id, err = override, nil
 	}
-	return ""
+	if err == nil && strings.TrimSpace(id) != "" {
+		sum := sha256.Sum256([]byte(id))
+		name += " (" + hex.EncodeToString(sum[:])[:12] + ")"
+		mac := hmac.New(sha256.New, []byte(id))
+		mac.Write([]byte("safegrd"))
+		machineHMAC = hex.EncodeToString(mac.Sum(nil))
+	}
+	machineLabel = name
 }

@@ -35,7 +35,17 @@ type Organization struct {
 	OwnerUserID  string    `json:"owner_user_id" yaml:"owner_user_id"`
 	CreatedAt    time.Time `json:"created_at" yaml:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at" yaml:"updated_at"`
+
+	// TrialUntil is set on an organization `safegrd try` opened before anyone
+	// owned it: its backup is kept until then unless someone signs up, and
+	// the trial's limits apply while it is set. TrialMachine is the machine
+	// label the trial was opened from.
+	TrialUntil   *time.Time `json:"trial_until,omitempty" yaml:"trial_until,omitempty"`
+	TrialMachine string     `json:"trial_machine,omitempty" yaml:"trial_machine,omitempty"`
 }
+
+// IsTrial reports whether the organization is still under a trial's limits.
+func (o *Organization) IsTrial() bool { return o != nil && o.TrialUntil != nil }
 
 // OrgMember maps user membership and role inside an organization.
 type OrgMember struct {

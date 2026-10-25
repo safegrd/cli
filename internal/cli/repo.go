@@ -357,7 +357,9 @@ func runRepoBackup(ctx context.Context, p repoParams) (*model.SnapshotMetadata, 
 func repoLocked(sc config.StorageConfig) bool {
 	switch sc.Type {
 	case config.StorageTypeHosted:
-		return true
+		// The remote server says NONE for a backup it keeps unlocked: a
+		// trial's, before anyone signed up for it.
+		return sc.WORMMode != config.WORMModeNone
 	case config.StorageTypeLocal, "":
 		return false
 	}
@@ -422,8 +424,7 @@ func printRepoKept(out io.Writer, label string, res *write.Result, locked bool) 
 	case res.Decision.Known && res.Decision.Scheduled:
 		fmt.Fprintf(out, "%s Snapshot %s complete. Locked until %s (%s).\n", label, snap.SnapshotID, until, slotCopyWords(res.Decision.Slot))
 	case !locked:
-		fmt.Fprintf(out, "%s Snapshot %s complete. Not locked: this storage applies no Object Lock; it is kept until %s.\n",
-			label, snap.SnapshotID, until)
+		fmt.Fprintf(out, "%s Snapshot %s complete. Kept until %s, not locked.\n", label, snap.SnapshotID, until)
 	case res.Class == format.ClassOpening && res.Epoch.OpeningTier == format.TierMonthly:
 		fmt.Fprintf(out, "%s Snapshot %s complete. Locked until %s: the month's first backup is kept as its monthly copy. Later backups follow the surface's retention.\n",
 			label, snap.SnapshotID, until)

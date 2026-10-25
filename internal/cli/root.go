@@ -183,6 +183,8 @@ func init() {
 	RootCmd.AddCommand(newEnrollCmd())
 	RootCmd.AddCommand(newClaimCmd())
 	RootCmd.AddCommand(newLoginCmd())
+	RootCmd.AddCommand(newTryCmd())
+	RootCmd.AddCommand(newSignupCmd())
 	RootCmd.AddCommand(newWhoamiCmd())
 	RootCmd.AddCommand(newOrgsCmd())
 	RootCmd.AddCommand(newProjectCmd())
