@@ -118,22 +118,44 @@ func (h *walHostedStore) putSmall(ctx context.Context, key string, data []byte, 
 		return time.Time{}, fmt.Errorf("the remote server signed %d uploads for one object", len(signed.Objects))
 	}
 	slot := signed.Objects[0]
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, slot.URL, bytes.NewReader(data))
-	if err != nil {
-		return time.Time{}, err
+	// A bucket that is busy answers 503 SlowDown (MinIO: "please reduce
+	// your request rate"); that, a 5xx or a dropped connection is retried on
+	// the same URL, for about half a minute. Anything else is the answer.
+	var last error
+	for attempt := 0; attempt < 6; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-time.After(time.Duration(attempt) * hostedRetryPause):
+			case <-ctx.Done():
+				return time.Time{}, ctx.Err()
+			}
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPut, slot.URL, bytes.NewReader(data))
+		if err != nil {
+			return time.Time{}, err
+		}
+		req.ContentLength = int64(len(data))
+		for k, v := range slot.Headers {
+			req.Header.Set(k, v)
+		}
+		resp, err := h.p.client.bucket.Do(req)
+		if err != nil {
+			last = err
+			continue
+		}
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+		resp.Body.Close()
+		if resp.StatusCode/100 == 2 {
+			last = nil
+			break
+		}
+		last = bucketError(resp.Status, msg)
+		if resp.StatusCode/100 != 5 && resp.StatusCode != http.StatusRequestTimeout {
+			break
+		}
 	}
-	req.ContentLength = int64(len(data))
-	for k, v := range slot.Headers {
-		req.Header.Set(k, v)
-	}
-	resp, err := h.p.client.bucket.Do(req)
-	if err != nil {
-		return time.Time{}, storageFailure(fmt.Errorf("hosted storage: writing %s: %w", key, err))
-	}
-	msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
-	resp.Body.Close()
-	if resp.StatusCode/100 != 2 {
-		return time.Time{}, storageFailure(fmt.Errorf("hosted storage: writing %s: %w", key, bucketError(resp.Status, msg)))
+	if last != nil {
+		return time.Time{}, storageFailure(fmt.Errorf("hosted storage: writing %s: %w", key, last))
 	}
 	if err := h.p.client.callRetry(ctx, http.MethodPost, "/wal/uploaded", map[string]any{"keys": []string{key}}, nil); err != nil {
 		return time.Time{}, err

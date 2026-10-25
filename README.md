@@ -291,21 +291,24 @@ claude mcp add safegrd-local -- docker run -i --rm \
 ```
 
 **The remote server**, `https://safegrd.dev/mcp`, reads every host's backups and Fire Drills
-and asks for a backup or a drill now. It takes a personal access token from the console's
-*Tokens* page as `Authorization: Bearer sg_pat_...`, and is included on the paid plans.
+and asks for a backup or a drill now, on every plan. Add it with no header, then run `/mcp`
+in Claude Code and choose *Authenticate*: you sign in to SafeGrd in the browser and approve.
 
 ```bash
-claude mcp add --transport http safegrd https://safegrd.dev/mcp \
-  --header "Authorization: Bearer sg_pat_..."
+claude mcp add --transport http safegrd https://safegrd.dev/mcp
 ```
 
 The Claude Code plugin in [safegrd/agent-plugins](https://github.com/safegrd/agent-plugins)
-adds the remote server with skills that back up and run a Fire Drill before a risky change:
+adds the same server, signed in the same way, with skills that back up and run a Fire Drill
+before a risky change:
 
 ```text
 /plugin marketplace add safegrd/agent-plugins
 /plugin install safegrd@safegrd
 ```
+
+A client that cannot sign in, such as CI, sends a personal access token from the console's
+*Tokens* page as `Authorization: Bearer sg_pat_...`.
 
 Both servers are listed in the [MCP Registry](https://registry.modelcontextprotocol.io/v0/servers?search=dev.safegrd)
 as `dev.safegrd/safegrd`, and the remote one on [Smithery](https://smithery.ai/servers/safegrd/safegrd).

@@ -430,7 +430,7 @@ func printRepoKept(out io.Writer, label string, res *write.Result, locked bool) 
 			res.Decision.KeptUntil.UTC().Format("2006-01-02 15:04 UTC"))
 		return
 	case !locked:
-		fmt.Fprintf(out, "%s Snapshot %s complete. Kept until %s, not locked.\n", label, snap.SnapshotID, until)
+		fmt.Fprintf(out, "%s Snapshot %s complete. Kept until %s, not locked: this storage has no Object Lock.\n", label, snap.SnapshotID, until)
 	case res.Class == format.ClassOpening && res.Epoch.OpeningTier == format.TierMonthly:
 		fmt.Fprintf(out, "%s Snapshot %s complete. Locked until %s: the month's first backup is kept as its monthly copy. Later backups follow the surface's retention.\n",
 			label, snap.SnapshotID, until)

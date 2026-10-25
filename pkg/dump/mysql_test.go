@@ -2,6 +2,7 @@ package dump
 
 import (
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -251,5 +252,26 @@ func TestTheMySQLOptionsFileGivesEachClientOnlyItsOwnTLSOptions(t *testing.T) {
 				t.Errorf("[client-mariadb] present = %t:\n%s", ok, raw)
 			}
 		})
+	}
+}
+
+// A section loaded beside others leaves out its LOCK TABLES and UNLOCK
+// TABLES lines and nothing else: the same words inside a row are data
+// (mysqldump writes a newline in a row as \n, so a row is one line).
+func TestASectionLoadedAtOnceDropsOnlyItsLockLines(t *testing.T) {
+	in := "LOCK TABLES `t2` WRITE;\n" +
+		"/*!40000 ALTER TABLE `t2` DISABLE KEYS */;\n" +
+		"INSERT INTO `t2` VALUES (1,'LOCK TABLES `x` WRITE;\\nUNLOCK TABLES;');\n" +
+		"UNLOCK TABLES;\n"
+	r := newDefinerRewriter(strings.NewReader(in))
+	r.dropLocks = true
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "/*!40000 ALTER TABLE `t2` DISABLE KEYS */;\n" +
+		"INSERT INTO `t2` VALUES (1,'LOCK TABLES `x` WRITE;\\nUNLOCK TABLES;');\n"
+	if string(out) != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", out, want)
 	}
 }

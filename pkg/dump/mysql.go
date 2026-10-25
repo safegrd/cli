@@ -912,12 +912,17 @@ func (r *MySQLRestorer) Restore(ctx context.Context, src io.Reader) (*model.Snap
 	var mu sync.Mutex
 	rewritten := 0
 	// load runs the client over in, a dump or part of one, every DEFINER in
-	// it set to the restoring user.
-	load := func(in io.Reader, what string) error {
+	// it set to the restoring user. A section loaded beside others drops its
+	// LOCK TABLES: it holds one table on its own connection, so the lock
+	// guards nothing, and MariaDB refuses a locked parent's rows when another
+	// connection created a child with a foreign key to it in between
+	// (ERROR 1100 "Table 'a_child' was not locked with LOCK TABLES").
+	load := func(in io.Reader, what string, section bool) error {
 		var stderr bytes.Buffer
 		cmd := exec.CommandContext(ctx, tool.Path, "--defaults-extra-file="+cnf,
 			"--binary-mode", "--default-character-set=utf8mb4", "--database="+target.Database)
 		definers := newDefinerRewriter(in)
+		definers.dropLocks = section
 		cmd.Stdin = definers
 		cmd.Stderr = &stderr
 		err := cmd.Run()
@@ -942,7 +947,7 @@ func (r *MySQLRestorer) Restore(ctx context.Context, src io.Reader) (*model.Snap
 			}
 			in = io.MultiReader(bytes.NewReader(r.Head), in)
 		}
-		if err := load(in, ""); err != nil {
+		if err := load(in, "", false); err != nil {
 			return err
 		}
 		// Drain what the client did not read, so the archive can be finished.
@@ -976,7 +981,7 @@ func (r *MySQLRestorer) Restore(ctx context.Context, src io.Reader) (*model.Snap
 
 // loadSections loads r.Sections over r.Parallel connections at once, each
 // behind the head. The first failure stops the sections not yet started.
-func (r *MySQLRestorer) loadSections(ctx context.Context, load func(io.Reader, string) error) error {
+func (r *MySQLRestorer) loadSections(ctx context.Context, load func(io.Reader, string, bool) error) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var mu sync.Mutex
@@ -993,7 +998,7 @@ func (r *MySQLRestorer) loadSections(ctx context.Context, load func(io.Reader, s
 				}
 				pr, pw := io.Pipe()
 				go func() { _ = pw.CloseWithError(s.Open(pw)) }()
-				err := load(io.MultiReader(bytes.NewReader(r.Head), pr), " loading "+s.Table)
+				err := load(io.MultiReader(bytes.NewReader(r.Head), pr), " loading "+s.Table, true)
 				_ = pr.CloseWithError(io.ErrClosedPipe)
 				if err != nil {
 					mu.Lock()
@@ -1030,6 +1035,8 @@ type definerRewriter struct {
 	inInsert  bool
 	atStart   bool
 	rewritten int
+	// dropLocks leaves out mysqldump's LOCK TABLES and UNLOCK TABLES lines.
+	dropLocks bool
 }
 
 func newDefinerRewriter(r io.Reader) *definerRewriter {
@@ -1056,6 +1063,9 @@ func (d *definerRewriter) Read(p []byte) (int, error) {
 				if n := len(definerRe.FindAllIndex(line, -1)); n > 0 {
 					d.rewritten += n
 					line = definerRe.ReplaceAll(line, []byte("DEFINER=CURRENT_USER"))
+				}
+				if d.dropLocks && d.atStart && (bytes.HasPrefix(line, []byte("LOCK TABLES ")) || bytes.HasPrefix(line, []byte("UNLOCK TABLES;"))) {
+					line = nil
 				}
 			}
 			d.atStart = complete
