@@ -185,6 +185,7 @@ func sendHeartbeat(ctx context.Context, c *config.CLIConfig, nodeID string, st *
 		DrillDetail:         st.DrillDetail,
 		BackupRunning:       st.backupRunning,
 		DrillRequestSeen:    st.LastDrillRequestID,
+		BackupRequestSeen:   st.LastBackupRequestID,
 		Schedule:            s.Schedule,
 		RetentionDays:       s.RetentionDays,
 		BlackoutSeconds:     blackoutSeconds(s),
@@ -194,6 +195,7 @@ func sendHeartbeat(ctx context.Context, c *config.CLIConfig, nodeID string, st *
 		CopiesChecked:       st.HasCopies,
 		CopiesIgnored:       st.CopiesIgnored,
 		Update:              hostUpdates.report(tick),
+		Export:              hostExport.report(),
 	}, &resp)
 	if status == http.StatusNotFound && st.ServerNodeID != "" && st.ServerNodeID == nodeID && nodeID != c.NodeID {
 		// The surface's node is gone: retired in the console while this

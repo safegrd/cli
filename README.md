@@ -117,6 +117,19 @@ make build
 
 ---
 
+## Try it before you sign up
+
+With no account, one command backs up a database and restores it to check:
+
+```bash
+safegrd try postgres://app:secret@db.example.com/app   # or env:DATABASE_URL, a MySQL, MongoDB or SQLite URL, or a directory
+safegrd signup                                          # keep it: the host, its backup and a daily schedule
+```
+
+The backup is encrypted on this host, stored on the remote server's storage for 24 hours, and
+restored in memory from there. Details are in the
+[install guide](https://safegrd.dev/docs/install#try).
+
 ## Quickstart
 
 ### 1. Create a config and a key

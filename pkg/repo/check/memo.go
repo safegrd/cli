@@ -22,7 +22,7 @@ import (
 //
 // A Memo is for one epoch and one set of identities, and for one goroutine.
 type Memo struct {
-	b   sink.Backend
+	b   *watched
 	e   sink.EpochInfo
 	ids []age.Identity
 	r   *read.Repo
@@ -43,7 +43,8 @@ type memoRun struct {
 
 // NewMemo returns an empty memo for the epoch.
 func NewMemo(b sink.Backend, e sink.EpochInfo, ids []age.Identity) *Memo {
-	return &Memo{b: b, e: e, ids: ids, r: read.Open(b, e, ids), snaps: map[string]format.Snapshot{},
+	w := &watched{Backend: b}
+	return &Memo{b: w, e: e, ids: ids, r: read.Open(w, e, ids), snaps: map[string]format.Snapshot{},
 		indexes: map[string]format.Index{}, trailers: map[string]error{}, stateAt: -1}
 }
 

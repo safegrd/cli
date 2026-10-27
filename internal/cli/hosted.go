@@ -270,7 +270,7 @@ func (p *hostedProvider) UploadSnapshot(ctx context.Context, snapshotID string, 
 	if retentionUntil.IsZero() && p.retentionDays > 0 {
 		retentionUntil = time.Now().UTC().AddDate(0, 0, p.retentionDays)
 	}
-	uri, kept, keptUntil, locked, err := p.upload(ctx, snapshotID+".safegrd", stream, retentionUntil)
+	uri, kept, keptUntil, locked, err := p.upload(ctx, p.nodeID, snapshotID+".safegrd", stream, retentionUntil)
 	if err != nil {
 		return "", err
 	}
@@ -320,7 +320,7 @@ func (p *hostedProvider) UploadMetadata(ctx context.Context, snapshotID string, 
 	if retain.IsZero() && p.retentionDays > 0 {
 		retain = time.Now().UTC().AddDate(0, 0, p.retentionDays)
 	}
-	if _, _, _, _, err := p.upload(ctx, snapshotID+".meta.json", bytes.NewReader(data), retain); err != nil {
+	if _, _, _, _, err := p.upload(ctx, p.nodeID, snapshotID+".meta.json", bytes.NewReader(data), retain); err != nil {
 		return err
 	}
 	p.forget()
@@ -333,8 +333,68 @@ func (p *hostedProvider) UploadRecoveryDoc(ctx context.Context, snapshotID strin
 	if retainUntil.IsZero() && p.retentionDays > 0 {
 		retainUntil = time.Now().UTC().AddDate(0, 0, p.retentionDays)
 	}
-	_, _, _, _, err := p.upload(ctx, snapshotID+storage.RecoveryDocSuffix(sealed), bytes.NewReader(doc), retainUntil)
+	_, _, _, _, err := p.upload(ctx, p.nodeID, snapshotID+storage.RecoveryDocSuffix(sealed), bytes.NewReader(doc), retainUntil)
 	return err
+}
+
+// --- the erasure record (storage.Objects) ------------------------------------
+//
+// A surface's erasure record is kept beside its snapshots in hosted storage,
+// at <node>/erasures/<surface>/, through the same signed uploads and
+// downloads. The remote server sets each object's lock, long enough that no
+// backup older than an erasure outlives its record, and deletes an object
+// once its lock has ended and no backup needs it; this host never deletes.
+
+// PutObject writes one object of the record, named <node>/erasures/...: the
+// node segment says whose folder it goes in, as a snapshot's does.
+func (p *hostedProvider) PutObject(ctx context.Context, name string, data []byte, retainUntil time.Time) error {
+	node, rest, ok := strings.Cut(name, "/")
+	if !ok {
+		return fmt.Errorf("hosted storage: %q is not <node>/<object>", name)
+	}
+	_, _, _, _, err := p.upload(ctx, node, rest, bytes.NewReader(data), retainUntil)
+	var he *hostedError
+	if errors.As(err, &he) && he.Status == http.StatusConflict && strings.HasSuffix(name, "/record.json") {
+		// Another host of the organization started the record first; the
+		// marker is the same either way.
+		err = nil
+	}
+	p.forget()
+	return err
+}
+
+// ListObjects returns the names under prefix in the organization's hosted
+// storage, hidden ones included.
+func (p *hostedProvider) ListObjects(ctx context.Context, prefix string) ([]string, error) {
+	objs, err := p.list(ctx)
+	if err != nil {
+		return nil, err
+	}
+	prefix = strings.TrimSuffix(prefix, "/") + "/"
+	var out []string
+	for _, o := range objs {
+		if strings.HasPrefix(o.Path, prefix) {
+			out = append(out, o.Path)
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// GetObject reads one object by its full path, whichever host wrote it.
+func (p *hostedProvider) GetObject(ctx context.Context, name string) ([]byte, error) {
+	rc, err := p.download(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	defer rc.Close()
+	return io.ReadAll(rc)
+}
+
+// DeleteObject never deletes: the remote server removes an object of the
+// record once its lock has ended and no backup needs it.
+func (p *hostedProvider) DeleteObject(context.Context, string) error {
+	return errors.New("hosted storage: objects cannot be deleted from this host; the remote server removes an erasure record's objects once no backup needs them")
 }
 
 type hostedUpload struct {
@@ -367,10 +427,10 @@ const hostedBufferBudget = 128 << 20
 // so nothing half-written is left to be billed or mistaken for a backup.
 // It returns the lock the remote server set, which may differ from the one
 // asked for.
-func (p *hostedProvider) upload(ctx context.Context, name string, r io.Reader, retainUntil time.Time) (uri string, kept, keptUntil time.Time, locked bool, err error) {
+func (p *hostedProvider) upload(ctx context.Context, nodeID, name string, r io.Reader, retainUntil time.Time) (uri string, kept, keptUntil time.Time, locked bool, err error) {
 	var up hostedUpload
 	if err := p.client.call(ctx, http.MethodPost, "/uploads", map[string]any{
-		"node_id": p.nodeID, "name": name, "retain_until": retainUntil,
+		"node_id": nodeID, "name": name, "retain_until": retainUntil,
 	}, &up); err != nil {
 		return "", time.Time{}, time.Time{}, false, err
 	}

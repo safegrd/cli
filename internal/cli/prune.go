@@ -57,15 +57,28 @@ type pruneReport struct {
 	Kept        int
 	Held        int
 	Failed      int
+	// Erasures counts the erasure record's objects deleted (prune_erasures.go),
+	// apart from the snapshots above.
+	Erasures            int
+	WouldDeleteErasures int
 }
 
 func (r pruneReport) String() string {
-	if r.WouldDelete > 0 {
-		return fmt.Sprintf("%d would be deleted, %d still locked, %d kept (newest or last known good), %d held, %d failed",
+	var s string
+	if r.WouldDelete > 0 || r.WouldDeleteErasures > 0 {
+		s = fmt.Sprintf("%d would be deleted, %d still locked, %d kept (newest or last known good), %d held, %d failed",
 			r.WouldDelete, r.Locked, r.Kept, r.Held, r.Failed)
+		if r.WouldDeleteErasures > 0 {
+			s += fmt.Sprintf(", %d erasure record objects would be deleted", r.WouldDeleteErasures)
+		}
+		return s
 	}
-	return fmt.Sprintf("%d deleted, %d still locked, %d kept (newest or last known good), %d held, %d failed",
+	s = fmt.Sprintf("%d deleted, %d still locked, %d kept (newest or last known good), %d held, %d failed",
 		r.Deleted, r.Locked, r.Kept, r.Held, r.Failed)
+	if r.Erasures > 0 {
+		s += fmt.Sprintf(", %d erasure record objects deleted", r.Erasures)
+	}
+	return s
 }
 
 // pruneBucket is the bucket's side of pruning.
@@ -441,9 +454,14 @@ func pruneStorage(ctx context.Context, c *config.CLIConfig, storageCfg config.St
 	if storageCfg.Type == config.StorageTypeSFTP {
 		return pruneSFTP(ctx, c, storageCfg, grace, minKeep, dryRun, out)
 	}
+	if storageCfg.Type == config.StorageTypeLocal || storageCfg.Type == "" {
+		// Snapshots in a directory are not pruned (no lock or clock to judge
+		// by); the erasure record is, by the snapshots that are left.
+		return pruneLocalErasures(ctx, c, storageCfg, grace, dryRun, out)
+	}
 	if storageCfg.Type != config.StorageTypeS3 {
-		return pruneReport{}, fmt.Errorf("prune works on your own S3 bucket (storage.type: s3) or SFTP server (storage.type: sftp), not %q: "+
-			"hosted storage expires on its own, and a local directory has no lock or clock to judge by", storageCfg.Type)
+		return pruneReport{}, fmt.Errorf("prune works on your own S3 bucket (storage.type: s3), SFTP server (storage.type: sftp) or local directory, not %q: "+
+			"hosted storage expires on its own", storageCfg.Type)
 	}
 	sp, err := openStorage(ctx, c, storageCfg)
 	if err != nil {
@@ -524,7 +542,11 @@ prune once a day.
 
 Each copy (copies:, or a bucket the project writes to beside its own) is pruned after
 the host's own bucket, by its own locks and its own min_keep. --from-bucket <name> prunes
-one copy only. A copy's expire_after_lock lets the daemon prune it too.`,
+one copy only. A copy's expire_after_lock lets the daemon prune it too.
+
+A surface's erasure record (erasures:) is pruned with its bucket: an object of it goes once
+its lock has ended and no snapshot of the surface is older than the newest erasure in it.
+On local storage, which has no lock, only the record is pruned, by that rule and the grace.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if grace < 0 {
 				return errors.New("--grace cannot be negative")

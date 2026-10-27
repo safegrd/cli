@@ -426,6 +426,10 @@ func runRepoDatabaseBackup(ctx context.Context, p repoDBParams) (*model.Snapshot
 		pluralWord(int64(meta.TotalTables), tableWord, tablesWord), formatNumber(meta.TotalRows), rowsWord, formatBytes(res.ReadBytes),
 		formatBytes(res.WrittenBytes), res.Snapshot.Stats.NewPacks, pluralWord(res.Snapshot.Stats.NewPacks, "pack", "packs"),
 		shortDuration(time.Since(started)))
+	if len(meta.PartitionedTables) > 0 {
+		// Otherwise the count is one short of the tables a catalogue lists.
+		fmt.Fprintf(out, "%s Partitioned tables are counted by their partitions: %s.\n", label, strings.Join(meta.PartitionedTables, ", "))
+	}
 	if p.ChangeLog && plan != nil {
 		carried := 0
 		for _, t := range meta.TableStats {

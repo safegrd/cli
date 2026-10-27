@@ -24,10 +24,14 @@ func newSignupCmd() *cobra.Command {
 		Use:   "signup",
 		Short: "Keep this host's trial backup: sign up in a browser, and the host is enrolled",
 		Long: `Opens the sign-up page for the backup safegrd try took. Sign up there (or sign
-in, if you have an account), check that the code on the page matches the one
-printed here, and this host's backup, its host and its daily schedule are yours.
+in to an account with no organization yet), check that the code on the page
+matches the one printed here, and this host's backup, its host and its daily
+schedule are yours.
 
-Nothing changes on this host: the config already holds what it needs.`,
+Nothing changes on this host: the config already holds what it needs.
+
+An account that already has an organization keeps this host by running
+safegrd login and then safegrd enroll here instead.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if cfg == nil || cfg.ServerToken == "" || cfg.NodeID == "" {
@@ -54,10 +58,12 @@ func runSignup(ctx context.Context, serverURL, token string, noBrowser bool) err
 	if err != nil {
 		return fmt.Errorf("could not open a sign-up session: %w", err)
 	}
-	fmt.Printf("Open this URL in a browser on any device:\n\n   %s\n\n", sess.SignupURL)
-	fmt.Printf("Check that the page shows this code: %s\n", sess.UserCode)
-	fmt.Printf("Sign up there, or sign in if you have an account. Waiting here until %s.\n\n",
-		sess.ExpiresAt.Local().Format("15:04"))
+	// The link is printed last: while this waits, a terminal that shows only
+	// the newest lines of a running command (an agent's shell) still shows it.
+	fmt.Printf("Code: %s\n", sess.UserCode)
+	fmt.Printf("Sign up, or sign in to an account with no organization yet, and check the page shows that code.\n")
+	fmt.Printf("Waiting here until %s. Open this URL in a browser on any device:\n\n   %s\n\n",
+		sess.ExpiresAt.Local().Format("15:04"), sess.SignupURL)
 	if !noBrowser && !isRemoteSession() {
 		if err := openBrowser(sess.SignupURL); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: could not open a browser: %v\n", err)
@@ -96,7 +102,7 @@ func runSignup(ctx context.Context, serverURL, token string, noBrowser bool) err
 				fmt.Println("   Back up every day: sudo safegrd daemon install")
 			} else {
 				fmt.Println("   Verify your address from the email to finish; the backup is kept until then.")
-				fmt.Printf("   Until %s. Check with: safegrd try status\n", poll.TrialUntil.Local().Format("2006-01-02 15:04"))
+				fmt.Printf("   Until %s. Check with: safegrd try status\n", poll.TrialUntil.Local().Format(trialTimeLayout))
 			}
 			return nil
 		default:

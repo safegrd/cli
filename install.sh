@@ -490,7 +490,8 @@ print_next_steps() {
   step=$((step + 1))
   printf "   %s. Take the first encrypted, immutable backup:\n" "$step"
   printf "      ${CYAN}safegrd backup --database-url \"\$DATABASE_URL\"${RESET}\n\n"
-  printf "   No account? ${CYAN}safegrd init${RESET} sets up a standalone host that contacts no server.\n"
+  printf "   No account yet? ${CYAN}safegrd try <database-url>${RESET} backs up one database and restores it\n"
+  printf "   to check, then ${CYAN}safegrd signup${RESET} keeps it. ${CYAN}safegrd init${RESET} sets up a host that contacts no server.\n"
   printf " Docs: ${CYAN}https://safegrd.dev/docs/install${RESET} | Source: ${CYAN}https://github.com/safegrd/cli${RESET}\n\n"
 }
 
@@ -651,6 +652,7 @@ if [ -n "${SAFEGRD_NO_SETUP:-}" ] || [ -z "$ENROLL_USES_LOGIN" ] || ! have_tty; 
 fi
 
 printf "\n"
+printf "   No account yet? Answer n, then run ${CYAN}safegrd try <database-url>${RESET} to back up and check one database first.\n"
 ask "Connect this host to SafeGrd now? It opens a browser login. [Y/n] "
 case "$REPLY" in
   n|N|no|NO|No)

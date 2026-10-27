@@ -24,6 +24,7 @@ func TestOnlyStorageDamageMarksAnEpoch(t *testing.T) {
 		{failed("RestoreIntegrity", "hosted storage: No such object in hosted storage: k"), true},
 		{failed("RestoreIntegrity", "write /scratch/f: no space left on device"), false},
 		{failed("DigestIntegrity", "abc"), false},
+		{failed(model.AssertionRepositoryRead, "storage could not be read: HTTP 503 not found"), false},
 		{&model.VerificationReport{Status: model.VerificationStatusFailed, Assertions: []model.AssertionResult{
 			{Name: "orders exist", Kind: model.AssertionKindCheck, Actual: "sh: psql: command not found"}}}, false},
 		{&model.VerificationReport{Status: model.VerificationStatusPassed}, false},

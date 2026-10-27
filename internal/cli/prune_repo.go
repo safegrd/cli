@@ -88,6 +88,23 @@ func pruneRepos(ctx context.Context, st repoPruneStore, keepFor func(node string
 			}
 		}
 	}
+	// The erasure records, after the snapshots: an object goes once no
+	// snapshot left needs it (prune_erasures.go). Every node's, whether or
+	// not it still has a repository.
+	for _, n := range append([]string{""}, nodes...) {
+		if n == "repo" || n == "erasures" {
+			continue
+		}
+		prefix := path.Join(root, n)
+		if names, _ := st.Children(ctx, path.Join(prefix, "erasures")); len(names) == 0 {
+			continue
+		}
+		d := sink.NewDirect(&rootedStore{repoPruneStore: st, root: prefix})
+		if err := pruneErasuresIn(ctx, st, d, prefix, now, grace, dryRun, out, r); err != nil {
+			fmt.Fprintf(out.Err, "Error: Node %s: erasure records not pruned: %v\n", n, err)
+			r.Failed++
+		}
+	}
 	return nil
 }
 

@@ -188,6 +188,7 @@ they are, so it can run after 'safegrd enroll'.`,
 					PublicKey:  kp.PublicKey,
 					PrivateKey: kp.PrivateKey,
 					KeyPath:    keyPath,
+					Custody:    config.KeyCustodyLocal,
 				},
 			}
 
@@ -343,8 +344,8 @@ func initDatabaseSurface(ref string) (config.SurfaceConfig, error) {
 	if ref == resolved {
 		if u, err := url.Parse(resolved); err == nil && u.User != nil {
 			if _, has := u.User.Password(); has {
-				fmt.Fprintln(os.Stderr, "Warning: the config holds this URL's password. To keep it out, put the URL in an "+
-					"environment variable and pass --database-url env:DATABASE_URL.")
+				fmt.Fprintln(os.Stderr, "Warning: the config holds this URL's password. To keep it out, write the URL to a 0600 "+
+					"file and pass --database-url file:/path, or env:VAR for a variable the daemon is started with too.")
 			}
 		}
 	}

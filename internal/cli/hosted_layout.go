@@ -85,6 +85,13 @@ func (readOnlyArchives) DeleteVersion(context.Context, string, string) error {
 	return errHostedLayoutReadOnly
 }
 
+// The erasure record is read here too (a restore replays it); nothing is
+// written or deleted.
+func (readOnlyArchives) PutObject(context.Context, string, []byte, time.Time) error {
+	return errHostedLayoutReadOnly
+}
+func (readOnlyArchives) DeleteObject(context.Context, string) error { return errHostedLayoutReadOnly }
+
 // DeleteProbe writes an object to see whether it can delete it.
 func (readOnlyArchives) DeleteProbe(context.Context) (bool, bool, string, error) {
 	return false, false, "", errHostedLayoutReadOnly

@@ -281,6 +281,27 @@ func NewestIn(name string) (time.Time, bool) {
 	return time.Unix(0, n).UTC(), true
 }
 
+// IsMarker reports whether name is a record's marker (record.json).
+func IsMarker(name string) bool {
+	return name == marker || strings.HasSuffix(name, "/"+marker)
+}
+
+// NeededBy reports whether an object of the record, by its name, may hold
+// an erasure a restore of a backup started at oldest would replay. A record
+// object whose newest erasure is older than every backup left holds nothing
+// a restore uses, and prune deletes it once its lock has ended. The hour of
+// skew is the one Window.Replays allows: an erasure made inside it, by a
+// transaction the backup did not see, is still replayed.
+func NeededBy(name string, oldest time.Time) bool {
+	newest, ok := NewestIn(name)
+	if !ok {
+		// Not a record object: the marker, or something else; never pruned
+		// by this rule.
+		return true
+	}
+	return newest.Add(skew).After(oldest)
+}
+
 func seal(b batch, recipient string) ([]byte, error) {
 	plain, err := json.Marshal(b)
 	if err != nil {

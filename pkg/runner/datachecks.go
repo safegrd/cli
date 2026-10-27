@@ -123,9 +123,12 @@ func postgresAmcheck(ctx context.Context, sandboxURL string) model.AssertionResu
 			tables++
 		}
 	}
+	// relkind 'i' leaves out a partitioned table's own index, which holds no
+	// data and which bt_index_check refuses ("only B-Tree indexes are
+	// supported"); each partition's index is checked on its own.
 	rows, err := conn.Query(ctx, `SELECT c.oid, quote_ident(n.nspname) || '.' || quote_ident(c.relname) FROM pg_index i
 		JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_namespace n ON n.oid = c.relnamespace JOIN pg_am am ON am.oid = c.relam
-		WHERE am.amname = 'btree' AND i.indisvalid AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'safegrd_amcheck') AND n.nspname NOT LIKE 'pg_toast%'`)
+		WHERE am.amname = 'btree' AND c.relkind = 'i' AND i.indisvalid AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'safegrd_amcheck') AND n.nspname NOT LIKE 'pg_toast%'`)
 	if err != nil {
 		return notRun(name, expected, "listing the sandbox's indexes: "+err.Error())
 	}

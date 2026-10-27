@@ -1,6 +1,7 @@
 package model
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -39,6 +40,29 @@ const AssertionKindData = "data"
 // Holds reports whether the assertion lets the drill pass: it passed, or
 // it could not run.
 func (a AssertionResult) Holds() bool { return a.Passed || a.NotRun }
+
+// Result is the assertion's outcome in one word: "passed", "failed" or
+// "not_run". A reader of the JSON gets it beside passed and not_run, so a
+// check that could not run is never read as a failure.
+func (a AssertionResult) Result() string {
+	switch {
+	case a.NotRun:
+		return "not_run"
+	case a.Passed:
+		return "passed"
+	}
+	return "failed"
+}
+
+// MarshalJSON writes the assertion with its result. Reading it back ignores
+// result, which is derived.
+func (a AssertionResult) MarshalJSON() ([]byte, error) {
+	type plain AssertionResult
+	return json.Marshal(struct {
+		plain
+		Result string `json:"result"`
+	}{plain(a), a.Result()})
+}
 
 // AssertionKindCheck marks an assertion that is one of the customer's own
 // drill checks: a query and its expected value, or a command, run against the
@@ -111,6 +135,11 @@ func (v *VerificationReport) CanonicalBytes() []byte {
 	))
 }
 
+// AssertionRepositoryRead is the check a repository drill fails when storage
+// did not answer a read: a 503, a dropped connection. It says nothing about
+// the stored objects, so it never marks an epoch damaged.
+const AssertionRepositoryRead = "RepositoryRead"
+
 // storedDamageMarks are what a drill's failure says when stored objects are
 // damaged or missing, as opposed to the drill's host failing to restore them.
 var storedDamageMarks = []string{"does not authenticate", "is missing", "shorter than its index", "is in no index",
@@ -128,7 +157,7 @@ func (v *VerificationReport) StoredObjectsDamaged() (string, bool) {
 		// printed ("table not found", "psql: command not found"), and the
 		// database's check of the sandbox reports on the sandbox: neither
 		// says anything about the stored objects.
-		if a.Passed || a.Kind == AssertionKindCheck || a.Kind == AssertionKindData {
+		if a.Passed || a.Kind == AssertionKindCheck || a.Kind == AssertionKindData || a.Name == AssertionRepositoryRead {
 			continue
 		}
 		text := a.Actual + " " + a.Message

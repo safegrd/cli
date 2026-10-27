@@ -247,9 +247,13 @@ type SnapshotMetadata struct {
 	TotalItems            int64       `json:"total_items" yaml:"total_items"`           // rows, files, or emails
 	TotalContainers       int         `json:"total_containers" yaml:"total_containers"` // tables, directories, or folders
 	TableStats            []TableStat `json:"table_stats,omitempty" yaml:"table_stats,omitempty"`
-	TotalTables           int         `json:"total_tables,omitempty" yaml:"total_tables,omitempty"`
-	TotalRows             int64       `json:"total_rows,omitempty" yaml:"total_rows,omitempty"`
-	Extensions            []string    `json:"extensions,omitempty" yaml:"extensions,omitempty"`
+	// PartitionedTables names each partitioned table ("public.orders"). It
+	// holds no rows of its own, so it is not in TableStats or TotalTables:
+	// its partitions are.
+	PartitionedTables []string `json:"partitioned_tables,omitempty" yaml:"partitioned_tables,omitempty"`
+	TotalTables       int      `json:"total_tables,omitempty" yaml:"total_tables,omitempty"`
+	TotalRows         int64    `json:"total_rows,omitempty" yaml:"total_rows,omitempty"`
+	Extensions        []string `json:"extensions,omitempty" yaml:"extensions,omitempty"`
 	// SchemaSource says how a Postgres snapshot's schema was captured:
 	// "pg_dump 18.6", or "native" when no usable pg_dump was on the host and
 	// the schema was re-derived without foreign keys, views, triggers or enum

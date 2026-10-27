@@ -177,6 +177,12 @@ type DaemonState struct {
 	// LastPrune is when the daemon last pruned the bucket
 	// (storage.expire_after_lock).
 	LastPrune time.Time `json:"last_prune,omitempty"`
+	// LastExport is when daemon.export_to last copied every snapshot,
+	// LastExportTry when it last ran, and LastExportError why that run
+	// failed, when it did.
+	LastExport      time.Time `json:"last_export,omitempty"`
+	LastExportTry   time.Time `json:"last_export_try,omitempty"`
+	LastExportError string    `json:"last_export_error,omitempty"`
 }
 
 // LockInfo records in-flight execution to prevent concurrent runs.
@@ -289,10 +295,21 @@ exits at once.`,
 				}
 				interval = d
 			}
+			// An export block that does not parse is refused before the
+			// first pass, as the interval is.
+			if cfg.Daemon.ExportTo != nil {
+				if _, _, err := exportTargetOf(cfg.Daemon.ExportTo); err != nil {
+					return err
+				}
+			}
 
 			fmt.Printf("SafeGrd daemon %s started\n", Version)
 			fmt.Printf("   Surfaces:            %d\n", len(cfg.Surfaces))
 			fmt.Printf("   State directory:     %s\n", resolvedStateDir)
+			if d := cfg.Daemon.ExportTo; d != nil {
+				_, every, _ := exportTargetOf(d)
+				fmt.Printf("   Export to:           %s, every %s (daemon.export_to)\n", exportWhere(d), model.ShortDuration(every))
+			}
 			// Said once, at start: a daemon with no token reports nothing, and
 			// an enrolled host that lost its token must not look the same as
 			// one reporting fine.
@@ -1056,6 +1073,7 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 	lockDir := filepath.Join(stateDir, "locks")
 	daemonState := loadDaemonState(statePath)
 	now := time.Now().UTC()
+	hostExport.set(exportReport(c, daemonState))
 
 	var hasErrors bool
 	var drills []pendingDrill
@@ -1218,6 +1236,11 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 			sState.backupRunning = false
 			if _, err := backupSurfaceNow(ctx, c, &surface, sState, nodeID, lockDir, statePath, daemonState); err != nil {
 				hasErrors = true
+				// No snapshot will end the backup the heartbeat above
+				// announced. A single pass sends no later heartbeat, so the
+				// console would show it running, and refuse a backup of the
+				// surface elsewhere, for a day.
+				sendHeartbeat(ctx, c, nodeID, sState, tick, &surface)
 			}
 		}
 
@@ -1351,6 +1374,10 @@ func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string
 		}
 	}
 
+	// The scheduled copy to the customer's own bucket or directory, after
+	// everything this pass wrote, so it is in the copy.
+	runScheduledExport(ctx, c, daemonState, time.Now().UTC())
+
 	warnIfStateUnsaved(saveDaemonState(statePath, daemonState), statePath)
 
 	if hasErrors {
@@ -1412,6 +1439,13 @@ func backupSurfaceNow(ctx context.Context, c *config.CLIConfig, surface *config.
 		said := fmt.Sprintf("no new backup at %s since %s", surface.Watch.URL, sState.Watched.Object.Modified.Format("2006-01-02 15:04 UTC"))
 		fmt.Printf("Surface %s: %s.\n", surface.ID, said)
 		warnIfStateUnsaved(saveDaemonState(statePath, daemonState), statePath)
+		// A check that wrote nothing has only the heartbeat to answer a
+		// "back up now" from the console, and the heartbeat before this
+		// check said a backup was running: without this one the request
+		// stays open for a day and a second is refused as already made.
+		// Not reported as "unchanged": Overdue follows the tool, not the
+		// check.
+		sendHeartbeat(ctx, c, nodeID, sState, 0, surface)
 		// The check ran, so the ping started above is finished; the
 		// server's Overdue says when the other tool stopped writing.
 		warnPing(surface.ID, ping(ctx, "surfaces["+surface.ID+"].ping_url", surface.PingURL, "", "Checked "+surface.ID+": "+said))
@@ -1576,12 +1610,6 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 		return nil, plan, stageErr(model.BackupReasonStorage, err)
 	}
 	applyHeldSinkKey(ctx, c, &storageCfg)
-	// A surface that names erasure tables believes they are recorded: on
-	// storage that cannot keep the record it is refused, not backed up
-	// without one.
-	if len(s.Erasures) > 0 && (storageCfg.Type == config.StorageTypeHosted || hostedLayout(storageCfg)) {
-		return nil, plan, stageErr(model.BackupReasonConfig, fmt.Errorf("surface %s: %w", s.ID, errErasuresOnHosted))
-	}
 
 	storageProvider, err := openStorage(ctx, c, storageCfg)
 	if err != nil {

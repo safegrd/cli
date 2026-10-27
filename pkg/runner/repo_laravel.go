@@ -73,7 +73,7 @@ func (v *Verifier) RunRepoLaravelDrill(ctx context.Context, d RepoDrill, private
 	}
 	rep, err := check.Snapshot(ctx, d.Backend, d.Epoch, meta.SnapshotID, ids, check.Options{})
 	if err != nil {
-		return fail("RepositoryIntegrity", "every pack present and agreeing with its index", err.Error(), "the repository could not be read: "+err.Error())
+		return fail(model.AssertionRepositoryRead, "storage answers every read", err.Error(), "the repository could not be read, so nothing was checked: "+err.Error())
 	}
 	if !rep.OK() {
 		return fail("RepositoryIntegrity", "every pack present and agreeing with its index", rep.Problems[0], rep.Err().Error())

@@ -191,6 +191,10 @@ type Node struct {
 	// acted on. On the host's node, never on a surface's.
 	Update        *UpdateStatus  `json:"update,omitempty" yaml:"update,omitempty"`
 	UpdateRequest *UpdateRequest `json:"update_request,omitempty" yaml:"update_request,omitempty"`
+	// Export is what the host's daemon last said about its scheduled copy of
+	// this host's backups to a bucket or directory of the customer's
+	// (daemon.export_to). On the host's node.
+	Export *ExportStatus `json:"export,omitempty" yaml:"export,omitempty"`
 
 	// AlertState is the open alert episode, if any: AlertStateSilent or
 	// AlertStateOverdue. One alert opens it and one closes it, so it is
@@ -378,6 +382,11 @@ type HeartbeatRequest struct {
 	// host acted on, so a request it could not run (no key, storage it
 	// could not open) is known to be answered without a report.
 	DrillRequestSeen string `json:"drill_request_seen,omitempty"`
+	// BackupRequestSeen is the last HeartbeatResponse.BackupRequestID this
+	// host acted on. A backup answers the request with its snapshot; a
+	// watched surface's check that found nothing new has only this, with
+	// BackupRunning false, to say the request was answered.
+	BackupRequestSeen string `json:"backup_request_seen,omitempty"`
 	// CopiesBehind are the surface's other buckets that lack snapshots its
 	// own bucket holds, said until the host's catch-up has written them.
 	// Absent with CopiesChecked: every copy is caught up.
@@ -411,6 +420,10 @@ type HeartbeatRequest struct {
 	// Update is the host's update state, sent by a resident daemon with each
 	// surface's heartbeat and recorded on the host's node.
 	Update *UpdateStatus `json:"update,omitempty"`
+	// Export is the daemon's scheduled export (daemon.export_to): when the
+	// last copy was made and whether the last run failed. Nil from a daemon
+	// without one leaves the record alone.
+	Export *ExportStatus `json:"export,omitempty"`
 }
 
 // HeartbeatResponse instructs the node on next actions.
@@ -556,3 +569,17 @@ type HostCheckResult struct {
 
 // HostCheckStatuses are the statuses a check may report.
 var HostCheckStatuses = map[string]bool{"PASS": true, "WARN": true, "FAIL": true}
+
+// ExportStatus is what a host's daemon says about its scheduled export
+// (daemon.export_to): a copy of every snapshot, still encrypted, in a bucket
+// or a directory the customer owns.
+type ExportStatus struct {
+	// To is the bucket, or the directory, the copy goes to.
+	To string `json:"to"`
+	// At is when a run last completed with every snapshot copied.
+	At *time.Time `json:"at,omitempty"`
+	// FailedAt and Error are the last run that failed, in the daemon's
+	// words; cleared by a run that did not.
+	FailedAt *time.Time `json:"failed_at,omitempty"`
+	Error    string     `json:"error,omitempty"`
+}

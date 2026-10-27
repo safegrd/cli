@@ -87,15 +87,27 @@ func Snapshots(ctx context.Context, b sink.Backend, e sink.EpochInfo) ([]string,
 	return out, nil
 }
 
-// Snapshot checks one snapshot of an epoch.
+// Snapshot checks one snapshot of an epoch. A read that failed for any reason
+// but the object being absent is returned as the error, not as a problem: the
+// storage did not answer, so the check found nothing either way. A memo that
+// met one returns it for every later snapshot, as it may hold the failure.
 func Snapshot(ctx context.Context, b sink.Backend, e sink.EpochInfo, snapshotID string, ids []age.Identity, o Options) (*Report, error) {
-	rep := &Report{Snapshots: 1}
 	m := o.Memo
 	if m == nil {
 		m = NewMemo(b, e, ids)
 	} else if m.e.Prefix != e.Prefix || m.e.Epoch.EpochID != e.Epoch.EpochID {
 		return nil, fmt.Errorf("the memo is for epoch %s, not %s", m.e.Epoch.EpochID, e.Epoch.EpochID)
 	}
+	rep, err := snapshot(ctx, m, e, snapshotID, o)
+	if rerr := m.b.failed(); rerr != nil {
+		return nil, fmt.Errorf("storage could not be read: %w", rerr)
+	}
+	return rep, err
+}
+
+func snapshot(ctx context.Context, m *Memo, e sink.EpochInfo, snapshotID string, o Options) (*Report, error) {
+	rep := &Report{Snapshots: 1}
+	b := m.b
 	r := m.r
 	metaKey, err := sink.ObjectKey(e.Prefix, sink.KindMeta, snapshotID)
 	if err != nil {

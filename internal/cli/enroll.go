@@ -75,6 +75,17 @@ file:/path, which keeps the token out of 'ps' and shell history.`,
 			// operator responsible for it.
 			keyExistedBeforeEnroll := cfg != nil && cfg.Encryption.PublicKey != ""
 
+			// A personal access token on a host that holds a trial's node
+			// token: the trial nobody signed up for stays behind, and this
+			// host enrolls as a new node in the token's organization. Without
+			// this the trial's node id went with the registration and was
+			// refused as another organization's.
+			if strings.HasPrefix(token, "sg_pat_") || apiKey != "" {
+				if standing, trial := nodeTokenStanding(cmd.Context(), serverURL, cfg); standing == tokenTrial {
+					leaveNodeToken(cfg, standing, trial)
+				}
+			}
+
 			// Whether this host already had an identity of its own, captured
 			// before the local setup runs and invents one.
 			hostAlreadyHadNodeID := cfg != nil && cfg.NodeID != ""
@@ -258,6 +269,15 @@ file:/path, which keeps the token out of 'ps' and shell history.`,
 					return fmt.Errorf("--key-custody must be 'safegrd' or 'local', got %q", keyCustody)
 				}
 
+				// A key SafeGrd already holds sealed for this host (the config
+				// says custody: safegrd, written when it was sent) is not one
+				// the operator brought. It is sent again for this node, so
+				// it stays SafeGrd-managed. --key-custody=local keeps it here.
+				heldAlready := keyExistedBeforeEnroll && cfg.Encryption.Custody == config.KeyCustodySafeGrd && keyCustody != "local"
+				if heldAlready {
+					keyCustody = "safegrd"
+				}
+
 				// A claim says where this host goes and what it protects.
 				var claim *claimPreview
 				claimChoseSafeGrd := false
@@ -293,12 +313,12 @@ file:/path, which keeps the token out of 'ps' and shell history.`,
 				if claimChoseSafeGrd && keyExistedBeforeEnroll {
 					keyCustody = "local"
 				}
-				if keyExistedBeforeEnroll && keyCustody == "safegrd" {
+				if keyExistedBeforeEnroll && keyCustody == "safegrd" && !heldAlready {
 					return fmt.Errorf("this host already has a key, and an existing key is never sent.\n"+
 						"  --key-custody=safegrd makes a new key and has SafeGrd hold it.\n"+
 						"  For that, move %s aside (keep it: backups taken with it need it), then run this again. Nothing was changed", cfg.Encryption.KeyPath)
 				}
-				escrowRequested := generatedNow && keyCustody != "local"
+				escrowRequested := (generatedNow || heldAlready) && keyCustody != "local"
 
 				// Resolve organization ID for node registration if not provided.
 				if orgID == "" {
@@ -381,6 +401,13 @@ file:/path, which keeps the token out of 'ps' and shell history.`,
 
 				cfg.ServerURL = serverURL
 				cfg.ServerToken = regResp.Token
+				// What the server confirmed, not what was asked: a key it did
+				// not store is this host's alone.
+				if regResp.KeyEscrowed {
+					cfg.Encryption.Custody = config.KeyCustodySafeGrd
+				} else if !keyExistedBeforeEnroll || cfg.Encryption.Custody != "" {
+					cfg.Encryption.Custody = config.KeyCustodyLocal
+				}
 				// The host named no storage and its project backs up to
 				// hosted storage, so this host does too.
 				if regResp.StorageKind == string(config.StorageTypeHosted) && regReq.LocalStorage == "none" {
@@ -528,7 +555,14 @@ func adoptNodeKey(ctx context.Context, c *config.CLIConfig, generatedHere bool) 
 		return nil
 	}
 	recorded, local := strings.TrimSpace(n.PublicKey), strings.TrimSpace(c.Encryption.PublicKey)
-	if recorded == "" || recorded == local {
+	if recorded == "" {
+		return nil
+	}
+	if recorded == local {
+		c.Encryption.Custody = config.KeyCustodyLocal
+		if n.KeyEscrowed {
+			c.Encryption.Custody = config.KeyCustodySafeGrd
+		}
 		return nil
 	}
 	if !generatedHere {
@@ -568,6 +602,7 @@ func adoptNodeKey(ctx context.Context, c *config.CLIConfig, generatedHere bool) 
 		return err
 	}
 	c.Encryption.PublicKey, c.Encryption.PrivateKey = recorded, identity
+	c.Encryption.Custody = config.KeyCustodySafeGrd
 	fmt.Printf("   Key:         %s, the node's SafeGrd-managed key, written to %s (mode 0600)\n", crypto.Fingerprint(recorded), keyPath)
 	return nil
 }

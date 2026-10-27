@@ -184,7 +184,17 @@ type EncryptionConfig struct {
 	PublicKey  string `yaml:"public_key" json:"public_key"` // Age recipient: age1...
 	PrivateKey string `yaml:"-" json:"-"`                   // Age identity: AGE-SECRET-KEY-1... (held in-memory, resolved from key_path or SAFEGRD_PRIVATE_KEY)
 	KeyPath    string `yaml:"key_path" json:"key_path"`     // Path to identity file
+	// Custody is who holds the key besides this host, as chosen when it was
+	// made: KeyCustodySafeGrd (the remote server keeps it sealed) or
+	// KeyCustodyLocal. Empty means a key put here by hand, which is never sent.
+	Custody string `yaml:"custody,omitempty" json:"custody,omitempty"`
 }
+
+// Who holds a host's key besides the host (EncryptionConfig.Custody).
+const (
+	KeyCustodySafeGrd = "safegrd"
+	KeyCustodyLocal   = "local"
+)
 
 // DaemonConfig configures the resident unattended daemon.
 type DaemonConfig struct {
@@ -206,6 +216,38 @@ type DaemonConfig struct {
 	// https://github.com/safegrd/cli/releases/download: a mirror. Each
 	// release is <url>/v<version>/<file>, and is checked the same way.
 	UpdatesURL string `yaml:"updates_url,omitempty" json:"updates_url,omitempty"`
+	// ExportTo runs `safegrd export` on a schedule from the daemon: a copy of
+	// every snapshot, still encrypted, in a bucket or a directory of yours.
+	// Nil runs none.
+	ExportTo *ExportToConfig `yaml:"export_to,omitempty" json:"export_to,omitempty"`
+}
+
+// ExportToConfig is where the daemon's scheduled export goes and how often:
+// the same values `safegrd export` takes as flags. Exactly one of Bucket and
+// Dir is set.
+type ExportToConfig struct {
+	// Bucket is an S3 bucket you own (--to-bucket); Endpoint, Region and
+	// Prefix are its --to-endpoint, --to-region and --to-prefix, with the
+	// command's defaults when empty.
+	Bucket   string `yaml:"bucket,omitempty" json:"bucket,omitempty"`
+	Endpoint string `yaml:"endpoint,omitempty" json:"endpoint,omitempty"`
+	Region   string `yaml:"region,omitempty" json:"region,omitempty"`
+	Prefix   string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
+	// WORMMode is the bucket's Object Lock mode (--to-worm-mode): COMPLIANCE
+	// (the default), GOVERNANCE or NONE for a bucket without Object Lock.
+	WORMMode WORMMode `yaml:"worm_mode,omitempty" json:"worm_mode,omitempty"`
+	// AccessKeyID and SecretAccessKey open the bucket; each takes env:VAR or
+	// file:/path. Empty, the standard AWS environment is used, as the
+	// command does.
+	AccessKeyID     string `yaml:"access_key_id,omitempty" json:"access_key_id,omitempty"`
+	SecretAccessKey string `yaml:"secret_access_key,omitempty" json:"secret_access_key,omitempty"`
+	// ForcePathStyle addresses the bucket in the path, for MinIO.
+	ForcePathStyle bool `yaml:"force_path_style,omitempty" json:"force_path_style,omitempty"`
+	// Dir is a local directory instead (--to-dir).
+	Dir string `yaml:"dir,omitempty" json:"dir,omitempty"`
+	// Schedule is how often the export runs, in a surface schedule's words
+	// ("@daily", "6h", "0 3 * * *"). Empty is daily.
+	Schedule string `yaml:"schedule,omitempty" json:"schedule,omitempty"`
 }
 
 // DefaultsConfig defines fallback values inherited by surfaces.

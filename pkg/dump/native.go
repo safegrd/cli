@@ -364,6 +364,7 @@ func (d *NativeDumper) Dump(ctx context.Context, databaseName string, dst io.Wri
 			continue
 		}
 		if partitioned {
+			meta.PartitionedTables = append(meta.PartitionedTables, t.Schema+"."+t.TableName)
 			continue
 		}
 		meta.TableStats = append(meta.TableStats, t)

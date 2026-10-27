@@ -694,6 +694,11 @@ func printCreatedRoles(roles []string) {
 	for _, r := range roles {
 		fmt.Printf("   Created role:   %s\n", r)
 	}
+	if len(roles) > 0 {
+		// Said, because a restore beside a live database on one server
+		// otherwise reads as if it may have changed the live app's roles.
+		fmt.Printf("   Roles:          only the ones this server lacked were created; the roles it had keep their passwords and settings\n")
+	}
 }
 
 // printFileRestoreLimits says what a file restore did not bring back. A

@@ -24,26 +24,22 @@ import (
 // daemon tick and before every backup, and replayed by a restore of a
 // backup that predates the deletion.
 
-// errErasuresOnHosted is why a surface on hosted storage keeps no record.
-var errErasuresOnHosted = errors.New("hosted storage cannot keep an erasure record yet: SafeGrd's server signs every object written there and does not know this one. " +
-	"Keep this surface on local storage or your own bucket, or remove erasures: from it")
-
 // erasureRecordPath is where a surface's record is kept, relative to its
-// storage's root: beside the host's snapshots, under the surface's id.
+// storage's root: beside the host's snapshots, under the surface's id. The
+// same path on local storage, in the host's own bucket and in hosted
+// storage, so a snapshot's manifest names it the same way everywhere.
 func erasureRecordPath(nodeID, surfaceID string) string {
 	return path.Join(nodeID, "erasures", surfaceID)
 }
 
-// erasureObjects opens the storage a record is kept in.
-func erasureObjects(ctx context.Context, storageCfg config.StorageConfig) (storage.Objects, error) {
-	if storageCfg.Type == config.StorageTypeHosted || hostedLayout(storageCfg) {
-		return nil, errErasuresOnHosted
+// erasureObjects opens the storage a record is kept in: the host's own
+// bucket or directory, or hosted storage through the remote server, which
+// signs each object's write and read and sets its lock.
+func erasureObjects(ctx context.Context, c *config.CLIConfig, storageCfg config.StorageConfig) (storage.Objects, error) {
+	if c == nil {
+		c = cfg
 	}
-	resolved, err := resolveSFTPSecrets(storageCfg)
-	if err != nil {
-		return nil, err
-	}
-	p, err := storage.NewProvider(ctx, resolved)
+	p, err := openStorage(ctx, c, storageCfg)
 	if err != nil {
 		return nil, err
 	}
@@ -63,14 +59,18 @@ type erasureParams struct {
 	Recipient   string
 	Tables      []string
 	// RetainUntil is how long a backup taken now could be kept: each
-	// object is locked as long, so no older snapshot outlives it.
+	// object is locked as long, so no older snapshot outlives it. Hosted
+	// storage sets its own, at least as long.
 	RetainUntil time.Time
+	// CLI is the host's configuration, for storage reached through the
+	// remote server; nil reads the loaded one.
+	CLI *config.CLIConfig
 }
 
 // shipErasures moves what safegrd.erasures holds into the record and
 // returns how many rows it moved.
 func shipErasures(ctx context.Context, p erasureParams) (int, error) {
-	objs, err := erasureObjects(ctx, p.StorageCfg)
+	objs, err := erasureObjects(ctx, p.CLI, p.StorageCfg)
 	if err != nil {
 		return 0, err
 	}
@@ -87,10 +87,6 @@ func shipErasures(ctx context.Context, p erasureParams) (int, error) {
 // returns what goes into the backup's manifest.
 func prepareErasures(ctx context.Context, p erasureParams, out io.Writer, label string) *model.ErasureRecord {
 	rec := &model.ErasureRecord{Path: erasureRecordPath(p.NodeID, p.SurfaceID), Tables: p.Tables}
-	if p.StorageCfg.Type == config.StorageTypeHosted || hostedLayout(p.StorageCfg) {
-		fmt.Fprintf(os.Stderr, "Error: %s %v.\n", label, errErasuresOnHosted)
-		return nil
-	}
 	installed, err := erasure.Install(ctx, p.DatabaseURL, p.Tables)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: %s the erasure record is not in place (%v). Rows deleted from %s are not recorded until it is.\n",
@@ -137,7 +133,7 @@ func loadErasureReplay(ctx context.Context, rs *repoSnapshot, identity string, w
 	if rs.StorageCfg == nil {
 		return nil, refuse(errors.New("the storage this snapshot was found in is not known here"))
 	}
-	objs, err := erasureObjects(ctx, *rs.StorageCfg)
+	objs, err := erasureObjects(ctx, nil, *rs.StorageCfg)
 	if err != nil {
 		return nil, refuse(err)
 	}
@@ -204,7 +200,7 @@ func shipErasuresOnTick(ctx context.Context, c *config.CLIConfig, s *config.Surf
 	}
 	n, err := shipErasures(ctx, erasureParams{
 		SurfaceID: s.ID, NodeID: nodeID, DatabaseURL: dbURL, StorageCfg: storageCfg, Recipient: pubKey,
-		Tables: s.Erasures, RetainUntil: erasureRetainUntil(c, s),
+		Tables: s.Erasures, RetainUntil: erasureRetainUntil(c, s), CLI: c,
 	})
 	if err != nil {
 		st.probe.probed = true
@@ -229,7 +225,7 @@ func drillErasures(ctx context.Context, rs *repoSnapshot) storage.Objects {
 	if rs == nil || rs.Meta == nil || rs.Meta.Erasures == nil || rs.StorageCfg == nil {
 		return nil
 	}
-	objs, err := erasureObjects(ctx, *rs.StorageCfg)
+	objs, err := erasureObjects(ctx, nil, *rs.StorageCfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: the erasure record of %s cannot be opened: %v\n", rs.Meta.SnapshotID, err)
 		return nil

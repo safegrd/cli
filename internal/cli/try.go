@@ -83,7 +83,7 @@ func runTry(ctx context.Context, source, keyCustody, name string, noBrowser bool
 	if cfg != nil && cfg.ServerToken != "" && cfg.NodeID != "" {
 		if st, err := fetchTryStatus(ctx, serverURL, cfg.ServerToken); err == nil && st.State == "unclaimed" {
 			return fmt.Errorf("this host already has a trial backup, kept until %s. Keep it with: safegrd signup",
-				st.TrialUntil.Local().Format("2006-01-02 15:04"))
+				st.TrialUntil.Local().Format(trialTimeLayout))
 		}
 		return fmt.Errorf("this host is enrolled with %s already. Back up with: safegrd backup --database-url <url>, or safegrd backup --files <dir>", serverURL)
 	}
@@ -137,6 +137,12 @@ func runTry(ctx context.Context, source, keyCustody, name string, noBrowser bool
 
 	cfg.ServerURL = serverURL
 	cfg.ServerToken = resp.Token
+	if !keyExisted {
+		cfg.Encryption.Custody = config.KeyCustodyLocal
+		if escrow {
+			cfg.Encryption.Custody = config.KeyCustodySafeGrd
+		}
+	}
 	cfg.ProjectID = resp.ProjectID
 	cfg.Storage = config.StorageConfig{Type: config.StorageTypeHosted, WORMMode: config.WORMModeCompliance}
 	cfg.Surfaces = []config.SurfaceConfig{surface}
@@ -146,6 +152,12 @@ func runTry(ctx context.Context, source, keyCustody, name string, noBrowser bool
 	}
 	fmt.Printf("Trial opened: this host is %s, kept for %d hours.\n", cfg.NodeName, resp.Hours)
 	fmt.Printf("   Config: %s\n", target)
+	// A variable set in this shell is gone by the next backup, and a daemon
+	// never had it: say so while the person still has the value to hand.
+	if v, ok := strings.CutPrefix(surface.DatabaseURL, "env:"); ok {
+		fmt.Printf("   Database: read from $%s. Every later backup needs it set, the daemon's too.\n", v)
+		fmt.Printf("             To keep it in a file instead, write the URL to a 0600 file and set database_url: file:/path in the config.\n")
+	}
 	switch {
 	case resp.KeyEscrowed:
 		fmt.Printf("   Custody: SafeGrd-managed key. SafeGrd keeps your key sealed and releases it only to this host,\n")
@@ -186,8 +198,8 @@ func runTry(ctx context.Context, source, keyCustody, name string, noBrowser bool
 	if verificationID != "" {
 		fmt.Printf("   Drill:     %s (restored in memory from the remote server's storage)\n", verificationID)
 	}
-	fmt.Printf("   Kept until %s, not locked. Once you sign up, every backup is locked by your plan.\n",
-		resp.TrialUntil.Local().Format("2006-01-02 15:04"))
+	fmt.Printf("   Kept for %d hours, until %s, not locked. Once you sign up, every backup is locked by your plan.\n",
+		resp.Hours, resp.TrialUntil.Local().Format(trialTimeLayout))
 	fmt.Printf("   See it:    safegrd list\n")
 	fmt.Println()
 
@@ -209,6 +221,10 @@ func runTry(ctx context.Context, source, keyCustody, name string, noBrowser bool
 	}
 	return nil
 }
+
+// trialTimeLayout names the zone: the backup's own lines print UTC, and a
+// local time beside them with no zone reads as a second deadline.
+const trialTimeLayout = "2006-01-02 15:04 MST"
 
 var (
 	snapshotIDRe     = regexp.MustCompile(`(?m)^\s*Snapshot ID:\s+(\S+)`)
@@ -387,11 +403,11 @@ func newTryStatusCmd() *cobra.Command {
 func printTryStatus(st *model.TryStatus) {
 	switch st.State {
 	case "unclaimed":
-		fmt.Printf("Trial backup kept until %s, not signed up.\n", st.TrialUntil.Local().Format("2006-01-02 15:04"))
+		fmt.Printf("Trial backup kept until %s, not signed up.\n", st.TrialUntil.Local().Format(trialTimeLayout))
 		fmt.Println("   Keep it: safegrd signup")
 	case "claimed":
 		fmt.Printf("Signed up as %s; the address is not verified yet.\n", st.OrgName)
-		fmt.Printf("   The backup is kept until %s. Verify the address from the email to lift the trial's limits.\n", st.TrialUntil.Local().Format("2006-01-02 15:04"))
+		fmt.Printf("   The backup is kept until %s. Verify the address from the email to lift the trial's limits.\n", st.TrialUntil.Local().Format(trialTimeLayout))
 	case "owned":
 		fmt.Printf("This host is enrolled in %s. No trial limits apply.\n", st.OrgName)
 		if st.ConsoleURL != "" {

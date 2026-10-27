@@ -54,119 +54,10 @@ keeps each snapshot's lock: it is locked there until the same date. A
 repository's objects are locked until their epoch's longest date, the one its
 first run's objects carry.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := cmd.Context()
-			if (toDir == "") == (toBucket == "") {
-				return fmt.Errorf("choose one destination: --to-dir or --to-bucket")
-			}
-
-			srcCfg, routeErr := resolveStorageRouting(ctx, cfg, "", "", "", "", false)
-			if routeErr != nil {
-				return routeErr
-			}
-			if _, err := resolveHostedStorage(ctx, cfg, &srcCfg, false); err != nil {
-				return err
-			}
-			resolveRuntimeCredentials(ctx, cfg, &srcCfg, false)
-			if cfg.NodeID != "" && srcCfg.NodeID == "" {
-				srcCfg.NodeID = cfg.NodeID
-			}
-			src, err := openStorage(ctx, cfg, srcCfg)
-			if err != nil {
-				return fmt.Errorf("source storage: %w", err)
-			}
-
-			var dstCfg config.StorageConfig
-			if toDir != "" {
-				dstCfg = config.StorageConfig{Type: config.StorageTypeLocal, LocalPath: toDir}
-			} else {
-				dstCfg = config.StorageConfig{
-					Type: config.StorageTypeS3, Bucket: toBucket, Endpoint: toEndpoint, Region: toRegion,
-					Prefix: toPrefix, WORMMode: config.WORMMode(toWORM), RetentionDays: 1,
-				}
-			}
-			dst, err := openStorage(ctx, cfg, dstCfg)
-			if err != nil {
-				return fmt.Errorf("destination storage: %w", err)
-			}
-			// Checked once, before anything is copied: each epoch failed on
-			// its own with S3's "Bucket is missing ObjectLockConfiguration".
-			if lv, ok := dst.(interface{ VerifyBucketObjectLock(context.Context) error }); ok && toBucket != "" {
-				if err := lv.VerifyBucketObjectLock(ctx); err != nil {
-					why := err.Error()
-					if strings.Contains(why, "ObjectLockConfigurationNotFound") || strings.Contains(why, "does not have Object Lock enabled") {
-						why = "it has no Object Lock"
-					}
-					return fmt.Errorf("bucket %s cannot take locked copies: %s. Create it with Object Lock on, "+
-						"or pass --to-worm-mode NONE to copy without a lock. Nothing was exported", toBucket, why)
-				}
-			}
-
-			// Incremental repositories go first, whole epochs at a time: a
-			// snapshot needs every object of its epoch.
-			rCopied, rSkipped, rFailed, rMatched, rErr := exportRepos(ctx, srcCfg, dstCfg, onlySnapshots, onlyNodes)
-			if rErr != nil {
-				return rErr
-			}
-
-			ids, err := src.ListSnapshots(ctx)
-			if err != nil {
-				return fmt.Errorf("listing snapshots: %w", err)
-			}
-			sort.Strings(ids)
-			nodes := map[string]string{}
-			if loc, ok := src.(storage.NodeLocator); ok {
-				if m, err := loc.SnapshotNodes(ctx); err == nil {
-					nodes = m
-				}
-			}
-
-			var unmatched []string
-			for _, id := range onlySnapshots {
-				if !rMatched[strings.TrimSpace(id)] {
-					unmatched = append(unmatched, id)
-				}
-			}
-			if len(onlySnapshots) > 0 && len(unmatched) == 0 {
-				ids = nil
-			} else if len(ids) > 0 || len(onlySnapshots) > 0 || rCopied+rSkipped+rFailed == 0 {
-				if len(onlySnapshots) > 0 {
-					onlySnapshots = unmatched
-				}
-				ids, err = filterExport(ids, nodes, srcCfg.NodeID, onlySnapshots, onlyNodes)
-				if err != nil && rCopied+rSkipped+rFailed == 0 {
-					return err
-				} else if err != nil {
-					ids = nil
-				}
-			}
-
-			copied, skipped, failed := 0, 0, 0
-			for _, id := range ids {
-				node := nodes[id]
-				setNode(src, node, srcCfg.NodeID)
-				setNode(dst, node, srcCfg.NodeID)
-				if ok, err := dst.SnapshotExists(ctx, id); err == nil && ok {
-					fmt.Printf("   %s already exported\n", id)
-					skipped++
-					continue
-				}
-				if err := exportOne(ctx, src, dst, id); err != nil {
-					fmt.Fprintf(os.Stderr, "Error: %s: %v\n", id, err)
-					failed++
-					continue
-				}
-				fmt.Printf("   %s exported\n", id)
-				copied++
-			}
-			// Counted by what was copied: an incremental repository goes an
-			// epoch at a time, a full copy a snapshot at a time. One total
-			// called both "snapshots".
-			fmt.Printf("\nExported %s. Already there: %s. Failed: %s.\n",
-				exportCount(rCopied, copied), exportCount(rSkipped, skipped), exportCount(rFailed, failed))
-			if failed+rFailed > 0 {
-				return fmt.Errorf("%s not exported", exportCount(rFailed, failed))
-			}
-			return nil
+			return runExport(cmd.Context(), cfg, exportTarget{
+				Dir: toDir, Bucket: toBucket, Endpoint: toEndpoint, Region: toRegion, Prefix: toPrefix, WORM: toWORM,
+				Snapshots: onlySnapshots, Nodes: onlyNodes,
+			})
 		},
 	}
 	cmd.Flags().StringVar(&toDir, "to-dir", "", "Export into this local directory")
@@ -444,4 +335,142 @@ func exportCount(epochs, copies int) string {
 	default:
 		return plural(epochs, "epoch", "epochs")
 	}
+}
+
+// exportTarget is where an export goes: the values of the command's flags,
+// which daemon.export_to also supplies.
+type exportTarget struct {
+	Dir, Bucket, Endpoint, Region, Prefix, WORM string
+	// AccessKeyID and SecretAccessKey open the bucket when set; otherwise the
+	// standard AWS environment does.
+	AccessKeyID, SecretAccessKey string
+	ForcePathStyle               bool
+	Snapshots, Nodes             []string
+}
+
+// runExport copies every snapshot of this host's storage to t, as the export
+// command does: by hand from the command, on a schedule from the daemon.
+func runExport(ctx context.Context, cfg *config.CLIConfig, t exportTarget) error {
+	if (t.Dir == "") == (t.Bucket == "") {
+		return fmt.Errorf("choose one destination: --to-dir or --to-bucket")
+	}
+	if t.Region == "" {
+		t.Region = "us-east-1"
+	}
+	if t.Prefix == "" {
+		t.Prefix = "safegrd/snapshots"
+	}
+	if t.WORM == "" {
+		t.WORM = string(config.WORMModeCompliance)
+	}
+
+	srcCfg, routeErr := resolveStorageRouting(ctx, cfg, "", "", "", "", false)
+	if routeErr != nil {
+		return routeErr
+	}
+	if _, err := resolveHostedStorage(ctx, cfg, &srcCfg, false); err != nil {
+		return err
+	}
+	resolveRuntimeCredentials(ctx, cfg, &srcCfg, false)
+	if cfg.NodeID != "" && srcCfg.NodeID == "" {
+		srcCfg.NodeID = cfg.NodeID
+	}
+	src, err := openStorage(ctx, cfg, srcCfg)
+	if err != nil {
+		return fmt.Errorf("source storage: %w", err)
+	}
+
+	var dstCfg config.StorageConfig
+	if t.Dir != "" {
+		dstCfg = config.StorageConfig{Type: config.StorageTypeLocal, LocalPath: t.Dir}
+	} else {
+		dstCfg = config.StorageConfig{
+			Type: config.StorageTypeS3, Bucket: t.Bucket, Endpoint: t.Endpoint, Region: t.Region,
+			Prefix: t.Prefix, WORMMode: config.WORMMode(t.WORM), RetentionDays: 1,
+			AccessKeyID: t.AccessKeyID, SecretAccessKey: t.SecretAccessKey, ForcePathStyle: t.ForcePathStyle,
+		}
+	}
+	dst, err := openStorage(ctx, cfg, dstCfg)
+	if err != nil {
+		return fmt.Errorf("destination storage: %w", err)
+	}
+	// Checked once, before anything is copied: each epoch failed on
+	// its own with S3's "Bucket is missing ObjectLockConfiguration".
+	if lv, ok := dst.(interface{ VerifyBucketObjectLock(context.Context) error }); ok && t.Bucket != "" {
+		if err := lv.VerifyBucketObjectLock(ctx); err != nil {
+			why := err.Error()
+			if strings.Contains(why, "ObjectLockConfigurationNotFound") || strings.Contains(why, "does not have Object Lock enabled") {
+				why = "it has no Object Lock"
+			}
+			return fmt.Errorf("bucket %s cannot take locked copies: %s. Create it with Object Lock on, "+
+				"or pass --to-worm-mode NONE to copy without a lock. Nothing was exported", t.Bucket, why)
+		}
+	}
+
+	// Incremental repositories go first, whole epochs at a time: a
+	// snapshot needs every object of its epoch.
+	rCopied, rSkipped, rFailed, rMatched, rErr := exportRepos(ctx, srcCfg, dstCfg, t.Snapshots, t.Nodes)
+	if rErr != nil {
+		return rErr
+	}
+
+	ids, err := src.ListSnapshots(ctx)
+	if err != nil {
+		return fmt.Errorf("listing snapshots: %w", err)
+	}
+	sort.Strings(ids)
+	nodes := map[string]string{}
+	if loc, ok := src.(storage.NodeLocator); ok {
+		if m, err := loc.SnapshotNodes(ctx); err == nil {
+			nodes = m
+		}
+	}
+
+	var unmatched []string
+	for _, id := range t.Snapshots {
+		if !rMatched[strings.TrimSpace(id)] {
+			unmatched = append(unmatched, id)
+		}
+	}
+	if len(t.Snapshots) > 0 && len(unmatched) == 0 {
+		ids = nil
+	} else if len(ids) > 0 || len(t.Snapshots) > 0 || rCopied+rSkipped+rFailed == 0 {
+		if len(t.Snapshots) > 0 {
+			t.Snapshots = unmatched
+		}
+		ids, err = filterExport(ids, nodes, srcCfg.NodeID, t.Snapshots, t.Nodes)
+		if err != nil && rCopied+rSkipped+rFailed == 0 {
+			return err
+		} else if err != nil {
+			ids = nil
+		}
+	}
+
+	copied, skipped, failed := 0, 0, 0
+	for _, id := range ids {
+		node := nodes[id]
+		setNode(src, node, srcCfg.NodeID)
+		setNode(dst, node, srcCfg.NodeID)
+		if ok, err := dst.SnapshotExists(ctx, id); err == nil && ok {
+			fmt.Printf("   %s already exported\n", id)
+			skipped++
+			continue
+		}
+		if err := exportOne(ctx, src, dst, id); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %s: %v\n", id, err)
+			failed++
+			continue
+		}
+		fmt.Printf("   %s exported\n", id)
+		copied++
+	}
+	// Counted by what was copied: an incremental repository goes an
+	// epoch at a time, a full copy a snapshot at a time. One total
+	// called both "snapshots".
+	fmt.Printf("\nExported %s. Already there: %s. Failed: %s.\n",
+		exportCount(rCopied, copied), exportCount(rSkipped, skipped), exportCount(rFailed, failed))
+	if failed+rFailed > 0 {
+		return fmt.Errorf("%s not exported", exportCount(rFailed, failed))
+	}
+	return nil
 }

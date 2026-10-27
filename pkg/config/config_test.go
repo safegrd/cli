@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestCLIConfigLoadSave(t *testing.T) {
@@ -449,5 +451,32 @@ func TestAKeyBesideTheConfigIsWrittenRelativeToIt(t *testing.T) {
 	}
 	if raw, _ := os.ReadFile(cfgPath); !strings.Contains(string(raw), elsewhere) {
 		t.Fatalf("a key outside the config's folder lost its path:\n%s", raw)
+	}
+}
+
+// Who holds the key is written beside it and read back, because enroll
+// decides from it whether a key already on the host may be sent.
+func TestKeyCustodySurvivesASave(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	for _, custody := range []string{KeyCustodySafeGrd, KeyCustodyLocal, ""} {
+		cfg := &CLIConfig{NodeID: "node-1", Encryption: EncryptionConfig{
+			PublicKey: "age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p", KeyPath: "keys/daemon.key", Custody: custody}}
+		if err := SaveCLIConfig(cfg, path); err != nil {
+			t.Fatalf("SaveCLIConfig: %v", err)
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var back CLIConfig
+		if err := yaml.Unmarshal(raw, &back); err != nil {
+			t.Fatal(err)
+		}
+		if back.Encryption.Custody != custody {
+			t.Errorf("custody %q came back as %q:\n%s", custody, back.Encryption.Custody, raw)
+		}
+		if custody == "" && strings.Contains(string(raw), "custody") {
+			t.Errorf("an unknown custody was written:\n%s", raw)
+		}
 	}
 }

@@ -42,9 +42,14 @@ Tokens in the console: --token env:SAFEGRD_TOKEN (or file:/path, or the token it
 			// An enrolled host authenticates as its node. Writing a personal
 			// token over that one would leave the daemon unable to fetch the
 			// credentials and key the remote server holds for it, which only a
-			// node token may fetch.
-			if err := refuseOverNodeToken(cfg); err != nil {
-				return err
+			// node token may fetch. Two node tokens are not worth keeping: a
+			// trial's nobody signed up for, which the host leaves to enroll
+			// as a new node, and one the server no longer accepts.
+			standing, trial := nodeTokenStanding(cmd.Context(), serverURL, cfg)
+			if standing == tokenLive {
+				if err := refuseOverNodeToken(cfg); err != nil {
+					return err
+				}
 			}
 
 			// Mode 1: Direct API Key / Personal Access Token provided
@@ -61,6 +66,7 @@ Tokens in the console: --token env:SAFEGRD_TOKEN (or file:/path, or the token it
 
 				cfg.ServerURL = serverURL
 				cfg.ServerToken = token
+				leaveNodeToken(cfg, standing, trial)
 				targetConfig, err := saveConfig()
 				if err != nil {
 					return err
@@ -175,6 +181,7 @@ Tokens in the console: --token env:SAFEGRD_TOKEN (or file:/path, or the token it
 
 						cfg.ServerURL = serverURL
 						cfg.ServerToken = pollSession.Token
+						leaveNodeToken(cfg, standing, trial)
 
 						targetConfig, err := saveConfig()
 						if err != nil {
@@ -198,6 +205,49 @@ Tokens in the console: --token env:SAFEGRD_TOKEN (or file:/path, or the token it
 	cmd.Flags().BoolVar(&noBrowser, "no-browser", false, "Do not attempt to open browser automatically")
 
 	return cmd
+}
+
+// tokenStanding is what the remote server says of the node token a config
+// holds, which decides whether a login or an enrollment may replace it.
+type tokenStanding int
+
+const (
+	tokenLive  tokenStanding = iota // an enrolled host's, or unknown: kept
+	tokenTrial                      // a trial nobody signed up for
+	tokenDead                       // refused by the server: nothing to keep
+)
+
+// nodeTokenStanding asks the remote server about the node token in c. Only
+// an answer decides: a server that cannot be reached leaves the token live.
+func nodeTokenStanding(ctx context.Context, serverURL string, c *config.CLIConfig) (tokenStanding, *model.TryStatus) {
+	if c == nil || c.NodeID == "" || !strings.HasPrefix(c.ServerToken, "sg_tok_") {
+		return tokenLive, nil
+	}
+	var st model.TryStatus
+	code, err := tryCall(ctx, serverURL, c.ServerToken, http.MethodGet, "/status", nil, &st)
+	switch {
+	case err == nil && st.State == "unclaimed":
+		return tokenTrial, &st
+	case code == http.StatusUnauthorized || code == http.StatusNotFound:
+		return tokenDead, nil
+	}
+	return tokenLive, nil
+}
+
+// leaveNodeToken says what happens to the node token a login or an
+// enrollment replaces. A trial's node stays with the trial, which is deleted
+// at its deadline, so the host forgets it and enrolls as a new node; its key
+// and surfaces stay. A dead token's node id is kept, so enrolling registers
+// the same host again.
+func leaveNodeToken(c *config.CLIConfig, standing tokenStanding, trial *model.TryStatus) {
+	switch standing {
+	case tokenTrial:
+		fmt.Printf("This host leaves its trial (node %s). The trial backup is deleted at %s.\n",
+			c.NodeID, trial.TrialUntil.Local().Format(trialTimeLayout))
+		c.NodeID, c.ProjectID = "", ""
+	case tokenDead:
+		fmt.Printf("The remote server no longer accepts this host's node token, so it is replaced.\n")
+	}
 }
 
 // refuseOverNodeToken stops a login from replacing the node token of an

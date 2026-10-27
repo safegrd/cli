@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -120,5 +121,70 @@ func TestARepoDrillFailsWhenTheRecordedRootDiffers(t *testing.T) {
 	}
 	if len(reports) != 1 || reports[0].Status != model.VerificationStatusFailed {
 		t.Fatalf("the failure was not reported: %+v", reports)
+	}
+}
+
+// unavailable is storage that answers 503 for the snapshot objects, as hosted
+// storage did on 2026-10-27, and serves everything else.
+type unavailable struct{ sink.Backend }
+
+func (u unavailable) Get(ctx context.Context, key string) ([]byte, error) {
+	if strings.Contains(key, "/snapshots/") && strings.HasSuffix(key, ".age") {
+		return nil, fmt.Errorf("hosted storage refused the download of %s: HTTP 503 <Code>ServiceUnavailable</Code>", key)
+	}
+	return u.Backend.Get(ctx, key)
+}
+
+// A drill that storage did not answer fails, and does not report the stored
+// objects damaged: that would open a new epoch and upload everything again
+// for an outage.
+func TestARepoDrillStorageDidNotAnswerIsNotDamage(t *testing.T) {
+	d, key := repoSnapshotForTest(t)
+	d.Backend = unavailable{d.Backend}
+	var reports []model.VerificationReport
+	srv := repoRecordServer(t, *d.Meta, &reports)
+	defer srv.Close()
+	v := NewVerifier(nil, srv.URL)
+	v.SetServerToken("tok")
+	report, err := v.RunRepoDrill(context.Background(), d, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status == model.VerificationStatusPassed {
+		t.Fatal("a drill passed while storage answered 503")
+	}
+	if why, damaged := report.StoredObjectsDamaged(); damaged {
+		t.Fatalf("a 503 was reported as damaged stored objects: %s", why)
+	}
+	if !strings.Contains(report.ErrorMessage, "HTTP 503") {
+		t.Fatalf("the failure does not say storage answered 503: %q", report.ErrorMessage)
+	}
+}
+
+// missing is storage where the snapshot objects are gone.
+type missing struct{ sink.Backend }
+
+func (m missing) Get(ctx context.Context, key string) ([]byte, error) {
+	if strings.Contains(key, "/snapshots/") && strings.HasSuffix(key, ".age") {
+		return nil, fmt.Errorf("%s: %w", key, sink.ErrNotFound)
+	}
+	return m.Backend.Get(ctx, key)
+}
+
+// The other half: a snapshot object that is gone is damage.
+func TestARepoDrillMissingObjectIsDamage(t *testing.T) {
+	d, key := repoSnapshotForTest(t)
+	d.Backend = missing{d.Backend}
+	var reports []model.VerificationReport
+	srv := repoRecordServer(t, *d.Meta, &reports)
+	defer srv.Close()
+	v := NewVerifier(nil, srv.URL)
+	v.SetServerToken("tok")
+	report, err := v.RunRepoDrill(context.Background(), d, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, damaged := report.StoredObjectsDamaged(); !damaged {
+		t.Fatalf("a missing snapshot object was not reported damaged: %+v", report.Assertions)
 	}
 }
