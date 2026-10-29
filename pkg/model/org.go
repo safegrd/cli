@@ -22,6 +22,11 @@ const (
 	OrgRoleAdmin  OrgRole = "admin"
 	OrgRoleMember OrgRole = "member"
 	OrgRoleViewer OrgRole = "viewer"
+	// OrgRoleAuditor reads the organization's drill records and its
+	// Evidence Pack, and nothing else: no surfaces, hosts, snapshots,
+	// settings or members. It is for the person outside the team who
+	// checks the backups were tested.
+	OrgRoleAuditor OrgRole = "auditor"
 )
 
 // Organization represents a top-level tenant account.
