@@ -19,8 +19,9 @@ import (
 	"github.com/safegrd/cli/pkg/watch"
 )
 
-// A watched surface (pkg/watch) checks the PostgreSQL backups another tool
-// writes, where that tool puts them, instead of backing up a database. A
+// A watched surface (pkg/watch) checks the backups another tool writes
+// (PostgreSQL, MySQL or MongoDB), where that tool puts them, instead of
+// backing up a database. A
 // check that finds a new backup reports it as a snapshot dated by the
 // backup, so the surface goes Overdue when the other tool stops writing and
 // Threat Shield compares each backup with the last. A check that finds
@@ -36,14 +37,28 @@ type watchedBackup struct {
 	Meta   *model.SnapshotMetadata `json:"meta"`
 }
 
+// watchedEngine is the engine a watched surface's type names, or an error
+// for a type this cannot watch.
+func watchedEngine(s *config.SurfaceConfig) (model.SurfaceType, error) {
+	switch kind := model.SurfaceType(strings.ToLower(s.Type)); kind {
+	case model.SurfaceTypePostgres, model.SurfaceTypeMySQL, model.SurfaceTypeMongoDB:
+		return kind, nil
+	default:
+		return "", fmt.Errorf("surface %s: watch: reads PostgreSQL, MySQL and MongoDB backups; set type: postgres, mysql or mongodb", s.ID)
+	}
+}
+
 // watchLocation is a surface's watch: block, its keys resolved.
 func watchLocation(s *config.SurfaceConfig) (watch.Location, error) {
 	w := s.Watch
-	loc := watch.Location{URL: strings.TrimSpace(w.URL), Endpoint: w.Endpoint, Region: w.Region, Match: w.Match}
+	engine, err := watchedEngine(s)
+	if err != nil {
+		return watch.Location{}, err
+	}
+	loc := watch.Location{URL: strings.TrimSpace(w.URL), Engine: engine, Endpoint: w.Endpoint, Region: w.Region, Match: w.Match}
 	if loc.URL == "" {
 		return loc, fmt.Errorf("surface %s: watch: needs a url (s3://bucket/prefix, or a directory)", s.ID)
 	}
-	var err error
 	if loc.AccessKeyID, err = resolveConfigSecret("watch.access_key", w.AccessKey); err != nil {
 		return loc, err
 	}
@@ -65,9 +80,6 @@ func watchScratch(stateDir string) (string, error) {
 // runWatchCheck is a watched surface's run: the newest backup at its
 // location, read once if it is new.
 func runWatchCheck(ctx context.Context, c *config.CLIConfig, s *config.SurfaceConfig, nodeID string, st *SurfaceState, stateDir string) (*model.SnapshotMetadata, error) {
-	if !strings.EqualFold(s.Type, "postgres") {
-		return nil, stageErr(model.BackupReasonConfig, fmt.Errorf("surface %s: watch: reads PostgreSQL backups; set type: postgres", s.ID))
-	}
 	loc, err := watchLocation(s)
 	if err != nil {
 		return nil, stageErr(model.BackupReasonConfig, err)
@@ -93,14 +105,22 @@ func runWatchCheck(ctx context.Context, c *config.CLIConfig, s *config.SurfaceCo
 	if err != nil {
 		return nil, stageErr(model.BackupReasonSource, fmt.Errorf("the backup at %s cannot be read: %w", obj.URI, err))
 	}
+	if contents.Engine != loc.Engine {
+		return nil, stageErr(model.BackupReasonConfig, fmt.Errorf("the newest backup at %s is a %s dump, and surface %s is type: %s; set the type the backups are of, or match: to its files",
+			obj.URI, contents.Engine, s.ID, s.Type))
+	}
+	// The file's name stands in for the database's where the dump does not
+	// name it: a pg_dump names it only in a comment.
+	database := contents.Database
+	if database == "" {
+		database = path.Base(obj.Key)
+	}
 	now := time.Now().UTC()
 	meta := &model.SnapshotMetadata{
-		SnapshotID:  fmt.Sprintf("snap-%s-%s", now.Format("20060102-150405"), uuid.New().String()[:6]),
-		NodeID:      nodeID,
-		SurfaceType: model.SurfaceTypePostgres,
-		// The file's name stands in for the database's, which a dump names
-		// only in a comment.
-		DatabaseName:       path.Base(obj.Key),
+		SnapshotID:         fmt.Sprintf("snap-%s-%s", now.Format("20060102-150405"), uuid.New().String()[:6]),
+		NodeID:             nodeID,
+		SurfaceType:        loc.Engine,
+		DatabaseName:       database,
 		CreatedAt:          obj.Modified,
 		CompletedAt:        &now,
 		Status:             model.SnapshotStatusCompleted,
@@ -116,15 +136,20 @@ func runWatchCheck(ctx context.Context, c *config.CLIConfig, s *config.SurfaceCo
 		External: &model.ExternalBackup{URI: obj.URI, Tool: watch.Tool(obj), Format: contents.Format,
 			Modified: obj.Modified},
 	}
-	if contents.ServerVersion != "" {
+	switch {
+	case contents.ServerVersion == "":
+	case loc.Engine == model.SurfaceTypePostgres:
 		meta.PostgresVersion = "PostgreSQL " + contents.ServerVersion
+	default:
+		meta.ServerVersion = contents.ServerVersion
 	}
 	meta.CalculateTotals()
-	fmt.Printf("[%s] Read %s (made by %s, %s, written %s): %d %s, %s rows.\n", s.ID, obj.URI, meta.External.MadeBy(),
+	containers, items := contents.CountWords()
+	fmt.Printf("[%s] Read %s (made by %s, %s, written %s): %d %s, %s %s.\n", s.ID, obj.URI, meta.External.MadeBy(),
 		formatBytes(obj.Size), obj.Modified.Format("2006-01-02 15:04 UTC"), len(contents.Tables),
-		pluralWord(int64(len(contents.Tables)), "table", "tables"), formatNumber(contents.Rows))
+		pluralWord(int64(len(contents.Tables)), strings.TrimSuffix(containers, "s"), containers), formatNumber(contents.Rows), items)
 	if !contents.Loadable() {
-		fmt.Printf("[%s] This dump creates databases or roles, so its drills read it in memory and do not load it.\n", s.ID)
+		fmt.Printf("[%s] This dump creates databases or roles, or holds more than one database, so its drills read it in memory and do not load it.\n", s.ID)
 	}
 	if hostIsEnrolled(c) {
 		st.notRecorded = reportSnapshot(ctx, c, st, meta)
@@ -180,7 +205,7 @@ func runWatchDrill(ctx context.Context, c *config.CLIConfig, d pendingDrill, sav
 		if resetErr := runner.ResetSandbox(ctx, sandbox); resetErr != nil {
 			fmt.Fprintf(os.Stderr, "Warning: Surface %s: could not empty the sandbox after the drill: %v\n", s.ID, resetErr)
 		}
-	case d.sandboxIncluded:
+	case d.sandboxIncluded && meta.SurfaceType == model.SurfaceTypePostgres:
 		var why error
 		if local, _, why = startLocalSandbox(ctx, nil, meta.SnapshotID, meta, d.stateDir); why != nil || local == nil {
 			if why != nil {
@@ -267,8 +292,9 @@ func verifyWatchedSurface(ctx context.Context, surfaceID, sandboxURL string) err
 	if report.Status != model.VerificationStatusPassed {
 		return drillFailure(verifier, fmt.Errorf("fire drill of %s failed: %s", meta.External.URI, report.ErrorMessage))
 	}
-	fmt.Printf("\nFire Drill Passed\n   Made by:         %s\n   Read from:       %s\n   Tables:          %d\n   Rows:            %d\n   Certificate:     %s\n",
-		meta.External.MadeBy(), meta.External.URI, report.TablesRestored, report.RowsRestored, report.CertificateHash)
+	containers, items := watch.CountWords(meta.SurfaceType)
+	fmt.Printf("\nFire Drill Passed\n   Made by:         %s\n   Read from:       %s\n   %-16s %d\n   %-16s %d\n   Certificate:     %s\n",
+		meta.External.MadeBy(), meta.External.URI, strings.ToUpper(containers[:1])+containers[1:]+":", report.TablesRestored, strings.ToUpper(items[:1])+items[1:]+":", report.RowsRestored, report.CertificateHash)
 	fmt.Println("   Not proven:      that the dump holds the whole database; SafeGrd never read the database it came from.")
 	return nil
 }

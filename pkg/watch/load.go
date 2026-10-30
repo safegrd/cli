@@ -17,20 +17,52 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/safegrd/cli/pkg/dump"
+	"github.com/safegrd/cli/pkg/model"
 )
 
-// Load restores the backup at file into the empty database sandboxURL names,
-// in one transaction that stops at the first error, without owners or
-// privileges. A custom-format archive is turned into SQL by pg_restore
-// first, so both formats go through one filter into psql. The filter leaves
-// out the rows of pg_cron's job table (a dump carries them, and loaded into
-// a database pg_cron schedules from they would run), COMMENT ON EXTENSION
-// (which only the extension's owner may run), and settings the sandbox's
-// server does not have: pg_dump 18 writes SET transaction_timeout, which a
-// PostgreSQL 16 sandbox refuses. The caller holds the loaded rows to c.
+// Load restores the backup at file into the empty database sandboxURL names.
+// The caller holds the loaded rows to c.
+//
+// A PostgreSQL dump loads in one transaction that stops at the first error,
+// without owners or privileges. A custom-format archive is turned into SQL
+// by pg_restore first, so both formats go through one filter into psql. The
+// filter leaves out the rows of pg_cron's job table (a dump carries them,
+// and loaded into a database pg_cron schedules from they would run),
+// COMMENT ON EXTENSION (which only the extension's owner may run), and
+// settings the sandbox's server does not have: pg_dump 18 writes SET
+// transaction_timeout, which a PostgreSQL 16 sandbox refuses.
+//
+// A MySQL dump goes through the server's client and a mongodump archive
+// through mongorestore, each stopping at the first error. Neither engine
+// rolls DDL back, so a failed load leaves part of the backup in the
+// sandbox, which the drill empties afterwards.
 func Load(ctx context.Context, file string, c *Contents, sandboxURL string) error {
 	if !c.Loadable() {
-		return errors.New("a dump that creates databases or roles is not loaded into a sandbox; it is checked in memory")
+		return errors.New("a dump that creates databases or roles, or holds more than one database, is not loaded into a sandbox; it is checked in memory")
+	}
+	if engine := SandboxEngine(sandboxURL); engine != c.Engine {
+		return fmt.Errorf("the sandbox is a %s database and the backup is a %s dump", engine, c.Engine)
+	}
+	switch c.Engine {
+	case model.SurfaceTypeMySQL, model.SurfaceTypeMongoDB:
+		f, err := os.Open(file)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		var src io.Reader = f
+		if c.Gzipped {
+			gz, err := gzip.NewReader(f)
+			if err != nil {
+				return err
+			}
+			defer gz.Close()
+			src = gz
+		}
+		if c.Engine == model.SurfaceTypeMySQL {
+			return dump.LoadMySQLDump(ctx, sandboxURL, src)
+		}
+		return dump.LoadMongoArchive(ctx, sandboxURL, src)
 	}
 	known, err := serverSettings(ctx, sandboxURL)
 	if err != nil {

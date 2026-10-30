@@ -617,6 +617,14 @@ type mysqlDumpCounter struct {
 	Rows      map[string]int64
 	created   []string
 	Completed bool
+	// Database and ServerVersion are read from the dump's header ("-- Host:
+	// localhost    Database: shop", "-- Server version\t8.4.11").
+	Database, ServerVersion string
+	// CreatesDatabase is set by a CREATE DATABASE or USE line, which
+	// mysqldump writes with --databases and --all-databases. Tables are then
+	// named database.table, since one dump holds several databases.
+	CreatesDatabase bool
+	db              string
 	// inRoutine is set between "DELIMITER ;;" and "DELIMITER ;", where
 	// mysqldump writes routine, trigger and event bodies: an INSERT there is
 	// code, not rows.
@@ -666,7 +674,7 @@ func (c *mysqlDumpCounter) Write(p []byte) (int, error) {
 				continue
 			}
 			if name, ok := insertTable(c.line); ok {
-				c.table, c.state, c.seek = name, mcSeek, 0
+				c.table, c.state, c.seek = c.qualify(name), mcSeek, 0
 				c.line = c.line[:0]
 			}
 		case mcSkip, mcTrailer:
@@ -711,7 +719,21 @@ func (c *mysqlDumpCounter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-var createTableRe = regexp.MustCompile("^CREATE TABLE `((?:[^`]|``)+)` \\($")
+var (
+	createTableRe = regexp.MustCompile("^CREATE TABLE `((?:[^`]|``)+)` \\($")
+	dumpHostRe    = regexp.MustCompile(`^-- Host: .*\bDatabase: (\S*)\s*$`)
+	dumpVersionRe = regexp.MustCompile(`^-- Server version\s+(\S+)`)
+	useDatabaseRe = regexp.MustCompile("^USE `?([^`;]+)`?;")
+)
+
+// qualify names a table database.table once the dump switched databases
+// with USE, so the tables of several databases do not merge.
+func (c *mysqlDumpCounter) qualify(table string) string {
+	if c.db == "" {
+		return table
+	}
+	return c.db + "." + table
+}
 
 func (c *mysqlDumpCounter) endShortLine() {
 	line := string(c.line)
@@ -722,8 +744,25 @@ func (c *mysqlDumpCounter) endShortLine() {
 	if strings.HasPrefix(line, "DELIMITER ") {
 		c.inRoutine = strings.TrimSpace(line) != "DELIMITER ;"
 	}
+	switch {
+	case strings.HasPrefix(line, "-- Host: "):
+		if m := dumpHostRe.FindStringSubmatch(line); m != nil && c.Database == "" {
+			c.Database = m[1]
+		}
+	case strings.HasPrefix(line, "-- Server version"):
+		if m := dumpVersionRe.FindStringSubmatch(line); m != nil && c.ServerVersion == "" {
+			c.ServerVersion = m[1]
+		}
+	case strings.HasPrefix(line, "CREATE DATABASE "):
+		c.CreatesDatabase = true
+	case strings.HasPrefix(line, "USE "):
+		c.CreatesDatabase = true
+		if m := useDatabaseRe.FindStringSubmatch(line); m != nil {
+			c.db = strings.ReplaceAll(m[1], "``", "`")
+		}
+	}
 	if m := createTableRe.FindStringSubmatch(line); m != nil {
-		name := strings.ReplaceAll(m[1], "``", "`")
+		name := c.qualify(strings.ReplaceAll(m[1], "``", "`"))
 		if _, seen := c.Rows[name]; !seen {
 			c.Rows[name] = 0
 			c.created = append(c.created, name)

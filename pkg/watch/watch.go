@@ -1,13 +1,14 @@
-// Package watch checks the PostgreSQL backups another tool writes (Coolify's
-// scheduled backups, a cron pg_dump, a download kept in a bucket) where that
-// tool puts them, without copying them anywhere.
+// Package watch checks the backups another tool writes (Coolify's scheduled
+// backups, a cron pg_dump or mysqldump, a download kept in a bucket) where
+// that tool puts them, without copying them anywhere: PostgreSQL, MySQL and
+// MariaDB dumps, and mongodump archives.
 //
 // A check takes the newest dump at a location, reads it once and records
 // what it holds: its SHA-256, its format, and every table's rows counted from
-// its COPY blocks. A drill reads it again, loads it into an empty database
-// in one transaction and holds the loaded rows to what the check recorded.
-// Nothing here can prove the dump was complete: the database it was taken
-// from was never read.
+// the dump (a collection's documents, for MongoDB). A drill reads it again,
+// loads it into an empty database and holds the loaded rows to what the
+// check recorded. Nothing here can prove the dump was complete: the database
+// it was taken from was never read.
 package watch
 
 import (
@@ -27,12 +28,17 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 
 	"github.com/safegrd/cli/pkg/dump"
+	"github.com/safegrd/cli/pkg/model"
 )
 
 // Location is where another tool writes its backups: a prefix in a bucket
 // (s3://bucket/prefix) or a directory on this host.
 type Location struct {
 	URL string
+	// Engine is the database the backups are of (postgres when empty).
+	// Coolify writes every database's backups under one tree, each named
+	// by its engine, and the others are not this surface's.
+	Engine model.SurfaceType
 	// Endpoint, Region and the keys reach a bucket that is not on AWS, as a
 	// bucket source of a files surface does.
 	Endpoint, Region, AccessKeyID, SecretAccessKey string
@@ -56,9 +62,20 @@ func (o Object) Same(other Object) bool {
 	return o.URI == other.URI && o.Size == other.Size && o.Modified.Equal(other.Modified)
 }
 
-// otherEngines are file name prefixes Coolify writes for databases this
-// package does not read, so a prefix that holds them is not misread.
-var otherEngines = []string{"mysql-dump-", "mariadb-dump-", "mongo-dump-", "clickhouse-backup-", "sqlite-backup-"}
+// coolifyPrefixes are the file name prefixes Coolify gives each engine's
+// backups; otherTools are its backups of engines this package does not read.
+var (
+	coolifyPrefixes = map[string]model.SurfaceType{"pg-dump-": model.SurfaceTypePostgres, "mysql-dump-": model.SurfaceTypeMySQL,
+		"mariadb-dump-": model.SurfaceTypeMySQL, "mongo-dump-": model.SurfaceTypeMongoDB}
+	otherTools = []string{"clickhouse-backup-", "sqlite-backup-"}
+)
+
+func (l Location) engine() model.SurfaceType {
+	if l.Engine == "" {
+		return model.SurfaceTypePostgres
+	}
+	return l.Engine
+}
 
 func (l Location) isDump(name string) bool {
 	base := path.Base(name)
@@ -69,7 +86,12 @@ func (l Location) isDump(name string) bool {
 		ok, _ := path.Match(l.Match, base)
 		return ok
 	}
-	for _, p := range otherEngines {
+	for p, engine := range coolifyPrefixes {
+		if strings.HasPrefix(base, p) && engine != l.engine() {
+			return false
+		}
+	}
+	for _, p := range otherTools {
 		if strings.HasPrefix(base, p) {
 			return false
 		}
@@ -214,8 +236,23 @@ func (l Location) Download(ctx context.Context, obj Object, dir string) (string,
 
 // Tool names the tool that made a backup when its file name says, or "".
 func Tool(obj Object) string {
-	if strings.HasPrefix(path.Base(obj.Key), "pg-dump-") {
-		return "Coolify"
+	for p := range coolifyPrefixes {
+		if strings.HasPrefix(path.Base(obj.Key), p) {
+			return "Coolify"
+		}
 	}
 	return ""
+}
+
+// SandboxEngine is the database engine a drill.sandbox_url names.
+func SandboxEngine(sandboxURL string) model.SurfaceType {
+	switch {
+	case dump.IsMySQLURL(sandboxURL):
+		return model.SurfaceTypeMySQL
+	case dump.IsMongoURL(sandboxURL):
+		return model.SurfaceTypeMongoDB
+	case dump.IsSQLiteURL(sandboxURL):
+		return model.SurfaceTypeSQLite
+	}
+	return model.SurfaceTypePostgres
 }

@@ -362,11 +362,12 @@ type SurfaceConfig struct {
 	// safegrd schema in the database, which `DROP SCHEMA safegrd CASCADE`
 	// removes.
 	ChangeLog bool `yaml:"change_log,omitempty" json:"change_log,omitempty"`
-	// Watch makes a PostgreSQL surface check the backups another tool writes
-	// (Coolify's, a cron pg_dump) where that tool puts them, instead of
-	// backing up a database: the newest one is read and counted on the
-	// surface's schedule, which is how often the other tool is expected to
-	// write, and its drills load it into a sandbox.
+	// Watch makes a PostgreSQL, MySQL or MongoDB surface check the backups
+	// another tool writes (Coolify's, a cron pg_dump or mysqldump) where
+	// that tool puts them, instead of backing up a database: the newest one
+	// is read and counted on the surface's schedule, which is how often the
+	// other tool is expected to write, and its drills load it into a
+	// sandbox of the surface's engine.
 	Watch *WatchConfig `yaml:"watch,omitempty" json:"watch,omitempty"`
 
 	// Erasures names the tables, as schema.table, whose deleted rows are
