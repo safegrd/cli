@@ -157,8 +157,7 @@ and never leaves this host.`,
 			if retentionDays > 0 {
 				storageCfg.RetentionDays = retentionDays
 			}
-			lease, err := resolveHostedStorage(ctx, cfg, &storageCfg, true)
-			if err != nil {
+			if _, err := resolveHostedStorage(ctx, cfg, &storageCfg, true); err != nil {
 				return err
 			}
 
@@ -204,7 +203,7 @@ and never leaves this host.`,
 			// (gfs.go). A one-off has no surface state, so the slots it took
 			// are kept per source and sink in the state directory
 			// (gfs_oneoff.go), and recorded only once the backup is written.
-			tiers := oneOffTiers(cfg, gfs{Days: keepDaily, Weeks: keepWeekly, Months: keepMonthly}, retentionDays > 0, lease)
+			tiers := oneOffTiers(cfg, gfs{Days: keepDaily, Weeks: keepWeekly, Months: keepMonthly}, retentionDays > 0)
 			slots := loadOneOffSlots(resolveStateDir("", cfg))
 			slotKey := oneOffSlotKey(oneOffSource(cfg, dbURL, filesPath, emailMode, emailHost, emailUser), storageCfg)
 			plan := planRetention(time.Now(), storageCfg.RetentionDays, tiers, slots.slotsFor(slotKey))

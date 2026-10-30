@@ -70,26 +70,23 @@ func TestAOneOffBackupKeepsItsSlotsPerSourceAndSink(t *testing.T) {
 }
 
 // The tiers of a one-off come from the --keep-* flags, else the config's
-// defaults, else hosted storage's plan. An explicit --retention-days alone
-// turns them off: the flag names the days this backup is locked, and a
-// lock under compliance mode cannot be shortened afterwards.
+// defaults, and never from hosted storage's plan: a hosted job has no slots
+// file and would claim every tier on every run. An explicit --retention-days
+// alone turns them off: the flag names the days this backup is locked, and
+// a lock under compliance mode cannot be shortened afterwards.
 func TestAOneOffBackupsTiersComeFromFlagsThenDefaults(t *testing.T) {
 	cfg := &config.CLIConfig{}
 	cfg.Defaults.KeepDaily, cfg.Defaults.KeepWeekly, cfg.Defaults.KeepMonthly = 7, 4, 12
-	if got := oneOffTiers(cfg, gfs{}, false, nil); got != (gfs{Days: 7, Weeks: 4, Months: 12}) {
+	if got := oneOffTiers(cfg, gfs{}, false); got != (gfs{Days: 7, Weeks: 4, Months: 12}) {
 		t.Errorf("defaults: %+v", got)
 	}
-	if got := oneOffTiers(cfg, gfs{}, true, nil); got != (gfs{}) {
+	if got := oneOffTiers(cfg, gfs{}, true); got != (gfs{}) {
 		t.Errorf("--retention-days alone still promoted: %+v", got)
 	}
-	if got := oneOffTiers(cfg, gfs{Weeks: 8}, true, nil); got != (gfs{Days: 7, Weeks: 8, Months: 12}) {
+	if got := oneOffTiers(cfg, gfs{Weeks: 8}, true); got != (gfs{Days: 7, Weeks: 8, Months: 12}) {
 		t.Errorf("--keep-weekly beside --retention-days: %+v", got)
 	}
-	none := &config.CLIConfig{}
-	if got := oneOffTiers(none, gfs{}, false, &hostedInfo{KeepDaily: 14, KeepWeekly: 4}); got != (gfs{Days: 14, Weeks: 4}) {
-		t.Errorf("hosted storage's plan with no config tiers: %+v", got)
-	}
-	if got := oneOffTiers(none, gfs{}, false, nil); got != (gfs{}) {
+	if got := oneOffTiers(&config.CLIConfig{}, gfs{}, false); got != (gfs{}) {
 		t.Errorf("no tiers anywhere: %+v", got)
 	}
 }

@@ -120,12 +120,15 @@ func oneOffSource(cfg *config.CLIConfig, dbURL, filesPath string, email bool, em
 }
 
 // oneOffTiers is what a one-off backup locks its daily, weekly and monthly
-// copies for: the --keep-* flags, else the config's defaults, else, on hosted
-// storage, the plan's. An explicit --retention-days with no --keep-* flag
-// locks for exactly that many days: a flag that says "days this backup is
-// locked" must not lock a throwaway run for a year under compliance mode,
-// which nothing can undo.
-func oneOffTiers(cfg *config.CLIConfig, flags gfs, retentionDaysSet bool, hosted *hostedInfo) gfs {
+// copies for: the --keep-* flags, else the config's defaults. Not hosted
+// storage's plan, which the daemon falls back to: a hosted job runs each
+// backup on a fresh machine with no slots file, so it would claim every
+// tier on every run, and the remote server honours the opening tier a host
+// names. With no tiers the remote server decides, as it did before. An
+// explicit --retention-days with no --keep-* flag locks for exactly that
+// many days: a flag that says "days this backup is locked" must not lock a
+// throwaway run for a year under compliance mode, which nothing can undo.
+func oneOffTiers(cfg *config.CLIConfig, flags gfs, retentionDaysSet bool) gfs {
 	if flags != (gfs{}) {
 		g := flags
 		if g.Days == 0 {
@@ -142,11 +145,7 @@ func oneOffTiers(cfg *config.CLIConfig, flags gfs, retentionDaysSet bool, hosted
 	if retentionDaysSet {
 		return gfs{}
 	}
-	g := gfs{Days: cfg.Defaults.KeepDaily, Weeks: cfg.Defaults.KeepWeekly, Months: cfg.Defaults.KeepMonthly}
-	if g == (gfs{}) {
-		g = hosted.gfs()
-	}
-	return g
+	return gfs{Days: cfg.Defaults.KeepDaily, Weeks: cfg.Defaults.KeepWeekly, Months: cfg.Defaults.KeepMonthly}
 }
 
 // lockedUntilWords says what the sink does with the planned date: an Object
