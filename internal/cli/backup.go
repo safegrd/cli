@@ -759,7 +759,7 @@ and never leaves this host.`,
 			if len(dumpMeta.PartitionedTables) > 0 {
 				fmt.Printf("   Partitioned:     %s (counted by their partitions)\n", strings.Join(dumpMeta.PartitionedTables, ", "))
 			}
-			fmt.Printf("   Schema:        %s\n", schemaSourceLabel(dumpMeta.SchemaSource))
+			fmt.Printf("   Schema:          %s\n", schemaSourceLabel(dumpMeta.SchemaSource))
 			if line := replicaLine(dumpMeta.Replica); line != "" {
 				fmt.Printf("   Read from:       %s\n", line)
 			}

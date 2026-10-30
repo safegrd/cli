@@ -107,9 +107,10 @@ func oneOffSource(cfg *config.CLIConfig, dbURL, filesPath string, email bool, em
 	if raw == "" {
 		raw = cfg.DatabaseURL
 	}
-	// The backup resolves the reference and reports a bad one; here a bad
-	// reference only names the slot after the reference itself.
-	if resolved, err := ResolveSecretRef("database-url", raw); err == nil && resolved != "" {
+	// The backup resolves the reference, warns about a literal on the
+	// command line and reports a bad reference; here a bad reference only
+	// names the slot after the reference itself, and nothing is said twice.
+	if resolved, err := resolveConfigSecret("database_url", raw); err == nil && resolved != "" {
 		raw = resolved
 	}
 	raw, _ = cleanPostgresURL(raw)
