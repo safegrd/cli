@@ -60,10 +60,14 @@ func (d *Dir) Put(_ context.Context, key string, body []byte, _ [16]byte, _ time
 	// A directory is often on the disk the host's own database and logs
 	// live on. A write stops before it would leave that filesystem with
 	// less than the share diskspace keeps free, rather than fill it.
-	if err := diskspace.CheckFreeSpace(filepath.Dir(p), int64(len(body)), "a backup to the local sink "+d.base,
-		"free some space, move local_path to a larger disk, or back up to a bucket"); err != nil {
+	// Packs are written several at a time, so each one's bytes are spoken
+	// for until it is on disk: the checks all read the same free space.
+	release, err := diskspace.Reserve(filepath.Dir(p), int64(len(body)), "a backup to the local sink "+d.base,
+		"free some space, move local_path to a larger disk, or back up to a bucket")
+	if err != nil {
 		return err
 	}
+	defer release()
 	tmp, err := os.CreateTemp(filepath.Dir(p), ".put-*")
 	if err != nil {
 		return err

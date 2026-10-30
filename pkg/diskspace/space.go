@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
+	"sync/atomic"
 )
 
 // KeepFreeShare is the share of a filesystem a backup or a drill leaves free
@@ -45,19 +47,47 @@ func (e *NotEnoughDiskError) Error() string {
 
 func (e *NotEnoughDiskError) Is(target error) bool { return target == ErrNotEnoughDisk }
 
+// inFlight is what writes that passed a check have yet to put on disk. The
+// free space they all read is the same, so without it writes running at
+// once (a repository's packs, uploaded in parallel) each passed and together
+// filled a disk the check had refused one of.
+var inFlight atomic.Int64
+
 // CheckFreeSpace refuses to write need bytes under dir when that would leave
-// less than keepFree of the filesystem free. A filesystem whose free
-// space cannot be read is not refused: the write itself will say so.
+// less than keepFree of the filesystem free, counting what other writes are
+// about to put there. A filesystem whose free space cannot be read is not
+// refused: the write itself will say so.
 func CheckFreeSpace(dir string, need int64, what, remedy string) error {
+	_, err := check(dir, need, 0, what, remedy)
+	return err
+}
+
+// Reserve is CheckFreeSpace for a write of need bytes that other writes may
+// run beside: the bytes count as spoken for until release is called.
+func Reserve(dir string, need int64, what, remedy string) (release func(), err error) {
+	inFlight.Add(need)
+	var once sync.Once
+	release = func() { once.Do(func() { inFlight.Add(-need) }) }
+	if _, err := check(dir, need, need, what, remedy); err != nil {
+		release()
+		return nil, err
+	}
+	return release, nil
+}
+
+// check is CheckFreeSpace with own, the caller's share of inFlight, not
+// counted twice.
+func check(dir string, need, own int64, what, remedy string) (int64, error) {
 	avail, total, err := spaceOf(dir)
 	if err != nil {
-		return nil
+		return 0, nil
 	}
+	avail -= inFlight.Load() - own
 	keep := keepFree(total)
 	if avail < need+keep {
-		return &NotEnoughDiskError{Dir: dir, What: what, Need: need, Avail: avail, Keep: keep, Remedy: remedy}
+		return avail, &NotEnoughDiskError{Dir: dir, What: what, Need: need, Avail: max(avail, 0), Keep: keep, Remedy: remedy}
 	}
-	return nil
+	return avail, nil
 }
 
 // HumanBytes prints n in binary units: "1.5 GiB".

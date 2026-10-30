@@ -59,3 +59,26 @@ func TestGuardStopsAWriteBeforeTheDiskFills(t *testing.T) {
 		t.Errorf("stopped after %d MiB; want just under 250", written>>20)
 	}
 }
+
+// Writes running at once each read the same free space: a reservation
+// counts what the others are about to put on disk, so the second of two
+// writes that fit one at a time, and not together, is refused.
+func TestReservationsCountWritesRunningAtOnce(t *testing.T) {
+	spaceOf = func(string) (int64, int64, error) { return 150 << 20, 1000 << 20, nil }
+	t.Cleanup(func() { spaceOf = DiskSpace })
+	release, err := Reserve("/sink", 60<<20, "a backup", "free space")
+	if err != nil {
+		t.Fatalf("the first write of 60 MiB into 150 MiB free: %v", err)
+	}
+	if _, err := Reserve("/sink", 60<<20, "a backup", "free space"); err == nil {
+		t.Fatal("the second write was not refused though together they leave less than the share kept free")
+	}
+	if err := CheckFreeSpace("/sink", 60<<20, "a backup", "free space"); err == nil {
+		t.Fatal("a plain check did not count the write in flight")
+	}
+	release()
+	release() // twice is once
+	if _, err := Reserve("/sink", 60<<20, "a backup", "free space"); err != nil {
+		t.Fatalf("after the first write released its bytes: %v", err)
+	}
+}
