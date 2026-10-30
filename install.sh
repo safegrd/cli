@@ -465,9 +465,10 @@ print_next_steps() {
     printf "      ${CYAN}%s${RESET}\n\n" "$(claim_enroll_line)"
     printf "   3. Check every surface opens from this host. The console shows the result:\n"
     printf "      ${CYAN}safegrd doctor${RESET}\n\n"
-    printf "   4. Take the first backups, then keep the daemon running:\n"
+    printf "   4. Take the first backups, then keep the daemon running. Nothing backs up on a\n"
+    printf "      schedule until it runs:\n"
     printf "      ${CYAN}safegrd daemon run --once${RESET}\n"
-    printf "      ${CYAN}safegrd daemon install${RESET}\n\n"
+    printf "      ${CYAN}sudo safegrd daemon install${RESET}\n\n"
     printf "   With no terminal, set SAFEGRD_TOKEN to a token from Tokens in the console and run the\n"
     printf "   one-liner again: it enrolls with the claim and nothing to answer.\n"
     printf " Docs: ${CYAN}https://safegrd.dev/docs/install${RESET}\n\n"
@@ -484,12 +485,20 @@ print_next_steps() {
     printf "      ${CYAN}safegrd enroll --token sg_pat_YOUR_TOKEN${RESET}\n"
     printf "      (%s predates enrolling through a browser login; the latest release has it.)\n\n" "$TAG"
   fi
+  # The route enroll prints once it has run, to the daemon: a one-off backup
+  # here left a host that never backed up again.
   if [ -n "$ENROLL_USES_LOGIN" ]; then step=3; else step=2; fi
-  printf "   %s. Check the host. The console shows the result:\n" "$step"
+  printf "   %s. Name what this host protects: Add surface on its row under Hosts in the\n" "$step"
+  printf "      console, then add it here:\n"
+  printf "      ${CYAN}safegrd claim${RESET}\n\n"
+  step=$((step + 1))
+  printf "   %s. Check every surface opens from this host. The console shows the result:\n" "$step"
   printf "      ${CYAN}safegrd doctor${RESET}\n\n"
   step=$((step + 1))
-  printf "   %s. Take the first encrypted, immutable backup:\n" "$step"
-  printf "      ${CYAN}safegrd backup --database-url \"\$DATABASE_URL\"${RESET}\n\n"
+  printf "   %s. Take the first backups, then keep the daemon running. Nothing backs up on a\n" "$step"
+  printf "      schedule until it runs:\n"
+  printf "      ${CYAN}safegrd daemon run --once${RESET}\n"
+  printf "      ${CYAN}sudo safegrd daemon install${RESET}\n\n"
   printf "   No account yet? ${CYAN}safegrd try <database-url>${RESET} backs up one database and restores it\n"
   printf "   to check, then ${CYAN}safegrd signup${RESET} keeps it. ${CYAN}safegrd init${RESET} sets up a host that contacts no server.\n"
   printf " Docs: ${CYAN}https://safegrd.dev/docs/install${RESET} | Source: ${CYAN}https://github.com/safegrd/cli${RESET}\n\n"
@@ -567,25 +576,15 @@ enroll_with() {
   "$SAFEGRD_BIN" "$@"
 }
 
-print_enrolled() {
-  printf "\n"
-  # A claimed host already has its surfaces in its config, so the daemon is what
-  # runs them; a one-off backup command would ignore every choice made in the
-  # console.
-  if [ -n "$CLAIM" ]; then
-    # enroll --claim has just printed the two next steps; saying them again
-    # here printed them twice, one under the other.
-    log_success "This host is enrolled with the surfaces named in the console."
-    printf "\n"
-  else
-    log_success "This host is enrolled. Take the first backup with:"
-    printf "      ${CYAN}safegrd backup --database-url \"\$DATABASE_URL\"${RESET}\n"
-    printf "   or run it unattended: ${CYAN}https://safegrd.dev/docs/daemon${RESET}\n\n"
-  fi
-}
-
 already_enrolled() {
   [ -f "${HOME}/.safegrd/config.yaml" ] && grep -q '^[[:space:]]*token:[[:space:]]*sg_tok_' "${HOME}/.safegrd/config.yaml" 2>/dev/null
+}
+
+# daemon_installed says whether `safegrd daemon install` has put a service on
+# this host, system-wide or for this user.
+daemon_installed() {
+  [ -f /etc/systemd/system/safegrd.service ] || [ -f /Library/LaunchDaemons/dev.safegrd.daemon.plist ] ||
+    [ -f "${HOME}/.config/systemd/user/safegrd.service" ] || [ -f "${HOME}/Library/LaunchAgents/dev.safegrd.daemon.plist" ]
 }
 
 printf "\n"
@@ -624,7 +623,11 @@ fi
 if [ -z "${SAFEGRD_NO_SETUP:-}" ] && already_enrolled; then
   printf "   This host is already enrolled (%s).\n" "${HOME}/.safegrd/config.yaml"
   printf "   To add the surfaces named for it in the console: ${CYAN}safegrd claim${RESET}\n"
-  printf "   Check it with: ${CYAN}safegrd doctor${RESET}\n\n"
+  printf "   Check it with: ${CYAN}safegrd doctor${RESET}\n"
+  if ! daemon_installed; then
+    printf "   Nothing backs up on a schedule until the daemon runs: ${CYAN}sudo safegrd daemon install${RESET}\n"
+  fi
+  printf "\n"
   exit 0
 fi
 
@@ -642,7 +645,8 @@ if [ -z "${SAFEGRD_NO_SETUP:-}" ] && [ -n "${SAFEGRD_TOKEN:-}" ]; then
   if ! enroll_with enroll --token env:SAFEGRD_TOKEN </dev/null; then
     setup_failed "Enrollment failed, so this host is not registered."
   fi
-  print_enrolled
+  # enroll ends with this host's next steps, through to the daemon. Steps of
+  # the script's own after them said something else (a one-off backup).
   exit 0
 fi
 
@@ -672,4 +676,4 @@ printf "\n"
 if ! enroll_with enroll </dev/tty; then
   setup_failed "Enrollment failed, so this host is not registered."
 fi
-print_enrolled
+# enroll has printed this host's next steps last, as above.

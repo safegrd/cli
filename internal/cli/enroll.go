@@ -90,6 +90,10 @@ file:/path, which keeps the token out of 'ps' and shell history.`,
 			// before the local setup runs and invents one.
 			hostAlreadyHadNodeID := cfg != nil && cfg.NodeID != ""
 
+			// What a newly registered host is told to run next, printed after
+			// the config is saved.
+			var next string
+
 			// Do the local half if it has not been done. Enrolling used to read
 			// cfg.NodeID out of a config LoadCLIConfig had invented from
 			// defaults, which registered a node with an empty identity and no
@@ -469,36 +473,12 @@ file:/path, which keeps the token out of 'ps' and shell history.`,
 				}
 				if claim != nil {
 					addClaimSurfaces(cfg, claim.Surfaces)
-					// The same three steps the console's host step shows.
-					fmt.Printf("\n   Next: check every surface opens from this host. The console shows the result:\n")
-					fmt.Printf("     safegrd doctor\n")
-					fmt.Printf("   Take the first backups now, and watch them land in the console:\n")
-					fmt.Printf("     safegrd daemon run --once\n")
-					fmt.Printf("   Then keep it running as a service that starts at boot:\n")
-					fmt.Printf("     sudo safegrd daemon install\n")
-				} else if wd, _ := os.Getwd(); len(cfg.Surfaces) == 0 && isLaravelApp(wd) {
-					fmt.Printf("\n   Next: this directory is a Laravel app. Add it as a surface:\n")
-					fmt.Printf("     safegrd init --laravel %s\n", wd)
-				} else if len(cfg.Surfaces) == 0 && cfg.DatabaseURL == "" && os.Getenv("SAFEGRD_DATABASE_URL") == "" {
-					fmt.Printf("\n   Next: name what this host protects. Either add a surface to this host in the\n")
-					fmt.Printf("   console (Hosts, Add surface on its row) and run:\n")
-					fmt.Printf("     safegrd claim\n")
-					fmt.Printf("   or add one to the config under surfaces:, its URL read from the environment so\n")
-					fmt.Printf("   the password stays out of the file:\n")
-					fmt.Printf("     surfaces:\n")
-					fmt.Printf("       - {id: db, type: postgres, credential: {from: env, name: DATABASE_URL}}\n")
-					fmt.Printf("   Then check it: safegrd doctor\n")
-					fmt.Printf("   To restore the organization's backups on this host instead, it needs nothing more:\n")
-					fmt.Printf("     safegrd list\n")
-					fmt.Printf("     safegrd restore --snapshot <id> --target env:TARGET_URL\n")
-				} else if len(cfg.Surfaces) > 0 {
-					fmt.Printf("\n   Next: check every surface opens from this host:\n")
-					fmt.Printf("     safegrd doctor\n")
-					fmt.Printf("   Take the first backups now:\n")
-					fmt.Printf("     safegrd daemon run --once\n")
-					fmt.Printf("   Then keep it running as a service that starts at boot:\n")
-					fmt.Printf("     sudo safegrd daemon install\n")
 				}
+				laravelDir := ""
+				if wd, _ := os.Getwd(); claim == nil && len(cfg.Surfaces) == 0 && isLaravelApp(wd) {
+					laravelDir = wd
+				}
+				next = enrollNextSteps(claim != nil || len(cfg.Surfaces) > 0, cfg.DatabaseURL != "", laravelDir)
 			}
 
 			targetConfig, err := saveConfig()
@@ -507,6 +487,9 @@ file:/path, which keeps the token out of 'ps' and shell history.`,
 			}
 
 			fmt.Printf("Saved to %s\n", targetConfig)
+			// Last and once: the installer that ran this prints no steps of
+			// its own, so these are the ones the person reads.
+			fmt.Print(next)
 			return nil
 		},
 	}
@@ -538,6 +521,56 @@ file:/path, which keeps the token out of 'ps' and shell history.`,
 			"Ignored when you supplied your own key (an existing key is never sent).")
 
 	return cmd
+}
+
+// enrollNextSteps is what a newly registered host is told to run next. Every
+// path ends at the daemon's service, because nothing backs up on a schedule
+// until it runs: the installer used to end on a one-off backup instead, under
+// a different set of steps this printed. hasSurfaces is a claim's surfaces or
+// the config's own, fromEnv a database named only by SAFEGRD_DATABASE_URL,
+// and laravelDir the Laravel app in the current directory, if any.
+func enrollNextSteps(hasSurfaces, fromEnv bool, laravelDir string) string {
+	var b strings.Builder
+	keepRunning := func() {
+		b.WriteString("   Then keep the daemon running as a service that starts at boot. Nothing backs up\n")
+		b.WriteString("   on a schedule until it runs:\n")
+		b.WriteString("     sudo safegrd daemon install\n")
+	}
+	switch {
+	case hasSurfaces:
+		// The same three steps the console's host step shows.
+		b.WriteString("\n   Next: check every surface opens from this host. The console shows the result:\n")
+		b.WriteString("     safegrd doctor\n")
+		b.WriteString("   Take the first backups now, and watch them land in the console:\n")
+		b.WriteString("     safegrd daemon run --once\n")
+		if fromEnv {
+			b.WriteString("   SAFEGRD_DATABASE_URL names the database, and the service reads only its own\n")
+			b.WriteString("   environment. Set it there too: https://safegrd.dev/docs/daemon#environment\n")
+		}
+		keepRunning()
+	case laravelDir != "":
+		b.WriteString("\n   Next: this directory is a Laravel app. Add it as a surface:\n")
+		fmt.Fprintf(&b, "     safegrd init --laravel %s\n", laravelDir)
+		b.WriteString("   Take the first backup now, and watch it land in the console:\n")
+		b.WriteString("     safegrd daemon run --once\n")
+		keepRunning()
+	default:
+		b.WriteString("\n   Next: name what this host protects. Either add a surface to this host in the\n")
+		b.WriteString("   console (Hosts, Add surface on its row) and run:\n")
+		b.WriteString("     safegrd claim\n")
+		b.WriteString("   or add one to the config under surfaces:, its URL read from the environment so\n")
+		b.WriteString("   the password stays out of the file. Set DATABASE_URL where the daemon runs:\n")
+		b.WriteString("     surfaces:\n")
+		b.WriteString("       - {id: db, type: postgres, credential: {from: env, name: DATABASE_URL}}\n")
+		b.WriteString("   Check it opens, then take the first backup now:\n")
+		b.WriteString("     safegrd doctor\n")
+		b.WriteString("     safegrd daemon run --once\n")
+		keepRunning()
+		b.WriteString("   To restore the organization's backups on this host instead, it needs nothing more:\n")
+		b.WriteString("     safegrd list\n")
+		b.WriteString("     safegrd restore --snapshot <id> --target env:TARGET_URL\n")
+	}
+	return b.String()
 }
 
 // adoptNodeKey makes a host that takes over a node with its token back up to

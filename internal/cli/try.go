@@ -102,6 +102,10 @@ func runTry(ctx context.Context, source, keyCustody, name string, noBrowser bool
 	if adopted {
 		keyExisted = true
 	}
+	urlFile, err := keepURLOutOfConfig(&surface)
+	if err != nil {
+		return err
+	}
 	// A key already on the host is never sent: its custody was settled
 	// before SafeGrd was involved.
 	escrow := keyCustody == "safegrd" && !keyExisted
@@ -157,6 +161,9 @@ func runTry(ctx context.Context, source, keyCustody, name string, noBrowser bool
 	if v, ok := strings.CutPrefix(surface.DatabaseURL, "env:"); ok {
 		fmt.Printf("   Database: read from $%s. Every later backup needs it set, the daemon's too.\n", v)
 		fmt.Printf("             To keep it in a file instead, write the URL to a 0600 file and set database_url: file:/path in the config.\n")
+	}
+	if urlFile != "" {
+		fmt.Printf("   Database: the URL is in %s, readable only by you. The config points to it.\n", urlFile)
 	}
 	switch {
 	case resp.KeyEscrowed:
@@ -277,11 +284,45 @@ func trySurface(source string) (config.SurfaceConfig, error) {
 		}
 		return config.SurfaceConfig{ID: id, Type: string(model.SurfaceTypeFiles), Name: id, Roots: []string{abs}}, nil
 	}
-	s, err := initDatabaseSurface(source)
+	s, err := databaseSurface(source, false)
 	if err != nil {
 		return config.SurfaceConfig{}, err
 	}
 	return s, nil
+}
+
+// keepURLOutOfConfig writes a database URL typed on the command line to a
+// 0600 file beside the config and points the surface at it, so the config
+// holds no password and every later backup, the daemon's too, still reads it.
+// An env: or file: reference, and a SQLite path, stay as they are.
+func keepURLOutOfConfig(s *config.SurfaceConfig) (string, error) {
+	ref := s.DatabaseURL
+	if ref == "" || strings.HasPrefix(ref, "env:") || strings.HasPrefix(ref, "file:") || dump.IsSQLiteURL(ref) {
+		return "", nil
+	}
+	dir, err := setupDir()
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, s.ID+".url")
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return "", fmt.Errorf("could not write the database URL to %s: %w", path, err)
+	}
+	// OpenFile keeps the mode of a file that was already there.
+	if err := f.Chmod(0o600); err != nil {
+		f.Close()
+		return "", fmt.Errorf("could not make %s readable by you alone: %w", path, err)
+	}
+	if _, err := f.WriteString(ref + "\n"); err != nil {
+		f.Close()
+		return "", fmt.Errorf("could not write the database URL to %s: %w", path, err)
+	}
+	if err := f.Close(); err != nil {
+		return "", fmt.Errorf("could not write the database URL to %s: %w", path, err)
+	}
+	s.DatabaseURL = "file:" + path
+	return path, nil
 }
 
 func postTry(ctx context.Context, serverURL string, req model.TryRequest) (*model.TryResponse, error) {

@@ -316,6 +316,12 @@ func fileExists(path string) bool {
 // is kept as given, a reference included; it is resolved here only to tell
 // the engine and name the surface after its database.
 func initDatabaseSurface(ref string) (config.SurfaceConfig, error) {
+	return databaseSurface(ref, true)
+}
+
+// databaseSurface is initDatabaseSurface for a caller that keeps a typed
+// password out of the config itself (try), so there is nothing to warn about.
+func databaseSurface(ref string, warnPassword bool) (config.SurfaceConfig, error) {
 	resolved, err := resolveConfigSecret("database-url", ref)
 	if err != nil || resolved == "" {
 		fmt.Fprintf(os.Stderr, "Warning: %s cannot be read now, so the surface is written as postgres. "+
@@ -341,7 +347,7 @@ func initDatabaseSurface(ref string) (config.SurfaceConfig, error) {
 		id = "db"
 	}
 	// A literal URL is written to the config as typed, password and all.
-	if ref == resolved {
+	if warnPassword && ref == resolved {
 		if u, err := url.Parse(resolved); err == nil && u.User != nil {
 			if _, has := u.User.Password(); has {
 				fmt.Fprintln(os.Stderr, "Warning: the config holds this URL's password. To keep it out, write the URL to a 0600 "+
