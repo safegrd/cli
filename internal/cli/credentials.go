@@ -55,6 +55,10 @@ type nodeCredentialsResponse struct {
 		AccessKeyID     string `json:"access_key_id"`
 		SecretAccessKey string `json:"secret_access_key"`
 	} `json:"copies"`
+	// Watch is set with ObjectStore on a surface the remote server checks
+	// rather than backs up: the bucket holds the backups another tool
+	// writes, of a database of SurfaceType.
+	Watch *watchHeld `json:"watch"`
 	// ObjectStore is the bucket a files surface reads and the key that signs
 	// for it, when the remote server holds them.
 	ObjectStore *struct {
@@ -68,6 +72,13 @@ type nodeCredentialsResponse struct {
 		// remote server makes for a Supabase project's Storage.
 		SessionToken string `json:"session_token"`
 	} `json:"object_store"`
+}
+
+// watchHeld is what the remote server says of a watched surface beside the
+// location's key: the engine the backups are of, and the file-name glob.
+type watchHeld struct {
+	SurfaceType string `json:"surface_type"`
+	Match       string `json:"match"`
 }
 
 // runningCommand is the name of the command this process is running,
@@ -181,6 +192,9 @@ type credentialSource struct {
 	// ObjectStore is the bucket the remote server holds for a files surface
 	// with no source on this host, or nil. Held in memory like the rest.
 	ObjectStore *dump.ObjectStoreSource
+	// Watch, with ObjectStore, says the bucket holds another tool's backups
+	// of a database, which this run checks instead of backing anything up.
+	Watch *watchHeld
 	// CAFile is where the CA the remote server holds beside DatabaseURL was
 	// written, and CAErr why it could not be used. A URL whose CA did not
 	// apply is not used unverified: the command stops on CAErr.
@@ -262,6 +276,7 @@ func resolveCredentials(ctx context.Context, cfg *config.CLIConfig, storageCfg *
 	if o := creds.ObjectStore; surface && cfg.DatabaseURL == "" && o != nil && o.SecretAccessKey != "" {
 		src.ObjectStore = &dump.ObjectStoreSource{Endpoint: o.Endpoint, Region: o.Region, Bucket: o.Bucket, Prefix: o.Prefix,
 			AccessKeyID: o.AccessKeyID, SecretAccessKey: o.SecretAccessKey, SessionToken: o.SessionToken}
+		src.Watch = creds.Watch
 	}
 	if surface && cfg.Encryption.PublicKey == "" && creds.PublicKey != "" {
 		cfg.Encryption.PublicKey = creds.PublicKey

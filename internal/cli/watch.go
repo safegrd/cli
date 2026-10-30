@@ -2,8 +2,12 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -35,6 +39,8 @@ var errNothingNew = errors.New("no new backup since the last check")
 type watchedBackup struct {
 	Object watch.Object            `json:"object"`
 	Meta   *model.SnapshotMetadata `json:"meta"`
+	// URL is the location the backup was read from, as resolved.
+	URL string `json:"url,omitempty"`
 }
 
 // watchedEngine is the engine a watched surface's type names, or an error
@@ -91,6 +97,13 @@ func runWatchCheck(ctx context.Context, c *config.CLIConfig, s *config.SurfaceCo
 	if st.Watched != nil && st.Watched.Object.Same(obj) {
 		return nil, errNothingNew
 	}
+	return checkWatchedObject(ctx, c, s, loc, obj, nodeID, st, stateDir)
+}
+
+// checkWatchedObject reads one backup at a location, counts it, reports it
+// as a snapshot when this host is enrolled, and records it as the surface's
+// last check.
+func checkWatchedObject(ctx context.Context, c *config.CLIConfig, s *config.SurfaceConfig, loc watch.Location, obj watch.Object, nodeID string, st *SurfaceState, stateDir string) (*model.SnapshotMetadata, error) {
 	scratch, err := watchScratch(stateDir)
 	if err != nil {
 		return nil, err
@@ -154,7 +167,7 @@ func runWatchCheck(ctx context.Context, c *config.CLIConfig, s *config.SurfaceCo
 	if hostIsEnrolled(c) {
 		st.notRecorded = reportSnapshot(ctx, c, st, meta)
 	}
-	st.Watched = &watchedBackup{Object: obj, Meta: meta}
+	st.Watched = &watchedBackup{Object: obj, Meta: meta, URL: loc.URL}
 	return meta, nil
 }
 
@@ -281,6 +294,170 @@ func verifyWatchedSurface(ctx context.Context, surfaceID, sandboxURL string) err
 	if err != nil {
 		return err
 	}
+	return printExternalDrill(verifier, meta, report)
+}
+
+// A watched surface the remote server runs (no host): SafeGrd holds a
+// read-only key for the location, and the machine it starts for a check or a
+// drill fetches that key with its job token, as a host fetches a held
+// database credential. The machine keeps no state between jobs, so a check
+// decides "nothing new" against the remote server's record of the surface's
+// newest backup, before it downloads anything.
+
+// heldLocation is a Location from the bucket the remote server holds.
+func heldLocation(o *dump.ObjectStoreSource, match string) watch.Location {
+	return watch.Location{URL: o.Root(), Endpoint: o.Endpoint, Region: o.Region, Match: match,
+		AccessKeyID: o.AccessKeyID, SecretAccessKey: o.SecretAccessKey, SessionToken: o.SessionToken}
+}
+
+// newestRecordedExternal is the remote server's newest record of a backup
+// another tool made for this node, or nil.
+func newestRecordedExternal(ctx context.Context, c *config.CLIConfig) (*model.SnapshotMetadata, error) {
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(c.ServerURL, "/")+"/api/v1/snapshots?node_id="+url.QueryEscape(c.NodeID), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.ServerToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("the remote server answered HTTP %d to the snapshot list", resp.StatusCode)
+	}
+	var list []model.SnapshotMetadata
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&list); err != nil {
+		return nil, fmt.Errorf("the snapshot list could not be read: %w", err)
+	}
+	var newest *model.SnapshotMetadata
+	for i := range list {
+		s := &list[i]
+		if s.External == nil || s.Status == model.SnapshotStatusFailed {
+			continue
+		}
+		if newest == nil || s.CreatedAt.After(newest.CreatedAt) {
+			newest = s
+		}
+	}
+	return newest, nil
+}
+
+// recordedObject is the object a recorded backup was read from, as a
+// listing would name it.
+func recordedObject(rec *model.SnapshotMetadata) watch.Object {
+	obj := watch.Object{URI: rec.External.URI, Size: rec.RawSizeBytes, Modified: rec.External.Modified}
+	switch {
+	case strings.HasPrefix(obj.URI, "s3://"):
+		if _, after, ok := strings.Cut(strings.TrimPrefix(obj.URI, "s3://"), "/"); ok {
+			obj.Key = after
+		}
+	case strings.HasPrefix(obj.URI, "file://"):
+		obj.Key = strings.TrimPrefix(obj.URI, "file://")
+	}
+	return obj
+}
+
+// runHeldWatchCheck is `safegrd backup` on a machine the remote server
+// started for a watched surface: the newest backup at the location SafeGrd
+// holds the key of, read and counted once if the remote server has no
+// record of it yet. It prints the check and exits 0 either way; nothing new
+// is a check that recorded nothing, so the surface goes Overdue when the
+// other tool stops.
+func runHeldWatchCheck(ctx context.Context, c *config.CLIConfig, held credentialSource) error {
+	kind := model.SurfaceType(strings.ToLower(held.Watch.SurfaceType))
+	switch kind {
+	case model.SurfaceTypePostgres, model.SurfaceTypeMySQL, model.SurfaceTypeMongoDB:
+	default:
+		return fmt.Errorf("the remote server holds a watched location for a %q surface, which this build cannot check", held.Watch.SurfaceType)
+	}
+	loc := heldLocation(held.ObjectStore, held.Watch.Match)
+	loc.Engine = kind
+	obj, err := loc.Newest(ctx)
+	if err != nil {
+		return err
+	}
+	known, err := newestRecordedExternal(ctx, c)
+	if err != nil {
+		return fmt.Errorf("could not read what the remote server has of this surface: %w", err)
+	}
+	if known != nil && recordedObject(known).Same(obj) {
+		fmt.Printf("No new backup at %s since %s: the newest there is the one recorded as %s.\n", loc.URL,
+			obj.Modified.Format("2006-01-02 15:04 UTC"), known.SnapshotID)
+		return nil
+	}
+	s := &config.SurfaceConfig{ID: c.NodeID, Type: string(kind), Watch: &config.WatchConfig{URL: loc.URL, Match: loc.Match}}
+	st := &SurfaceState{}
+	meta, err := checkWatchedObject(ctx, c, s, loc, obj, c.NodeID, st, resolveStateDir("", c))
+	if err != nil {
+		return err
+	}
+	if st.notRecorded != "" {
+		return fmt.Errorf("the check of %s was not recorded: %s", obj.URI, st.notRecorded)
+	}
+	fmt.Printf("Recorded %s as %s.\n", obj.URI, meta.SnapshotID)
+	return nil
+}
+
+// verifyExternalSnapshot drills a recorded backup another tool made, by its
+// snapshot id: on a host, from the watch: surface in this config that
+// records for the snapshot's node; on a machine the remote server started,
+// from the location whose key the remote server holds. It prints the drill
+// the way verify prints every drill.
+func verifyExternalSnapshot(ctx context.Context, c *config.CLIConfig, rec *model.SnapshotMetadata, sandboxURL string) error {
+	var loc watch.Location
+	found := false
+	stateDir := resolveStateDir("", c)
+	if c.NodeID == rec.NodeID || c.NodeID == "" {
+		state := loadDaemonState(filepath.Join(stateDir, "daemon_state.json"))
+		for i := range c.Surfaces {
+			s := &c.Surfaces[i]
+			st := state.Surfaces[s.ID]
+			if s.Watch == nil || !(s.ID == rec.NodeID || (st != nil && st.ServerNodeID == rec.NodeID)) {
+				continue
+			}
+			l, err := watchLocation(s)
+			if err != nil {
+				return err
+			}
+			loc, found = l, true
+			break
+		}
+	}
+	if !found {
+		held := resolveRuntimeCredentials(ctx, c, &config.StorageConfig{Type: config.StorageTypeHosted}, false)
+		if held.ObjectStore == nil || held.Watch == nil {
+			return fmt.Errorf("snapshot %s is a backup another tool made, and this config has no watch: surface for its node %s", rec.SnapshotID, rec.NodeID)
+		}
+		loc = heldLocation(held.ObjectStore, held.Watch.Match)
+		loc.Engine = rec.SurfaceType
+	}
+	scratch, err := watchScratch(stateDir)
+	if err != nil {
+		return err
+	}
+	verifier := runner.NewVerifier(nil, c.ServerURL)
+	if c.ServerToken != "" {
+		verifier.SetServerToken(c.ServerToken)
+	}
+	where := "in memory"
+	if sandboxURL != "" {
+		where = "into " + dump.RedactURL(sandboxURL)
+	}
+	fmt.Printf("Verifying %s (made by %s, written %s): reading it again and loading it %s.\n", rec.External.URI,
+		rec.External.MadeBy(), rec.External.Modified.Format("2006-01-02 15:04 UTC"), where)
+	report, err := verifier.RunExternalDrill(ctx, runner.ExternalDrill{Meta: rec, Location: loc, Object: recordedObject(rec), Scratch: scratch}, sandboxURL)
+	if err != nil {
+		return err
+	}
+	return printExternalDrill(verifier, rec, report)
+}
+
+// printExternalDrill prints a drill of a backup another tool made, and
+// returns the drill's failure as the command's error.
+func printExternalDrill(verifier *runner.Verifier, meta *model.SnapshotMetadata, report *model.VerificationReport) error {
 	for _, a := range report.Assertions {
 		status := assertionWord(a)
 		if a.Message != "" {

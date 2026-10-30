@@ -18,6 +18,14 @@ const (
 // RunsOnSafeGrd marks a surface the remote server backs up and drills itself.
 const RunsOnSafeGrd = "safegrd"
 
+// NodeWatch is the non-secret part of a watched surface the remote server
+// runs: the key that lists and reads the location is held with the
+// surface's credential.
+type NodeWatch struct {
+	// Match, when set, is a glob a backup's file name must match.
+	Match string `json:"match,omitempty" yaml:"match,omitempty"`
+}
+
 // How a backup is stored: a run of the surface's repository (incremental),
 // or one archive (full).
 const (
@@ -95,6 +103,12 @@ type Node struct {
 	// database and skips reading tables nothing wrote since the previous
 	// run. Off unless asked, and never set on a surface a host runs.
 	ChangeLog bool `json:"change_log,omitempty" yaml:"change_log,omitempty"`
+
+	// Watch is set on a surface the remote server checks rather than backs
+	// up: the backups another tool writes to the location the remote
+	// server holds a read-only key for, read on its schedule on machines
+	// the remote server starts. Empty on every other surface.
+	Watch *NodeWatch `json:"watch,omitempty" yaml:"watch,omitempty"`
 
 	// CredentialSource is where a surface's own credential comes from, as its
 	// host's config says: "held" (the remote server holds it and the host

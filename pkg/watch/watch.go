@@ -40,8 +40,9 @@ type Location struct {
 	// by its engine, and the others are not this surface's.
 	Engine model.SurfaceType
 	// Endpoint, Region and the keys reach a bucket that is not on AWS, as a
-	// bucket source of a files surface does.
-	Endpoint, Region, AccessKeyID, SecretAccessKey string
+	// bucket source of a files surface does. SessionToken goes with a
+	// temporary key.
+	Endpoint, Region, AccessKeyID, SecretAccessKey, SessionToken string
 	// Match, when set, is a glob a dump's file name must match
 	// (pg-dump-*.dmp), for a location that holds other files as well.
 	Match string
@@ -105,7 +106,7 @@ func (l Location) bucket() (src dump.ObjectStoreSource, ok bool) {
 		return src, false
 	}
 	return dump.ObjectStoreSource{Endpoint: l.Endpoint, Region: l.Region, Bucket: bucket, Prefix: prefix,
-		AccessKeyID: l.AccessKeyID, SecretAccessKey: l.SecretAccessKey}, true
+		AccessKeyID: l.AccessKeyID, SecretAccessKey: l.SecretAccessKey, SessionToken: l.SessionToken}, true
 }
 
 func (l Location) dir() (string, error) {

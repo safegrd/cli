@@ -171,8 +171,13 @@ and never leaves this host.`,
 				return held.CAErr
 			}
 			// Nothing named here, and the remote server holds the bucket this
-			// node backs up: a files surface read over the S3 API.
+			// node backs up: a files surface read over the S3 API, or the
+			// backups another tool writes, which are checked and not
+			// backed up.
 			var heldSource *dump.ObjectStoreSource
+			if held.ObjectStore != nil && held.Watch != nil && filesPath == "" && dbURL == "" && cfg.DatabaseURL == "" && !emailMode && emailHost == "" {
+				return runHeldWatchCheck(ctx, cfg, held)
+			}
 			if held.ObjectStore != nil && filesPath == "" && dbURL == "" && cfg.DatabaseURL == "" && !emailMode && emailHost == "" {
 				heldSource = held.ObjectStore
 				filesPath = heldSource.Root()

@@ -1433,7 +1433,11 @@ func backupSurfaceNow(ctx context.Context, c *config.CLIConfig, surface *config.
 		sState.ConsecutiveFailures, sState.LastError, sState.BackupReason = 0, "", ""
 		sState.LastChecked = time.Now().UTC()
 		_, sState.NextDue = isSurfaceDue(surface, sState, sState.LastChecked)
-		said := fmt.Sprintf("no new backup at %s since %s", surface.Watch.URL, sState.Watched.Object.Modified.Format("2006-01-02 15:04 UTC"))
+		at := surface.Watch.URL
+		if sState.Watched != nil && sState.Watched.URL != "" {
+			at = sState.Watched.URL
+		}
+		said := fmt.Sprintf("no new backup at %s since %s", at, sState.Watched.Object.Modified.Format("2006-01-02 15:04 UTC"))
 		fmt.Printf("Surface %s: %s.\n", surface.ID, said)
 		warnIfStateUnsaved(saveDaemonState(statePath, daemonState), statePath)
 		// A check that wrote nothing has only the heartbeat to answer a

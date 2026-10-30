@@ -120,6 +120,17 @@ not reported as a drill.
 			if len(checks) > 0 && (inMemory || sandboxURL == "") {
 				return fmt.Errorf("--checks runs against the restored database, so it needs --sandbox-target and no --in-memory")
 			}
+			// A backup another tool made is read again where that tool put
+			// it, not from this host's storage, and needs no key.
+			if rec := recordedSnapshot(cmd.Context(), cfg, snapshotID); rec != nil && rec.External != nil {
+				if query != "" || len(checks) > 0 {
+					return fmt.Errorf("snapshot %s is a backup another tool made; --query and --checks are not run on one", snapshotID)
+				}
+				if inMemory {
+					sandboxURL = ""
+				}
+				return verifyExternalSnapshot(cmd.Context(), cfg, rec, sandboxURL)
+			}
 
 			// Apply S3 sink overrides if provided
 			if s3Bucket != "" {
