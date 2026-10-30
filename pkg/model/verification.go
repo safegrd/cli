@@ -1,6 +1,8 @@
 package model
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -117,11 +119,58 @@ type VerificationReport struct {
 	// surface's other buckets rather than its own storage. It is inside the
 	// certificate hash, so the signed record fixes which bucket was proven.
 	SourceBucket string `json:"source_bucket,omitempty" yaml:"source_bucket,omitempty"`
+	// TableChanges lists every table whose row count differs between the
+	// drilled snapshot and the backup before it (TableChangesFrom), largest
+	// move first, with the tables added and gone. TablesUnchanged counts the
+	// rest, and TableChangesOmitted the changed tables past the list's cap.
+	// The remote server fills them from its own records when the drill is
+	// reported, and they are signed through TableChangesDigest: a record
+	// with TableChangesFrom set has the digest in its CanonicalBytes.
+	TableChanges        []TableChange `json:"table_changes,omitempty" yaml:"table_changes,omitempty"`
+	TableChangesFrom    string        `json:"table_changes_from,omitempty" yaml:"table_changes_from,omitempty"`
+	TablesUnchanged     int           `json:"tables_unchanged,omitempty" yaml:"tables_unchanged,omitempty"`
+	TableChangesOmitted int           `json:"table_changes_omitted,omitempty" yaml:"table_changes_omitted,omitempty"`
 }
 
-// CanonicalBytes returns the deterministic serialization for cryptographic signing and chaining.
+// TableChange is one table whose row count differs between a drilled
+// snapshot and the backup before it. A table in only one of the two is
+// Added or Gone; a partition rotated out for a newer one of the same name
+// stem shows as one gone and one added.
+type TableChange struct {
+	Schema     string `json:"schema" yaml:"schema"`
+	TableName  string `json:"table_name" yaml:"table_name"`
+	RowsBefore int64  `json:"rows_before" yaml:"rows_before"`
+	RowsAfter  int64  `json:"rows_after" yaml:"rows_after"`
+	Added      bool   `json:"added,omitempty" yaml:"added,omitempty"`
+	Gone       bool   `json:"gone,omitempty" yaml:"gone,omitempty"`
+}
+
+// TableChangesDigest is the SHA-256, hex, of the record's table changes in
+// a fixed text form: a header line with the snapshot compared against and
+// the unchanged and omitted counts, then one line per change in the list's
+// order. The verifier page computes the same bytes in JavaScript.
+func (v *VerificationReport) TableChangesDigest() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "tables|%s|%d|%d\n", v.TableChangesFrom, v.TablesUnchanged, v.TableChangesOmitted)
+	for _, c := range v.TableChanges {
+		flag := ""
+		switch {
+		case c.Added:
+			flag = "added"
+		case c.Gone:
+			flag = "gone"
+		}
+		fmt.Fprintf(&b, "%s.%s|%d|%d|%s\n", c.Schema, c.TableName, c.RowsBefore, c.RowsAfter, flag)
+	}
+	sum := sha256.Sum256([]byte(b.String()))
+	return hex.EncodeToString(sum[:])
+}
+
+// CanonicalBytes returns the deterministic serialization for cryptographic
+// signing and chaining. A record with table changes carries their digest
+// as an eleventh field; one without keeps the ten.
 func (v *VerificationReport) CanonicalBytes() []byte {
-	return []byte(fmt.Sprintf("%s|%s|%s|%s|%s|%d|%d|%d|%s|%s",
+	s := fmt.Sprintf("%s|%s|%s|%s|%s|%d|%d|%d|%s|%s",
 		v.VerificationID,
 		v.SnapshotID,
 		v.NodeID,
@@ -132,7 +181,11 @@ func (v *VerificationReport) CanonicalBytes() []byte {
 		v.DurationMs,
 		v.CertificateHash,
 		v.PrevHash,
-	))
+	)
+	if v.TableChangesFrom != "" {
+		s += "|" + v.TableChangesDigest()
+	}
+	return []byte(s)
 }
 
 // AssertionRepositoryRead is the check a repository drill fails when storage
