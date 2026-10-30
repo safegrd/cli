@@ -727,7 +727,10 @@ and never leaves this host.`,
 			fmt.Printf("   Snapshot ID:     %s\n", dumpMeta.SnapshotID)
 			fmt.Printf("   Tables Dumped:   %d\n", dumpMeta.TotalTables)
 			fmt.Printf("   Total Rows:      %d\n", dumpMeta.TotalRows)
-			fmt.Printf("   Schema:          %s\n", schemaSourceLabel(dumpMeta.SchemaSource))
+			if len(dumpMeta.PartitionedTables) > 0 {
+				fmt.Printf("   Partitioned:     %s (counted by their partitions)\n", strings.Join(dumpMeta.PartitionedTables, ", "))
+			}
+			fmt.Printf("   Schema:        %s\n", schemaSourceLabel(dumpMeta.SchemaSource))
 			if line := replicaLine(dumpMeta.Replica); line != "" {
 				fmt.Printf("   Read from:       %s\n", line)
 			}
