@@ -16,9 +16,27 @@ import (
 // what makes an hourly schedule affordable: the hourly copies need only a
 // short lock, and a day's first backup carries the longer history.
 //
-// "First" comes from the daemon's state. If the state is lost, the next backup
+// "First" comes from the daemon's state, or, for a one-off backup, from the
+// slots file beside it (gfs_oneoff.go). If the state is lost, the next backup
 // is promoted again: that keeps a backup longer than planned, never shorter,
 // which is the only safe way to be wrong about a lock nobody can lift.
+
+// gfsSlots is the UTC day ("2026-09-24"), ISO week ("2026-W39") and month
+// ("2026-09") whose longer-lived backup has been taken. A SurfaceState embeds
+// it; a one-off backup keeps one per source in the slots file.
+type gfsSlots struct {
+	LastDailySlot   string `json:"last_daily_slot,omitempty"`
+	LastWeeklySlot  string `json:"last_weekly_slot,omitempty"`
+	LastMonthlySlot string `json:"last_monthly_slot,omitempty"`
+}
+
+// slots is the surface's slots, or nil for no state: every tier is open.
+func (st *SurfaceState) slots() *gfsSlots {
+	if st == nil {
+		return nil
+	}
+	return &st.gfsSlots
+}
 
 // retentionPlan is what one backup is locked for, and why.
 type retentionPlan struct {
@@ -43,7 +61,7 @@ func isoWeekKey(t time.Time) string {
 func monthKey(t time.Time) string { return t.UTC().Format("2006-01") }
 
 // planRetention decides the tier for a backup taken at now.
-func planRetention(now time.Time, days int, g gfs, st *SurfaceState) retentionPlan {
+func planRetention(now time.Time, days int, g gfs, st *gfsSlots) retentionPlan {
 	p := retentionPlan{Until: now.Add(time.Duration(days) * 24 * time.Hour), Tier: "base"}
 	if g.Days > 0 && (st == nil || st.LastDailySlot != dayKey(now)) {
 		if until := now.AddDate(0, 0, g.Days); until.After(p.Until) {
@@ -67,8 +85,14 @@ func planRetention(now time.Time, days int, g gfs, st *SurfaceState) retentionPl
 	return p
 }
 
+// takesASlot reports whether this backup is the day's, week's or month's
+// first, whatever tier won.
+func (p retentionPlan) takesASlot() bool {
+	return p.DayKey != "" || p.WeekKey != "" || p.MonthKey != ""
+}
+
 // record marks the slots this backup took, once it has succeeded.
-func (p retentionPlan) record(st *SurfaceState) {
+func (p retentionPlan) record(st *gfsSlots) {
 	if st == nil {
 		return
 	}

@@ -115,7 +115,7 @@ func ownLockRule(ctx context.Context, c *config.CLIConfig, sc config.StorageConf
 // a surface added in the console names none, and planned from the config
 // alone every run was "base", so nothing in the bucket was ever locked. The
 // weekly and monthly copies are the ones the remote server chooses later.
-func keptPlan(rule *lockRule, plan retentionPlan, now time.Time, st *SurfaceState) retentionPlan {
+func keptPlan(rule *lockRule, plan retentionPlan, now time.Time, st *gfsSlots) retentionPlan {
 	if rule == nil {
 		return plan
 	}

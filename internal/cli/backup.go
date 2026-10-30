@@ -18,7 +18,6 @@ import (
 	"github.com/safegrd/cli/pkg/crypto"
 	"github.com/safegrd/cli/pkg/dump"
 	"github.com/safegrd/cli/pkg/model"
-	"github.com/safegrd/cli/pkg/repo/format"
 	"github.com/safegrd/cli/pkg/repo/policy"
 	"github.com/safegrd/cli/pkg/storage"
 	"github.com/spf13/cobra"
@@ -29,6 +28,9 @@ func newBackupCmd() *cobra.Command {
 		dbURL         string
 		engineStr     string
 		retentionDays int
+		keepDaily     int
+		keepWeekly    int
+		keepMonthly   int
 		tag           string
 		jsonOutput    bool
 		surfaceID     string
@@ -77,7 +79,7 @@ func newBackupCmd() *cobra.Command {
 		Long: `Streams a backup, compresses it with zstd, encrypts it on this host with age,
 and writes it to locked (WORM) storage. The unencrypted data is never written to disk
 and never leaves this host.`,
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) (runErr error) {
 			level, err := config.ParseCompression(compression)
 			if err != nil {
 				return fmt.Errorf("--compression: %w", err)
@@ -92,7 +94,7 @@ and never leaves this host.`,
 			// database as a surface, and `safegrd backup` is the next step the
 			// docs give. With several, one has to be named.
 			oneOffFlag := ""
-			for _, f := range []string{"tag", "retention-days", "s3-bucket", "s3-prefix", "s3-region", "s3-endpoint", "s3-access-key", "s3-secret-key", "format", "compression", "one-filesystem", "source-endpoint", "source-region", "source-access-key", "source-secret-key", "source-session-token"} {
+			for _, f := range []string{"tag", "retention-days", "keep-daily", "keep-weekly", "keep-monthly", "s3-bucket", "s3-prefix", "s3-region", "s3-endpoint", "s3-access-key", "s3-secret-key", "format", "compression", "one-filesystem", "source-endpoint", "source-region", "source-access-key", "source-secret-key", "source-session-token"} {
 				if oneOffFlag == "" && cmd.Flags().Changed(f) {
 					oneOffFlag = f
 				}
@@ -119,7 +121,7 @@ and never leaves this host.`,
 				}
 			}
 			if surfaceID != "" {
-				for _, f := range []string{"database-url", "files", "email", "tag", "retention-days", "s3-bucket", "s3-prefix", "s3-region", "s3-endpoint", "s3-access-key", "s3-secret-key", "format", "compression", "one-filesystem", "source-endpoint", "source-region", "source-access-key", "source-secret-key", "source-session-token"} {
+				for _, f := range []string{"database-url", "files", "email", "tag", "retention-days", "keep-daily", "keep-weekly", "keep-monthly", "s3-bucket", "s3-prefix", "s3-region", "s3-endpoint", "s3-access-key", "s3-secret-key", "format", "compression", "one-filesystem", "source-endpoint", "source-region", "source-access-key", "source-secret-key", "source-session-token"} {
 					if cmd.Flags().Changed(f) {
 						return fmt.Errorf("--surface backs up the surface as the config defines it; leave out --%s", f)
 					}
@@ -155,7 +157,8 @@ and never leaves this host.`,
 			if retentionDays > 0 {
 				storageCfg.RetentionDays = retentionDays
 			}
-			if _, err := resolveHostedStorage(ctx, cfg, &storageCfg, true); err != nil {
+			lease, err := resolveHostedStorage(ctx, cfg, &storageCfg, true)
+			if err != nil {
 				return err
 			}
 
@@ -197,7 +200,29 @@ and never leaves this host.`,
 				}
 			}
 
-			retentionUntil := time.Now().Add(time.Duration(storageCfg.RetentionDays) * 24 * time.Hour)
+			// The first backup of the day, week and month is locked longer
+			// (gfs.go). A one-off has no surface state, so the slots it took
+			// are kept per source and sink in the state directory
+			// (gfs_oneoff.go), and recorded only once the backup is written.
+			tiers := oneOffTiers(cfg, gfs{Days: keepDaily, Weeks: keepWeekly, Months: keepMonthly}, retentionDays > 0, lease)
+			slots := loadOneOffSlots(resolveStateDir("", cfg))
+			slotKey := oneOffSlotKey(oneOffSource(cfg, dbURL, filesPath, emailMode, emailHost, emailUser), storageCfg)
+			plan := planRetention(time.Now(), storageCfg.RetentionDays, tiers, slots.slotsFor(slotKey))
+			retentionUntil := plan.Until
+			if plan.Tier != "base" && !jsonOutput && storageCfg.Type != config.StorageTypeHosted {
+				fmt.Printf("   Kept as the %s copy: %s\n", plan.Tier, lockedUntilWords(storageCfg, retentionUntil))
+			}
+			if plan.takesASlot() {
+				defer func() {
+					if runErr != nil {
+						return
+					}
+					plan.record(slots.slotsFor(slotKey))
+					if err := slots.save(); err != nil {
+						fmt.Fprintf(os.Stderr, "Error: could not save %s: %v\n   The next one-off backup of this source will be kept as the %s copy again.\n", slots.path, err, plan.Tier)
+					}
+				}()
+			}
 
 			snapshotID := fmt.Sprintf("snap-%s-%s", time.Now().UTC().Format("20060102-150405"), uuid.New().String()[:6])
 			if tag != "" {
@@ -252,11 +277,12 @@ and never leaves this host.`,
 						node = cfg.NodeID
 						storageCfg.NodeID = node
 					}
-					meta, _, err := runRepoBackup(ctx, repoParams{
+					meta, res, err := runRepoBackup(ctx, repoParams{
 						Compression: level,
 						SurfaceID:   repoSurfaceID([]string{filesPath}), Roots: []string{filesPath}, Excludes: excludes, OneFS: oneFSFlag,
 						StorageCfg: storageCfg, NodeID: cfg.NodeID, Recipient: cfg.Encryption.PublicKey,
-						Retention: policy.Retention{Days: storageCfg.RetentionDays}, Tier: format.TierBase, Planned: retentionUntil,
+						Retention: policy.Retention{Days: storageCfg.RetentionDays, KeepDaily: tiers.Days, KeepWeekly: tiers.Weeks, KeepMonthly: tiers.Months},
+						Tier:      plan.Tier, Planned: retentionUntil,
 						NewEpoch: newEpoch, Rescan: rescan, SnapshotID: snapshotID, StateDir: resolveStateDir("", cfg), Out: out,
 					})
 					if err != nil {
@@ -264,6 +290,7 @@ and never leaves this host.`,
 						reportBackupFailure(ctx, cfg, snapshotID, model.SurfaceTypeFiles, "", retErr, !jsonOutput)
 						return retErr
 					}
+					plan = keptAtEpochTier(plan, res.Tier, !jsonOutput)
 					if cfg.ServerURL != "" {
 						sendMetadataToServer(ctx, cfg.ServerURL, cfg.ServerToken, meta, !jsonOutput)
 					}
@@ -585,11 +612,12 @@ and never leaves this host.`,
 				if storageCfg.NodeID == "" {
 					storageCfg.NodeID = cfg.NodeID
 				}
-				meta, _, err := runRepoDatabaseBackup(ctx, repoDBParams{
+				meta, res, err := runRepoDatabaseBackup(ctx, repoDBParams{
 					Compression: level,
 					SurfaceID:   adhocDatabaseSurfaceID(cfg), DatabaseURL: cfg.DatabaseURL,
 					StorageCfg: storageCfg, NodeID: cfg.NodeID, Recipient: cfg.Encryption.PublicKey,
-					Retention: policy.Retention{Days: storageCfg.RetentionDays}, Tier: format.TierBase, Planned: retentionUntil,
+					Retention: policy.Retention{Days: storageCfg.RetentionDays, KeepDaily: tiers.Days, KeepWeekly: tiers.Weeks, KeepMonthly: tiers.Months},
+					Tier:      plan.Tier, Planned: retentionUntil,
 					NewEpoch: newEpoch, SnapshotID: snapshotID, StateDir: resolveStateDir("", cfg), Out: out,
 					ServerCache: serverCache, ChangeLog: changeLog, RolesWithoutPasswords: noRolePw,
 				})
@@ -598,6 +626,7 @@ and never leaves this host.`,
 					reportBackupFailure(ctx, cfg, snapshotID, dbSurface, string(dbSurface), retErr, !jsonOutput)
 					return retErr
 				}
+				plan = keptAtEpochTier(plan, res.Tier, !jsonOutput)
 				if cfg.ServerURL != "" {
 					sendMetadataToServer(ctx, cfg.ServerURL, cfg.ServerToken, meta, !jsonOutput)
 				}
@@ -784,6 +813,9 @@ and never leaves this host.`,
 
 	// Global backup flags
 	cmd.Flags().IntVar(&retentionDays, "retention-days", 0, "Days this backup is locked (Object Lock retention; default: the config's)")
+	cmd.Flags().IntVar(&keepDaily, "keep-daily", 0, "Lock the first backup of each UTC day for this many days (default: the config's defaults.keep_daily)")
+	cmd.Flags().IntVar(&keepWeekly, "keep-weekly", 0, "Lock the first backup of each ISO week for this many weeks (default: the config's defaults.keep_weekly)")
+	cmd.Flags().IntVar(&keepMonthly, "keep-monthly", 0, "Lock the first backup of each month for this many months (default: the config's defaults.keep_monthly). With --retention-days and no --keep-* flag, the config's tiers do not apply")
 	cmd.Flags().StringVar(&tag, "tag", "", "Put this tag in the snapshot ID (snap-<tag>-…)")
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Print the snapshot metadata as JSON on stdout; warnings stay on stderr")
 

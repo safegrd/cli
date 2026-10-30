@@ -125,12 +125,9 @@ type SurfaceState struct {
 	// there, dropped with it.
 	SandboxKeptUntil time.Time `json:"sandbox_kept_until,omitempty"`
 	SandboxKeptRoles []string  `json:"sandbox_kept_roles,omitempty"`
-	// LastDailySlot, LastWeeklySlot and LastMonthlySlot are the UTC day
-	// ("2026-09-24"), ISO week ("2026-W39") and month ("2026-09") whose
-	// longer-lived backup has been taken (gfs.go).
-	LastDailySlot   string `json:"last_daily_slot,omitempty"`
-	LastWeeklySlot  string `json:"last_weekly_slot,omitempty"`
-	LastMonthlySlot string `json:"last_monthly_slot,omitempty"`
+	// The day, week and month whose longer-lived backup has been taken
+	// (gfs.go), as the three last_*_slot fields.
+	gfsSlots
 
 	// ConsoleSchedule and ConsoleRetentionDays are what the console last set
 	// for this surface, in place of the config's. Kept here so a remote
@@ -1502,7 +1499,7 @@ func backupSurfaceNow(ctx context.Context, c *config.CLIConfig, surface *config.
 				sState.LastSnapshotID = meta.SnapshotID
 				sState.LastDurationMs, sState.LastSizeBytes = meta.DurationMs, meta.EncryptedSizeBytes
 			}
-			plan.record(sState)
+			plan.record(sState.slots())
 			fmt.Printf("Backed up surface %s\n", surface.ID)
 			afterBackupCopies(ctx, c, surface, nodeID, meta, sState)
 		}
@@ -1640,7 +1637,7 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 		// so a typical estate fits its quota.
 		tiers = lease.gfs()
 	}
-	plan = planRetention(time.Now(), storageCfg.RetentionDays, tiers, st)
+	plan = planRetention(time.Now(), storageCfg.RetentionDays, tiers, st.slots())
 	// Asked once: a repository run below replans under it (keptPlan).
 	ownRule := ownLockRule(ctx, c, storageCfg)
 	retentionUntil := plan.Until
@@ -1681,7 +1678,7 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 			if storageCfg.NodeID == "" {
 				storageCfg.NodeID = nodeID
 			}
-			plan = keptPlan(ownRule, plan, time.Now(), st)
+			plan = keptPlan(ownRule, plan, time.Now(), st.slots())
 			kept := ownKeptRule(ownRule, plan, time.Now())
 			meta, res, err := runRepoBackup(ctx, repoParams{
 				SkipIfUnchanged: skipIfUnchanged(s, storageCfg),
@@ -1788,7 +1785,7 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 		if storageCfg.NodeID == "" {
 			storageCfg.NodeID = nodeID
 		}
-		plan = keptPlan(ownRule, plan, time.Now(), st)
+		plan = keptPlan(ownRule, plan, time.Now(), st.slots())
 		kept := ownKeptRule(ownRule, plan, time.Now())
 		meta, res, err := runRepoLaravelBackup(ctx, repoLaravelParams{
 			repoDBParams: repoDBParams{
@@ -1933,7 +1930,7 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 			if storageCfg.NodeID == "" {
 				storageCfg.NodeID = nodeID
 			}
-			plan = keptPlan(ownRule, plan, time.Now(), st)
+			plan = keptPlan(ownRule, plan, time.Now(), st.slots())
 			kept := ownKeptRule(ownRule, plan, time.Now())
 			meta, res, err := runRepoDatabaseBackup(ctx, repoDBParams{
 				SkipIfUnchanged: skipIfUnchanged(s, storageCfg),
