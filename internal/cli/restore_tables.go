@@ -336,8 +336,12 @@ func (tr *tableRestore) commitRows(ctx context.Context, tx pgx.Tx) error {
 			pluralWord(res.inserted+res.updated, "row", "rows"), p.name, tr.id, shortDuration(time.Since(tr.started)),
 			formatNumber(res.inserted), formatNumber(res.updated))
 		if res.kept > 0 {
-			fmt.Printf("   %s matching %s the target already has %s left as %s; --overwrite replaces %s with the backup's.\n",
+			fmt.Printf("   %s matching %s the target already has %s left as %s. --overwrite replaces %s with the backup's.\n",
 				formatNumber(res.kept), pluralWord(res.kept, "row", "rows"), pluralWord(res.kept, "is", "are"), pluralWord(res.kept, "it is", "they are"), pluralWord(res.kept, "it", "them"))
+		}
+		if len(p.stat.OwnedSequences) > 0 {
+			fmt.Printf("   %s owns %s, which this restore did not move: a row put back past its value collides with the next insert until setval moves it.\n",
+				p.name, strings.Join(p.stat.OwnedSequences, ", "))
 		}
 	}
 	noteRestored(ctx, len(tr.picks), written)

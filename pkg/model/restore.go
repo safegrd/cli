@@ -66,6 +66,11 @@ type RestoreScope struct {
 	DataOnlySchemas []string `json:"data_only_schemas,omitempty"`
 	Tables          []string `json:"tables,omitempty"`
 	Paths           []string `json:"paths,omitempty"`
+	// Rows, with one table, restores only the rows this SQL condition
+	// matches into the table as the target has it, by primary key
+	// (restore --rows). Overwrite lets it replace rows the target has.
+	Rows      string `json:"rows,omitempty"`
+	Overwrite bool   `json:"overwrite,omitempty"`
 }
 
 // Partial reports whether the scope restores part of a database into one
@@ -100,6 +105,14 @@ func (s RestoreScope) Validate() error {
 			}
 		}
 	}
+	switch {
+	case strings.TrimSpace(s.Rows) != "" && len(s.Tables) != 1:
+		return fmt.Errorf("a row condition restores rows of one table: name one table with it")
+	case strings.ContainsAny(s.Rows, "\x00\r\n"):
+		return fmt.Errorf("the row condition has a line break in it")
+	case s.Overwrite && strings.TrimSpace(s.Rows) == "":
+		return fmt.Errorf("overwrite goes with a row condition")
+	}
 	return nil
 }
 
@@ -108,6 +121,12 @@ func (s RestoreScope) Describe() string {
 	switch {
 	case s.Whole:
 		return "the whole backup"
+	case strings.TrimSpace(s.Rows) != "" && len(s.Tables) == 1:
+		words := "the rows of " + s.Tables[0] + " where " + strings.TrimSpace(s.Rows)
+		if s.Overwrite {
+			words += ", replacing rows the target has"
+		}
+		return words
 	case len(s.Tables) > 0:
 		return plural(len(s.Tables), "table", "tables") + " " + strings.Join(s.Tables, ", ")
 	case len(s.Paths) > 0:

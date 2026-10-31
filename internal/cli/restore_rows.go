@@ -85,7 +85,9 @@ func rowsUpsertSQL(ident, temp string, cols, pk []string, where string, overwrit
 		}
 		action = "DO UPDATE SET " + strings.Join(sets, ", ")
 	}
-	return "INSERT INTO " + ident + " (" + list + ") SELECT " + list + " FROM " + temp + " WHERE (" + where + ")" +
+	// OVERRIDING SYSTEM VALUE: a column GENERATED ALWAYS AS IDENTITY takes
+	// the backup's value, as it does under COPY, instead of refusing it.
+	return "INSERT INTO " + ident + " (" + list + ") OVERRIDING SYSTEM VALUE SELECT " + list + " FROM " + temp + " WHERE (" + where + ")" +
 		" ON CONFLICT (" + strings.Join(keys, ", ") + ") " + action + " RETURNING (xmax = 0) AS inserted"
 }
 

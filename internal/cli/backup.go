@@ -157,10 +157,6 @@ and never leaves this host.`,
 			if retentionDays > 0 {
 				storageCfg.RetentionDays = retentionDays
 			}
-			if _, err := resolveHostedStorage(ctx, cfg, &storageCfg, true); err != nil {
-				return err
-			}
-
 			// Secrets the local config does not carry, fetched just before use
 			// and held in memory for this command only. Must run before
 			// the provider is constructed: the sink secret is what the provider
@@ -173,10 +169,14 @@ and never leaves this host.`,
 			// Nothing named here, and the remote server holds the bucket this
 			// node backs up: a files surface read over the S3 API, or the
 			// backups another tool writes, which are checked and not
-			// backed up.
+			// backed up. A check writes nothing, so it is decided before
+			// hosted storage is asked about an upload.
 			var heldSource *dump.ObjectStoreSource
 			if held.ObjectStore != nil && held.Watch != nil && filesPath == "" && dbURL == "" && cfg.DatabaseURL == "" && !emailMode && emailHost == "" {
 				return runHeldWatchCheck(ctx, cfg, held)
+			}
+			if _, err := resolveHostedStorage(ctx, cfg, &storageCfg, true); err != nil {
+				return err
 			}
 			if held.ObjectStore != nil && filesPath == "" && dbURL == "" && cfg.DatabaseURL == "" && !emailMode && emailHost == "" {
 				heldSource = held.ObjectStore

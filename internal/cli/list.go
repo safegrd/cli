@@ -56,13 +56,18 @@ other line to stderr, so the output can be piped to jq.`,
 			if err != nil {
 				return fmt.Errorf("failed to list snapshots: %w", err)
 			}
+			recorded, err := recordedSnapshots(ctx, listProject)
+			if err != nil {
+				return err
+			}
+			snapshots = recorded.keep(snapshots)
 
 			// Checked before the empty case, because "no snapshots" and "your
 			// snapshots were deleted and Object Lock saved them" are very
 			// different situations that used to print the same sentence.
 			shadowed := warnAboutShadowedSnapshots(ctx, storageProvider)
 
-			repoRows := listRepoSnapshots(ctx, storageCfg)
+			repoRows := recorded.keepRepo(listRepoSnapshotsWith(ctx, storageCfg, recorded.lookup(ctx)))
 			// Last, after both tables: each snapshot's notes, from the
 			// remote server.
 			shown := map[string]bool{}
@@ -79,7 +84,9 @@ other line to stderr, so the output can be piped to jq.`,
 				defer printRepoTable(repoRows, storageCfg)
 			}
 			if len(snapshots) == 0 {
-				if shadowed == 0 && len(repoRows) == 0 {
+				if listProject != "" && len(repoRows) == 0 {
+					fmt.Printf("No snapshots of project %s in this storage.\n", listProject)
+				} else if shadowed == 0 && len(repoRows) == 0 {
 					fmt.Println(noSnapshotsLine(storageCfg))
 				}
 				return nil
@@ -106,7 +113,7 @@ other line to stderr, so the output can be piped to jq.`,
 				if node == "" {
 					node = "-"
 				}
-				meta, err := storageProvider.DownloadMetadata(ctx, snapID)
+				meta, err := recorded.metadata(ctx, storageProvider, snapID)
 				if err != nil {
 					// A row of dashes and "[metadata unavailable]" said neither
 					// what was missing nor whether the snapshot was still any
@@ -162,8 +169,114 @@ other line to stderr, so the output can be piped to jq.`,
 	}
 	cmd.Flags().StringVar(&listFromBucket, "from-bucket", "", "List a copy (copies: name, or the name of a bucket the project writes to beside its own) instead of this host's storage")
 	cmd.Flags().StringVar(&listFromDir, "from", "", "List an export: the directory 'safegrd export --to-dir' wrote, read without the remote server or this host's storage")
+	cmd.Flags().StringVar(&listProject, "project", "", "Only the snapshots of this project (its id, as 'safegrd projects' lists it), as the remote server recorded them")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print the snapshots as a JSON array on stdout")
 	return cmd
+}
+
+// listProject is list --project: one project's snapshots.
+var listProject string
+
+// recordedList is what the remote server recorded of the organization's
+// snapshots, by id, read in pages of 200: one request per page in place of
+// one sidecar download per snapshot, which took 40 s for 40 snapshots on
+// hosted storage. nil when the host is not enrolled, lists an export, or
+// the server did not answer, in which case each sidecar is read as before.
+// With a project, only that project's, and every snapshot not in it is
+// left out of the listing.
+type recordedList struct {
+	by      map[string]*model.SnapshotMetadata
+	project string
+}
+
+func recordedSnapshots(ctx context.Context, project string) (*recordedList, error) {
+	r := &recordedList{project: project}
+	if !hostIsEnrolled(cfg) || listFromDir != "" {
+		if project != "" {
+			return nil, fmt.Errorf("--project reads which project each snapshot belongs to from the remote server, which this host is not enrolled with")
+		}
+		return r, nil
+	}
+	by := map[string]*model.SnapshotMetadata{}
+	cursor := ""
+	for {
+		q := url.Values{"limit": {"200"}}
+		if project != "" {
+			q.Set("project_id", project)
+		}
+		if cursor != "" {
+			q.Set("cursor", cursor)
+		}
+		var page struct {
+			Items      []*model.SnapshotMetadata `json:"items"`
+			NextCursor string                    `json:"next_cursor"`
+		}
+		if _, err := getJSON(ctx, cfg, "/api/v1/snapshots?"+q.Encode(), &page); err != nil {
+			if project != "" {
+				return nil, fmt.Errorf("--project: could not read the remote server's record of the snapshots: %w", err)
+			}
+			fmt.Fprintf(os.Stderr, "Warning: could not read the remote server's record of the snapshots (%v). Each snapshot's sidecar is read instead, which is slower.\n", err)
+			return r, nil
+		}
+		for _, m := range page.Items {
+			if m != nil && m.SnapshotID != "" {
+				by[m.SnapshotID] = m
+			}
+		}
+		if page.NextCursor == "" || len(page.Items) == 0 {
+			break
+		}
+		cursor = page.NextCursor
+	}
+	r.by = by
+	return r, nil
+}
+
+// keep is the snapshot ids to list: all of them, or the project's.
+func (r *recordedList) keep(ids []string) []string {
+	if r == nil || r.project == "" {
+		return ids
+	}
+	var out []string
+	for _, id := range ids {
+		if r.by[id] != nil {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+func (r *recordedList) keepRepo(rows []repoSnapshot) []repoSnapshot {
+	if r == nil || r.project == "" {
+		return rows
+	}
+	var out []repoSnapshot
+	for _, row := range rows {
+		if r.by[row.Meta.SnapshotID] != nil {
+			out = append(out, row)
+		}
+	}
+	return out
+}
+
+// lookup is the remote server's record of one snapshot: from the pages
+// read, or asked for when they were not.
+func (r *recordedList) lookup(ctx context.Context) func(id string) (*model.SnapshotMetadata, error) {
+	return func(id string) (*model.SnapshotMetadata, error) {
+		if r != nil && r.by != nil {
+			return r.by[id], nil
+		}
+		return fetchRecordedSnapshot(ctx, cfg, id)
+	}
+}
+
+// metadata describes one snapshot: as the remote server recorded it when
+// it did, from its sidecar in storage otherwise.
+func (r *recordedList) metadata(ctx context.Context, p storage.StorageProvider, id string) (*model.SnapshotMetadata, error) {
+	if r != nil && r.by[id] != nil {
+		return r.by[id], nil
+	}
+	return p.DownloadMetadata(ctx, id)
 }
 
 // listedSnapshot is one entry of `list --json`. The field names are the
@@ -210,6 +323,15 @@ type listedSnapshot struct {
 // listRepoSnapshots reads every repository snapshot under this storage. A
 // failure is said and leaves the rest of the listing in place.
 func listRepoSnapshots(ctx context.Context, storageCfg config.StorageConfig) []repoSnapshot {
+	return listRepoSnapshotsWith(ctx, storageCfg, func(id string) (*model.SnapshotMetadata, error) {
+		return fetchRecordedSnapshot(ctx, cfg, id)
+	})
+}
+
+// listRepoSnapshotsWith is listRepoSnapshots with the remote server's record
+// of a snapshot read through recorded: what list read in one request, in
+// place of one request per unlocked run.
+func listRepoSnapshotsWith(ctx context.Context, storageCfg config.StorageConfig, recorded func(id string) (*model.SnapshotMetadata, error)) []repoSnapshot {
 	bs, err := repoBackendsAll(ctx, storageCfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: could not list the incremental repositories: %v\n", err)
@@ -244,7 +366,7 @@ func listRepoSnapshots(ctx context.Context, storageCfg config.StorageConfig) []r
 		if !out[i].Meta.Unlocked {
 			continue
 		}
-		rec, err := fetchRecordedSnapshot(ctx, cfg, out[i].Meta.SnapshotID)
+		rec, err := recorded(out[i].Meta.SnapshotID)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: could not reach the remote server (%v). Each recent run's lock is shown as it was written; one kept as a weekly or monthly copy since is locked longer.\n", err)
 			break
@@ -354,6 +476,11 @@ func listedSnapshots(ctx context.Context) ([]listedSnapshot, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to list snapshots: %w", err)
 	}
+	recorded, err := recordedSnapshots(ctx, listProject)
+	if err != nil {
+		return nil, err
+	}
+	snapshots = recorded.keep(snapshots)
 	warnAboutShadowedSnapshots(ctx, storageProvider)
 
 	var nodes map[string]string
@@ -372,7 +499,7 @@ func listedSnapshots(ctx context.Context) ([]listedSnapshot, error) {
 		if e.NodeID != "" && canSetNode {
 			setNode.SetNodeID(e.NodeID)
 		}
-		meta, err := storageProvider.DownloadMetadata(ctx, snapID)
+		meta, err := recorded.metadata(ctx, storageProvider, snapID)
 		if err != nil {
 			e.MetadataError = describeMissingMetadata(err)
 			entries = append(entries, e)
@@ -402,7 +529,7 @@ func listedSnapshots(ctx context.Context) ([]listedSnapshot, error) {
 		entries = append(entries, e)
 	}
 
-	for _, rs := range listRepoSnapshots(ctx, storageCfg) {
+	for _, rs := range recorded.keepRepo(listRepoSnapshotsWith(ctx, storageCfg, recorded.lookup(ctx))) {
 		meta := rs.Meta
 		e := listedSnapshot{SnapshotID: meta.SnapshotID, NodeID: meta.NodeID, Surface: string(meta.SurfaceType),
 			Status: string(meta.Status), EncryptedSizeBytes: meta.EncryptedSizeBytes, TotalItems: meta.TotalItems,

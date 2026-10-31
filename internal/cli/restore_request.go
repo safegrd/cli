@@ -227,6 +227,7 @@ func restoreFlagsOf(plan *model.RestorePlan) (*restoreFlags, error) {
 	}
 	f := &restoreFlags{snapshotID: plan.SnapshotID, engineStr: "native", targetResolved: true,
 		schemas: plan.Scope.Schemas, dataOnly: plan.Scope.DataOnlySchemas, tables: plan.Scope.Tables, paths: plan.Scope.Paths,
+		rows: strings.TrimSpace(plan.Scope.Rows), overwrite: plan.Scope.Overwrite,
 		noOwner: plan.Options.NoOwner, keepCron: plan.Options.KeepCronActive, withoutErasures: plan.Options.WithoutErasures, parallel: 4}
 	t := plan.Target
 	switch t.Kind {
