@@ -184,6 +184,22 @@ func TestADownloadIsTriedAgainAfterABucketFailure(t *testing.T) {
 	}
 }
 
+// A bucket that is busy answers 503 for a while. Four attempts gave up after
+// 7 seconds and failed the drill reading it; the read now outlasts six.
+func TestADownloadOutlastsABusyBucket(t *testing.T) {
+	quickBackoff(t)
+	f := newFakeRepoHosted(t)
+	f.objects["k"] = []byte("payload")
+	f.getScript = []string{"503", "503", "503", "503", "503", "503"}
+	got, err := f.repo().Get(context.Background(), "k")
+	if err != nil || string(got) != "payload" {
+		t.Fatalf("after six 503s: %q %v", got, err)
+	}
+	if f.gets != 7 {
+		t.Fatalf("%d GETs", f.gets)
+	}
+}
+
 func putSlot(f *fakeRepoHosted, key string) sink.Slot {
 	return sink.Slot{Kind: sink.KindPack, Key: key, EpochID: "e202610-00000000", URL: f.srv.URL + "/bucket/put?k=" + key,
 		Headers: map[string]string{"Content-Length": "7", "Content-MD5": "x"}}

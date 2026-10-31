@@ -54,8 +54,11 @@ type hostedRepo struct {
 
 // Transfers to the bucket are tried a few times: a dropped connection or a
 // 5xx from the bucket is the ordinary weather of a two-hour upload, and a
-// run that dies on one is resumed only at its next schedule.
-const hostedTransferAttempts = 4
+// run that dies on one is resumed only at its next schedule. Seven attempts
+// wait about a minute in all. A busy bucket can answer 503 for longer than
+// the 7 seconds that four allowed, and a drill that gave up then failed
+// without having read the backup at all.
+const hostedTransferAttempts = 7
 
 // hostedTransferBackoff is the first pause between attempts; each later one
 // is twice the one before. A variable so tests do not wait.
