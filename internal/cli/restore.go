@@ -84,7 +84,8 @@ files: each upload writes or updates the file's row in storage.objects.`,
 	cmd.Flags().BoolVar(&f.keepCron, "keep-cron-active", false, "PostgreSQL: create pg_cron's jobs as they were at backup time. By default each is created turned off")
 	cmd.Flags().IntVar(&f.parallel, "parallel", 4, "PostgreSQL and MySQL, incremental backups: how many connections load the tables at once, capped by the server's free connections. 1 loads them one at a time, on PostgreSQL in one transaction")
 	cmd.Flags().BoolVar(&f.noOwner, "no-owner", false, "PostgreSQL: restore without ownership and privileges, so every object belongs to the restoring role. The roles the schema names are still created")
-	cmd.Flags().StringArrayVar(&f.tables, "table", nil, "Restore only this table (schema.table, either part quoted as psql prints it) of a PostgreSQL snapshot into --target: into an empty table of the same definition, or created as the snapshot defined it, with its schema, when the target has none (repeatable)")
+	cmd.Flags().StringArrayVar(&f.tables, "table", nil, "Restore only this table of a database snapshot into --target, which may hold other tables: a PostgreSQL table (schema.table, either part quoted as psql prints it) of any backup, or a table of an incremental MySQL, MariaDB or SQLite backup, or one collection of an incremental MongoDB backup, by name. It loads into an empty table of the same definition, or creates the table as the snapshot defined it when the target has none (repeatable)")
+	cmd.Flags().StringVar(&f.as, "as", "", "With one --table of a PostgreSQL snapshot: restore it under this name (schema.table_restored) beside the live table, which stays as it is")
 	cmd.Flags().StringVar(&f.rows, "rows", "", "With one --table: restore only the rows this SQL condition matches (\"id IN (4211, 4212)\") into the table as the target has it, matched by primary key. A row the target already has is left as it is")
 	cmd.Flags().BoolVar(&f.overwrite, "overwrite", false, "With --rows: replace a row the target already has with the backup's")
 	cmd.Flags().StringVar(&f.surfaceSel, "surface", "", "With --path or --table and no --snapshot: the surface whose repository holds it")
@@ -156,6 +157,17 @@ func executeRestore(ctx context.Context, f *restoreFlags) error {
 			return fmt.Errorf("--rows takes a SQL condition, such as \"id IN (4211, 4212)\"")
 		}
 	}
+	if f.as != "" {
+		if len(tables) != 1 {
+			return fmt.Errorf("--as restores one table under another name: give one --table")
+		}
+		if f.rows != "" {
+			return fmt.Errorf("--as restores the whole table beside the live one; leave out --rows")
+		}
+		if _, _, ok := splitTableName(f.as); !ok || strings.ContainsAny(f.as, "/\x00") {
+			return fmt.Errorf("--as %q is not schema.table", f.as)
+		}
+	}
 	if len(tables) > 0 {
 		if targetURL == "" || len(paths) > 0 {
 			return fmt.Errorf("--table restores tables of a database snapshot into --target; leave out --path, --target-dir and --to-sql")
@@ -164,11 +176,13 @@ func executeRestore(ctx context.Context, f *restoreFlags) error {
 			if len(tables) != 1 {
 				return fmt.Errorf("--version restores one version of one table: give one --table")
 			}
-			p, err := tablePath(tables[0])
+			// Every file a run of any engine keeps the table in: the
+			// lookup finds the one the surface's runs hold.
+			p, err := tablePaths(tables[0])
 			if err != nil {
 				return err
 			}
-			paths = []string{p}
+			paths = p
 		}
 	}
 	// One file or one table with no snapshot named comes back as its
@@ -176,17 +190,17 @@ func executeRestore(ctx context.Context, f *restoreFlags) error {
 	newest := false
 	if version == 0 && snapshotID == "" {
 		if len(tables) == 1 && len(paths) == 0 {
-			p, err := tablePath(tables[0])
+			p, err := tablePaths(tables[0])
 			if err != nil {
 				return err
 			}
-			paths, newest = []string{p}, true
+			paths, newest = p, true
 		} else if len(paths) == 1 && len(tables) == 0 && !strings.ContainsAny(paths[0], "*?[") {
 			newest = true
 		}
 	}
 	if version > 0 {
-		if snapshotID != "" || len(paths) != 1 {
+		if snapshotID != "" || (len(tables) == 0 && len(paths) != 1) {
 			return fmt.Errorf("--version restores one version of one file: give one --path, and leave out --snapshot")
 		}
 	} else if snapshotID == "" && !newest {
@@ -269,7 +283,7 @@ func executeRestore(ctx context.Context, f *restoreFlags) error {
 			if bucketTarget {
 				return errRepoToBucket(snapshotID)
 			}
-			return restoreRepo(ctx, rs, resolvedKey, targetDir, targetURL, toSQL, paths, tables, dbRestoreOptions{Parallel: f.parallel, NoOwner: noOwner, KeepCronActive: keepCron, WithoutErasures: withoutErasures, Rows: f.rows, Overwrite: f.overwrite}, salvage)
+			return restoreRepo(ctx, rs, resolvedKey, targetDir, targetURL, toSQL, paths, tables, dbRestoreOptions{Parallel: f.parallel, NoOwner: noOwner, KeepCronActive: keepCron, WithoutErasures: withoutErasures, Rows: f.rows, Overwrite: f.overwrite, As: f.as}, salvage)
 		}
 	}
 	if salvage && fromDir != "" {
@@ -307,13 +321,13 @@ func executeRestore(ctx context.Context, f *restoreFlags) error {
 		// A snapshot of an incremental repository has no single
 		// object to download; it is restored from its packs.
 		if version > 0 || newest {
-			id, found, fetched, err := resolveVersion(ctx, storageCfg, resolvedKey, surfaceSel, paths[0], version)
+			id, found, fetched, err := resolveVersion(ctx, storageCfg, resolvedKey, surfaceSel, paths, version)
 			if err != nil {
 				return err
 			}
 			snapshotID = id
 			if len(paths) > 0 && found != "" {
-				paths[0] = found
+				paths = []string{found}
 			}
 			if fetched != "" {
 				resolvedKey = strings.TrimSpace(resolvedKey + "\n" + fetched)
@@ -336,7 +350,7 @@ func executeRestore(ctx context.Context, f *restoreFlags) error {
 			if bucketTarget {
 				return errRepoToBucket(snapshotID)
 			}
-			return restoreRepo(ctx, rs, resolvedKey, targetDir, targetURL, toSQL, paths, tables, dbRestoreOptions{Parallel: f.parallel, NoOwner: noOwner, KeepCronActive: keepCron, WithoutErasures: withoutErasures, Rows: f.rows, Overwrite: f.overwrite}, salvage)
+			return restoreRepo(ctx, rs, resolvedKey, targetDir, targetURL, toSQL, paths, tables, dbRestoreOptions{Parallel: f.parallel, NoOwner: noOwner, KeepCronActive: keepCron, WithoutErasures: withoutErasures, Rows: f.rows, Overwrite: f.overwrite, As: f.as}, salvage)
 		}
 		if salvage {
 			return fmt.Errorf("--salvage restores what verifies of an incremental files snapshot; %s is not one", snapshotID)
@@ -355,7 +369,7 @@ func executeRestore(ctx context.Context, f *restoreFlags) error {
 		if metaErr != nil {
 			fmt.Fprintf(os.Stderr, "Warning: could not read the metadata for %s: %v\n", snapshotID, metaErr)
 		}
-		return restoreArchiveTables(ctx, storageProvider, meta, snapshotID, resolvedKey, targetURL, tables, dbRestoreOptions{NoOwner: noOwner, Rows: f.rows, Overwrite: f.overwrite})
+		return restoreArchiveTables(ctx, storageProvider, meta, snapshotID, resolvedKey, targetURL, tables, dbRestoreOptions{NoOwner: noOwner, Rows: f.rows, Overwrite: f.overwrite, As: f.as})
 	}
 	// Not where this config looks: a recovery machine rebuilding a lost
 	// host does not know the node id its backups were filed under.
@@ -680,6 +694,9 @@ type dbRestoreOptions struct {
 	// Overwrite lets it replace rows the target has.
 	Rows      string
 	Overwrite bool
+	// As, with one table, restores it under this name beside the live
+	// table (restore_tables.go).
+	As string
 }
 
 // printCronJobs says what the restore did with each pg_cron job the

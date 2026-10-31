@@ -50,6 +50,11 @@ type tableRestore struct {
 	overwrite bool
 	temp      map[string]string // the temporary table each pick loaded into, by name
 	rowsDone  map[string]rowsResult
+
+	// as, with one pick, restores it under this name beside the live
+	// table: a table with the live one's columns, created here, that the
+	// backup's rows load into. The live table stays as it is.
+	as string
 }
 
 type tablePick struct {
@@ -152,6 +157,37 @@ func (tr *tableRestore) prepare(ctx context.Context, tx pgx.Tx) error {
 			tr.temp[p.name] = temp
 			continue
 		}
+		if tr.as != "" {
+			// The copy takes the live table's columns, so the live table
+			// has to be there, defined as the backup recorded it.
+			if !ok {
+				return fmt.Errorf("the target has no table %s to restore beside; restore it with --table alone, which creates it", p.name)
+			}
+			if p.stat.SchemaHash == "" {
+				return fmt.Errorf("snapshot %s records no definition of %s to compare the target's with; restore the whole table into an empty database instead", tr.id, p.name)
+			}
+			if hash != p.stat.SchemaHash {
+				return fmt.Errorf("%s in the target is not defined as it was in %s (columns, types, defaults or constraints differ), so a copy of it would not take the backup's rows; restore the table into another database", p.name, tr.id)
+			}
+			asSchema, asTable, _ := splitTableName(tr.as)
+			if _, exists, err := dump.TableSchemaHash(ctx, tx, asSchema, asTable); err != nil {
+				return fmt.Errorf("reading whether the target has %s: %w", tr.as, err)
+			} else if exists {
+				return fmt.Errorf("the target already has %s; --as names a table it does not have", tr.as)
+			}
+			if _, err := tx.Exec(ctx, "CREATE SCHEMA IF NOT EXISTS "+pgx.Identifier{asSchema}.Sanitize()); err != nil {
+				return fmt.Errorf("creating schema %s for %s: %w; nothing was restored", asSchema, tr.as, err)
+			}
+			asIdent := pgx.Identifier{asSchema, asTable}.Sanitize()
+			if _, err := tx.Exec(ctx, "CREATE TABLE "+asIdent+" (LIKE "+ident+" INCLUDING GENERATED)"); err != nil {
+				return fmt.Errorf("creating %s with the columns of %s: %w; nothing was restored", tr.as, p.name, err)
+			}
+			if tr.temp == nil {
+				tr.temp = map[string]string{}
+			}
+			tr.temp[p.name] = asIdent
+			continue
+		}
 		if !ok {
 			if sections == nil {
 				if sections, err = tr.sections(); err != nil {
@@ -246,6 +282,9 @@ func (tr *tableRestore) commit(ctx context.Context, tx pgx.Tx) error {
 	if tr.where != "" {
 		return tr.commitRows(ctx, tx)
 	}
+	if tr.as != "" {
+		return tr.commitAs(ctx, tx)
+	}
 	for _, p := range tr.picks {
 		ddl, ok := tr.created[p.name]
 		if !ok || ddl.ForeignKeys == "" {
@@ -311,6 +350,20 @@ func (tr *tableRestore) commit(ctx context.Context, tx pgx.Tx) error {
 			}
 		}
 	}
+	return nil
+}
+
+// commitAs commits the copy restored beside the live table and says what
+// it is and is not.
+func (tr *tableRestore) commitAs(ctx context.Context, tx pgx.Tx) error {
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("committing the restore: %w", err)
+	}
+	p := tr.picks[0]
+	noteRestored(ctx, 1, tr.rows)
+	fmt.Printf("Restored %s rows of %s from %s as %s in %s. The rows matched the backup's count.\n", formatNumber(tr.rows), p.name, tr.id, tr.as, shortDuration(time.Since(tr.started)))
+	fmt.Printf("   As of %s. %s is as it was.\n", tr.asOf.UTC().Format("2006-01-02 15:04:05 UTC"), p.name)
+	fmt.Printf("   %s has the columns of %s and no indexes, constraints or defaults. Compare the two with SQL, copy back what you need, and drop %s after.\n", tr.as, p.name, tr.as)
 	return nil
 }
 

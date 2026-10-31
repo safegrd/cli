@@ -12,6 +12,7 @@ import (
 
 	"filippo.io/age"
 	"github.com/safegrd/cli/pkg/config"
+	"github.com/safegrd/cli/pkg/dump"
 	"github.com/safegrd/cli/pkg/repo/catalog"
 	"github.com/safegrd/cli/pkg/repo/sink"
 	"github.com/safegrd/cli/pkg/repo/unseal"
@@ -134,12 +135,19 @@ func epochRecipients(es []sink.EpochInfo, held map[string]bool) (missing []strin
 }
 
 // shownPath is a path as the person typed it: a table's file in a
-// database run is named as schema.table.
+// PostgreSQL run is named as schema.table, a MySQL table's section or a
+// MongoDB collection's documents by the table alone.
 func shownPath(p string) string {
 	if rest, ok := strings.CutPrefix(p, "data/"); ok {
 		if t, ok := strings.CutSuffix(rest, ".copy"); ok && strings.Count(t, "/") == 1 {
 			return strings.Replace(t, "/", ".", 1)
 		}
+	}
+	if t := dump.MySQLRunTable(p); t != "" {
+		return t
+	}
+	if c := dump.MongoRunCollection(p); c != "" {
+		return c
 	}
 	return p
 }
@@ -207,18 +215,19 @@ Without --surface, a host searches the surfaces it holds the key for and says ho
 many others it did not search. --surface names one, and fetches its key when the remote server
 holds it.
 
---table schema.table lists the versions of a table in incremental PostgreSQL backups.
+--table schema.table lists the versions of a table in incremental PostgreSQL backups; a bare
+name lists a table of incremental MySQL or SQLite backups, or a collection of MongoDB ones, too.
 
 Restore a version with: safegrd restore --path <path> --version <n> --target-dir <dir>
 or, for a table: safegrd restore --table <schema.table> --version <n> --target <database URL>`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			for _, t := range tables {
-				p, err := tablePath(t)
+				p, err := tablePaths(t)
 				if err != nil {
 					return err
 				}
-				args = append(args, p)
+				args = append(args, p...)
 			}
 			if len(args) == 0 {
 				return fmt.Errorf("give a pattern, or --table schema.table")
@@ -288,7 +297,7 @@ or, for a table: safegrd restore --table <schema.table> --version <n> --target <
 	}
 	cmd.Flags().StringVar(&surface, "surface", "", "Search this surface only")
 	cmd.Flags().StringVar(&fromBucket, "from-bucket", "", "Search this copy (copies: name, or the name of a bucket the project writes to beside its own) instead of this host's storage")
-	cmd.Flags().StringArrayVar(&tables, "table", nil, "List the versions of this table (schema.table) in incremental PostgreSQL backups (repeatable)")
+	cmd.Flags().StringArrayVar(&tables, "table", nil, "List the versions of this table (schema.table for PostgreSQL, the name alone for MySQL, SQLite or a MongoDB collection) in incremental backups (repeatable)")
 	cmd.Flags().BoolVar(&deleted, "deleted", false, "List only files the newest snapshot no longer holds")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print the histories as JSON")
 	cmd.Flags().StringVar(&keyPath, "key-path", "", "Path to the age identity file")
@@ -301,16 +310,23 @@ or, for a table: safegrd restore --table <schema.table> --version <n> --target <
 // keys the search asked the remote server for.
 // A bare name (no /) is looked up at any depth, as find does, and path is
 // the one file it names; two files of that name are refused.
-func resolveVersion(ctx context.Context, storageCfg config.StorageConfig, key, surface, p string, n int) (snapshotID, path, fetched string, err error) {
-	res, fetched, err := searchRepos(ctx, storageCfg, key, surface, cleanPatterns([]string{p}), false)
+func resolveVersion(ctx context.Context, storageCfg config.StorageConfig, key, surface string, candidates []string, n int) (snapshotID, path, fetched string, err error) {
+	res, fetched, err := searchRepos(ctx, storageCfg, key, surface, cleanPatterns(candidates), false)
 	if err != nil {
 		return "", "", "", err
 	}
+	// One file, or a table's file under each engine's name: a surface's
+	// runs hold one of them.
+	p := candidates[0]
 	want := strings.Trim(strings.TrimPrefix(p, "/"), "/")
 	bare := !strings.Contains(want, "/")
+	wanted := map[string]bool{}
+	for _, c := range candidates {
+		wanted[strings.Trim(strings.TrimPrefix(c, "/"), "/")] = true
+	}
 	var hits []findResult
 	for _, r := range res {
-		if r.Path == want || (bare && pathpkg.Base(r.Path) == want) {
+		if wanted[r.Path] || (bare && pathpkg.Base(r.Path) == want) {
 			hits = append(hits, r)
 		}
 	}

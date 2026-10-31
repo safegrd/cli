@@ -948,35 +948,8 @@ func (r *MySQLRestorer) Restore(ctx context.Context, src io.Reader) (*model.Snap
 	defer cleanup()
 
 	counter := newMySQLDumpCounter()
-	var mu sync.Mutex
-	rewritten := 0
-	// load runs the client over in, a dump or part of one, every DEFINER in
-	// it set to the restoring user. A section loaded beside others drops its
-	// LOCK TABLES: it holds one table on its own connection, so the lock
-	// guards nothing, and MariaDB refuses a locked parent's rows when another
-	// connection created a child with a foreign key to it in between
-	// (ERROR 1100 "Table 'a_child' was not locked with LOCK TABLES").
-	load := func(in io.Reader, what string, section bool) error {
-		var stderr bytes.Buffer
-		cmd := exec.CommandContext(ctx, tool.Path, "--defaults-extra-file="+cnf,
-			"--binary-mode", "--default-character-set=utf8mb4", "--database="+target.Database)
-		definers := newDefinerRewriter(in)
-		definers.dropLocks = section
-		cmd.Stdin = definers
-		cmd.Stderr = &stderr
-		err := cmd.Run()
-		mu.Lock()
-		rewritten += definers.rewritten
-		mu.Unlock()
-		if err != nil {
-			msg := toolMessage(stderr.String())
-			if len(msg) > 500 {
-				msg = msg[:500] + "..."
-			}
-			return fmt.Errorf("%s failed%s: %v: %s. The target may now hold part of the snapshot; drop and recreate it before retrying", tool, what, err, msg)
-		}
-		return nil
-	}
+	loader := &mysqlLoader{ctx: ctx, tool: tool, cnf: cnf, database: target.Database, leftBehind: "the snapshot"}
+	load := loader.load
 	manifest, sawDump, err := mysqlArchive(src, func(dump io.Reader) error {
 		in := io.Reader(io.TeeReader(dump, counter))
 		if r.Parallel > 1 && len(r.Sections) > 0 {
@@ -1011,9 +984,8 @@ func (r *MySQLRestorer) Restore(ctx context.Context, src io.Reader) (*model.Snap
 			return nil, fmt.Errorf("%s loaded %d rows; the snapshot recorded %d", t.TableName, counts[t.TableName], t.RowCount)
 		}
 	}
-	if rewritten > 0 && r.Warn != nil {
-		r.Warn(fmt.Sprintf("%d view, trigger, routine or event definer(s) were set to the restoring user: they now run as it, "+
-			"not as the account that created them. Recreating another account's definer needs SET_USER_ID, which managed servers do not grant", rewritten))
+	if loader.rewritten > 0 && r.Warn != nil {
+		r.Warn(definerWarning(loader.rewritten))
 	}
 	return manifest, nil
 }

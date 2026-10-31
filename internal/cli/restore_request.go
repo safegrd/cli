@@ -31,9 +31,11 @@ type restoreFlags struct {
 	// read, and says erased rows may be back.
 	withoutErasures, salvage bool
 	// rows is a row restore's condition, with one --table; overwrite lets
-	// it replace rows the target has.
+	// it replace rows the target has. as restores one table under another
+	// name beside the live one.
 	rows      string
 	overwrite bool
+	as        string
 
 	// A bucket to restore a files snapshot into, as backup reads one.
 	sourceEndpoint, sourceRegion, sourceAccessKey, sourceSecretKey, sourceToken string

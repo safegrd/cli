@@ -321,3 +321,63 @@ func TestTheSplitterCutsAnOracleMySQLDump(t *testing.T) {
 		t.Error("the sections do not concatenate to the dump")
 	}
 }
+
+// A run's prelude narrowed to one collection, with that collection's
+// documents, rebuilds as an archive that holds that namespace alone, its
+// metadata (indexes) with it.
+func TestAMongoRunArchiveOfOneCollection(t *testing.T) {
+	src, err := os.ReadFile("testdata/mongo-shop.archive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	rw := newMongoRunWriter(tw)
+	if _, err := readMongoArchive(bytes.NewReader(src), rw); err != nil {
+		t.Fatal(err)
+	}
+	if err := rw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	tw.Close()
+	entries := map[string][]byte{}
+	tr := tar.NewReader(&buf)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(tr)
+		entries[hdr.Name] = b
+	}
+	narrowed, err := MongoPreludeFor(entries[MongoPreludeEntry], map[string]bool{"orders": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, nss, err := mongoPreludeNamespaces(narrowed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nss) != 1 || nss[0].collection != "orders" {
+		t.Fatalf("the narrowed prelude names %+v, want shop.orders alone", nss)
+	}
+	orders := entries["mongo/collections/orders.bson"]
+	part := MongoRunPart{Collection: "orders", Size: int64(len(orders)), Open: func(w io.Writer) error { _, err := w.Write(orders); return err }}
+	var rebuilt bytes.Buffer
+	if err := WriteMongoRunArchive(narrowed, []MongoRunPart{part}, &rebuilt); err != nil {
+		t.Fatal(err)
+	}
+	got, err := readMongoArchive(bytes.NewReader(rebuilt.Bytes()), nil)
+	if err != nil {
+		t.Fatalf("the archive of one collection does not parse: %v", err)
+	}
+	if len(got.Collections) != 1 || got.Collections[0] != "shop.orders" || got.Docs["shop.orders"] == 0 {
+		t.Errorf("the archive of one collection holds %v (%v)", got.Collections, got.Docs)
+	}
+	if missing := got.missingEnds(); len(missing) > 0 || len(got.CRCFailed) > 0 {
+		t.Errorf("unfinished %v, CRC failed %v", missing, got.CRCFailed)
+	}
+}

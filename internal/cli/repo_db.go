@@ -530,21 +530,24 @@ func restoreRepo(ctx context.Context, rs *repoSnapshot, privateKey, targetDir, t
 		return fmt.Errorf("--path restores files; %s is a database snapshot and restores whole", id)
 	}
 	if rs.Meta.SurfaceType == model.SurfaceTypeSQLite {
-		if len(tables) > 0 {
-			return fmt.Errorf("--table restores tables of a PostgreSQL snapshot; %s is a SQLite snapshot and restores whole", id)
-		}
 		if !dump.IsSQLiteURL(targetURL) {
+			if len(tables) > 0 {
+				return fmt.Errorf("snapshot %s is a SQLite snapshot; --target must be a sqlite: URL naming the database file to put the table in", id)
+			}
 			return fmt.Errorf("snapshot %s is a SQLite snapshot; --target must be a sqlite: URL naming a new file", id)
+		}
+		if len(tables) > 0 {
+			return restoreRepoEngineTables(ctx, rs, privateKey, targetURL, tables, db)
 		}
 		fmt.Printf("Restoring %s (epoch %s, %s) into %s\n", id, rs.Epoch.Epoch.EpochID, rs.SurfaceID, dump.RedactURL(targetURL))
 		return restoreRepoSQLite(ctx, rs, privateKey, targetURL)
 	}
 	if kind := rs.Meta.SurfaceType; kind == model.SurfaceTypeMySQL || kind == model.SurfaceTypeMongoDB {
-		if len(tables) > 0 {
-			return fmt.Errorf("--table restores tables of a PostgreSQL snapshot; %s is a %s snapshot and restores whole", id, kind)
-		}
 		if dump.SurfaceTypeOfURL(targetURL) != kind {
 			return fmt.Errorf("snapshot %s is a %s snapshot; --target must be an empty %s database", id, kind, kind)
+		}
+		if len(tables) > 0 {
+			return restoreRepoEngineTables(ctx, rs, privateKey, targetURL, tables, db)
 		}
 		fmt.Printf("Restoring %s (epoch %s, %s) into %s\n", id, rs.Epoch.Epoch.EpochID, rs.SurfaceID, dump.RedactURL(targetURL))
 		return restoreRepoEngine(ctx, rs, privateKey, targetURL, db.Parallel)
@@ -553,9 +556,12 @@ func restoreRepo(ctx context.Context, rs *repoSnapshot, privateKey, targetDir, t
 		return fmt.Errorf("snapshot %s is a PostgreSQL snapshot; --target must be a PostgreSQL database", id)
 	}
 	if len(tables) > 0 {
-		if db.Rows != "" {
+		switch {
+		case db.Rows != "":
 			fmt.Printf("Restoring the rows of %s matching %q from %s (epoch %s, %s) into %s\n", tables[0], db.Rows, id, rs.Epoch.Epoch.EpochID, rs.SurfaceID, dump.RedactURL(targetURL))
-		} else {
+		case db.As != "":
+			fmt.Printf("Restoring %s from %s (epoch %s, %s) into %s as %s\n", tables[0], id, rs.Epoch.Epoch.EpochID, rs.SurfaceID, dump.RedactURL(targetURL), db.As)
+		default:
 			fmt.Printf("Restoring %s from %s (epoch %s, %s) into %s\n", strings.Join(tables, ", "), id, rs.Epoch.Epoch.EpochID, rs.SurfaceID, dump.RedactURL(targetURL))
 		}
 		return restoreRepoTables(ctx, rs, privateKey, targetURL, tables, db)
@@ -564,14 +570,31 @@ func restoreRepo(ctx context.Context, rs *repoSnapshot, privateKey, targetDir, t
 	return restoreRepoDatabase(ctx, rs, privateKey, targetURL, db)
 }
 
-// tablePath is the file a database run keeps a table's rows in. A name with
-// no schema is in public.
+// tablePath is the file a PostgreSQL run keeps a table's rows in. A name
+// with no schema is in public.
 func tablePath(name string) (string, error) {
 	schema, table, ok := splitTableName(name)
 	if !ok || schema == "" || table == "" || strings.ContainsAny(schema+table, "/\x00") {
 		return "", fmt.Errorf("--table %q is not schema.table", name)
 	}
 	return "data/" + schema + "/" + table + ".copy", nil
+}
+
+// tablePaths is every file a run of any engine may keep a table's rows in,
+// the PostgreSQL one first: a MySQL table's section and a MongoDB
+// collection's documents are named by the table alone, and a MongoDB
+// collection's own name may hold the dot.
+func tablePaths(name string) ([]string, error) {
+	pg, err := tablePath(name)
+	if err != nil {
+		return nil, err
+	}
+	_, table, _ := splitTableName(name)
+	out := []string{pg, dump.MySQLTableEntry(table), dump.MongoCollectionEntry(table)}
+	if table != name && !strings.Contains(name, `"`) {
+		out = append(out, dump.MongoCollectionEntry(name))
+	}
+	return out, nil
 }
 
 // splitTableName reads schema.table, either part quoted as SQL quotes it
@@ -678,7 +701,7 @@ func restoreRepoTables(ctx context.Context, rs *repoSnapshot, privateKey, target
 	for _, f := range files {
 		byPath[f.Path] = f
 	}
-	tr := &tableRestore{id: id, asOf: rs.Meta.CreatedAt, noOwner: db.NoOwner, where: db.Rows, overwrite: db.Overwrite, sections: func() (map[string]string, error) {
+	tr := &tableRestore{id: id, asOf: rs.Meta.CreatedAt, noOwner: db.NoOwner, where: db.Rows, overwrite: db.Overwrite, as: db.As, sections: func() (map[string]string, error) {
 		return readRunSections(ctx, r, idx, byPath)
 	}}
 	if err := tr.pick(manifest.TableStats, tables, func(path string) bool { _, ok := byPath[path]; return ok }); err != nil {

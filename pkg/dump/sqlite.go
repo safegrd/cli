@@ -254,7 +254,12 @@ func sqliteTables(ctx context.Context, db *sql.DB) ([]model.TableStat, error) {
 // sqliteColumns reads one table's columns from PRAGMA table_info, in
 // column order.
 func sqliteColumns(ctx context.Context, db *sql.DB, table string) ([]model.ColumnStat, error) {
-	rows, err := db.QueryContext(ctx, "PRAGMA table_info("+quoteSQLiteIdent(table)+")")
+	return sqliteColumnsIn(ctx, db, "main", table)
+}
+
+// sqliteColumnsIn is sqliteColumns for a table of one attached database.
+func sqliteColumnsIn(ctx context.Context, q sqlQuerier, schema, table string) ([]model.ColumnStat, error) {
+	rows, err := q.QueryContext(ctx, "PRAGMA "+quoteSQLiteIdent(schema)+".table_info("+quoteSQLiteIdent(table)+")")
 	if err != nil {
 		return nil, err
 	}
