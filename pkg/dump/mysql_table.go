@@ -24,8 +24,12 @@ type mysqlLoader struct {
 	// leftBehind names what a failure part way may have left in the
 	// target, for the error: MySQL commits DDL as it goes.
 	leftBehind string
-	mu         sync.Mutex
-	rewritten  int
+	// alone is a table loaded into a database that has other tables: its
+	// section's DROP TABLE is left out, since the table was checked absent
+	// or empty first and a drop would take what arrived since.
+	alone     bool
+	mu        sync.Mutex
+	rewritten int
 }
 
 // load pipes in through the client. A section loaded beside others, or
@@ -33,13 +37,19 @@ type mysqlLoader struct {
 // holds one table on its own connection, so the lock guards nothing, and
 // MariaDB refuses a locked parent's rows when another connection created a
 // child with a foreign key to it in between (ERROR 1100 "Table 'a_child'
-// was not locked with LOCK TABLES").
+// was not locked with LOCK TABLES"). A section loaded alone (l.alone) also
+// drops its DROP TABLE, and rowsOnly its CREATE TABLE and triggers.
 func (l *mysqlLoader) load(in io.Reader, what string, section bool) error {
+	return l.loadWith(in, what, section, false)
+}
+
+func (l *mysqlLoader) loadWith(in io.Reader, what string, section, rowsOnly bool) error {
 	var stderr bytes.Buffer
 	cmd := exec.CommandContext(l.ctx, l.tool.Path, "--defaults-extra-file="+l.cnf,
 		"--binary-mode", "--default-character-set=utf8mb4", "--database="+l.database)
 	definers := newDefinerRewriter(in)
 	definers.dropLocks = section
+	definers.dropTable, definers.skipStructure = l.alone, rowsOnly
 	cmd.Stdin = definers
 	cmd.Stderr = &stderr
 	err := cmd.Run()
@@ -64,16 +74,19 @@ func definerWarning(n int) string {
 }
 
 // RestoreMySQLTables loads chosen tables of a per-table dump into a
-// database that may hold other tables. Each table's section (its structure,
-// its rows and its triggers) is loaded behind the dump's head, which
-// carries the session settings, through the server's own client, as a
-// whole restore loads the dump. Before anything is written every chosen
-// table is checked in the target: absent, or empty and defined as the
-// manifest records it (the same hash over information_schema.columns the
-// backup took). After, each table's rows are counted against the manifest.
-// MySQL commits DDL as it goes, so a failure part way leaves what loaded
-// in the target, which the error says. created names the tables the target
-// lacked.
+// database that may hold other tables. Each table's section is loaded
+// behind the dump's head, which carries the session settings, through the
+// server's own client, as a whole restore loads the dump. Before anything
+// is written every chosen table is checked in the target: absent, or empty
+// and defined as the manifest records it (the same hash over
+// information_schema.columns the backup took). A table the target lacks is
+// created as the section defines it, with its indexes and triggers; one
+// the target has takes the rows alone and keeps its own definition,
+// indexes and triggers. The section's DROP TABLE is never run: a drop
+// would take rows that arrived since the check. After, each table's rows
+// are counted against the manifest. MySQL commits DDL as it goes, so a
+// failure part way leaves what loaded in the target, which the error says.
+// created names the tables the target lacked.
 func RestoreMySQLTables(ctx context.Context, targetURL string, head []byte, sections []TableData, stats []model.TableStat, warn func(string)) (created []string, rows int64, err error) {
 	if len(sections) != len(stats) {
 		return nil, 0, errors.New("each table needs its manifest entry")
@@ -91,6 +104,7 @@ func RestoreMySQLTables(ctx context.Context, targetURL string, head []byte, sect
 	if err != nil {
 		return nil, 0, fmt.Errorf("could not connect to the restore target: %w", err)
 	}
+	exists := map[string]bool{}
 	for i, s := range sections {
 		kind, cols, err := mysqlTableShape(ctx, db, s.Table)
 		if err != nil {
@@ -115,6 +129,7 @@ func RestoreMySQLTables(ctx context.Context, targetURL string, head []byte, sect
 			if held {
 				return nil, 0, fmt.Errorf("%s in the target holds rows; a restore never writes over data. Empty it, or restore into another database", s.Table)
 			}
+			exists[s.Table] = true
 		}
 	}
 	tool, err := findMySQLTool(ctx, "client", mariaDB)
@@ -127,10 +142,10 @@ func RestoreMySQLTables(ctx context.Context, targetURL string, head []byte, sect
 	}
 	defer cleanup()
 	for _, s := range sections {
-		loader := &mysqlLoader{ctx: ctx, tool: tool, cnf: cnf, database: target.Database, leftBehind: s.Table}
+		loader := &mysqlLoader{ctx: ctx, tool: tool, cnf: cnf, database: target.Database, leftBehind: s.Table, alone: true}
 		pr, pw := io.Pipe()
 		go func() { _ = pw.CloseWithError(s.Open(pw)) }()
-		err := loader.load(io.MultiReader(bytes.NewReader(head), pr), " loading "+s.Table, true)
+		err := loader.loadWith(io.MultiReader(bytes.NewReader(head), pr), " loading "+s.Table, true, exists[s.Table])
 		_ = pr.CloseWithError(io.ErrClosedPipe)
 		if err != nil {
 			return nil, 0, err

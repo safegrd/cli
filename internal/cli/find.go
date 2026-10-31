@@ -14,6 +14,7 @@ import (
 	"github.com/safegrd/cli/pkg/config"
 	"github.com/safegrd/cli/pkg/dump"
 	"github.com/safegrd/cli/pkg/repo/catalog"
+	"github.com/safegrd/cli/pkg/repo/dbrun"
 	"github.com/safegrd/cli/pkg/repo/sink"
 	"github.com/safegrd/cli/pkg/repo/unseal"
 	"github.com/spf13/cobra"
@@ -149,6 +150,9 @@ func shownPath(p string) string {
 	if c := dump.MongoRunCollection(p); c != "" {
 		return c
 	}
+	if p == dbrun.SQLiteDatabase {
+		return "the SQLite database"
+	}
 	return p
 }
 
@@ -215,8 +219,9 @@ Without --surface, a host searches the surfaces it holds the key for and says ho
 many others it did not search. --surface names one, and fetches its key when the remote server
 holds it.
 
---table schema.table lists the versions of a table in incremental PostgreSQL backups; a bare
-name lists a table of incremental MySQL or SQLite backups, or a collection of MongoDB ones, too.
+--table schema.table lists the versions of a table in incremental PostgreSQL backups. A bare
+name lists a table of incremental MySQL backups or a collection of MongoDB ones too. A SQLite
+run keeps every table in its one database file, so a SQLite table's versions are the file's.
 
 Restore a version with: safegrd restore --path <path> --version <n> --target-dir <dir>
 or, for a table: safegrd restore --table <schema.table> --version <n> --target <database URL>`,
@@ -297,7 +302,7 @@ or, for a table: safegrd restore --table <schema.table> --version <n> --target <
 	}
 	cmd.Flags().StringVar(&surface, "surface", "", "Search this surface only")
 	cmd.Flags().StringVar(&fromBucket, "from-bucket", "", "Search this copy (copies: name, or the name of a bucket the project writes to beside its own) instead of this host's storage")
-	cmd.Flags().StringArrayVar(&tables, "table", nil, "List the versions of this table (schema.table for PostgreSQL, the name alone for MySQL, SQLite or a MongoDB collection) in incremental backups (repeatable)")
+	cmd.Flags().StringArrayVar(&tables, "table", nil, "List the versions of this table (schema.table for PostgreSQL, the name alone for a MySQL table or a MongoDB collection; a SQLite table's are its database file's) in incremental backups (repeatable)")
 	cmd.Flags().BoolVar(&deleted, "deleted", false, "List only files the newest snapshot no longer holds")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print the histories as JSON")
 	cmd.Flags().StringVar(&keyPath, "key-path", "", "Path to the age identity file")

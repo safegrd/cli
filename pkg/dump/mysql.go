@@ -1048,6 +1048,13 @@ type definerRewriter struct {
 	rewritten int
 	// dropLocks leaves out mysqldump's LOCK TABLES and UNLOCK TABLES lines.
 	dropLocks bool
+	// dropTable leaves out a section's DROP TABLE IF EXISTS: a table loaded
+	// alone was checked absent or empty first, and a drop would take what
+	// arrived since. skipStructure leaves out its CREATE TABLE statement and
+	// its trigger block (DELIMITER ;; to DELIMITER ;) too, so the rows load
+	// into the table as the target defines it.
+	dropTable, skipStructure bool
+	inCreate, inTriggers     bool
 }
 
 func newDefinerRewriter(r io.Reader) *definerRewriter {
@@ -1078,6 +1085,9 @@ func (d *definerRewriter) Read(p []byte) (int, error) {
 				if d.dropLocks && d.atStart && (bytes.HasPrefix(line, []byte("LOCK TABLES ")) || bytes.HasPrefix(line, []byte("UNLOCK TABLES;"))) {
 					line = nil
 				}
+				if d.atStart && line != nil {
+					line = d.filterStructure(line)
+				}
 			}
 			d.atStart = complete
 			d.pending = line
@@ -1092,6 +1102,34 @@ func (d *definerRewriter) Read(p []byte) (int, error) {
 	n := copy(p, d.pending)
 	d.pending = d.pending[n:]
 	return n, nil
+}
+
+// filterStructure drops the lines dropTable and skipStructure leave out of
+// a section: the DROP TABLE, the CREATE TABLE statement to its closing ";",
+// and the trigger block between DELIMITER ;; and DELIMITER ;.
+func (d *definerRewriter) filterStructure(line []byte) []byte {
+	trimmed := bytes.TrimRight(line, "\r\n")
+	switch {
+	case d.inCreate:
+		if bytes.HasSuffix(trimmed, []byte(";")) {
+			d.inCreate = false
+		}
+		return nil
+	case d.inTriggers:
+		if bytes.Equal(trimmed, []byte("DELIMITER ;")) {
+			d.inTriggers = false
+		}
+		return nil
+	case d.dropTable && bytes.HasPrefix(line, []byte("DROP TABLE IF EXISTS ")):
+		return nil
+	case d.skipStructure && bytes.HasPrefix(line, []byte("CREATE TABLE ")):
+		d.inCreate = !bytes.HasSuffix(trimmed, []byte(";"))
+		return nil
+	case d.skipStructure && bytes.Equal(trimmed, []byte("DELIMITER ;;")):
+		d.inTriggers = true
+		return nil
+	}
+	return line
 }
 
 // OpenMySQL opens a mysql:// URL with the Go driver.

@@ -100,7 +100,7 @@ func RestoreSQLiteTables(ctx context.Context, targetURL string, src io.Reader, s
 		case err != nil:
 			return nil, 0, fmt.Errorf("reading the definition of %s in the target: %w", name, err)
 		case kind != "table":
-			return nil, 0, fmt.Errorf("%s in the target is a %s, not a table; nothing was restored", name, kind)
+			return nil, 0, fmt.Errorf("%s in the target is not a table (it is a%s %s); nothing was restored", name, article(kind), kind)
 		default:
 			if st.SchemaHash == "" {
 				return nil, 0, fmt.Errorf("the snapshot records no definition of %s to compare the target's with; restore the whole snapshot to a new file instead", name)
@@ -214,4 +214,12 @@ func sqliteStoredColumns(ctx context.Context, q sqlQuerier, schema, table string
 		return "", fmt.Errorf("%s has no column an insert can set", table)
 	}
 	return strings.Join(cols, ", "), nil
+}
+
+// article is "n" before a word that starts with a vowel, else "".
+func article(word string) string {
+	if word != "" && strings.ContainsRune("aeiou", rune(word[0])) {
+		return "n"
+	}
+	return ""
 }

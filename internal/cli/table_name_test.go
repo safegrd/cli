@@ -66,11 +66,11 @@ func TestATableIsLookedForUnderEveryEnginesName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"data/public/orders.copy", "mysql/tables/orders.sql", "mongo/collections/orders.bson"}; strings.Join(got, " ") != strings.Join(want, " ") {
+	if want := []string{"data/public/orders.copy", "mysql/tables/orders.sql", "mongo/collections/orders.bson", "sqlite/database.sqlite"}; strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Errorf("tablePaths(orders) = %v, want %v", got, want)
 	}
 	got, _ = tablePaths("shop.users.archive")
-	if want := "data/shop/users.archive.copy mysql/tables/users.archive.sql mongo/collections/users.archive.bson mongo/collections/shop.users.archive.bson"; strings.Join(got, " ") != want {
+	if want := "data/shop/users.archive.copy mysql/tables/users.archive.sql mongo/collections/users.archive.bson mongo/collections/shop.users.archive.bson sqlite/database.sqlite"; strings.Join(got, " ") != want {
 		t.Errorf("tablePaths(shop.users.archive) = %v", got)
 	}
 }

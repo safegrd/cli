@@ -582,8 +582,10 @@ func tablePath(name string) (string, error) {
 
 // tablePaths is every file a run of any engine may keep a table's rows in,
 // the PostgreSQL one first: a MySQL table's section and a MongoDB
-// collection's documents are named by the table alone, and a MongoDB
-// collection's own name may hold the dot.
+// collection's documents are named by the table alone, a MongoDB
+// collection's own name may hold the dot, and a SQLite run keeps every
+// table in its one database file, so a SQLite table's versions are the
+// file's.
 func tablePaths(name string) ([]string, error) {
 	pg, err := tablePath(name)
 	if err != nil {
@@ -594,7 +596,7 @@ func tablePaths(name string) ([]string, error) {
 	if table != name && !strings.Contains(name, `"`) {
 		out = append(out, dump.MongoCollectionEntry(name))
 	}
-	return out, nil
+	return append(out, dbrun.SQLiteDatabase), nil
 }
 
 // splitTableName reads schema.table, either part quoted as SQL quotes it

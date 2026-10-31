@@ -161,12 +161,19 @@ func restoreRepoEngineTables(ctx context.Context, rs *repoSnapshot, privateKey, 
 	fmt.Printf("Restored %d %s, %s %s, from %s in %s. Every %s matched its count.\n", len(picks),
 		pluralWord(int64(len(picks)), tableWord, tablesWord), formatNumber(rows), rowsWord, id, shortDuration(time.Since(started)), tableWord)
 	fmt.Printf("   As of %s. The target's other %s are as they were, and are not consistent with it.\n", rs.Meta.CreatedAt.UTC().Format("2006-01-02 15:04:05 UTC"), tablesWord)
+	made := map[string]bool{}
 	for _, name := range created {
+		made[name] = true
 		switch kind {
 		case model.SurfaceTypeMongoDB:
 			fmt.Printf("   Created %s as it was in %s, with its options and indexes.\n", name, id)
 		default:
 			fmt.Printf("   Created %s as it was defined in %s, with its indexes and triggers.\n", name, id)
+		}
+	}
+	for _, p := range picks {
+		if !made[p.TableName] {
+			fmt.Printf("   Loaded the %s of %s into the %s as the target defines it, with the target's indexes and triggers.\n", rowsWord, p.TableName, tableWord)
 		}
 	}
 	if kind != model.SurfaceTypeMongoDB && len(created) > 0 {

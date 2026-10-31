@@ -363,7 +363,7 @@ func (tr *tableRestore) commitAs(ctx context.Context, tx pgx.Tx) error {
 	noteRestored(ctx, 1, tr.rows)
 	fmt.Printf("Restored %s rows of %s from %s as %s in %s. The rows matched the backup's count.\n", formatNumber(tr.rows), p.name, tr.id, tr.as, shortDuration(time.Since(tr.started)))
 	fmt.Printf("   As of %s. %s is as it was.\n", tr.asOf.UTC().Format("2006-01-02 15:04:05 UTC"), p.name)
-	fmt.Printf("   %s has the columns of %s and no indexes, constraints or defaults. Compare the two with SQL, copy back what you need, and drop %s after.\n", tr.as, p.name, tr.as)
+	fmt.Printf("   %s has the columns and NOT NULL rules of %s and no indexes, keys, checks or defaults. Compare the two with SQL, copy back what you need, and drop %s after.\n", tr.as, p.name, tr.as)
 	return nil
 }
 
