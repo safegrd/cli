@@ -30,6 +30,10 @@ type restoreFlags struct {
 	// withoutErasures restores a snapshot whose erasure record cannot be
 	// read, and says erased rows may be back.
 	withoutErasures, salvage bool
+	// rows is a row restore's condition, with one --table; overwrite lets
+	// it replace rows the target has.
+	rows      string
+	overwrite bool
 
 	// A bucket to restore a files snapshot into, as backup reads one.
 	sourceEndpoint, sourceRegion, sourceAccessKey, sourceSecretKey, sourceToken string
@@ -92,7 +96,7 @@ func noteRestored(ctx context.Context, containers int, items int64) {
 // asks for a backup first, the surface is backed up from this host's config.
 func runRestoreRequest(ctx context.Context, f *restoreFlags) error {
 	if f.snapshotID != "" || f.targetURL != "" || f.targetDir != "" || f.toSQL != "" || f.fromPath != "" || len(f.paths) > 0 ||
-		len(f.tables) > 0 || len(f.schemas) > 0 || len(f.dataOnly) > 0 || f.version > 0 || f.sourceFlagsSet || f.salvage {
+		len(f.tables) > 0 || len(f.schemas) > 0 || len(f.dataOnly) > 0 || f.version > 0 || f.sourceFlagsSet || f.salvage || f.rows != "" || f.overwrite {
 		return fmt.Errorf("--request takes the snapshot, the target and what to restore from the console's request; leave out the other flags except --key-path and --private-key")
 	}
 	if !canReport(cfg) {

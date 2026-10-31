@@ -85,6 +85,8 @@ files: each upload writes or updates the file's row in storage.objects.`,
 	cmd.Flags().IntVar(&f.parallel, "parallel", 4, "PostgreSQL and MySQL, incremental backups: how many connections load the tables at once, capped by the server's free connections. 1 loads them one at a time, on PostgreSQL in one transaction")
 	cmd.Flags().BoolVar(&f.noOwner, "no-owner", false, "PostgreSQL: restore without ownership and privileges, so every object belongs to the restoring role. The roles the schema names are still created")
 	cmd.Flags().StringArrayVar(&f.tables, "table", nil, "Restore only this table (schema.table, either part quoted as psql prints it) of a PostgreSQL snapshot into --target: into an empty table of the same definition, or created as the snapshot defined it, with its schema, when the target has none (repeatable)")
+	cmd.Flags().StringVar(&f.rows, "rows", "", "With one --table: restore only the rows this SQL condition matches (\"id IN (4211, 4212)\") into the table as the target has it, matched by primary key. A row the target already has is left as it is")
+	cmd.Flags().BoolVar(&f.overwrite, "overwrite", false, "With --rows: replace a row the target already has with the backup's")
 	cmd.Flags().StringVar(&f.surfaceSel, "surface", "", "With --path or --table and no --snapshot: the surface whose repository holds it")
 	cmd.Flags().StringArrayVar(&f.paths, "path", nil, "Restore only this path of a repository snapshot, relative to / (repeatable; '*', '?' and '**' match)")
 	cmd.Flags().StringVar(&f.sourceEndpoint, "source-endpoint", "", "With --target s3://…: the store's S3 URL (Supabase Storage: https://PROJECT.storage.supabase.co/storage/v1/s3); empty means AWS S3")
@@ -141,6 +143,17 @@ func executeRestore(ctx context.Context, f *restoreFlags) error {
 		}
 		if dump.SurfaceTypeOfURL(targetURL) != model.SurfaceTypePostgres {
 			return fmt.Errorf("--schema and --data-only-schema restore into a PostgreSQL database")
+		}
+	}
+	if f.overwrite && f.rows == "" {
+		return fmt.Errorf("--overwrite goes with --rows")
+	}
+	if f.rows != "" {
+		if len(tables) != 1 {
+			return fmt.Errorf("--rows restores rows of one table: give one --table")
+		}
+		if strings.TrimSpace(f.rows) == "" {
+			return fmt.Errorf("--rows takes a SQL condition, such as \"id IN (4211, 4212)\"")
 		}
 	}
 	if len(tables) > 0 {
@@ -256,7 +269,7 @@ func executeRestore(ctx context.Context, f *restoreFlags) error {
 			if bucketTarget {
 				return errRepoToBucket(snapshotID)
 			}
-			return restoreRepo(ctx, rs, resolvedKey, targetDir, targetURL, toSQL, paths, tables, dbRestoreOptions{Parallel: f.parallel, NoOwner: noOwner, KeepCronActive: keepCron, WithoutErasures: withoutErasures}, salvage)
+			return restoreRepo(ctx, rs, resolvedKey, targetDir, targetURL, toSQL, paths, tables, dbRestoreOptions{Parallel: f.parallel, NoOwner: noOwner, KeepCronActive: keepCron, WithoutErasures: withoutErasures, Rows: f.rows, Overwrite: f.overwrite}, salvage)
 		}
 	}
 	if salvage && fromDir != "" {
@@ -323,7 +336,7 @@ func executeRestore(ctx context.Context, f *restoreFlags) error {
 			if bucketTarget {
 				return errRepoToBucket(snapshotID)
 			}
-			return restoreRepo(ctx, rs, resolvedKey, targetDir, targetURL, toSQL, paths, tables, dbRestoreOptions{Parallel: f.parallel, NoOwner: noOwner, KeepCronActive: keepCron, WithoutErasures: withoutErasures}, salvage)
+			return restoreRepo(ctx, rs, resolvedKey, targetDir, targetURL, toSQL, paths, tables, dbRestoreOptions{Parallel: f.parallel, NoOwner: noOwner, KeepCronActive: keepCron, WithoutErasures: withoutErasures, Rows: f.rows, Overwrite: f.overwrite}, salvage)
 		}
 		if salvage {
 			return fmt.Errorf("--salvage restores what verifies of an incremental files snapshot; %s is not one", snapshotID)
@@ -342,7 +355,7 @@ func executeRestore(ctx context.Context, f *restoreFlags) error {
 		if metaErr != nil {
 			fmt.Fprintf(os.Stderr, "Warning: could not read the metadata for %s: %v\n", snapshotID, metaErr)
 		}
-		return restoreArchiveTables(ctx, storageProvider, meta, snapshotID, resolvedKey, targetURL, tables, noOwner)
+		return restoreArchiveTables(ctx, storageProvider, meta, snapshotID, resolvedKey, targetURL, tables, dbRestoreOptions{NoOwner: noOwner, Rows: f.rows, Overwrite: f.overwrite})
 	}
 	// Not where this config looks: a recovery machine rebuilding a lost
 	// host does not know the node id its backups were filed under.
@@ -663,6 +676,10 @@ type dbRestoreOptions struct {
 	NoOwner         bool
 	KeepCronActive  bool
 	WithoutErasures bool
+	// Rows is a row restore's condition, with one table (restore_rows.go);
+	// Overwrite lets it replace rows the target has.
+	Rows      string
+	Overwrite bool
 }
 
 // printCronJobs says what the restore did with each pg_cron job the

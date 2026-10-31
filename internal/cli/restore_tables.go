@@ -41,6 +41,15 @@ type tableRestore struct {
 	// ones it may not run, as a whole restore does.
 	noOwner bool
 	skipped []string
+
+	// where is a row restore's condition (restore_rows.go): each chosen
+	// table is loaded into a temporary table and the rows it matches are
+	// written into the target's table by primary key. overwrite replaces
+	// a row the target has; without it that row is left as it is.
+	where     string
+	overwrite bool
+	temp      map[string]string // the temporary table each pick loaded into, by name
+	rowsDone  map[string]rowsResult
 }
 
 type tablePick struct {
@@ -112,11 +121,36 @@ func (tr *tableRestore) prepare(ctx context.Context, tx pgx.Tx) error {
 	tr.created = map[string]dump.TableDDL{}
 	var sections map[string]string
 	super, superKnown := false, false
-	for _, p := range tr.picks {
+	for i, p := range tr.picks {
 		ident := pgx.Identifier{p.stat.Schema, p.stat.TableName}.Sanitize()
 		hash, ok, err := dump.TableSchemaHash(ctx, tx, p.stat.Schema, p.stat.TableName)
 		if err != nil {
 			return fmt.Errorf("reading the definition of %s in the target: %w", p.name, err)
+		}
+		if tr.where != "" {
+			// Rows go into the table as the target has it: it has to be
+			// there, defined as the backup recorded it, and may hold rows.
+			if !ok {
+				return fmt.Errorf("the target has no table %s to put rows into; restore the whole table with --table alone, which creates it", p.name)
+			}
+			if p.stat.SchemaHash == "" {
+				return fmt.Errorf("snapshot %s records no definition of %s to compare the target's with; restore the whole table into an empty database instead", tr.id, p.name)
+			}
+			if hash != p.stat.SchemaHash {
+				return fmt.Errorf("%s in the target is not defined as it was in %s (columns, types, defaults or constraints differ); nothing was restored", p.name, tr.id)
+			}
+			// INCLUDING GENERATED keeps a generated column generated, so the
+			// backup's COPY stream, which leaves such columns out, loads
+			// into it as it loads into the table itself.
+			temp := pgx.Identifier{fmt.Sprintf("safegrd_rows_%d", i)}.Sanitize()
+			if _, err := tx.Exec(ctx, "CREATE TEMPORARY TABLE "+temp+" (LIKE "+ident+" INCLUDING GENERATED) ON COMMIT DROP"); err != nil {
+				return fmt.Errorf("making a temporary table for the rows of %s: %w; nothing was restored", p.name, err)
+			}
+			if tr.temp == nil {
+				tr.temp = map[string]string{}
+			}
+			tr.temp[p.name] = temp
+			continue
 		}
 		if !ok {
 			if sections == nil {
@@ -192,6 +226,9 @@ func (tr *tableRestore) prepare(ctx context.Context, tx pgx.Tx) error {
 // manifest.
 func (tr *tableRestore) load(ctx context.Context, tx pgx.Tx, p tablePick, rows io.Reader) error {
 	ident := pgx.Identifier{p.stat.Schema, p.stat.TableName}.Sanitize()
+	if temp, ok := tr.temp[p.name]; ok {
+		ident = temp
+	}
 	tag, err := tx.Conn().PgConn().CopyFrom(ctx, rows, "COPY "+ident+" FROM STDIN (FORMAT binary)")
 	if err != nil {
 		return fmt.Errorf("loading %s: %w; nothing was restored", p.name, err)
@@ -206,6 +243,9 @@ func (tr *tableRestore) load(ctx context.Context, tx pgx.Tx, p tablePick, rows i
 // commit sets the created tables' sequences, commits, and says what was
 // restored and what it points at.
 func (tr *tableRestore) commit(ctx context.Context, tx pgx.Tx) error {
+	if tr.where != "" {
+		return tr.commitRows(ctx, tx)
+	}
 	for _, p := range tr.picks {
 		ddl, ok := tr.created[p.name]
 		if !ok || ddl.ForeignKeys == "" {
@@ -271,5 +311,36 @@ func (tr *tableRestore) commit(ctx context.Context, tx pgx.Tx) error {
 			}
 		}
 	}
+	return nil
+}
+
+// commitRows writes each loaded table's matching rows into the target and
+// says what was inserted, replaced and left alone.
+func (tr *tableRestore) commitRows(ctx context.Context, tx pgx.Tx) error {
+	tr.rowsDone = map[string]rowsResult{}
+	for _, p := range tr.picks {
+		res, err := restoreRows(ctx, tx, p, tr.temp[p.name], tr.where, tr.overwrite)
+		if err != nil {
+			return err
+		}
+		tr.rowsDone[p.name] = res
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("committing the restore: %w", err)
+	}
+	var written int64
+	for _, p := range tr.picks {
+		res := tr.rowsDone[p.name]
+		written += res.inserted + res.updated
+		fmt.Printf("Restored %s %s of %s from %s in %s: %s inserted, %s replaced.\n", formatNumber(res.inserted+res.updated),
+			pluralWord(res.inserted+res.updated, "row", "rows"), p.name, tr.id, shortDuration(time.Since(tr.started)),
+			formatNumber(res.inserted), formatNumber(res.updated))
+		if res.kept > 0 {
+			fmt.Printf("   %s matching %s the target already has %s left as %s; --overwrite replaces %s with the backup's.\n",
+				formatNumber(res.kept), pluralWord(res.kept, "row", "rows"), pluralWord(res.kept, "is", "are"), pluralWord(res.kept, "it is", "they are"), pluralWord(res.kept, "it", "them"))
+		}
+	}
+	noteRestored(ctx, len(tr.picks), written)
+	fmt.Printf("   As of %s. The table's other rows are as the target had them.\n", tr.asOf.UTC().Format("2006-01-02 15:04:05 UTC"))
 	return nil
 }

@@ -17,14 +17,18 @@ import (
 // manifest and the schema sections, to check or create each table, then for
 // the chosen tables' rows. Each read is held to the snapshot's digest, and
 // the second one before the transaction commits.
-func restoreArchiveTables(ctx context.Context, provider storage.StorageProvider, meta *model.SnapshotMetadata, id, key, targetURL string, tables []string, noOwner bool) error {
+func restoreArchiveTables(ctx context.Context, provider storage.StorageProvider, meta *model.SnapshotMetadata, id, key, targetURL string, tables []string, db dbRestoreOptions) error {
 	if meta != nil && meta.SurfaceType != "" && meta.SurfaceType != model.SurfaceTypePostgres {
 		return fmt.Errorf("--table restores tables of a PostgreSQL snapshot; %s is a %s snapshot and restores whole", id, meta.SurfaceType)
 	}
 	if targetURL == "" || dump.SurfaceTypeOfURL(targetURL) != model.SurfaceTypePostgres {
 		return fmt.Errorf("--table restores into a PostgreSQL database: pass --target postgres://…")
 	}
-	fmt.Printf("Restoring %s from %s into %s\n", strings.Join(tables, ", "), id, dump.RedactURL(targetURL))
+	if db.Rows != "" {
+		fmt.Printf("Restoring the rows of %s matching %q from %s into %s\n", tables[0], db.Rows, id, dump.RedactURL(targetURL))
+	} else {
+		fmt.Printf("Restoring %s from %s into %s\n", strings.Join(tables, ", "), id, dump.RedactURL(targetURL))
+	}
 
 	var schema *dump.ArchiveSchema
 	if err := readArchive(ctx, provider, meta, id, key, func(r io.Reader) error {
@@ -42,7 +46,7 @@ func restoreArchiveTables(ctx context.Context, provider storage.StorageProvider,
 	if meta != nil && !meta.CreatedAt.IsZero() {
 		asOf = meta.CreatedAt
 	}
-	tr := &tableRestore{id: id, asOf: asOf, noOwner: noOwner, sections: func() (map[string]string, error) { return schema.Sections, nil }}
+	tr := &tableRestore{id: id, asOf: asOf, noOwner: db.NoOwner, where: db.Rows, overwrite: db.Overwrite, sections: func() (map[string]string, error) { return schema.Sections, nil }}
 	if err := tr.pick(schema.Manifest.TableStats, tables, func(p string) bool { return listed[p] }); err != nil {
 		return err
 	}
