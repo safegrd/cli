@@ -250,7 +250,7 @@ and never leaves this host.`,
 				var source *dump.ObjectStoreSource
 				if heldSource != nil {
 					if cmd.Flags().Changed("format") && ff == formatRepo {
-						return fmt.Errorf("this node backs up the bucket %s, which is backed up as one archive per run; leave out --format repo", filesPath)
+						return fmt.Errorf("this host backs up the bucket %s, which is backed up as one archive per run; leave out --format repo", filesPath)
 					}
 					ff, source = formatTar, heldSource
 				} else if bucket, prefix, isBucket := dump.ParseObjectStoreRoot(filesPath); isBucket {
@@ -968,7 +968,7 @@ func deliverSnapshotRecord(ctx context.Context, serverURL, token string, meta *m
 	}
 	warn("NOT RECORDED: %s rejected the report: HTTP %d %s\n"+
 		"                    The backup itself is fine and the manifest is beside it, but the\n"+
-		"                    console will show this node as never having backed up.",
+		"                    console will show this host as never having backed up.",
 		serverURL, resp.StatusCode, detail)
 	retry = resp.StatusCode >= 500 || resp.StatusCode == http.StatusTooManyRequests
 	return fmt.Sprintf("the remote server rejected the report: HTTP %d %s", resp.StatusCode, detail), retry

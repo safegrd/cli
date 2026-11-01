@@ -67,7 +67,7 @@ func SavePrivateKey(privateKey, path string) error {
 					"  That file is the only thing that can decrypt snapshots already written.\n"+
 					"  Replacing it would leave every one of them sealed to a key nothing here\n"+
 					"  holds, and nothing would report it until a restore failed.\n\n"+
-					"  Back it up, then remove it deliberately if you really mean to start over",
+					"  Back it up, then remove it deliberately if you mean to start over",
 				path)
 		}
 		return fmt.Errorf("failed to write private key to %s: %w", path, err)

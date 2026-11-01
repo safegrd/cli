@@ -185,7 +185,7 @@ file:/path, which keeps the token out of 'ps' and shell history.`,
 				case nodeIDFlag != "":
 					cfg.NodeID = nodeIDFlag
 				case !hostAlreadyHadNodeID:
-					return fmt.Errorf("a node token authenticates one existing node, and this host "+
+					return fmt.Errorf("a node token authenticates one host that is already enrolled, and this host "+
 						"has no node id of its own yet, so there is nothing to attach the token to.\n"+
 						"  Pass --node-id <id> (the console shows it beside the token) or enroll with a\n"+
 						"  personal access token (sg_pat_...), which registers a new node and issues its\n"+
@@ -206,7 +206,7 @@ file:/path, which keeps the token out of 'ps' and shell history.`,
 				switch {
 				case status == http.StatusUnauthorized || status == http.StatusForbidden:
 					return fmt.Errorf("the remote server refused this token for node %s (HTTP %d).\n"+
-						"  A node token only authenticates the node it was issued for, so either the id\n"+
+						"  A node token only authenticates the host it was issued for, so either the id\n"+
 						"  is not the one the token belongs to, or the token has been revoked.\n"+
 						"  Nothing was changed: no config was written",
 						cfg.NodeID, status)
@@ -216,7 +216,7 @@ file:/path, which keeps the token out of 'ps' and shell history.`,
 					// rather than refused.
 					fmt.Fprintf(os.Stderr, "Warning: could not check the token: %v\n", err)
 					fmt.Fprintf(os.Stderr, "   The config is written without that check. Run 'safegrd doctor' once\n")
-					fmt.Fprintf(os.Stderr, "   the remote server is reachable to confirm this node is enrolled.\n")
+					fmt.Fprintf(os.Stderr, "   the remote server is reachable to confirm this host is enrolled.\n")
 				default:
 					fmt.Printf("Node token accepted\n")
 					fmt.Printf("   Node:        %s\n", cfg.NodeID)
@@ -430,12 +430,12 @@ file:/path, which keeps the token out of 'ps' and shell history.`,
 				if escrowRequested && !regResp.KeyEscrowed {
 					w := os.Stderr
 					fmt.Fprintf(w, "\nError: the remote server did not store the encryption key.\n\n")
-					fmt.Fprintf(w, "   This node is enrolled, and the key below is only in this file:\n")
+					fmt.Fprintf(w, "   This host is enrolled, and the key below is only in this file:\n")
 					fmt.Fprintf(w, "   %s\n\n", cfg.Encryption.KeyPath)
-					fmt.Fprintf(w, "   Save a copy now. It is the only key that decrypts this node's backups.\n\n")
+					fmt.Fprintf(w, "   Save a copy now. It is the only key that decrypts this host's backups.\n\n")
 					fmt.Fprintf(w, "   Public key:  %s\n", cfg.Encryption.PublicKey)
 					fmt.Fprintf(w, "   Fingerprint: %s\n", crypto.Fingerprint(cfg.Encryption.PublicKey))
-					return fmt.Errorf("enrollment completed but key escrow failed: save the key above before running a backup")
+					return fmt.Errorf("enrolled, but the remote server did not store the key: save the key above before running a backup")
 				}
 
 				fmt.Printf("Enrolled node %s as '%s'\n", regResp.NodeID, name)
@@ -496,12 +496,12 @@ file:/path, which keeps the token out of 'ps' and shell history.`,
 
 	cmd.Flags().StringVar(&token, "token", "", "Personal access token (sg_pat_...) or node token (sg_tok_...), as env:VAR, file:/path or the token")
 	cmd.Flags().StringVar(&nodeName, "node-name", "", "Name this host is shown under (default: the hostname)")
-	cmd.Flags().StringVar(&projectID, "project", "", "Project ID or slug to attach this node to (default: the organization's default project)")
+	cmd.Flags().StringVar(&projectID, "project", "", "Project ID or slug to attach this host to (default: the organization's default project)")
 	cmd.Flags().StringVar(&nodeIDFlag, "node-id", "",
 		"The node this token belongs to, for --token. The console shows it beside the token. "+
 			"Not needed with a personal access token, which registers a new node.")
 	cmd.Flags().StringVar(&orgID, "org", "",
-		"Organization to enroll this node into. Only needed when the credential can see more than one: "+
+		"Organization to enroll this host into. Only needed when the credential can see more than one: "+
 			"with a single organization it is resolved automatically.")
 	cmd.Flags().StringVar(&claimCode, "claim", "",
 		"The code the console shows for this host. It names the project and the surfaces to protect; "+
@@ -636,7 +636,7 @@ func adoptNodeKey(ctx context.Context, c *config.CLIConfig, generatedHere bool) 
 	}
 	c.Encryption.PublicKey, c.Encryption.PrivateKey = recorded, identity
 	c.Encryption.Custody = config.KeyCustodySafeGrd
-	fmt.Printf("   Key:         %s, the node's SafeGrd-managed key, written to %s (mode 0600)\n", crypto.Fingerprint(recorded), keyPath)
+	fmt.Printf("   Key:         %s, the host's SafeGrd-managed key, written to %s (mode 0600)\n", crypto.Fingerprint(recorded), keyPath)
 	return nil
 }
 
@@ -725,8 +725,8 @@ func resolveEnrollmentOrg(serverURL, credential string) (string, error) {
 		for _, o := range orgs {
 			lines.WriteString(fmt.Sprintf("\n    %s  %s", o.ID, o.Name))
 		}
-		return "", fmt.Errorf("this credential can see %d organizations, so which one this node "+
-			"belongs to is not ours to choose. Re-run with --org <id>:%s", len(orgs), lines.String())
+		return "", fmt.Errorf("this credential can see %d organizations. "+
+			"Re-run with --org <id> to choose the one this host belongs to:%s", len(orgs), lines.String())
 	}
 }
 

@@ -438,7 +438,7 @@ func newVerifyHistoryCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "history",
-		Short: "Check a node's attestation chain and Ed25519 signatures",
+		Short: "Check a host's attestation chain and Ed25519 signatures",
 		Long: `Checks a node's attestation records, fetched from the remote server or read from
 a file with --file:
 

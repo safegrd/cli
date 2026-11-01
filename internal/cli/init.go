@@ -131,7 +131,7 @@ they are, so it can run after 'safegrd enroll'.`,
 						"  settings and credentials already there, and repoint key_path at a newly\n"+
 						"  generated key, leaving every existing snapshot sealed to a key the config\n"+
 						"  no longer names.\n\n"+
-						"  Edit that file directly, or pass --force if you really mean to start over\n"+
+						"  Edit that file directly, or pass --force if you mean to start over\n"+
 						"  (back up the key it currently names first)", targetPath)
 			}
 
