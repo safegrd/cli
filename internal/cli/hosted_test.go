@@ -39,6 +39,10 @@ type fakeHosted struct {
 	// the plan's range does; asked records each lock the host asked for.
 	keep  time.Time
 	asked []time.Time
+	// limit makes each call to the remote server that runs an upload answer
+	// 429 the first time, as the per-address limit does in a burst.
+	limit   bool
+	limited map[string]bool
 }
 
 func newFakeHosted(t *testing.T) *fakeHosted {
@@ -86,6 +90,10 @@ func (f *fakeHosted) serve(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(b)
 	case r.Header.Get("Authorization") != "Bearer sg_tok_1":
 		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
+	case f.limit && strings.HasPrefix(r.URL.Path, api+"/uploads") && f.firstCall(r.URL.Path):
+		w.Header().Set("Retry-After", "60")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":"Too many requests. Try again in a minute."}`))
 	case r.URL.Path == api+"/uploads":
 		var req struct {
 			RetainUntil time.Time `json:"retain_until"`
@@ -150,6 +158,18 @@ func (f *fakeHosted) serve(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+// firstCall reports whether path is asked for the first time.
+func (f *fakeHosted) firstCall(path string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.limited == nil {
+		f.limited = map[string]bool{}
+	}
+	first := !f.limited[path]
+	f.limited[path] = true
+	return first
 }
 
 func (f *fakeHosted) provider(t *testing.T) *hostedProvider {
@@ -316,6 +336,39 @@ func TestTheFirstHostedCallWaitsOutARateLimit(t *testing.T) {
 	}
 	if info.RetentionDays != 14 || st.RetentionDays != 14 || atomic.LoadInt32(&asked) != 3 {
 		t.Errorf("retention %d (config %d) after %d requests, want 14 after 3", info.RetentionDays, st.RetentionDays, asked)
+	}
+}
+
+// A backup's manifest is uploaded after its archive, when a burst of
+// commands on one address has spent the limit. Starting the upload, asking
+// for a part's URL and completing it each failed on one 429: the backup
+// printed a warning and passed, and its restore, with no manifest to say the
+// snapshot was MongoDB, refused the target as not a PostgreSQL database.
+func TestAnUploadWaitsOutARateLimitAtEveryStep(t *testing.T) {
+	f := newFakeHosted(t)
+	f.limit = true
+	saved := hostedRetryPause
+	hostedRetryPause = time.Millisecond
+	defer func() { hostedRetryPause = saved }()
+	p := f.provider(t)
+	data := make([]byte, 1<<20+10)
+	_, _ = rand.Read(data)
+	if _, err := p.UploadSnapshot(context.Background(), "snap-1", bytes.NewReader(data), -1, time.Time{}); err != nil {
+		t.Fatalf("an upload refused once at each step: %v", err)
+	}
+	for _, path := range []string{"/uploads", "/uploads/hup_1/parts", "/uploads/hup_1/complete"} {
+		if !f.limited["/api/v1/nodes/node-1/hosted"+path] {
+			t.Errorf("%s was never refused, so the test proves nothing about it", path)
+		}
+	}
+	rc, err := p.DownloadSnapshot(context.Background(), "snap-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, _ := io.ReadAll(rc)
+	rc.Close()
+	if !bytes.Equal(back, data) || f.aborted != 0 {
+		t.Fatalf("read back %d bytes of %d, %d upload(s) aborted", len(back), len(data), f.aborted)
 	}
 }
 

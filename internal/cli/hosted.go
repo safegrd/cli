@@ -424,12 +424,15 @@ const hostedBufferBudget = 128 << 20
 // upload streams r to hosted storage as a multipart upload: it reads a part,
 // asks the remote server for a URL signed for exactly that part's length, and
 // PUTs it, with several parts in flight at once. Any failure aborts the upload,
-// so nothing half-written is left to be billed or mistaken for a backup.
+// so nothing half-written is left to be billed or mistaken for a backup. Each
+// call to the remote server waits out a 429 as callRetry does: a burst of
+// commands on one address used to fail the manifest's upload, so the backup
+// passed and its restore could not tell what the snapshot was.
 // It returns the lock the remote server set, which may differ from the one
 // asked for.
 func (p *hostedProvider) upload(ctx context.Context, nodeID, name string, r io.Reader, retainUntil time.Time) (uri string, kept, keptUntil time.Time, locked bool, err error) {
 	var up hostedUpload
-	if err := p.client.call(ctx, http.MethodPost, "/uploads", map[string]any{
+	if err := p.client.callRetry(ctx, http.MethodPost, "/uploads", map[string]any{
 		"node_id": nodeID, "name": name, "retain_until": retainUntil,
 	}, &up); err != nil {
 		return "", time.Time{}, time.Time{}, false, err
@@ -512,7 +515,7 @@ func (p *hostedProvider) sendUpload(ctx context.Context, up hostedUpload, name s
 		StorageURI string `json:"storage_uri"`
 		Bytes      int64  `json:"bytes"`
 	}
-	if err := p.client.call(context.WithoutCancel(ctx), http.MethodPost, "/uploads/"+up.UploadID+"/complete", nil, &done); err != nil {
+	if err := p.client.callRetry(context.WithoutCancel(ctx), http.MethodPost, "/uploads/"+up.UploadID+"/complete", nil, &done); err != nil {
 		return "", err
 	}
 	if done.Bytes != total {
@@ -527,7 +530,7 @@ func (p *hostedProvider) sendUpload(ctx context.Context, up hostedUpload, name s
 func (p *hostedProvider) abort(uploadID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := p.client.call(ctx, http.MethodPost, "/uploads/"+uploadID+"/abort", nil, nil); err != nil {
+	if err := p.client.callRetry(ctx, http.MethodPost, "/uploads/"+uploadID+"/abort", nil, nil); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: hosted storage: could not abort the failed upload (%v); the remote server will clean it up\n", err)
 	}
 }
@@ -575,7 +578,7 @@ func (p *hostedProvider) putPart(ctx context.Context, uploadID string, part int3
 		var grant struct {
 			Parts []hostedPartURL `json:"parts"`
 		}
-		err := p.client.call(ctx, http.MethodPost, "/uploads/"+uploadID+"/parts", map[string]any{
+		err := p.client.callRetry(ctx, http.MethodPost, "/uploads/"+uploadID+"/parts", map[string]any{
 			"parts": []map[string]any{{"part_number": part, "size": len(data)}},
 		}, &grant)
 		if err != nil {
