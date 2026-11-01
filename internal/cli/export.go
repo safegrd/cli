@@ -67,7 +67,7 @@ first run's objects carry.`,
 	cmd.Flags().StringVar(&toPrefix, "to-prefix", "safegrd/snapshots", "Key prefix in --to-bucket")
 	cmd.Flags().StringVar(&toWORM, "to-worm-mode", "COMPLIANCE", "Object Lock mode in --to-bucket: COMPLIANCE, GOVERNANCE or NONE")
 	cmd.Flags().StringSliceVar(&onlySnapshots, "snapshot", nil, "Export only this snapshot ID (repeatable)")
-	cmd.Flags().StringSliceVar(&onlyNodes, "node", nil, "Export only this host's snapshots, by node id (repeatable)")
+	cmd.Flags().StringSliceVar(&onlyNodes, "node", nil, "Export only the snapshots of the hosts with these node ids (repeatable)")
 	return cmd
 }
 
