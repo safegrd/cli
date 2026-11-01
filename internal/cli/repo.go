@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/safegrd/cli/pkg/config"
@@ -491,80 +492,247 @@ type lister interface {
 	Surfaces(ctx context.Context) ([]string, error)
 }
 
-// findRepoSnapshot looks for snapshotID among the repositories in storage.
-// It returns nil, nil when there is none of that id.
-func findRepoSnapshot(ctx context.Context, b sink.Backend, snapshotID string) (*repoSnapshot, error) {
-	if sink.ValidSnapshotName(snapshotID) != nil {
-		return nil, nil
+// epochLister is a backend that lists every surface's epochs in one call.
+type epochLister interface {
+	AllEpochs(ctx context.Context) (map[string][]sink.EpochInfo, error)
+}
+
+// prefetcher is a backend that prepares many reads in one request.
+type prefetcher interface {
+	Prefetch(ctx context.Context, keys []string) error
+}
+
+// readsAtOnce bounds the reads of one listing in flight: hosted storage is
+// a request to the remote server and one to the bucket per object, so
+// sequential reads cost a round trip each.
+const readsAtOnce = 8
+
+// eachAtOnce runs fn for 0..n-1, at most limit at a time, and returns the
+// error of the lowest index that failed, as a loop would have.
+func eachAtOnce(ctx context.Context, n, limit int, fn func(ctx context.Context, i int) error) error {
+	errs := make([]error, n)
+	sem := make(chan struct{}, limit)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		if ctx.Err() != nil {
+			errs[i] = ctx.Err()
+			break
+		}
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(i int) {
+			defer func() { <-sem; wg.Done() }()
+			errs[i] = fn(ctx, i)
+		}(i)
+	}
+	wg.Wait()
+	for _, err := range errs {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// repoEpochs is every surface in b and its epochs. Hosted storage answers in
+// one listing; it was asked once for the surfaces and again for each one.
+func repoEpochs(ctx context.Context, b sink.Backend) ([]string, map[string][]sink.EpochInfo, error) {
+	if al, ok := b.(epochLister); ok {
+		m, err := al.AllEpochs(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		surfaces := make([]string, 0, len(m))
+		for s := range m {
+			surfaces = append(surfaces, s)
+		}
+		sort.Strings(surfaces)
+		return surfaces, m, nil
 	}
 	l, ok := b.(lister)
 	if !ok {
-		return nil, nil
+		return nil, nil, nil
 	}
 	surfaces, err := l.Surfaces(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	m := make(map[string][]sink.EpochInfo, len(surfaces))
 	for _, s := range surfaces {
 		es, err := b.Epochs(ctx, s)
 		if err != nil {
+			return nil, nil, err
+		}
+		m[s] = es
+	}
+	return surfaces, m, nil
+}
+
+// findRepoSnapshot looks for snapshotID among the repositories in storage.
+// It returns nil, nil when there is none of that id. epochHint, the epoch
+// the remote server recorded, is tried first: every other guess at an epoch
+// is a read of an object that is not there, which on hosted storage is a
+// signing request the remote server answers with 404.
+func findRepoSnapshot(ctx context.Context, b sink.Backend, snapshotID, epochHint string) (*repoSnapshot, error) {
+	if sink.ValidSnapshotName(snapshotID) != nil {
+		return nil, nil
+	}
+	surfaces, epochs, err := repoEpochs(ctx, b)
+	if err != nil {
+		return nil, err
+	}
+	type candidate struct {
+		surface string
+		e       sink.EpochInfo
+	}
+	var hinted, rest []candidate
+	for _, s := range surfaces {
+		for _, e := range epochs[s] {
+			if epochHint != "" && e.Epoch.EpochID == epochHint {
+				hinted = append(hinted, candidate{s, e})
+			} else {
+				rest = append(rest, candidate{s, e})
+			}
+		}
+	}
+	for _, cand := range append(hinted, rest...) {
+		key, _ := sink.ObjectKey(cand.e.Prefix, sink.KindMeta, snapshotID)
+		body, err := b.Get(ctx, key)
+		if errors.Is(err, sink.ErrNotFound) {
+			continue
+		}
+		if err != nil {
 			return nil, err
 		}
-		for _, e := range es {
-			key, _ := sink.ObjectKey(e.Prefix, sink.KindMeta, snapshotID)
-			body, err := b.Get(ctx, key)
-			if errors.Is(err, sink.ErrNotFound) {
-				continue
-			}
-			if err != nil {
-				return nil, err
-			}
-			var m model.SnapshotMetadata
-			if err := json.Unmarshal(body, &m); err != nil {
-				return nil, fmt.Errorf("the sidecar of %s does not parse: %w", snapshotID, err)
-			}
-			return &repoSnapshot{Backend: b, Epoch: e, SurfaceID: s, Meta: &m}, nil
+		var m model.SnapshotMetadata
+		if err := json.Unmarshal(body, &m); err != nil {
+			return nil, fmt.Errorf("the sidecar of %s does not parse: %w", snapshotID, err)
 		}
+		return &repoSnapshot{Backend: b, Epoch: cand.e, SurfaceID: cand.surface, Meta: &m}, nil
 	}
 	return nil, nil
 }
 
-// repoSnapshots lists every repository snapshot in storage with its sidecar.
-func repoSnapshots(ctx context.Context, b sink.Backend) ([]repoSnapshot, error) {
-	l, ok := b.(lister)
-	if !ok {
-		return nil, nil
+// repoSnapshotIDs lists every repository snapshot in storage by its listing
+// alone, without reading a sidecar, in surface and epoch order.
+func repoSnapshotIDs(ctx context.Context, b sink.Backend) ([]repoSnapshot, []string, error) {
+	surfaces, epochs, err := repoEpochs(ctx, b)
+	if err != nil {
+		return nil, nil, err
 	}
-	surfaces, err := l.Surfaces(ctx)
+	return repoSnapshotIDsIn(ctx, b, surfaces, epochs)
+}
+
+// repoSnapshotIDsIn is repoSnapshotIDs for the epochs given.
+func repoSnapshotIDsIn(ctx context.Context, b sink.Backend, surfaces []string, epochs map[string][]sink.EpochInfo) ([]repoSnapshot, []string, error) {
+	type epochOf struct {
+		surface string
+		e       sink.EpochInfo
+	}
+	var all []epochOf
+	for _, s := range surfaces {
+		for _, e := range epochs[s] {
+			all = append(all, epochOf{s, e})
+		}
+	}
+	ids := make([][]string, len(all))
+	if err := eachAtOnce(ctx, len(all), readsAtOnce, func(ctx context.Context, i int) error {
+		var err error
+		ids[i], err = check.Snapshots(ctx, b, all[i].e)
+		return err
+	}); err != nil {
+		return nil, nil, err
+	}
+	var out []repoSnapshot
+	var snapIDs []string
+	for i, eo := range all {
+		for _, id := range ids[i] {
+			out = append(out, repoSnapshot{Backend: b, Epoch: eo.e, SurfaceID: eo.surface})
+			snapIDs = append(snapIDs, id)
+		}
+	}
+	return out, snapIDs, nil
+}
+
+// repoSnapshots lists every repository snapshot in storage with its sidecar.
+// The sidecars are signed in one request where the backend can, and read
+// readsAtOnce at a time: read one by one, 14 of them took doctor's whole
+// 10 seconds from a host far from the bucket.
+func repoSnapshots(ctx context.Context, b sink.Backend) ([]repoSnapshot, error) {
+	out, ids, err := repoSnapshotIDs(ctx, b)
 	if err != nil {
 		return nil, err
 	}
-	var out []repoSnapshot
-	for _, s := range surfaces {
-		es, err := b.Epochs(ctx, s)
+	return withSidecars(ctx, b, out, ids)
+}
+
+// surfaceRepoSnapshots is repoSnapshots for one surface's epochs.
+func surfaceRepoSnapshots(ctx context.Context, b sink.Backend, surfaceID string, epochs []sink.EpochInfo) ([]repoSnapshot, error) {
+	out, ids, err := repoSnapshotIDsIn(ctx, b, []string{surfaceID}, map[string][]sink.EpochInfo{surfaceID: epochs})
+	if err != nil {
+		return nil, err
+	}
+	return withSidecars(ctx, b, out, ids)
+}
+
+// withSidecars reads each listed snapshot's sidecar into its row.
+func withSidecars(ctx context.Context, b sink.Backend, out []repoSnapshot, ids []string) ([]repoSnapshot, error) {
+	keys := make([]string, len(ids))
+	for i, id := range ids {
+		keys[i], _ = sink.ObjectKey(out[i].Epoch.Prefix, sink.KindMeta, id)
+	}
+	if p, ok := b.(prefetcher); ok && len(keys) > 0 {
+		// A batch that fails leaves each read to ask on its own, and to
+		// report its own error.
+		_ = p.Prefetch(ctx, keys)
+	}
+	if err := eachAtOnce(ctx, len(keys), readsAtOnce, func(ctx context.Context, i int) error {
+		body, err := b.Get(ctx, keys[i])
 		if err != nil {
-			return nil, err
+			return err
 		}
-		for _, e := range es {
-			ids, err := check.Snapshots(ctx, b, e)
-			if err != nil {
-				return nil, err
-			}
-			for _, id := range ids {
-				key, _ := sink.ObjectKey(e.Prefix, sink.KindMeta, id)
-				body, err := b.Get(ctx, key)
-				if err != nil {
-					return nil, err
-				}
-				var m model.SnapshotMetadata
-				if err := json.Unmarshal(body, &m); err != nil {
-					return nil, fmt.Errorf("the sidecar of %s does not parse: %w", id, err)
-				}
-				out = append(out, repoSnapshot{Backend: b, Epoch: e, SurfaceID: s, Meta: &m})
-			}
+		var m model.SnapshotMetadata
+		if err := json.Unmarshal(body, &m); err != nil {
+			return fmt.Errorf("the sidecar of %s does not parse: %w", ids[i], err)
 		}
+		out[i].Meta = &m
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 	return out, nil
+}
+
+// repoSnapshotCount counts the repository snapshots in storage from the
+// listings, and reads the newest one's sidecar so a key that lists but
+// cannot read still fails.
+func repoSnapshotCount(ctx context.Context, storageCfg config.StorageConfig) (int, error) {
+	bs, err := repoBackendsAll(ctx, storageCfg)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, b := range bs {
+		rows, ids, err := repoSnapshotIDs(ctx, b)
+		if err != nil {
+			return n, fmt.Errorf("listing the repository in %s: %w", b.Describe(), err)
+		}
+		if len(ids) == 0 {
+			continue
+		}
+		newest := len(ids) - 1
+		for i := range ids {
+			if ids[i] > ids[newest] {
+				newest = i
+			}
+		}
+		key, _ := sink.ObjectKey(rows[newest].Epoch.Prefix, sink.KindMeta, ids[newest])
+		if _, err := b.Get(ctx, key); err != nil {
+			return n, fmt.Errorf("reading %s in %s: %w", ids[newest], b.Describe(), err)
+		}
+		n += len(ids)
+	}
+	return n, nil
 }
 
 // restoreRepoSnapshot restores a repository snapshot, all of it or the paths
@@ -817,13 +985,15 @@ func repoBackendsAll(ctx context.Context, storageCfg config.StorageConfig) ([]si
 }
 
 // locateRepoSnapshot finds snapshotID in any repository under this storage.
+// The remote server's record names the epoch, when this host can ask it.
 func locateRepoSnapshot(ctx context.Context, storageCfg config.StorageConfig, snapshotID string) (*repoSnapshot, error) {
 	bs, err := repoBackendsAll(ctx, storageCfg)
 	if err != nil {
 		return nil, err
 	}
+	hint := recordedEpochID(ctx, cfg, snapshotID)
 	for _, b := range bs {
-		rs, err := findRepoSnapshot(ctx, b, snapshotID)
+		rs, err := findRepoSnapshot(ctx, b, snapshotID, hint)
 		if rs != nil {
 			rs.StorageCfg = &storageCfg
 		}

@@ -65,7 +65,7 @@ func nodeOfKey(prefix, key string) (id, node string, ok bool) {
 
 func (s *S3StorageProvider) SnapshotNodes(ctx context.Context) (map[string]string, error) {
 	out := map[string]string{}
-	versions, err := s.listVersions(ctx, s.prefix+"/")
+	versions, err := s.snapshotVersions(ctx)
 	if err == nil {
 		for _, v := range versions {
 			if v.IsMarker {

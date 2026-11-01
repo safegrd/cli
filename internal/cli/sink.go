@@ -51,6 +51,12 @@ type nodeSinkResponse struct {
 }
 
 func fetchNodeSink(ctx context.Context, serverURL, nodeID, token string) (*nodeSinkResponse, error) {
+	return memoized(ctx, "sink\x00"+serverURL+"\x00"+nodeID+"\x00"+token, func() (*nodeSinkResponse, error) {
+		return fetchNodeSinkOnce(ctx, serverURL, nodeID, token)
+	})
+}
+
+func fetchNodeSinkOnce(ctx context.Context, serverURL, nodeID, token string) (*nodeSinkResponse, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("%s/api/v1/nodes/%s/sink", serverURL, nodeID), nil)
 	if err != nil {
 		return nil, err

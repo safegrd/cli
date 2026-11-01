@@ -444,8 +444,9 @@ func runDoctorChecks(path string, c *config.CLIConfig) []CheckResult {
 		})
 	}
 
-	// 2. Storage Sink Writability & Object Lock check
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// 2. Storage Sink Writability & Object Lock check. The project's bucket
+	// is asked for by three checks; the memo asks the remote server once.
+	ctx, cancel := context.WithTimeout(withNodeMemo(context.Background()), 10*time.Second)
 	defer cancel()
 
 	// Checked the way a backup uses it: the project's bucket when the remote
@@ -509,11 +510,21 @@ func runDoctorChecks(path string, c *config.CLIConfig) []CheckResult {
 		// prefix that holds nothing this host took, shows here. Incremental
 		// runs live in repositories beside the single-archive snapshots and
 		// are the default format, so both are counted.
-		if snaps, err := stProvider.ListSnapshots(ctx); err != nil {
+		// The repositories are counted from their listings, with a
+		// deadline of their own: reading every snapshot's sidecar of the
+		// organization spent the 10 seconds every later check shared.
+		rctx, rcancel := context.WithTimeout(context.Background(), 30*time.Second)
+		snaps, err := stProvider.ListSnapshots(rctx)
+		var inRepos int
+		if err == nil {
+			inRepos, err = repoSnapshotCount(rctx, stCfg)
+		}
+		rcancel()
+		if err != nil {
 			results = append(results, CheckResult{Name: "Storage Read", Status: "FAIL",
 				Message: fmt.Sprintf("could not list snapshots in %s storage: %v", stCfg.Type, err)})
 		} else {
-			n := len(snaps) + len(listRepoSnapshots(ctx, stCfg))
+			n := len(snaps) + inRepos
 			results = append(results, CheckResult{Name: "Storage Read", Status: "PASS",
 				Message: fmt.Sprintf("%s storage readable, %d %s", stCfg.Type, n, pluralWord(int64(n), "snapshot", "snapshots"))})
 		}
@@ -571,9 +582,10 @@ func runDoctorChecks(path string, c *config.CLIConfig) []CheckResult {
 	serverURL := resolveServerURLFor(c)
 	var resp *http.Response
 	if c.ServerToken != "" {
-		resp, err = http.Get(serverURL + "/health")
+		probe := &http.Client{Timeout: 10 * time.Second}
+		resp, err = probe.Get(serverURL + "/health")
 		if err != nil {
-			resp, err = http.Get(serverURL + "/api/v1/plans")
+			resp, err = probe.Get(serverURL + "/api/v1/plans")
 		}
 	}
 	if c.ServerToken == "" {
@@ -619,7 +631,9 @@ func runDoctorChecks(path string, c *config.CLIConfig) []CheckResult {
 		}
 	}
 
-	results = append(results, nodeRecordChecks(ctx, c)...)
+	nctx, ncancel := context.WithTimeout(context.Background(), 10*time.Second)
+	results = append(results, nodeRecordChecks(nctx, c)...)
+	ncancel()
 
 	// 4. Surface Target Reachability
 	for _, s := range c.Surfaces {

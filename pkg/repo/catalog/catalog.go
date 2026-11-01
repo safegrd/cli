@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 	"time"
 
 	"filippo.io/age"
@@ -77,6 +78,15 @@ type cachedRun struct {
 	Catalog  format.Catalog `json:"catalog"`
 }
 
+// loadsAtOnce bounds the snapshots read at once: each is two reads from
+// storage, and over the network one at a time cost two round trips each.
+const loadsAtOnce = 8
+
+// prefetcher is a backend that prepares many reads in one request.
+type prefetcher interface {
+	Prefetch(ctx context.Context, keys []string) error
+}
+
 // load returns every retained snapshot of the source with its catalog, in
 // snapshot order.
 func (s Source) load(ctx context.Context) ([]cachedRun, error) {
@@ -91,52 +101,101 @@ func (s Source) load(ctx context.Context) ([]cachedRun, error) {
 		if err != nil {
 			return nil, err
 		}
+		got := make([]*cachedRun, len(ids))
+		var cold []int
+		for i, id := range ids {
+			if s.CacheDir == "" {
+				cold = append(cold, i)
+				continue
+			}
+			if b, err := os.ReadFile(s.cachePath(e, id)); err == nil {
+				var cr cachedRun
+				if json.Unmarshal(b, &cr) == nil && cr.Snapshot.SnapshotID == id {
+					got[i] = &cr
+					continue
+				}
+			}
+			cold = append(cold, i)
+		}
+		if p, ok := s.Backend.(prefetcher); ok && len(cold) > 1 {
+			// The snapshot objects by id, and the catalogs by their
+			// listing: a catalog is named for its run, which only the
+			// snapshot object says. A batch that fails leaves each read to
+			// ask on its own.
+			var keys []string
+			for _, i := range cold {
+				k, _ := sink.ObjectKey(e.Prefix, sink.KindSnapshot, ids[i])
+				keys = append(keys, k)
+			}
+			if objs, err := s.Backend.List(ctx, e, "catalog"); err == nil {
+				for _, o := range objs {
+					keys = append(keys, o.Key)
+				}
+			}
+			_ = p.Prefetch(ctx, keys)
+		}
 		r := read.Open(s.Backend, e, s.IDs)
-		for _, id := range ids {
-			cachePath := ""
-			if s.CacheDir != "" {
-				cachePath = filepath.Join(s.CacheDir, e.Epoch.EpochID+"-"+id+".json")
-				if b, err := os.ReadFile(cachePath); err == nil {
-					var cr cachedRun
-					if json.Unmarshal(b, &cr) == nil && cr.Snapshot.SnapshotID == id {
-						runs = append(runs, cr)
-						continue
-					}
-				}
-			}
-			snap, err := r.Snapshot(ctx, id)
+		errs := make([]error, len(cold))
+		sem := make(chan struct{}, loadsAtOnce)
+		var wg sync.WaitGroup
+		for j, i := range cold {
+			sem <- struct{}{}
+			wg.Add(1)
+			go func(j, i int) {
+				defer func() { <-sem; wg.Done() }()
+				got[i], errs[j] = s.loadRun(ctx, r, e, ids[i])
+			}(j, i)
+		}
+		wg.Wait()
+		for _, err := range errs {
 			if err != nil {
 				return nil, err
 			}
-			key, _ := sink.ObjectKey(e.Prefix, sink.KindCatalog, snap.RunID)
-			body, err := s.Backend.Get(ctx, key)
-			if errors.Is(err, sink.ErrNotFound) {
-				return nil, fmt.Errorf("snapshot %s has no catalog in storage", id)
-			}
-			if err != nil {
-				return nil, err
-			}
-			var c format.Catalog
-			if err := unseal.Object(body, s.IDs, &c); err != nil {
-				return nil, fmt.Errorf("the catalog of %s: %w", id, err)
-			}
-			if err := c.Validate(); err != nil {
-				return nil, err
-			}
-			if c.SnapshotID != id || c.RunID != snap.RunID {
-				return nil, fmt.Errorf("the catalog of run %s names snapshot %s, not %s", snap.RunID, c.SnapshotID, id)
-			}
-			cr := cachedRun{Snapshot: Snapshot{SnapshotID: id, EpochID: e.Epoch.EpochID, RunID: snap.RunID, CreatedAt: snap.CreatedAt, Class: snap.Class}, Catalog: c}
-			if cachePath != "" {
-				if b, err := json.Marshal(cr); err == nil {
-					_ = os.WriteFile(cachePath, b, 0o600) // a cache: the next search reads storage again without it
-				}
-			}
-			runs = append(runs, cr)
+		}
+		for _, cr := range got {
+			runs = append(runs, *cr)
 		}
 	}
 	sort.SliceStable(runs, func(i, j int) bool { return runs[i].Snapshot.CreatedAt.Before(runs[j].Snapshot.CreatedAt) })
 	return runs, nil
+}
+
+func (s Source) cachePath(e sink.EpochInfo, id string) string {
+	return filepath.Join(s.CacheDir, e.Epoch.EpochID+"-"+id+".json")
+}
+
+// loadRun reads one snapshot object and its catalog from storage, and keeps
+// them in the cache when there is one.
+func (s Source) loadRun(ctx context.Context, r *read.Repo, e sink.EpochInfo, id string) (*cachedRun, error) {
+	snap, err := r.Snapshot(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	key, _ := sink.ObjectKey(e.Prefix, sink.KindCatalog, snap.RunID)
+	body, err := s.Backend.Get(ctx, key)
+	if errors.Is(err, sink.ErrNotFound) {
+		return nil, fmt.Errorf("snapshot %s has no catalog in storage", id)
+	}
+	if err != nil {
+		return nil, err
+	}
+	var c format.Catalog
+	if err := unseal.Object(body, s.IDs, &c); err != nil {
+		return nil, fmt.Errorf("the catalog of %s: %w", id, err)
+	}
+	if err := c.Validate(); err != nil {
+		return nil, err
+	}
+	if c.SnapshotID != id || c.RunID != snap.RunID {
+		return nil, fmt.Errorf("the catalog of run %s names snapshot %s, not %s", snap.RunID, c.SnapshotID, id)
+	}
+	cr := &cachedRun{Snapshot: Snapshot{SnapshotID: id, EpochID: e.Epoch.EpochID, RunID: snap.RunID, CreatedAt: snap.CreatedAt, Class: snap.Class}, Catalog: c}
+	if s.CacheDir != "" {
+		if b, err := json.Marshal(cr); err == nil {
+			_ = os.WriteFile(s.cachePath(e, id), b, 0o600) // a cache: the next search reads storage again without it
+		}
+	}
+	return cr, nil
 }
 
 type open struct {

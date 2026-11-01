@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/safegrd/cli/pkg/repo/format"
 	"github.com/safegrd/cli/pkg/repo/sink"
 )
 
@@ -34,6 +35,10 @@ type fakeRepoHosted struct {
 	uploadedScript []int
 	uploadedCalls  int
 	epochClosed    bool
+	// epochs is what GET /repo/epochs answers; epochLists and objectLists
+	// count the listings.
+	epochs                  []map[string]any
+	epochLists, objectLists int
 }
 
 func newFakeRepoHosted(t *testing.T) *fakeRepoHosted {
@@ -72,8 +77,34 @@ func (f *fakeRepoHosted) serve(w http.ResponseWriter, r *http.Request) {
 		f.downloads++
 		var objs []map[string]any
 		for _, k := range req.Keys {
+			// As the remote server does: a key it holds no object for is
+			// refused, and nothing in the request is signed.
+			if _, ok := f.objects[k]; !ok {
+				w.WriteHeader(http.StatusNotFound)
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": "No such object in hosted storage: " + k})
+				return
+			}
 			objs = append(objs, map[string]any{"key": k, "url": f.srv.URL + "/bucket/get?k=" + k, "size": len(f.objects[k]),
 				"expires_at": time.Now().Add(time.Hour)})
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"objects": objs})
+	case r.URL.Path == api+"/repo/epochs" && r.Method == http.MethodGet:
+		f.epochLists++
+		_ = json.NewEncoder(w).Encode(map[string]any{"epochs": f.epochs})
+	case strings.HasPrefix(r.URL.Path, api+"/repo/epochs/") && strings.HasSuffix(r.URL.Path, "/objects"):
+		f.objectLists++
+		id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, api+"/repo/epochs/"), "/objects")
+		var prefix string
+		for _, e := range f.epochs {
+			if strings.Contains(string(e["epoch"].(json.RawMessage)), `"`+id+`"`) {
+				prefix = e["prefix"].(string) + "/" + r.URL.Query().Get("sub") + "/"
+			}
+		}
+		objs := []map[string]any{}
+		for k, b := range f.objects {
+			if prefix != "" && strings.HasPrefix(k, prefix) {
+				objs = append(objs, map[string]any{"key": k, "size": len(b)})
+			}
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"objects": objs})
 	case strings.HasPrefix(r.URL.Path, api+"/repo/epochs/") && strings.HasSuffix(r.URL.Path, "/uploaded"):
@@ -284,5 +315,103 @@ func TestARefusedPutIsNotTriedAgain(t *testing.T) {
 	}
 	if f.puts != 1 {
 		t.Fatalf("a refused PUT was sent %d times", f.puts)
+	}
+}
+
+// addEpoch files an epoch of surface under the fake, with a sidecar for
+// each snapshot id, and returns its prefix.
+func (f *fakeRepoHosted) addEpoch(t *testing.T, surface, epochID string, snapshots ...string) string {
+	t.Helper()
+	opened := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	e := format.Epoch{Format: format.FormatName, Version: format.Version, EpochID: epochID, SurfaceID: surface,
+		OpenedAt: opened, PlannedEnd: opened.AddDate(0, 1, 0), Reason: format.ReasonFull, OpeningTier: format.TierBase,
+		OpeningRetainUntil: opened.AddDate(0, 3, 0), LaterRetainUntil: opened.AddDate(0, 2, 0), Recipient: "age1x",
+		Chunker: format.ChunkerParams{Algorithm: format.ChunkerAlgorithm, Min: 1, Avg: 2, Max: 3}, PackTargetBytes: 1}
+	raw, err := format.Marshal(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefix := "orgs/o/safegrd/repo/node-1/" + surface + "/" + epochID
+	f.epochs = append(f.epochs, map[string]any{"epoch": json.RawMessage(raw), "prefix": prefix, "node_id": "node-1", "surface_id": surface})
+	for _, id := range snapshots {
+		key, _ := sink.ObjectKey(prefix, sink.KindMeta, id)
+		f.objects[key] = []byte(`{"snapshot_id":"` + id + `"}`)
+	}
+	return prefix
+}
+
+// Listing 14 snapshots read their sidecars one at a time, each a signing
+// request and a bucket read in turn, and asked for the epochs once per
+// surface: from a host far from the bucket it took doctor's whole 10
+// seconds. One epochs listing, one signing request, a listing per epoch.
+func TestListingSnapshotsSignsTheirSidecarsInOneRequest(t *testing.T) {
+	f := newFakeRepoHosted(t)
+	var want []string
+	for i, surface := range []string{"orders", "users"} {
+		var ids []string
+		for j := 0; j < 7; j++ {
+			ids = append(ids, fmt.Sprintf("snap-202610%02d-000000-%06x", j+1, i*16+j))
+		}
+		f.addEpoch(t, surface, fmt.Sprintf("e202610-0000000%d", i+1), ids...)
+		want = append(want, ids...)
+	}
+	rows, err := repoSnapshots(context.Background(), f.repo())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, r := range rows {
+		got = append(got, r.Meta.SnapshotID)
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("listed %v, want %v", got, want)
+	}
+	if f.epochLists != 1 || f.objectLists != 2 || f.downloads != 1 || f.gets != 14 {
+		t.Fatalf("asked for the epochs %d times, listed %d epochs, signed %d times, read %d objects; want 1, 2, 1, 14",
+			f.epochLists, f.objectLists, f.downloads, f.gets)
+	}
+}
+
+// A drill on SafeGrd found its snapshot by reading its sidecar from every
+// epoch of every surface in the organization, and each miss was a signing
+// request the remote server answered with 404: hundreds a drill on
+// production. The epoch the remote server recorded is tried first.
+func TestFindingASnapshotTriesTheRecordedEpochFirst(t *testing.T) {
+	f := newFakeRepoHosted(t)
+	for i := 0; i < 5; i++ {
+		f.addEpoch(t, fmt.Sprintf("s%d", i), fmt.Sprintf("e202610-0000000%d", i), fmt.Sprintf("snap-20261001-000000-00000%d", i))
+	}
+	rs, err := findRepoSnapshot(context.Background(), f.repo(), "snap-20261001-000000-000004", "e202610-00000004")
+	if err != nil || rs == nil {
+		t.Fatalf("found %v, %v", rs, err)
+	}
+	if rs.SurfaceID != "s4" || f.downloads != 1 || f.gets != 1 {
+		t.Fatalf("found it in %s after %d signing requests and %d reads; want s4, 1, 1", rs.SurfaceID, f.downloads, f.gets)
+	}
+	// Without a record every epoch is still searched, and it is found.
+	f.downloads, f.gets = 0, 0
+	if rs, err := findRepoSnapshot(context.Background(), f.repo(), "snap-20261001-000000-000004", ""); err != nil || rs == nil || rs.SurfaceID != "s4" {
+		t.Fatalf("without the recorded epoch: %v, %v", rs, err)
+	}
+}
+
+// doctor counts the snapshots and reads one sidecar to show the bucket
+// reads, where it read every sidecar in the organization.
+func TestDoctorsCountReadsOneSidecar(t *testing.T) {
+	f := newFakeRepoHosted(t)
+	for i, surface := range []string{"orders", "users"} {
+		var ids []string
+		for j := 0; j < 7; j++ {
+			ids = append(ids, fmt.Sprintf("snap-202610%02d-000000-%06x", j+1, i*16+j))
+		}
+		f.addEpoch(t, surface, fmt.Sprintf("e202610-0000000%d", i+1), ids...)
+	}
+	h := f.repo()
+	_, ids, err := repoSnapshotIDs(context.Background(), h)
+	if err != nil || len(ids) != 14 {
+		t.Fatalf("listed %d snapshots: %v", len(ids), err)
+	}
+	if f.downloads != 0 || f.gets != 0 {
+		t.Fatalf("listing alone signed %d and read %d objects", f.downloads, f.gets)
 	}
 }

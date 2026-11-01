@@ -93,6 +93,12 @@ var runningCommand string
 // from crossing the wire in the clear: by the time the server can object, the
 // credential that authenticates the request has already been transmitted.
 func fetchNodeCredentials(ctx context.Context, serverURL, nodeID, token string) (*nodeCredentialsResponse, error) {
+	return memoized(ctx, "credentials\x00"+serverURL+"\x00"+nodeID+"\x00"+token+"\x00"+runningCommand, func() (*nodeCredentialsResponse, error) {
+		return fetchNodeCredentialsOnce(ctx, serverURL, nodeID, token)
+	})
+}
+
+func fetchNodeCredentialsOnce(ctx context.Context, serverURL, nodeID, token string) (*nodeCredentialsResponse, error) {
 	if err := refuseInsecureServerURL(serverURL); err != nil {
 		return nil, err
 	}

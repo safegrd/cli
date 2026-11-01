@@ -412,7 +412,7 @@ func (s *S3StorageProvider) ListSnapshots(ctx context.Context) ([]string, error)
 	// is nothing to lose by falling back: what it lists IS what is there.
 	// Failing outright instead would mean `safegrd list` and `restore` dying on
 	// a bucket that works perfectly, because of a feature it never had.
-	versions, err := s.listVersions(ctx, s.prefix+"/")
+	versions, err := s.snapshotVersions(ctx)
 	if err != nil {
 		return s.listSnapshotsWithoutVersioning(ctx)
 	}

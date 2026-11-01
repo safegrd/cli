@@ -616,6 +616,15 @@ func recordedNodeID(ctx context.Context, c *config.CLIConfig, snapshotID string)
 	return ""
 }
 
+// recordedEpochID is the repository epoch the remote server recorded for a
+// snapshot, or "" when this host cannot ask or the record names none.
+func recordedEpochID(ctx context.Context, c *config.CLIConfig, snapshotID string) string {
+	if rec := recordedSnapshot(ctx, c, snapshotID); rec != nil {
+		return rec.EpochID
+	}
+	return ""
+}
+
 // recordedSnapshot is the remote server's record of a snapshot, or nil when
 // this host cannot ask or the server has none.
 func recordedSnapshot(ctx context.Context, c *config.CLIConfig, snapshotID string) *model.SnapshotMetadata {
@@ -630,6 +639,45 @@ func fetchRecordedSnapshot(ctx context.Context, c *config.CLIConfig, snapshotID 
 	if c == nil || !canReport(c) {
 		return nil, nil
 	}
+	key := c.ServerURL + "\x00" + c.ServerToken + "\x00" + snapshotID
+	recordedMemo.mu.Lock()
+	if e, ok := recordedMemo.m[key]; ok && time.Since(e.at) < recordedMemoTTL {
+		recordedMemo.mu.Unlock()
+		cp := *e.rec
+		return &cp, nil
+	}
+	recordedMemo.mu.Unlock()
+	rec, err := fetchRecordedSnapshotOnce(ctx, c, snapshotID)
+	if err == nil && rec != nil {
+		recordedMemo.mu.Lock()
+		if recordedMemo.m == nil {
+			recordedMemo.m = map[string]recordedEntry{}
+		}
+		recordedMemo.m[key] = recordedEntry{rec: rec, at: time.Now()}
+		recordedMemo.mu.Unlock()
+		cp := *rec
+		return &cp, nil
+	}
+	return rec, err
+}
+
+// recordedMemoTTL is how long a snapshot's record is reused: a restore or a
+// drill read the same record two or three times (the node it is filed
+// under, its epoch, the digests it is held to). A record changes when a run
+// is kept as a weekly or monthly copy, which a minute does not hide for long.
+const recordedMemoTTL = time.Minute
+
+type recordedEntry struct {
+	rec *model.SnapshotMetadata
+	at  time.Time
+}
+
+var recordedMemo struct {
+	mu sync.Mutex
+	m  map[string]recordedEntry
+}
+
+func fetchRecordedSnapshotOnce(ctx context.Context, c *config.CLIConfig, snapshotID string) (*model.SnapshotMetadata, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(c.ServerURL, "/")+"/api/v1/snapshots/"+url.PathEscape(snapshotID), nil)
@@ -755,7 +803,7 @@ func repoDrillTarget(ctx context.Context, c *config.CLIConfig, storageCfg config
 	if err != nil {
 		return nil
 	}
-	rs, err := findRepoSnapshot(ctx, rb, snapshotID)
+	rs, err := findRepoSnapshot(ctx, rb, snapshotID, recordedEpochID(ctx, c, snapshotID))
 	if err != nil || rs == nil {
 		return nil
 	}

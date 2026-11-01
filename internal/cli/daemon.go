@@ -1066,6 +1066,9 @@ func clockWentBackwards(state *SurfaceState, now time.Time) bool {
 }
 
 func reconcileSurfaces(ctx context.Context, c *config.CLIConfig, stateDir string, tick time.Duration, registered map[string]bool) error {
+	// One answer per node for the pass: each surface, its erasures and its
+	// drill asked for the same bucket and credentials again.
+	ctx = withNodeMemo(ctx)
 	statePath := filepath.Join(stateDir, "daemon_state.json")
 	lockDir := filepath.Join(stateDir, "locks")
 	daemonState := loadDaemonState(statePath)

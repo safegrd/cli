@@ -29,7 +29,9 @@ func newListCmd() *cobra.Command {
 --json prints a JSON array on stdout, one object per snapshot, and sends every
 other line to stderr, so the output can be piped to jq.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := cmd.Context()
+			// The bucket is listed once for the snapshots, the ones behind
+			// a delete marker and the node of each.
+			ctx := storage.WithListingMemo(cmd.Context())
 			if jsonOut {
 				// Routing, credential and deleted-snapshot notices print on
 				// stdout. They still matter, so they move to stderr rather
@@ -79,7 +81,7 @@ other line to stderr, so the output can be piped to jq.`,
 				shown[r.Meta.SnapshotID] = true
 				nodeIDs[r.Meta.NodeID] = true
 			}
-			defer func() { printNotes(ctx, shown, nodeIDs) }()
+			defer func() { printNotes(ctx, recorded, shown, nodeIDs) }()
 			if len(repoRows) > 0 {
 				defer printRepoTable(repoRows, storageCfg)
 			}
@@ -558,7 +560,7 @@ func listedSnapshots(ctx context.Context) ([]listedSnapshot, error) {
 	for _, e := range entries {
 		nodeIDs[e.NodeID] = true
 	}
-	notes := serverNotes(ctx, nodeIDs)
+	notes := recorded.notes(ctx, nodeIDs)
 	for i := range entries {
 		entries[i].Notes = notes[entries[i].SnapshotID]
 	}
@@ -668,6 +670,23 @@ func noSnapshotsLine(c config.StorageConfig) string {
 	return "No snapshots found in storage."
 }
 
+// notes is the notes on the snapshots of nodes. The pages of the remote
+// server's record carry them, so a list that read those asks nothing more;
+// it asked once per node, and the daemon files each surface under a node of
+// its own.
+func (r *recordedList) notes(ctx context.Context, nodeIDs map[string]bool) map[string]map[string]string {
+	if r == nil || r.by == nil {
+		return serverNotes(ctx, nodeIDs)
+	}
+	out := map[string]map[string]string{}
+	for id, m := range r.by {
+		if len(m.Notes) > 0 && nodeIDs[m.NodeID] {
+			out[id] = m.Notes
+		}
+	}
+	return out
+}
+
 // serverNotes is the notes on the snapshots of nodes, from the remote server,
 // by snapshot id. A host that cannot ask lists without them.
 func serverNotes(ctx context.Context, nodeIDs map[string]bool) map[string]map[string]string {
@@ -693,8 +712,8 @@ func serverNotes(ctx context.Context, nodeIDs map[string]bool) map[string]map[st
 }
 
 // printNotes lists the notes on the snapshots shown, one line each.
-func printNotes(ctx context.Context, shown, nodeIDs map[string]bool) {
-	notes := serverNotes(ctx, nodeIDs)
+func printNotes(ctx context.Context, recorded *recordedList, shown, nodeIDs map[string]bool) {
+	notes := recorded.notes(ctx, nodeIDs)
 	var ids []string
 	for id := range notes {
 		if shown[id] {

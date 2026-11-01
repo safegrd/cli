@@ -161,7 +161,7 @@ type ShadowedSnapshot struct {
 // VerifyBucketObjectLock is: local WORM storage has no versioning, so it has no
 // such state to report and implementing it there would be inventing an answer.
 func (s *S3StorageProvider) ListShadowedSnapshots(ctx context.Context) ([]ShadowedSnapshot, error) {
-	versions, err := s.listVersions(ctx, s.prefix+"/")
+	versions, err := s.snapshotVersions(ctx)
 	if err != nil {
 		// No versioning means no delete markers, so the honest answer is
 		// "none", not an error. This runs from `list`, `restore` and `verify`

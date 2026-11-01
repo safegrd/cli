@@ -403,6 +403,69 @@ func (h *hostedRepo) Surfaces(ctx context.Context) ([]string, error) {
 	return out, nil
 }
 
+// AllEpochs is every surface's epochs from one listing, each surface's
+// oldest first.
+func (h *hostedRepo) AllEpochs(ctx context.Context) (map[string][]sink.EpochInfo, error) {
+	views, err := h.listEpochs(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	out := map[string][]sink.EpochInfo{}
+	for _, v := range views {
+		e, err := h.remember(v)
+		if err != nil {
+			return nil, err
+		}
+		out[v.SurfaceID] = append(out[v.SurfaceID], sink.EpochInfo{Epoch: e, Prefix: v.Prefix})
+	}
+	for _, es := range out {
+		sort.Slice(es, func(i, j int) bool { return es[i].Epoch.OpenedAt.Before(es[j].Epoch.OpenedAt) })
+	}
+	return out, nil
+}
+
+// repoDownloadBatch is how many keys one signing request asks for: the
+// remote server signs at most 256 at a time.
+const repoDownloadBatch = 256
+
+// Prefetch signs the GETs of keys not already signed, many to a request,
+// so the reads that follow ask the remote server nothing. Each signed
+// download still counts against the day's budget, as one at a time did.
+func (h *hostedRepo) Prefetch(ctx context.Context, keys []string) error {
+	h.mu.Lock()
+	var want []string
+	seen := map[string]bool{}
+	for _, k := range keys {
+		if g, ok := h.gets[k]; (ok && time.Until(g.expires) > 15*time.Second) || seen[k] {
+			continue
+		}
+		seen[k] = true
+		want = append(want, k)
+	}
+	h.mu.Unlock()
+	for len(want) > 0 {
+		n := min(len(want), repoDownloadBatch)
+		var out struct {
+			Objects []struct {
+				Key       string    `json:"key"`
+				URL       string    `json:"url"`
+				Size      int64     `json:"size"`
+				ExpiresAt time.Time `json:"expires_at"`
+			} `json:"objects"`
+		}
+		if err := h.callRetry(ctx, http.MethodPost, "/repo/download", map[string]any{"keys": want[:n]}, &out); err != nil {
+			return err
+		}
+		h.mu.Lock()
+		for _, o := range out.Objects {
+			h.gets[o.Key] = signedGet{url: o.URL, size: o.Size, expires: o.ExpiresAt}
+		}
+		h.mu.Unlock()
+		want = want[n:]
+	}
+	return nil
+}
+
 func (h *hostedRepo) List(ctx context.Context, e sink.EpochInfo, sub string) ([]sink.ObjectInfo, error) {
 	var out struct {
 		Objects []struct {

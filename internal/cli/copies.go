@@ -283,6 +283,21 @@ func syncArchives(ctx context.Context, primary, dst storage.StorageProvider, rc 
 	}
 	since := time.Now().UTC().AddDate(0, 0, -window)
 	sort.Strings(ids)
+	// Which node holds each snapshot, from one listing of each side. Asked
+	// of each snapshot, it was two or three requests here and as many
+	// there. A provider that cannot list its nodes is asked one at a time.
+	hereNodes := snapshotNodesOf(ctx, primary)
+	var thereNodes map[string]string
+	if loc, ok := dst.(storage.NodeLocator); ok {
+		if thereNodes, err = loc.SnapshotNodes(ctx); err != nil {
+			return 0, nil, fmt.Errorf("the bucket could not be read: %w", err)
+		}
+	}
+	// A snapshot under the node, or at the flat path older hosts wrote.
+	held := func(nodes map[string]string, id string) bool {
+		n, ok := nodes[id]
+		return ok && (n == nodeID || n == "")
+	}
 	for _, id := range ids {
 		taken, ok := snapshotIDTime(id)
 		if !ok || taken.Before(since) {
@@ -290,15 +305,25 @@ func syncArchives(ctx context.Context, primary, dst storage.StorageProvider, rc 
 		}
 		// ListSnapshots reads the whole prefix; only this surface's node is
 		// copied, under its own node.
-		if here, err := primary.SnapshotExists(ctx, id); err != nil || !here {
+		if hereNodes != nil {
+			if !held(hereNodes, id) {
+				continue
+			}
+		} else if here, err := primary.SnapshotExists(ctx, id); err != nil || !here {
 			continue
 		}
-		there, xerr := dst.SnapshotExists(ctx, id)
-		if xerr != nil {
-			return missing, wrote, fmt.Errorf("the bucket could not be read: %w", xerr)
-		}
-		if there {
-			continue
+		if thereNodes != nil {
+			if held(thereNodes, id) {
+				continue
+			}
+		} else {
+			there, xerr := dst.SnapshotExists(ctx, id)
+			if xerr != nil {
+				return missing, wrote, fmt.Errorf("the bucket could not be read: %w", xerr)
+			}
+			if there {
+				continue
+			}
 		}
 		missing++
 		if dryRun {
@@ -313,6 +338,20 @@ func syncArchives(ctx context.Context, primary, dst storage.StorageProvider, rc 
 		missing--
 	}
 	return missing, wrote, err
+}
+
+// snapshotNodesOf is the node each snapshot in p is filed under, or nil when
+// p cannot say or its listing failed, so the caller asks one at a time.
+func snapshotNodesOf(ctx context.Context, p storage.StorageProvider) map[string]string {
+	loc, ok := p.(storage.NodeLocator)
+	if !ok {
+		return nil
+	}
+	nodes, err := loc.SnapshotNodes(ctx)
+	if err != nil {
+		return nil
+	}
+	return nodes
 }
 
 // copyArchive writes one archive and its manifest into a copy, locked from
@@ -394,7 +433,13 @@ func syncRepos(ctx context.Context, c *config.CLIConfig, primaryCfg config.Stora
 	if !ok {
 		return 0, nil, fmt.Errorf("a copy of a repository is written to a bucket")
 	}
-	rows, _ := repoSnapshots(ctx, src)
+	// The sidecars name the snapshots each epoch's recovery documents and
+	// copy records are for. A listing that failed copied the objects and
+	// reported no copy of any snapshot.
+	rows, err := surfaceRepoSnapshots(ctx, src, surfaceID, epochs)
+	if err != nil {
+		return 0, nil, fmt.Errorf("listing surface %s's snapshots to copy: %w", surfaceID, err)
+	}
 	for _, e := range epochs {
 		objs, lerr := src.List(ctx, e, "")
 		if lerr != nil {
