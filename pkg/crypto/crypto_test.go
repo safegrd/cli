@@ -68,8 +68,8 @@ func TestDecryptStreamTriesEveryIdentity(t *testing.T) {
 		}
 	}
 	var out bytes.Buffer
-	if _, err := DecryptStream(bytes.NewReader(sealed.Bytes()), &out, other.PrivateKey); err == nil {
-		t.Fatal("a key the snapshot was not sealed to opened it")
+	if _, err := DecryptStream(bytes.NewReader(sealed.Bytes()), &out, other.PrivateKey); err == nil || !strings.Contains(err.Error(), "no identity matched") {
+		t.Fatalf("a key the snapshot was not sealed to: %v", err)
 	}
 }
 
@@ -136,36 +136,43 @@ func TestTamperedCiphertextFails(t *testing.T) {
 	}
 
 	var encrypted bytes.Buffer
-	_, err = EncryptStream(strings.NewReader("secret database contents"), &encrypted, kp.PublicKey)
+	_, err = EncryptStream(strings.NewReader(strings.Repeat("secret database contents\n", 4000)), &encrypted, kp.PublicKey)
 	if err != nil {
 		t.Fatalf("encryption failed: %v", err)
 	}
 
+	// The header is the first couple of hundred bytes; a byte near the end
+	// is inside the payload, the part that holds the data.
 	tampered := encrypted.Bytes()
-	// Tamper with middle byte
-	tampered[len(tampered)/2] ^= 0xFF
+	tampered[len(tampered)-20] ^= 0xFF
 
 	var decrypted bytes.Buffer
 	_, err = DecryptStream(bytes.NewReader(tampered), &decrypted, kp.PrivateKey)
-	if err == nil {
-		t.Fatal("expected error when decrypting tampered ciphertext, but got nil")
+	if err == nil || !strings.Contains(err.Error(), "failed to decrypt and authenticate payload chunk") {
+		t.Fatalf("decrypting a payload with a changed byte: %v, want it refused as not authenticating", err)
 	}
 }
 
 func TestWrongPrivateKeyFails(t *testing.T) {
-	kp1, _ := GenerateKeyPair()
-	kp2, _ := GenerateKeyPair()
+	kp1, err := GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	kp2, err := GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	var encrypted bytes.Buffer
-	_, err := EncryptStream(strings.NewReader("confidential data"), &encrypted, kp1.PublicKey)
+	_, err = EncryptStream(strings.NewReader("confidential data"), &encrypted, kp1.PublicKey)
 	if err != nil {
 		t.Fatalf("encryption failed: %v", err)
 	}
 
 	var decrypted bytes.Buffer
 	_, err = DecryptStream(&encrypted, &decrypted, kp2.PrivateKey)
-	if err == nil {
-		t.Fatal("expected error decrypting with mismatched private key, but got nil")
+	if err == nil || !strings.Contains(err.Error(), "no identity matched") {
+		t.Fatalf("decrypting with a key the stream was not sealed to: %v", err)
 	}
 }
 

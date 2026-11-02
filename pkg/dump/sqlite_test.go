@@ -81,15 +81,24 @@ func TestASQLiteBackupUnderWritesIsOneCommittedState(t *testing.T) {
 			writes.Add(1)
 		}
 	}()
-	time.Sleep(20 * time.Millisecond)
+	// Wait for the writer to be committing before the backup starts.
+	for deadline := time.Now().Add(30 * time.Second); writes.Load() == 0; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			stop.Store(true)
+			wg.Wait()
+			t.Fatal("the writer committed nothing in 30s")
+		}
+	}
 	var archive bytes.Buffer
+	before := writes.Load()
 	meta, err := NewSQLiteDumper("sqlite://"+path).Dump(ctx, "", &archive)
+	after := writes.Load()
 	stop.Store(true)
 	wg.Wait()
 	if err != nil {
 		t.Fatalf("dump: %v", err)
 	}
-	if writes.Load() == 0 {
+	if after == before {
 		t.Fatal("the writer committed nothing while the backup ran; the test proved nothing")
 	}
 	if meta.DatabaseName != "app.db" || meta.TotalTables != 2 || meta.SurfaceType != "sqlite" {
@@ -162,11 +171,10 @@ func TestASQLiteBackupRefusesWhatIsNotADatabase(t *testing.T) {
 	if _, err := NewSQLiteDumper("sqlite://"+junk).Dump(context.Background(), "", &out); err == nil || !strings.Contains(err.Error(), "not a SQLite 3 database") {
 		t.Errorf("dump of a text file: %v", err)
 	}
-	if _, err := NewSQLiteDumper("sqlite://"+filepath.Join(dir, "missing.db")).Dump(context.Background(), "", &out); err == nil {
-		t.Error("a missing database was backed up (as a new empty one?)")
-	}
-	if _, err := os.Stat(filepath.Join(dir, "missing.db")); err == nil {
-		t.Error("backing up a missing database created it")
+	_, err := NewSQLiteDumper("sqlite://"+filepath.Join(dir, "missing.db")).Dump(context.Background(), "", &out)
+	wantErr(t, err, "missing.db", "no such file or directory")
+	if _, err := os.Stat(filepath.Join(dir, "missing.db")); !os.IsNotExist(err) {
+		t.Errorf("backing up a missing database created it (%v)", err)
 	}
 }
 
@@ -176,9 +184,8 @@ func TestSQLiteURLs(t *testing.T) {
 			t.Errorf("SQLitePath(%q) = %q, %v; want %q", in, got, err, want)
 		}
 	}
-	if _, err := SQLitePath("sqlite:///x.db?mode=rw"); err == nil {
-		t.Error("options in a sqlite URL were accepted")
-	}
+	_, err := SQLitePath("sqlite:///x.db?mode=rw")
+	wantErr(t, err, "options are not supported")
 	if !SameSQLiteDatabase("sqlite:///a/../b.db", "sqlite:///b.db") || SameSQLiteDatabase("sqlite:///a.db", "sqlite:///b.db") {
 		t.Error("SameSQLiteDatabase")
 	}
@@ -188,7 +195,7 @@ func TestSQLiteURLs(t *testing.T) {
 // run; one belonging to a live process is not.
 func TestALeftoverSQLiteCopyIsSwept(t *testing.T) {
 	parent := t.TempDir()
-	dead := filepath.Join(parent, sqliteWorkPrefix+"999999-abc")
+	dead := filepath.Join(parent, sqliteWorkPrefix+strconv.Itoa(deadPID(t))+"-abc")
 	live := filepath.Join(parent, sqliteWorkPrefix+strconv.Itoa(os.Getppid())+"-def")
 	other := filepath.Join(parent, "unrelated")
 	for _, d := range []string{dead, live, other} {

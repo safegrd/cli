@@ -194,8 +194,14 @@ func (er *EmailRestorer) InspectEmailArchive(ctx context.Context, src io.Reader,
 
 	// Assertion 2: Email Count Assertion
 	emailCountMatch := manifestFound && (emailsFound == sealed.TotalEmails)
+	countErr := fmt.Sprintf("email count mismatch: archive has %d, manifest has %d", emailsFound, sealed.TotalEmails)
 	if manifestFound && outerMeta != nil && outerMeta.TotalItems > 0 && emailsFound != outerMeta.TotalItems {
 		emailCountMatch = false
+		if emailsFound == sealed.TotalEmails {
+			// The archive agrees with its own manifest; the snapshot's
+			// record is the one that differs, so name that count.
+			countErr = fmt.Sprintf("email count mismatch: archive has %d, the snapshot record says %d", emailsFound, outerMeta.TotalItems)
+		}
 	}
 	result.Assertions = append(result.Assertions, model.AssertionResult{
 		Name:     "Archive Email Count Matches Manifest",
@@ -207,7 +213,7 @@ func (er *EmailRestorer) InspectEmailArchive(ctx context.Context, src io.Reader,
 	if !emailCountMatch {
 		result.Passed = false
 		if result.ErrorMessage == "" {
-			result.ErrorMessage = fmt.Sprintf("email count mismatch: archive has %d, manifest has %d", emailsFound, sealed.TotalEmails)
+			result.ErrorMessage = countErr
 		}
 	}
 

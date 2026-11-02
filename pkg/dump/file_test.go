@@ -5,10 +5,13 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -131,47 +134,50 @@ func TestFileCollector_PermissionDeniedFailsLoudly(t *testing.T) {
 	})
 
 	_, _, err := collector.ScanAndStream(context.Background())
-	if err == nil {
-		t.Fatalf("expected permission denied failure, but scan reported success")
-	}
+	wantErr(t, err, "unreadable", "permission denied")
 }
 
+// Two archives of an unchanged tree are the same bytes, though the first
+// pass read every file (moving its atime). No golden digest is pinned: the
+// sealed manifest records each file's owner, which differs between hosts.
 func TestFileCollector_GoldenReproducibleTar(t *testing.T) {
 	dir := createTestTree(t)
 
 	// Fix modtimes of all files to ensure stable timestamps
 	fixedTime := time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC)
-	_ = filepath.Walk(dir, func(p string, info os.FileInfo, err error) error {
-		if err == nil {
-			_ = os.Chtimes(p, fixedTime, fixedTime)
+	err := filepath.Walk(dir, func(p string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
 		}
-		return nil
+		return os.Chtimes(p, fixedTime, fixedTime)
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	collector := NewFileCollector(FileCollectorConfig{
 		RootDir:     dir,
 		Excludes:    []string{"*.tmp", ".git/*"},
 		ArchiveTime: fixedTime,
 	})
-
-	// First pass
-	r1, _, err := collector.ScanAndStream(context.Background())
-	if err != nil {
-		t.Fatal(err)
+	pass := func() (string, int64) {
+		t.Helper()
+		r, _, err := collector.ScanAndStream(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		h := sha256.New()
+		n, err := io.Copy(h, r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return hex.EncodeToString(h.Sum(nil)), n
 	}
-	h1 := sha256.New()
-	_, _ = io.Copy(h1, r1)
-	sum1 := hex.EncodeToString(h1.Sum(nil))
-
-	// Second pass
-	r2, _, err := collector.ScanAndStream(context.Background())
-	if err != nil {
-		t.Fatal(err)
+	sum1, n1 := pass()
+	sum2, n2 := pass()
+	if n1 == 0 || n1 != n2 {
+		t.Fatalf("the archives are %d and %d bytes", n1, n2)
 	}
-	h2 := sha256.New()
-	_, _ = io.Copy(h2, r2)
-	sum2 := hex.EncodeToString(h2.Sum(nil))
-
 	if sum1 != sum2 {
 		t.Fatalf("tar output was not deterministic:\npass1=%s\npass2=%s", sum1, sum2)
 	}
@@ -188,19 +194,33 @@ func TestFileCollector_MismatchedManifestFailsDrill(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	archive, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restorer := NewFileRestorer()
 
-	// Deliberately tamper with outer metadata file count
+	// The archive with its own record passes: what fails below is the
+	// count alone.
+	res, err := restorer.InspectFileArchive(context.Background(), bytes.NewReader(archive), meta)
+	if err != nil || !res.Passed {
+		t.Fatalf("the untampered archive did not pass: %v %s %+v", err, res.ErrorMessage, res.Assertions)
+	}
+
 	tamperedMeta := *meta
 	tamperedMeta.TotalItems = meta.TotalItems + 999
-
-	restorer := NewFileRestorer()
-	res, err := restorer.InspectFileArchive(context.Background(), reader, &tamperedMeta)
+	res, err = restorer.InspectFileArchive(context.Background(), bytes.NewReader(archive), &tamperedMeta)
 	if err != nil {
 		t.Fatalf("InspectFileArchive error: %v", err)
 	}
-
 	if res.Passed {
 		t.Fatalf("expected dry restore drill to FAIL on mismatched file count, but it passed")
+	}
+	if a := assertion(t, res.Assertions, "Archive File Count Matches Manifest"); a.Passed {
+		t.Fatalf("the count assertion passed over a record of %d files: %+v", tamperedMeta.TotalItems, a)
+	}
+	if want := fmt.Sprintf("the snapshot record says %d", tamperedMeta.TotalItems); !strings.Contains(res.ErrorMessage, want) {
+		t.Fatalf("the failure does not name the count it disagreed with: %q", res.ErrorMessage)
 	}
 }
 
@@ -208,7 +228,7 @@ func TestFileCollector_DiskExtraction(t *testing.T) {
 	dir := createTestTree(t)
 	collector := NewFileCollector(FileCollectorConfig{
 		RootDir:  dir,
-		Excludes: []string{"*.tmp", ".git/*"},
+		Excludes: []string{"*.tmp", ".git/*", ".git"},
 	})
 
 	reader, _, err := collector.ScanAndStream(context.Background())
@@ -228,18 +248,49 @@ func TestFileCollector_DiskExtraction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExtractArchive failed: %v", err)
 	}
-
 	if extractRes.FilesExtracted != 3 {
 		t.Fatalf("expected 3 files extracted, got %d", extractRes.FilesExtracted)
 	}
 
-	// Verify extracted file content
-	content, err := os.ReadFile(filepath.Join(targetDir, "README.md"))
+	// Every file the backup took comes back byte for byte, and nothing it
+	// excluded does.
+	want := map[string]string{}
+	err = filepath.Walk(dir, func(p string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return err
+		}
+		rel, err := filepath.Rel(dir, p)
+		if err != nil {
+			return err
+		}
+		if filepath.Ext(rel) == ".tmp" || strings.HasPrefix(rel, ".git") {
+			return nil
+		}
+		b, err := os.ReadFile(p)
+		want[filepath.ToSlash(rel)] = string(b)
+		return err
+	})
 	if err != nil {
-		t.Fatalf("failed reading extracted README.md: %v", err)
+		t.Fatal(err)
 	}
-	if string(content) != "# Hello SafeGrd" {
-		t.Fatalf("extracted content mismatch: got %s", string(content))
+	got := map[string]string{}
+	err = filepath.Walk(targetDir, func(p string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return err
+		}
+		rel, err := filepath.Rel(targetDir, p)
+		if err != nil {
+			return err
+		}
+		b, err := os.ReadFile(p)
+		got[filepath.ToSlash(rel)] = string(b)
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(want) != 3 || !reflect.DeepEqual(got, want) {
+		t.Fatalf("restored %v, the source holds %v", got, want)
 	}
 }
 

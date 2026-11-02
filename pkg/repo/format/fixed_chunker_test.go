@@ -1,6 +1,7 @@
 package format
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -19,7 +20,7 @@ func TestAnEpochOfFixedChunksValidates(t *testing.T) {
 		t.Fatalf("an epoch of fixed chunks: %v", err)
 	}
 	e.Chunker = ChunkerParams{Algorithm: "fixed", Min: 1, Avg: 1 << 20, Max: 1 << 20}
-	if err := e.Validate(); err == nil {
-		t.Fatal("a fixed chunker of another size validated")
+	if err := e.Validate(); err == nil || !strings.Contains(err.Error(), "is not one this release knows") {
+		t.Fatalf("a fixed chunker of another size: %v", err)
 	}
 }

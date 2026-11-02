@@ -30,6 +30,10 @@ type fakeRemoteServer struct {
 	drill        bool   // ask for a drill of the last snapshot on every heartbeat
 	lastSnapshot string // the last snapshot the daemon reported
 	drillReports int    // POST /api/v1/verifications, each answered 500
+	// records and reports are the snapshot records and drill reports the
+	// daemon sent, as the real server would read them.
+	records []model.SnapshotMetadata
+	reports []model.VerificationReport
 	// events is every heartbeat and snapshot in the order they arrived:
 	// "beat", "beat:running" for one that says a backup is starting, and
 	// "snapshot".
@@ -39,6 +43,11 @@ type fakeRemoteServer struct {
 func (f *fakeRemoteServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	// As the real server: no node token, no answer.
+	if r.Header.Get("Authorization") != "Bearer tok" {
+		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
 	switch r.URL.Path {
 	case "/api/v1/nodes/host-1/surfaces":
 		_ = json.NewEncoder(w).Encode(model.SurfaceRegisterResponse{NodeID: "host-1--docs"})
@@ -60,11 +69,23 @@ func (f *fakeRemoteServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = json.NewEncoder(w).Encode(resp)
 	case "/api/v1/verifications":
+		var rep model.VerificationReport
+		if err := json.NewDecoder(r.Body).Decode(&rep); err != nil {
+			http.Error(w, `{"error":"not a report"}`, http.StatusBadRequest)
+			return
+		}
+		f.reports = append(f.reports, rep)
 		f.drillReports++
 		http.Error(w, "the report never lands", http.StatusInternalServerError)
 	case "/api/v1/snapshots":
 		var meta model.SnapshotMetadata
-		_ = json.NewDecoder(r.Body).Decode(&meta)
+		// The real server refuses a record it cannot read, or one that
+		// names no snapshot or another node than the surface's.
+		if err := json.NewDecoder(r.Body).Decode(&meta); err != nil || meta.SnapshotID == "" || meta.NodeID != "host-1--docs" {
+			http.Error(w, `{"error":"bad snapshot record"}`, http.StatusBadRequest)
+			return
+		}
+		f.records = append(f.records, meta)
 		f.lastSnapshot = meta.SnapshotID
 		f.snapshots++
 		f.events = append(f.events, "snapshot")
@@ -81,6 +102,17 @@ func (f *fakeRemoteServer) set(trigger bool, requestID string) {
 	f.trigger, f.requestID = trigger, requestID
 }
 
+// lastRecord is the last snapshot record the daemon sent.
+func (f *fakeRemoteServer) lastRecord(t *testing.T) model.SnapshotMetadata {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.records) == 0 {
+		t.Fatal("the daemon sent no snapshot record")
+	}
+	return f.records[len(f.records)-1]
+}
+
 func (f *fakeRemoteServer) backups() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -93,6 +125,7 @@ func (f *fakeRemoteServer) backups() int {
 // those is an object nobody can delete. Only a
 // one-shot request id starts an unscheduled backup, and each id runs once.
 func TestTheDaemonIgnoresTriggerBackupAndRunsARequestOnce(t *testing.T) {
+	forgetWhatTheDaemonSaid(t)
 	fake := &fakeRemoteServer{}
 	ts := httptest.NewServer(fake)
 	defer ts.Close()
@@ -121,9 +154,11 @@ func TestTheDaemonIgnoresTriggerBackupAndRunsARequestOnce(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(stateDir, "locks"), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	// The daemon keeps what it registered across ticks.
+	registered := map[string]bool{}
 	tick := func() {
 		t.Helper()
-		if err := reconcileSurfaces(context.Background(), c, stateDir, time.Minute, map[string]bool{}); err != nil {
+		if err := reconcileSurfaces(context.Background(), c, stateDir, time.Minute, registered); err != nil {
 			t.Fatalf("reconcile: %v", err)
 		}
 	}
@@ -160,6 +195,10 @@ func TestTheDaemonIgnoresTriggerBackupAndRunsARequestOnce(t *testing.T) {
 	if meta.WORMMode != string(config.WORMModeNone) || meta.WORMRetentionUntil.IsZero() {
 		t.Fatalf("a snapshot in a directory recorded worm_mode %q until %s, want NONE with its keep date", meta.WORMMode, meta.WORMRetentionUntil)
 	}
+	// The record the remote server got says the same as the sidecar.
+	if rec := fake.lastRecord(t); rec.SnapshotID != ids[0] || rec.WORMMode != string(config.WORMModeNone) || rec.Status != model.SnapshotStatusCompleted {
+		t.Fatalf("the snapshot record sent was %s, worm_mode %q, status %q; want %s, NONE, completed", rec.SnapshotID, rec.WORMMode, rec.Status, ids[0])
+	}
 
 	fake.set(true, "") // the remote server thinks it is overdue
 	tick()
@@ -187,6 +226,7 @@ func TestTheDaemonIgnoresTriggerBackupAndRunsARequestOnce(t *testing.T) {
 // remote server cannot be reached, and a backup requested from the console
 // still runs. Resumed, the backup that was due runs on the next tick.
 func TestThePausedSurfaceTakesNoScheduledBackup(t *testing.T) {
+	forgetWhatTheDaemonSaid(t)
 	fake := &fakeRemoteServer{paused: true}
 	ts := httptest.NewServer(fake)
 	defer ts.Close()
@@ -215,9 +255,11 @@ func TestThePausedSurfaceTakesNoScheduledBackup(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(stateDir, "locks"), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	// The daemon keeps what it registered across ticks.
+	registered := map[string]bool{}
 	tick := func() {
 		t.Helper()
-		if err := reconcileSurfaces(context.Background(), c, stateDir, time.Minute, map[string]bool{}); err != nil {
+		if err := reconcileSurfaces(context.Background(), c, stateDir, time.Minute, registered); err != nil {
 			t.Fatalf("reconcile: %v", err)
 		}
 	}
@@ -258,12 +300,30 @@ func TestThePausedSurfaceTakesNoScheduledBackup(t *testing.T) {
 	if got := fake.backups(); got != 2 {
 		t.Fatalf("after resuming, the due backup did not run: %d backups", got)
 	}
+
+	// The control for the unreachable half above: a surface that is not
+	// paused and is due backs up while heartbeats fail, so the zero backups
+	// there came from the pause it remembered.
+	state = loadDaemonState(statePath)
+	st = state.Surfaces["docs"]
+	st.LastSuccess, st.LastAttempt = st.LastSuccess.Add(-2*time.Hour), st.LastAttempt.Add(-2*time.Hour)
+	if err := saveDaemonState(statePath, state); err != nil {
+		t.Fatal(err)
+	}
+	fake.mu.Lock()
+	fake.down = true
+	fake.mu.Unlock()
+	tick()
+	if got := fake.backups(); got != 3 {
+		t.Fatalf("an unpaused, due surface did not back up while the remote server was unreachable: %d backups", got)
+	}
 }
 
 // A drill that passes but whose report never lands leaves the remote server
 // asking for it on every heartbeat. Each attempt downloads the whole snapshot,
 // so the daemon must not drill again every tick however often it is asked.
 func TestALostDrillReportDoesNotBecomeADrillEveryTick(t *testing.T) {
+	forgetWhatTheDaemonSaid(t)
 	fake := &fakeRemoteServer{drill: true}
 	ts := httptest.NewServer(fake)
 	defer ts.Close()
@@ -296,14 +356,30 @@ func TestALostDrillReportDoesNotBecomeADrillEveryTick(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(stateDir, "locks"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 5; i++ {
-		_ = reconcileSurfaces(context.Background(), c, stateDir, time.Minute, map[string]bool{})
+	registered := map[string]bool{}
+	var errs []error
+	stderr := captureStderr(t, func() {
+		for i := 0; i < 5; i++ {
+			errs = append(errs, reconcileSurfaces(context.Background(), c, stateDir, time.Minute, registered))
+		}
+	})
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("tick %d: %v", i+1, err)
+		}
 	}
 	fake.mu.Lock()
-	reports := fake.drillReports
+	reports := append([]model.VerificationReport(nil), fake.reports...)
 	fake.mu.Unlock()
-	if reports != 1 {
-		t.Fatalf("the daemon drilled %d times in five ticks while every report was lost, want 1", reports)
+	if len(reports) != 1 {
+		t.Fatalf("the daemon drilled %d times in five ticks while every report was lost, want 1", len(reports))
+	}
+	if reports[0].Status != model.VerificationStatusPassed || reports[0].SnapshotID != fake.lastSnapshot {
+		t.Fatalf("the drill reported %q for %s; want a pass of %s", reports[0].Status, reports[0].SnapshotID, fake.lastSnapshot)
+	}
+	// The host says the report was lost: the console will not show the drill.
+	if !strings.Contains(stderr, "NOT RECORDED") || !strings.Contains(stderr, "HTTP 500") {
+		t.Errorf("a drill report the remote server refused was not said on stderr:\n%s", stderr)
 	}
 
 	// A drill that took the process down is found at the next start and
@@ -313,7 +389,11 @@ func TestALostDrillReportDoesNotBecomeADrillEveryTick(t *testing.T) {
 	if err := saveDaemonState(filepath.Join(stateDir, "daemon_state.json"), st); err != nil {
 		t.Fatal(err)
 	}
-	_ = reconcileSurfaces(context.Background(), c, stateDir, time.Minute, map[string]bool{})
+	_ = captureStderr(t, func() {
+		if err := reconcileSurfaces(context.Background(), c, stateDir, time.Minute, registered); err != nil {
+			t.Errorf("the tick after an interrupted drill: %v", err)
+		}
+	})
 	st = loadDaemonState(filepath.Join(stateDir, "daemon_state.json"))
 	if got := st.Surfaces["docs"]; got.DrillInFlight || got.DrillFailures != 1 || got.DrillStatus != model.DrillStatusFailed {
 		t.Errorf("an interrupted drill: in_flight=%t failures=%d status=%q, want it counted as one failure",

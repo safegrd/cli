@@ -43,10 +43,10 @@ func TestConnectingToASilentDatabaseTimesOut(t *testing.T) {
 	}()
 	start := time.Now()
 	_, err = connectPostgres(context.Background(), "postgres://u:p@"+ln.Addr().String()+"/db?sslmode=disable&connect_timeout=1")
-	if err == nil {
-		t.Fatal("connecting to a database that never answers succeeded")
-	}
-	if took := time.Since(start); took > 10*time.Second {
-		t.Errorf("connecting to a silent database took %v", took)
+	took := time.Since(start)
+	wantErr(t, err, "timeout")
+	// The URL's one second, not an instant refusal and not the default.
+	if took < 900*time.Millisecond || took > 10*time.Second {
+		t.Errorf("connecting to a silent database took %v, want about the URL's 1s", took)
 	}
 }

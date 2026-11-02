@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -147,7 +148,10 @@ func TestALocalSandboxStartsAndIsDeleted(t *testing.T) {
 		t.Fatal(err)
 	}
 	var listen, fsync string
-	_ = conn.QueryRow(ctx, "SELECT current_setting('listen_addresses'), current_setting('fsync')").Scan(&listen, &fsync)
+	if err := conn.QueryRow(ctx, "SELECT current_setting('listen_addresses'), current_setting('fsync')").Scan(&listen, &fsync); err != nil {
+		lp.Stop()
+		t.Fatal(err)
+	}
 	_ = conn.Close(ctx)
 	if listen != "" || fsync != "off" {
 		t.Errorf("listen_addresses %q (want none: socket only), fsync %q", listen, fsync)
@@ -272,7 +276,7 @@ func TestALocalSandboxUnderRootRunsAsTheStateDirsOwner(t *testing.T) {
 	defer cancel()
 	srv, err := FindPgServer(ctx, 0)
 	if err != nil {
-		t.Skipf("this host cannot start a local PostgreSQL: %v", err)
+		t.Fatalf("this test runs as root only where a PostgreSQL server is installed, and none was found: %v", err)
 	}
 	// A state directory root owns runs the cluster as nobody instead:
 	// TestARootDaemonsSandboxRunsAsNobody.
@@ -296,8 +300,8 @@ func TestALocalSandboxUnderRootRunsAsTheStateDirsOwner(t *testing.T) {
 // fit is not run and not reported: it says nothing about the backup, and the
 // daemon reports it as blocked instead of failed.
 func TestARepoDrillThatCannotFitIsBlockedNotFailed(t *testing.T) {
-	posted := false
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { posted = true }))
+	var posted atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { posted.Store(true) }))
 	defer srv.Close()
 	v := NewVerifier(nil, srv.URL)
 	v.SetServerToken("token")
@@ -314,7 +318,7 @@ func TestARepoDrillThatCannotFitIsBlockedNotFailed(t *testing.T) {
 	if !strings.Contains(err.Error(), "for a Fire Drill of snap-big, which restores every file") {
 		t.Errorf("the reason does not name the drill: %v", err)
 	}
-	if posted {
+	if posted.Load() {
 		t.Error("a drill that never ran was reported to the remote server")
 	}
 	if _, err := os.Stat(scratch); !os.IsNotExist(err) {
@@ -334,7 +338,7 @@ func TestARootDaemonsSandboxRunsAsNobody(t *testing.T) {
 	defer cancel()
 	srv, err := FindPgServer(ctx, 0)
 	if err != nil {
-		t.Skipf("this host cannot start a local PostgreSQL: %v", err)
+		t.Fatalf("this test runs as root only where a PostgreSQL server is installed, and none was found: %v", err)
 	}
 	stateDir := filepath.Join(t.TempDir(), "state")
 	if err := os.Mkdir(stateDir, 0o700); err != nil {

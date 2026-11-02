@@ -13,3 +13,13 @@ func DiskSpace(dir string) (avail, total int64, err error) {
 	}
 	return int64(st.Bavail) * int64(st.Bsize), int64(st.Blocks) * int64(st.Bsize), nil
 }
+
+// filesystemID is the device dir is on, or 0 when dir cannot be read: its
+// free space cannot be read either, and the check lets the write go ahead.
+func filesystemID(dir string) uint64 {
+	var st syscall.Stat_t
+	if err := syscall.Stat(dir, &st); err != nil {
+		return 0
+	}
+	return uint64(st.Dev)
+}

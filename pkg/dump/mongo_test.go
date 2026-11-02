@@ -111,9 +111,8 @@ func TestMongoURLs(t *testing.T) {
 	if db, err := mongoDatabase("mongodb://u:p@h:27017/shop?authSource=admin"); err != nil || db != "shop" {
 		t.Errorf("%q %v", db, err)
 	}
-	if _, err := mongoDatabase("mongodb://h:27017/"); err == nil {
-		t.Error("a URL with no database was accepted")
-	}
+	_, err := mongoDatabase("mongodb://h:27017/")
+	wantErr(t, err, "the URL names no database")
 	if !SameMongoDatabase("mongodb://a@localhost/x", "mongodb://b:pw@127.0.0.1:27017/x?tls=true") || SameMongoDatabase("mongodb://h/x", "mongodb://h/y") {
 		t.Error("SameMongoDatabase")
 	}

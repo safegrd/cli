@@ -239,8 +239,14 @@ func (fr *FileRestorer) InspectFileArchive(ctx context.Context, src io.Reader, o
 
 	// Assertion 2: File count assertion
 	fileCountMatch := manifestFound && (filesFound == sealed.TotalFiles)
+	countErr := fmt.Sprintf("file count mismatch: archive has %d, manifest has %d", filesFound, sealed.TotalFiles)
 	if manifestFound && outerMeta != nil && outerMeta.TotalItems > 0 && filesFound != outerMeta.TotalItems {
 		fileCountMatch = false
+		if filesFound == sealed.TotalFiles {
+			// The archive agrees with its own manifest; the snapshot's
+			// record is the one that differs, so name that count.
+			countErr = fmt.Sprintf("file count mismatch: archive has %d, the snapshot record says %d", filesFound, outerMeta.TotalItems)
+		}
 	}
 	result.Assertions = append(result.Assertions, model.AssertionResult{
 		Name:     "Archive File Count Matches Manifest",
@@ -252,7 +258,7 @@ func (fr *FileRestorer) InspectFileArchive(ctx context.Context, src io.Reader, o
 	if !fileCountMatch {
 		result.Passed = false
 		if result.ErrorMessage == "" {
-			result.ErrorMessage = fmt.Sprintf("file count mismatch: archive has %d, manifest has %d", filesFound, sealed.TotalFiles)
+			result.ErrorMessage = countErr
 		}
 	}
 

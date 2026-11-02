@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/safegrd/cli/pkg/repo/format"
@@ -62,14 +63,19 @@ func TestAMountIsWalkedIntoASourceRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	root, _ := format.ParseID(snap.RootTree)
+	root, err := format.ParseID(snap.RootTree)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var mode uint32
-	_ = r.Walk(ctx, idx, root, func(it read.Item) error {
+	if err := r.Walk(ctx, idx, root, func(it read.Item) error {
 		if it.Path == "files/storage/app/public/photo.jpg" {
 			mode = it.Node.Mode
 		}
 		return nil
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if mode != 0o640 {
 		t.Errorf("the walked file is stored with mode %o, it has 0640 on disk", mode)
 	}
@@ -85,13 +91,13 @@ func TestAMountNeedsASourceAndAPlaceOfItsOwn(t *testing.T) {
 	h := newHarness(t)
 	if _, err := write.Run(context.Background(), h.b, h.opts(func(o *write.Options) {
 		o.Mounts = []write.Mount{{Path: "files", Dir: h.src}}
-	})); err == nil {
-		t.Fatal("a run with roots and a mount was accepted")
+	})); err == nil || !strings.Contains(err.Error(), "this run has no source") {
+		t.Fatalf("a run with roots and a mount: %v", err)
 	}
 	if _, err := write.Run(context.Background(), h.b, h.opts(func(o *write.Options) {
 		o.Roots, o.Source = nil, streams(map[string][]byte{"files/x": []byte("x")})
 		o.Mounts = []write.Mount{{Path: "files/x", Dir: h.src}}
-	})); err == nil {
-		t.Fatal("a mount over a streamed file was accepted")
+	})); err == nil || !strings.Contains(err.Error(), "mount files/x is already in the tree") {
+		t.Fatalf("a mount over a streamed file: %v", err)
 	}
 }

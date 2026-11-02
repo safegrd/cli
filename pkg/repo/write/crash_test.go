@@ -99,7 +99,10 @@ func blobsPerPack(t *testing.T, h *harness, e sink.EpochInfo) map[string][]strin
 		if err != nil {
 			t.Fatal(err)
 		}
-		op, _ := unseal.NewOpener(k)
+		op, err := unseal.NewOpener(k)
+		if err != nil {
+			t.Fatal(err)
+		}
 		tl, err := format.ParsePackFooter(body[len(body)-8:], int64(len(body)), hdr)
 		if err != nil {
 			t.Fatal(err)
@@ -183,7 +186,10 @@ func TestAnInterruptedRunResumesAtEveryPoint(t *testing.T) {
 			if d := diffOracle(want, got); d != "" {
 				t.Fatalf("%s (seed %d): the resumed run restores wrong: %s", name, s, d)
 			}
-			es, _ := h.b.Epochs(context.Background(), "files-test")
+			es, err := h.b.Epochs(context.Background(), "files-test")
+			if err != nil || len(es) == 0 {
+				t.Fatalf("%s (seed %d): epochs %v %v", name, s, es, err)
+			}
 			for _, e := range es {
 				ids, err := check.Snapshots(context.Background(), h.b, e)
 				if err != nil {

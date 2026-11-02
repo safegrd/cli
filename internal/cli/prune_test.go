@@ -79,22 +79,14 @@ func TestPruneDeletesOnlyWhatTheBucketSaysHasExpired(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !b.gone("db", "old") {
-		t.Errorf("the expired snapshot and its metadata were not deleted: %v", b.deleted)
-	}
-	for _, id := range []string{"graced", "locked", "frozen", "newest", "held"} {
-		for _, d := range b.deleted {
-			if d == "safegrd/snapshots/db/"+id+".safegrd|"+id+".safegrd" {
-				t.Errorf("%s was deleted", id)
-			}
-		}
+	// Exactly the expired snapshot and its metadata, the snapshot first: a
+	// kept snapshot's metadata is gone as surely as its data if deleted.
+	want := []string{"safegrd/snapshots/db/old.safegrd|old.safegrd", "safegrd/snapshots/db/old.meta.json|old.meta.json"}
+	if strings.Join(b.deleted, " ") != strings.Join(want, " ") {
+		t.Errorf("deleted %v, want %v", b.deleted, want)
 	}
 	if r.Deleted != 1 || r.Kept != 2 || r.Held != 1 || r.Locked != 2 {
 		t.Errorf("report = %v", r)
-	}
-	// Metadata goes after its snapshot, never before.
-	if len(b.deleted) == 2 && b.deleted[0] != "safegrd/snapshots/db/old.safegrd|old.safegrd" {
-		t.Errorf("delete order = %v, want the snapshot before its metadata", b.deleted)
 	}
 }
 

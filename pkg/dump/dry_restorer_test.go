@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -14,34 +15,41 @@ import (
 	"github.com/safegrd/cli/pkg/model"
 )
 
-// buildSyntheticPgCopyBinary creates a valid PostgreSQL binary COPY byte stream for test tuples.
-func buildSyntheticPgCopyBinary(tuples [][]string) []byte {
+// buildSyntheticPgCopyBinary writes rows the way COPY ... TO STDOUT (FORMAT
+// binary) does, for the column types these tests use: int32 as int4, int64
+// as int8, a string as text or varchar, a time.Time as timestamp (microseconds
+// since 2000-01-01) and nil as NULL. It stands in for a PostgreSQL server;
+// the drill of what a real server writes is tested where one runs.
+func buildSyntheticPgCopyBinary(tuples [][]any) []byte {
 	var buf bytes.Buffer
-
-	// 1. Signature (11 bytes)
 	buf.Write(pgCopySignature)
-
-	// 2. Flags (4 bytes, 0 = no OIDs)
-	_ = binary.Write(&buf, binary.BigEndian, uint32(0))
-
-	// 3. Header extension length (4 bytes, 0 = none)
-	_ = binary.Write(&buf, binary.BigEndian, uint32(0))
-
-	// 4. Write tuples
+	_ = binary.Write(&buf, binary.BigEndian, uint32(0)) // flags: no OIDs
+	_ = binary.Write(&buf, binary.BigEndian, uint32(0)) // header extension length
+	pgEpoch := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
 	for _, row := range tuples {
-		// Field count (int16)
 		_ = binary.Write(&buf, binary.BigEndian, int16(len(row)))
-		for _, colVal := range row {
-			valBytes := []byte(colVal)
-			// Field length (int32)
-			_ = binary.Write(&buf, binary.BigEndian, int32(len(valBytes)))
-			buf.Write(valBytes)
+		for _, v := range row {
+			var field []byte
+			switch v := v.(type) {
+			case nil:
+				_ = binary.Write(&buf, binary.BigEndian, int32(-1))
+				continue
+			case int32:
+				field = binary.BigEndian.AppendUint32(nil, uint32(v))
+			case int64:
+				field = binary.BigEndian.AppendUint64(nil, uint64(v))
+			case string:
+				field = []byte(v)
+			case time.Time:
+				field = binary.BigEndian.AppendUint64(nil, uint64(v.Sub(pgEpoch).Microseconds()))
+			default:
+				panic(fmt.Sprintf("buildSyntheticPgCopyBinary: no binary encoding for %T", v))
+			}
+			_ = binary.Write(&buf, binary.BigEndian, int32(len(field)))
+			buf.Write(field)
 		}
 	}
-
-	// 5. File trailer: -1 (int16)
-	_ = binary.Write(&buf, binary.BigEndian, int16(-1))
-
+	_ = binary.Write(&buf, binary.BigEndian, int16(-1)) // trailer
 	return buf.Bytes()
 }
 
@@ -91,15 +99,15 @@ CREATE TABLE IF NOT EXISTS "public"."orders" (
 `
 
 	// 3. Prepare synthetic PGCOPY binary streams
-	usersCopy := buildSyntheticPgCopyBinary([][]string{
-		{"1", "alice@example.com", "2026-01-01 10:00:00"},
-		{"2", "bob@example.com", "2026-01-02 11:00:00"},
-		{"3", "charlie@example.com", "2026-01-03 12:00:00"},
+	usersCopy := buildSyntheticPgCopyBinary([][]any{
+		{int32(1), "alice@example.com", time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)},
+		{int32(2), "bob@example.com", time.Date(2026, 1, 2, 11, 0, 0, 0, time.UTC)},
+		{int32(3), "charlie@example.com", nil},
 	})
 
-	ordersCopy := buildSyntheticPgCopyBinary([][]string{
-		{"101", "1", "4900", "completed"},
-		{"102", "2", "8900", "completed"},
+	ordersCopy := buildSyntheticPgCopyBinary([][]any{
+		{int32(101), int32(1), int64(4900), "completed"},
+		{int32(102), int32(2), int64(8900), "completed"},
 	})
 
 	// 4. Pack into tar archive
@@ -120,7 +128,7 @@ CREATE TABLE IF NOT EXISTS "public"."orders" (
 		}
 	}
 
-	// The layout Dump writes: schema, rows (users split across two chunks,
+	// The layout NativeDumper writes: schema, rows (users split across two chunks,
 	// as a table larger than copyChunkSize is), sequences, manifest last.
 	addEntry("pre-data.sql", []byte(schemaSQL))
 	addEntry("data/public/users.copy", usersCopy[:17])
@@ -129,7 +137,9 @@ CREATE TABLE IF NOT EXISTS "public"."orders" (
 	addEntry("post-data.sql", []byte("ALTER TABLE ONLY public.users ADD CONSTRAINT users_pkey PRIMARY KEY (id);\n"))
 	addEntry("sequences.sql", []byte("-- none\n"))
 	addEntry("manifest.json", manifestBytes)
-	_ = tw.Close()
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	// 5. Run DryRestorer
 	restorer := NewDryRestorer()
@@ -173,51 +183,70 @@ CREATE TABLE IF NOT EXISTS "public"."orders" (
 
 func TestDryRestorer_InspectArchive_RowMismatchFailure(t *testing.T) {
 	ctx := context.Background()
-
-	manifest := model.SnapshotMetadata{
-		SnapshotID:   "snap-test-dry-02",
-		DatabaseName: "production_db",
-		TotalTables:  1,
-		TotalRows:    100, // Manifest expects 100 rows
-		TableStats: []model.TableStat{
-			{Schema: "public", TableName: "items", RowCount: 100},
-		},
-	}
-	manifestBytes, _ := json.MarshalIndent(manifest, "", "  ")
-
-	schemaSQL := `
+	archive := func(rowCount int64) *bytes.Buffer {
+		t.Helper()
+		manifest := model.SnapshotMetadata{
+			SnapshotID:   "snap-test-dry-02",
+			DatabaseName: "production_db",
+			SchemaSource: "pg_dump 18.6",
+			TotalTables:  1,
+			TotalRows:    rowCount,
+			TableStats: []model.TableStat{
+				{Schema: "public", TableName: "items", RowCount: rowCount},
+			},
+		}
+		manifestBytes, err := json.MarshalIndent(manifest, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		schemaSQL := `
 CREATE TABLE IF NOT EXISTS "public"."items" (
   "id" integer NOT NULL,
   "name" text
 );
 `
-	itemsCopy := buildSyntheticPgCopyBinary([][]string{
-		{"1", "widget A"},
-		{"2", "widget B"},
-	})
-
-	var tarBuf bytes.Buffer
-	tw := tar.NewWriter(&tarBuf)
-
-	addEntry := func(name string, data []byte) {
-		hdr := &tar.Header{Name: name, Mode: 0644, Size: int64(len(data))}
-		_ = tw.WriteHeader(hdr)
-		_, _ = tw.Write(data)
+		itemsCopy := buildSyntheticPgCopyBinary([][]any{
+			{int32(1), "widget A"},
+			{int32(2), "widget B"},
+		})
+		var tarBuf bytes.Buffer
+		tw := tar.NewWriter(&tarBuf)
+		for _, e := range []struct {
+			name string
+			data []byte
+		}{{"pre-data.sql", []byte(schemaSQL)}, {"data/public/items.copy", itemsCopy}, {"sequences.sql", []byte("-- none\n")}, {"manifest.json", manifestBytes}} {
+			if err := tw.WriteHeader(&tar.Header{Name: e.name, Mode: 0644, Size: int64(len(e.data))}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tw.Write(e.data); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := tw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return &tarBuf
 	}
 
-	addEntry("manifest.json", manifestBytes)
-	addEntry("schema.sql", []byte(schemaSQL))
-	addEntry("data/public/items.copy", itemsCopy)
-	_ = tw.Close()
+	// The same archive recording the 2 rows it holds passes: what fails
+	// below is the count alone.
+	res, err := NewDryRestorer().InspectArchive(ctx, archive(2))
+	if err != nil || !res.Passed {
+		t.Fatalf("an archive whose record matches its rows did not pass: %v %s %+v", err, res.ErrorMessage, res.Assertions)
+	}
 
-	restorer := NewDryRestorer()
-	res, err := restorer.InspectArchive(ctx, &tarBuf)
+	res, err = NewDryRestorer().InspectArchive(ctx, archive(100))
 	if err != nil {
 		t.Fatalf("unexpected inspection error: %v", err)
 	}
-
 	if res.Passed {
 		t.Fatalf("expected dry restore to fail due to row count mismatch, but it passed")
+	}
+	if a := assertion(t, res.Assertions, "Row Count: public.items"); a.Passed {
+		t.Fatalf("the row count assertion passed with 2 rows against 100 recorded: %+v", a)
+	}
+	if a := assertion(t, res.Assertions, "Schema Captured By pg_dump"); !a.Passed {
+		t.Fatalf("the drill failed on its schema, not its rows: %+v", a)
 	}
 }
 
@@ -239,7 +268,7 @@ func TestDryRestorer_ASchemaNotFromPgDumpFailsTheDrill(t *testing.T) {
 		}{
 			{"manifest.json", mb},
 			{"schema.sql", []byte(`CREATE TABLE IF NOT EXISTS "public"."t" ("id" integer);`)},
-			{"data/public/t.copy", buildSyntheticPgCopyBinary([][]string{{"1"}})},
+			{"data/public/t.copy", buildSyntheticPgCopyBinary([][]any{{int32(1)}})},
 		} {
 			_ = tw.WriteHeader(&tar.Header{Name: e.name, Mode: 0644, Size: int64(len(e.data))})
 			_, _ = tw.Write(e.data)
@@ -267,7 +296,7 @@ func TestDryRestorer_ASchemaNotFromPgDumpFailsTheDrill(t *testing.T) {
 // Chunks are joined only in order: a chunk out of place is an altered
 // archive, and joining it would load one table's rows into another.
 func TestDryRestorer_AChunkOutOfOrderIsRefused(t *testing.T) {
-	copyBytes := buildSyntheticPgCopyBinary([][]string{{"1"}, {"2"}})
+	copyBytes := buildSyntheticPgCopyBinary([][]any{{int32(1)}, {int32(2)}})
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
 	for _, e := range []struct {
@@ -366,8 +395,8 @@ CREATE TABLE "public"."b" ("id" integer);
 	}
 	addEntry("manifest.json", manifestBytes)
 	addEntry("schema.sql", []byte(schemaSQL))
-	addEntry("data/public/a.copy", buildSyntheticPgCopyBinary([][]string{{"1"}, {"2"}, {"3"}}))
-	addEntry("data/public/b.copy", buildSyntheticPgCopyBinary([][]string{{"1"}}))
+	addEntry("data/public/a.copy", buildSyntheticPgCopyBinary([][]any{{int32(1)}, {int32(2)}, {int32(3)}}))
+	addEntry("data/public/b.copy", buildSyntheticPgCopyBinary([][]any{{int32(1)}}))
 	_ = tw.Close()
 
 	res, err := NewDryRestorer().InspectArchive(context.Background(), &tarBuf)

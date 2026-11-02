@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // worm_mode: NONE is an opt-out, and the danger is that it becomes reachable by
 // accident. These assert the two properties that keep it deliberate: nothing
@@ -27,8 +30,8 @@ func TestWORMModeNoneIsOnlyEverExplicit(t *testing.T) {
 		t.Run(string(tc.in)+"/", func(t *testing.T) {
 			got, err := (&StorageConfig{WORMMode: tc.in}).ResolveWORMMode()
 			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("worm_mode %q resolved to %q; an unrecognised value must refuse", tc.in, got)
+				if err == nil || !strings.Contains(err.Error(), `use "COMPLIANCE", "GOVERNANCE" or "NONE"`) {
+					t.Fatalf("worm_mode %q resolved to %q (%v); an unrecognised value must refuse, naming the valid ones", tc.in, got, err)
 				}
 				return
 			}

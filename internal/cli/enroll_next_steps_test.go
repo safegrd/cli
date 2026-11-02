@@ -3,7 +3,6 @@ package cli
 import (
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,26 +50,23 @@ func TestEveryEnrollEndingLeadsToTheDaemon(t *testing.T) {
 // enroll prints its steps once, after the config is saved, so they are the
 // last thing the installer that ran it shows.
 func TestEnrollPrintsItsNextStepsLastAndOnce(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/orgs":
-			_, _ = w.Write([]byte(`[{"id":"org-1","name":"Acme"}]`))
-		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/orgs/org-1/projects":
-			_, _ = w.Write([]byte(`[{"id":"proj-1","name":"Production","slug":"production"}]`))
-		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/nodes/register":
+	var api *fakeAPI
+	api = newFakeAPI(t, "sg_pat_test", map[string]http.HandlerFunc{
+		"GET /api/v1/orgs":                jsonReply(http.StatusOK, `[{"id":"org-1","name":"Acme"}]`),
+		"GET /api/v1/orgs/org-1/projects": jsonReply(http.StatusOK, `[{"id":"proj-1","name":"Production","slug":"production"}]`),
+		"POST /api/v1/nodes/register": func(w http.ResponseWriter, r *http.Request) {
 			var req model.NodeRegisterRequest
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ManagedIdentity != "" {
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ManagedIdentity != "" || req.NodeID == "" {
 				http.Error(w, `{"error":"unexpected registration"}`, http.StatusBadRequest)
 				return
 			}
+			// What follows enrolment goes under the node token it mints.
+			api.accept("sg_tok_fake_test_token")
+			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(model.NodeRegisterResponse{NodeID: req.NodeID, ProjectID: "proj-1", Token: "sg_tok_fake_test_token"})
-		default:
-			http.Error(w, `{"error":"not here"}`, http.StatusNotFound)
-		}
-	}))
-	defer ts.Close()
+		},
+	})
 
 	for _, tc := range []struct {
 		name, config, last string
@@ -86,7 +82,7 @@ func TestEnrollPrintsItsNextStepsLastAndOnce(t *testing.T) {
 			t.Cleanup(func() { cfg, cfgFile = saved, savedFile })
 			dir := t.TempDir()
 			t.Setenv("HOME", dir)
-			t.Setenv("SAFEGRD_SERVER_URL", ts.URL)
+			t.Setenv("SAFEGRD_SERVER_URL", api.URL())
 			t.Setenv("SAFEGRD_DATABASE_URL", "")
 			cfgFile = filepath.Join(dir, ".safegrd", "config.yaml")
 			if tc.config != "" {
@@ -102,6 +98,9 @@ func TestEnrollPrintsItsNextStepsLastAndOnce(t *testing.T) {
 			out, errOut, err := captureStdoutErr(t, cmd.Execute)
 			if err != nil {
 				t.Fatalf("enroll: %v\n%s\n%s", err, out, errOut)
+			}
+			if n := len(api.Calls("/api/v1/nodes/register")); n == 0 {
+				t.Fatal("enroll registered no node with the remote server")
 			}
 			for _, want := range tc.want {
 				if !strings.Contains(out, want) {

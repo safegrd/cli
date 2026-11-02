@@ -42,6 +42,9 @@ func TestTheAccountCheckComparesProviders(t *testing.T) {
 
 func TestLocalStorageIsNotAgentProof(t *testing.T) {
 	res := storageAgentChecks(context.Background(), config.NewDefaultCLIConfig(), config.StorageConfig{Type: config.StorageTypeLocal, LocalPath: "/srv/b"})
+	if len(res) != 2 {
+		t.Fatalf("local storage gave %d checks, want the key check and the lock check: %+v", len(res), res)
+	}
 	for _, r := range res {
 		if r.Status != "FAIL" || r.Fix == "" {
 			t.Errorf("local storage: %+v", r)

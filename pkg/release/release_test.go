@@ -41,10 +41,16 @@ func archive(t *testing.T, version string, bin []byte) (string, []byte) {
 		if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o755, Size: int64(len(body)), Typeflag: tar.TypeReg}); err != nil {
 			t.Fatal(err)
 		}
-		tw.Write(body)
+		if _, err := tw.Write(body); err != nil {
+			t.Fatal(err)
+		}
 	}
-	tw.Close()
-	gz.Close()
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
 	p := filepath.Join(t.TempDir(), ArchiveName(version, "linux", "amd64"))
 	if err := os.WriteFile(p, buf.Bytes(), 0o644); err != nil {
 		t.Fatal(err)
@@ -63,8 +69,8 @@ func TestAReleaseSignedWithATrustedKeyVerifiesAndItsBinaryExtracts(t *testing.T)
 	if err := ExtractBinary(path, ArchiveDir("0.0.2", "linux", "amd64"), dest); err != nil {
 		t.Fatal(err)
 	}
-	if b, _ := os.ReadFile(dest); string(b) != "binary-0.0.2" {
-		t.Fatalf("extracted %q", b)
+	if b, err := os.ReadFile(dest); err != nil || string(b) != "binary-0.0.2" {
+		t.Fatalf("extracted %q, %v", b, err)
 	}
 }
 
@@ -89,7 +95,9 @@ func TestAReleaseIsRefusedWhenAnythingAboutItIsWrong(t *testing.T) {
 		n := name
 		if strings.HasSuffix(c.archive, ".other") {
 			n = name + ".other"
-			os.WriteFile(c.archive, []byte("x"), 0o644)
+			if err := os.WriteFile(c.archive, []byte("x"), 0o644); err != nil {
+				t.Fatal(err)
+			}
 		}
 		err := Verify(c.sums, c.sig, c.archive, n)
 		if err == nil || !strings.Contains(err.Error(), c.words) {
@@ -98,24 +106,34 @@ func TestAReleaseIsRefusedWhenAnythingAboutItIsWrong(t *testing.T) {
 	}
 
 	// The archive itself changed: the signed checksum no longer matches.
-	os.WriteFile(path, []byte("tampered"), 0o644)
+	if err := os.WriteFile(path, []byte("tampered"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if err := Verify(sums, Sign(priv, sums), path, name); err == nil || !strings.Contains(err.Error(), "lists") {
 		t.Errorf("a tampered archive: %v", err)
 	}
 }
 
+// trustNoKey makes this build trust no release key for one test, whatever
+// trusted_keys.txt holds.
+func trustNoKey(t *testing.T) {
+	t.Helper()
+	oldKey, oldFile := testKey, trustedKeysFile
+	testKey, trustedKeysFile = "", "# no keys\n"
+	t.Cleanup(func() { testKey, trustedKeysFile = oldKey, oldFile })
+}
+
 func TestABuildThatTrustsNoKeyChecksNothing(t *testing.T) {
-	old := testKey
-	testKey = ""
-	t.Cleanup(func() { testKey = old })
+	trustNoKey(t)
 	keys, err := TrustedKeys()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(keys) == 0 {
-		if err := VerifyChecksums([]byte("x"), []byte("eA==")); err != ErrNoTrustedKey {
-			t.Fatalf("with no trusted key: %v, want ErrNoTrustedKey", err)
-		}
+	if len(keys) != 0 || Signed() {
+		t.Fatalf("a build with no key line trusts %d keys (signed %v)", len(keys), Signed())
+	}
+	if err := VerifyChecksums([]byte("x"), []byte("eA==")); err != ErrNoTrustedKey {
+		t.Fatalf("with no trusted key: %v, want ErrNoTrustedKey", err)
 	}
 }
 
@@ -126,21 +144,11 @@ func TestInstallShTrustsTheSameKeysAsTheBinary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := regexp.MustCompile(`(?s)SAFEGRD_RELEASE_KEYS="\n(.*?)"`).FindSubmatch(b)
-	if m == nil {
+	script, ok := installShKeys(b)
+	if !ok {
 		t.Fatal("install.sh has no SAFEGRD_RELEASE_KEYS")
 	}
-	var script, file []string
-	for _, l := range strings.Split(string(m[1]), "\n") {
-		if l = strings.TrimSpace(l); l != "" {
-			script = append(script, l)
-		}
-	}
-	for _, l := range strings.Split(trustedKeysFile, "\n") {
-		if l = strings.TrimSpace(l); l != "" && !strings.HasPrefix(l, "#") {
-			file = append(file, l)
-		}
-	}
+	file := keyLines(trustedKeysFile)
 	if strings.Join(script, ",") != strings.Join(file, ",") {
 		t.Fatalf("install.sh trusts %v, pkg/release/trusted_keys.txt %v", script, file)
 	}
@@ -149,22 +157,59 @@ func TestInstallShTrustsTheSameKeysAsTheBinary(t *testing.T) {
 			t.Errorf("trusted key %q: %v", k, err)
 		}
 	}
+
+	// Both lists are empty while no release key ships, which the comparison
+	// above passes trivially. The reading of each side is checked here on
+	// a key that exists.
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	line := base64.StdEncoding.EncodeToString(pub)
+	got, ok := installShKeys([]byte("#!/bin/sh\nSAFEGRD_RELEASE_KEYS=\"\n" + line + "\n\"\n"))
+	if !ok || len(got) != 1 || got[0] != line {
+		t.Fatalf("install.sh's key list read as %q", got)
+	}
+	if fileLines := keyLines("# a comment\n" + line + "\n"); len(fileLines) != 1 || fileLines[0] != line {
+		t.Fatalf("trusted_keys.txt read as %q", fileLines)
+	}
+	if k, err := ParsePublicKey(line); err != nil || !k.Equal(pub) {
+		t.Fatalf("a key line did not parse back to its key: %v", err)
+	}
+}
+
+// installShKeys is the key lines between SAFEGRD_RELEASE_KEYS=" and its
+// closing quote in install.sh.
+func installShKeys(script []byte) ([]string, bool) {
+	m := regexp.MustCompile(`(?s)SAFEGRD_RELEASE_KEYS="\n(.*?)"`).FindSubmatch(script)
+	if m == nil {
+		return nil, false
+	}
+	return keyLines(string(m[1])), true
+}
+
+// keyLines is the non-blank, non-comment lines of a key list.
+func keyLines(s string) []string {
+	var out []string
+	for _, l := range strings.Split(s, "\n") {
+		if l = strings.TrimSpace(l); l != "" && !strings.HasPrefix(l, "#") {
+			out = append(out, l)
+		}
+	}
+	return out
 }
 
 // A build that trusts no key checks the archive against checksums.txt only:
 // a matching archive passes with no signature, a changed one does not.
 func TestABuildWithNoKeyChecksTheChecksumOnly(t *testing.T) {
-	old := testKey
-	testKey = ""
-	t.Cleanup(func() { testKey = old })
-	if Signed() {
-		t.Skip("this build trusts a release key, so every release must be signed")
-	}
+	trustNoKey(t)
 	path, sums := archive(t, "0.0.2", []byte("binary"))
 	if err := Verify(sums, nil, path, filepath.Base(path)); err != nil {
 		t.Fatalf("an unsigned release whose checksum matches: %v", err)
 	}
-	os.WriteFile(path, []byte("tampered"), 0o644)
+	if err := os.WriteFile(path, []byte("tampered"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if err := Verify(sums, nil, path, filepath.Base(path)); err == nil || !strings.Contains(err.Error(), "lists") {
 		t.Fatalf("a changed archive: %v", err)
 	}

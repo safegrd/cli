@@ -1,10 +1,8 @@
 package cli
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,28 +14,6 @@ import (
 	"github.com/safegrd/cli/pkg/model"
 	"github.com/safegrd/cli/pkg/storage"
 )
-
-// captureStdout runs fn and returns what it wrote to os.Stdout.
-func captureStdout(t *testing.T, fn func()) string {
-	t.Helper()
-	orig := os.Stdout
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("pipe: %v", err)
-	}
-	os.Stdout = w
-	done := make(chan string, 1)
-	go func() {
-		var buf bytes.Buffer
-		_, _ = io.Copy(&buf, r)
-		done <- buf.String()
-	}()
-	defer func() { os.Stdout = orig }()
-	fn()
-	w.Close()
-	os.Stdout = orig
-	return <-done
-}
 
 // verify printed the first 16 characters of the identity, which are
 // "AGE-SECRET-KEY-1" for every key there is. It names the key by the same
@@ -104,16 +80,6 @@ func TestASetupWithConfigKeepsItsKeyBesideTheConfig(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(home, ".safegrd")); !os.IsNotExist(err) {
 		t.Errorf("the setup wrote under $HOME/.safegrd as well (stat: %v)", err)
 	}
-}
-
-func captureStdoutErr(t *testing.T, fn func() error) (string, string, error) {
-	t.Helper()
-	var err error
-	var out string
-	errOut := captureStderr(t, func() {
-		out = captureStdout(t, func() { err = fn() })
-	})
-	return out, errOut, err
 }
 
 // `list --json` gave nothing parseable. It now prints one JSON array on stdout

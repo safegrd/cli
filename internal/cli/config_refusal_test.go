@@ -100,6 +100,38 @@ func TestTheCommandsThatDiagnoseTheConfigStillRun(t *testing.T) {
 	}
 }
 
+// The same, run as a customer runs them: through the root command, whose
+// pre-run is where a refused config stops everything else.
+func TestConfigValidateAndVersionRunOnARefusedConfig(t *testing.T) {
+	path := withRefusedConfig(t)
+	t.Cleanup(func() { RootCmd.SetArgs(nil) })
+
+	RootCmd.SetArgs([]string{"--config", path, "config", "validate"})
+	out, errOut, err := captureStdoutErr(t, RootCmd.Execute)
+	// validate fails the run, because the config does not load, after
+	// saying why: the refusal is a check it printed, not the gate's error.
+	if err == nil || !strings.Contains(out+errOut, "Configuration Load") || !strings.Contains(out+errOut, "insecure config file permissions") {
+		t.Errorf("config validate on a refused config: %v\nstdout:\n%s\nstderr:\n%s", err, out, errOut)
+	}
+	if strings.Contains(out+errOut, "public_key is required") {
+		t.Errorf("config validate judged the defaults:\n%s%s", out, errOut)
+	}
+
+	// The control: a command that reads the config is stopped by the same
+	// pre-run, so the two above ran because they are exempt.
+	RootCmd.SetArgs([]string{"--config", path, "list"})
+	_, _, err = captureStdoutErr(t, RootCmd.Execute)
+	if err == nil || !strings.Contains(err.Error(), "insecure config file permissions") {
+		t.Errorf("list on a refused config: %v, want the refusal", err)
+	}
+
+	RootCmd.SetArgs([]string{"--config", path, "version"})
+	out, errOut, err = captureStdoutErr(t, RootCmd.Execute)
+	if err != nil || !strings.Contains(out, "safegrd") {
+		t.Errorf("version on a refused config: %v\nstdout:\n%s\nstderr:\n%s", err, out, errOut)
+	}
+}
+
 // `config validate` must not describe the substituted defaults as if they were
 // the operator's file: it previously reported "encryption.public_key is missing
 // (run 'safegrd init')" about a file whose public key was present and unread.

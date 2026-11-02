@@ -517,7 +517,7 @@ func (d *NativeDumper) Dump(ctx context.Context, databaseName string, dst io.Wri
 		if err := writeTarEntry(tw, entryPreData, preData); err != nil {
 			return nil, err
 		}
-		meta.SchemaSource = "pg_dump " + pgDump.Version
+		meta.SchemaSource = SchemaSourcePgDump + " " + pgDump.Version
 	} else {
 		d.Warn(fmt.Sprintf("The schema of %s was captured WITHOUT pg_dump: %v.\n"+
 			"   The rows are backed up in full, but a restore of this snapshot will be missing foreign keys,\n"+

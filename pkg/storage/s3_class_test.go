@@ -50,13 +50,17 @@ func TestTheStorageClassIsSetOnTheArchiveOnly(t *testing.T) {
 		t.Fatalf("UploadMetadata: %v", err)
 	}
 	var archive, manifest string
+	var sawArchive, sawManifest bool
 	for path, class := range classes {
 		switch {
 		case strings.HasSuffix(path, ".safegrd"):
-			archive = class
+			archive, sawArchive = class, true
 		case strings.HasSuffix(path, ".meta.json"):
-			manifest = class
+			manifest, sawManifest = class, true
 		}
+	}
+	if !sawArchive || !sawManifest {
+		t.Fatalf("the stand-in bucket saw PUTs to %v; want the archive and its manifest", classes)
 	}
 	if archive != "STANDARD_IA" || manifest != "" {
 		t.Errorf("archive class %q, manifest class %q; want STANDARD_IA and none", archive, manifest)

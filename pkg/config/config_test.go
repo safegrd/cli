@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -79,12 +80,8 @@ func TestCLIConfigEnvOverrides(t *testing.T) {
 	}
 
 	// 2. Verify SAFEGRD_DATABASE_URL and SAFEGRD_SERVER_URL overrides
-	os.Setenv("SAFEGRD_DATABASE_URL", "postgres://override:override@localhost:5432/overridedb")
-	os.Setenv("SAFEGRD_SERVER_URL", "http://localhost:8080")
-	defer func() {
-		os.Unsetenv("SAFEGRD_DATABASE_URL")
-		os.Unsetenv("SAFEGRD_SERVER_URL")
-	}()
+	t.Setenv("SAFEGRD_DATABASE_URL", "postgres://override:override@localhost:5432/overridedb")
+	t.Setenv("SAFEGRD_SERVER_URL", "http://localhost:8080")
 
 	cfg, err := LoadCLIConfig("")
 	if err != nil {
@@ -161,7 +158,7 @@ encryption:
 	if keyInfo.Mode().Perm() != 0600 {
 		t.Fatalf("expected 0600 permissions on migrated key file, got %o", keyInfo.Mode().Perm())
 	}
-	keyContent, _ := os.ReadFile(targetKeyPath)
+	keyContent := mustRead(t, targetKeyPath)
 	if strings.TrimSpace(string(keyContent)) != "AGE-SECRET-KEY-1LEGACYMIGRATEKEY" {
 		t.Fatalf("migrated key content mismatch, got %s", string(keyContent))
 	}
@@ -203,11 +200,11 @@ encryption:
 	if loaded.Encryption.PrivateKey != "AGE-SECRET-KEY-1THEONLYCOPY" {
 		t.Fatalf("in-memory key = %q", loaded.Encryption.PrivateKey)
 	}
-	raw, _ := os.ReadFile(configPath)
+	raw := mustRead(t, configPath)
 	if !strings.Contains(string(raw), "AGE-SECRET-KEY-1THEONLYCOPY") {
 		t.Fatalf("the only copy of the key was stripped from the config:\n%s", raw)
 	}
-	if other, _ := os.ReadFile(keyPath); strings.TrimSpace(string(other)) != "AGE-SECRET-KEY-1SOMEOTHERKEY" {
+	if other := mustRead(t, keyPath); strings.TrimSpace(string(other)) != "AGE-SECRET-KEY-1SOMEOTHERKEY" {
 		t.Fatalf("the existing key file was overwritten: %q", other)
 	}
 }
@@ -278,7 +275,7 @@ func TestADatabaseFromTheEnvironmentIsASurfaceForTheRun(t *testing.T) {
 	if err := SaveCLIConfig(cfg, configPath); err != nil {
 		t.Fatal(err)
 	}
-	raw, _ := os.ReadFile(configPath)
+	raw := mustRead(t, configPath)
 	if strings.Contains(string(raw), "secret") || strings.Contains(string(raw), "surfaces") {
 		t.Errorf("saving wrote the environment's database into the file:\n%s", raw)
 	}
@@ -330,6 +327,9 @@ func TestResolveWORMModeRefusesAnythingUnrecognised(t *testing.T) {
 					t.Fatalf("ResolveWORMMode(%q) returned %q and no error; an unrecognised mode must be refused, "+
 						"because both silent choices are wrong and one of them is irreversible", tc.in, got)
 				}
+				if want := fmt.Sprintf("worm_mode %q is not recognised: use \"COMPLIANCE\", \"GOVERNANCE\" or \"NONE\"", tc.in); !strings.Contains(err.Error(), want) {
+					t.Fatalf("the refusal does not name the value and the valid ones: %v", err)
+				}
 				return
 			}
 			if err != nil {
@@ -350,8 +350,8 @@ func TestValidateForBackupRejectsUnknownWORMMode(t *testing.T) {
 		Encryption:  EncryptionConfig{PublicKey: "age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p"},
 		Storage:     StorageConfig{Type: StorageTypeS3, Bucket: "b", WORMMode: "governance"},
 	}
-	if err := cfg.ValidateForBackup(); err == nil {
-		t.Fatal("ValidateForBackup accepted worm_mode \"governance\"; the backup would then be written under compliance-mode Object Lock the operator did not ask for")
+	if err := cfg.ValidateForBackup(); err == nil || !strings.Contains(err.Error(), `worm_mode "governance" is not recognised`) {
+		t.Fatalf("ValidateForBackup did not refuse worm_mode \"governance\" by name (%v); the backup would then be written under compliance-mode Object Lock the operator did not ask for", err)
 	}
 	cfg.Storage.WORMMode = WORMModeGovernance
 	if err := cfg.ValidateForBackup(); err != nil {
@@ -419,7 +419,7 @@ func TestAKeyBesideTheConfigIsWrittenRelativeToIt(t *testing.T) {
 	if err := SaveCLIConfig(cfg, cfgPath); err != nil {
 		t.Fatal(err)
 	}
-	raw, _ := os.ReadFile(cfgPath)
+	raw := mustRead(t, cfgPath)
 	if !strings.Contains(string(raw), "key_path: "+filepath.Join("keys", "daemon.key")) || strings.Contains(string(raw), dir) {
 		t.Fatalf("the saved config names the key path as:\n%s", raw)
 	}
@@ -449,7 +449,7 @@ func TestAKeyBesideTheConfigIsWrittenRelativeToIt(t *testing.T) {
 	if err := SaveCLIConfig(cfg, cfgPath); err != nil {
 		t.Fatal(err)
 	}
-	if raw, _ := os.ReadFile(cfgPath); !strings.Contains(string(raw), elsewhere) {
+	if raw := mustRead(t, cfgPath); !strings.Contains(string(raw), elsewhere) {
 		t.Fatalf("a key outside the config's folder lost its path:\n%s", raw)
 	}
 }

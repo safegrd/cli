@@ -87,8 +87,8 @@ func TestTwoRootsRestoreAtTheirPaths(t *testing.T) {
 		t.Fatalf("restoring one path under the second root wrote %d files: %v", files, one)
 	}
 	// A root inside another is refused.
-	if _, err := write.Run(context.Background(), h.b, h.opts(func(o *write.Options) { o.Roots = []string{h.src, filepath.Join(h.src, "www")} })); err == nil {
-		t.Fatal("a root inside another was accepted")
+	if _, err := write.Run(context.Background(), h.b, h.opts(func(o *write.Options) { o.Roots = []string{h.src, filepath.Join(h.src, "www")} })); err == nil || !strings.Contains(err.Error(), "is inside root") {
+		t.Fatalf("a root inside another: %v", err)
 	}
 }
 
@@ -158,13 +158,13 @@ func TestTheMonthTurnOpensANewEpoch(t *testing.T) {
 	}
 	old, _, _ := h.restore(oct.Epoch.EpochID, oct.Snapshot.SnapshotID, nil)
 	fresh, _, _ := h.restore(nov.Epoch.EpochID, nov.Snapshot.SnapshotID, nil)
-	if old["f"].value == fresh["f"].value {
-		t.Fatal("the two epochs restore the same bytes")
+	if old["f"].value != sha256Hex("october") || fresh["f"].value != sha256Hex("november") {
+		t.Fatalf("october's epoch restores f as %s and november's as %s, want the digests of the words written", old["f"].value, fresh["f"].value)
 	}
 	// The cache of the old epoch is gone once the new one's opening run is
 	// complete.
-	left, _ := filepath.Glob(filepath.Join(h.state, "cache", "files-test", "*.db"))
-	if len(left) != 1 {
+	left, err := filepath.Glob(filepath.Join(h.state, "cache", "files-test", "*.db"))
+	if err != nil || len(left) != 1 {
 		t.Fatalf("cache files left: %v", left)
 	}
 }

@@ -39,8 +39,8 @@ func TestLocalStorageWORM(t *testing.T) {
 
 	// 2. WORM test: Overwrite must fail
 	_, err = provider.UploadSnapshot(ctx, snapshotID, bytes.NewReader([]byte("tampered-data")), 13, retentionUntil)
-	if err == nil {
-		t.Fatal("expected error on overwrite due to WORM immutability, got nil")
+	if err == nil || !strings.Contains(err.Error(), "already exists and is immutable") {
+		t.Fatalf("an overwrite of a snapshot: %v, want it refused as immutable", err)
 	}
 
 	// 3. Exists
@@ -134,14 +134,20 @@ func TestLocalStorage_NodeSegmentationAndFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DownloadSnapshot failed: %v", err)
 	}
-	content, _ := io.ReadAll(rc)
+	content, err := io.ReadAll(rc)
 	rc.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !bytes.Equal(content, payload) {
 		t.Errorf("content mismatch: %s vs %s", string(content), string(payload))
 	}
 
 	// Flat provider listing finds it
-	flatProvider, _ := NewLocalStorage(storageDir)
+	flatProvider, err := NewLocalStorage(storageDir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	snaps, err := flatProvider.ListSnapshots(ctx)
 	if err != nil || len(snaps) != 1 || snaps[0] != snapID {
 		t.Errorf("expected flatProvider to list segmented snapshot, got %v", snaps)

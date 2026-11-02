@@ -74,6 +74,12 @@ func walStreamBase(ctx context.Context, c *config.CLIConfig, a *wal.Archive, s *
 	if walStreamEngine(s) == wal.StreamMongo {
 		info, err = a.MongoBase(ctx, u)
 	} else {
+		// Following the binary log needs REPLICATION SLAVE. A base taken
+		// without it is one nothing can replay past, so it is refused here,
+		// in words, and not left for the daemon to find.
+		if _, err := wal.CheckMySQLStream(ctx, u); err != nil {
+			return info, classed(exitSource, err)
+		}
 		info, err = a.MySQLBase(ctx, u)
 	}
 	if err != nil {

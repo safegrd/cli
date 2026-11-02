@@ -3,6 +3,8 @@ package sink
 import (
 	"context"
 	"errors"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -22,6 +24,34 @@ func (f *failing) Put(ctx context.Context, key string, body []byte, md5 [16]byte
 		return errors.New("bucket unreachable")
 	}
 	return f.Store.Put(ctx, key, body, md5, until)
+}
+
+// recording is a store that keeps the order of the keys put to it.
+type recording struct {
+	Store
+	mu   sync.Mutex
+	puts []string
+}
+
+func (r *recording) Put(ctx context.Context, key string, body []byte, md5 [16]byte, until time.Time) error {
+	if err := r.Store.Put(ctx, key, body, md5, until); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	r.puts = append(r.puts, key)
+	r.mu.Unlock()
+	return nil
+}
+
+// lastPut is the key of the last object put under the run's snapshot, so
+// a test can see the sidecar published after everything it names.
+func (r *recording) lastPut() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.puts) == 0 {
+		return ""
+	}
+	return r.puts[len(r.puts)-1]
 }
 
 func dirBackend(t *testing.T, root string) *Direct {
@@ -77,12 +107,16 @@ func holds(t *testing.T, d *Direct, e format.Epoch) map[string]bool {
 }
 
 func TestMultiWritesEveryObjectToEveryCopyAndPublishesLast(t *testing.T) {
-	id, _ := age.GenerateX25519Identity()
+	id, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
 	now := time.Now().UTC()
 	req := OpenRequest{SurfaceID: "site", Decision: policy.Decision{Open: true, Reason: format.ReasonFirst},
 		OpeningTier: "base", Retention: policy.Retention{Days: 7}, Recipient: id.Recipient().String(), Now: now}
-	first := dirBackend(t, "node-a")
-	ok := dirBackend(t, "node-a")
+	firstRec := &recording{Store: dirBackend(t, "node-a").S}
+	okRec := &recording{Store: dirBackend(t, "node-a").S}
+	first, ok := NewDirect(firstRec), NewDirect(okRec)
 	broken := &failing{Store: dirBackend(t, "node-a").S}
 	m := NewMulti(first, Named{Name: "offsite", D: ok, RetentionDays: 30}, Named{Name: "cold", D: NewDirect(broken), RetentionDays: 30})
 	broken.armed = false
@@ -102,6 +136,13 @@ func TestMultiWritesEveryObjectToEveryCopyAndPublishesLast(t *testing.T) {
 			t.Errorf("copy %s: %+v", r.Name, r)
 		}
 	}
+	// Each copy is published last: its sidecar is the last object put, so a
+	// reader never finds a sidecar naming objects not yet there.
+	for name, r := range map[string]*recording{"first": firstRec, "offsite": okRec} {
+		if last := r.lastPut(); !strings.HasSuffix(last, "/snapshots/snap-1.meta.json") {
+			t.Errorf("the %s store's last put is %s, want the sidecar", name, last)
+		}
+	}
 
 	// A copy that fails mid-run is dropped: the run succeeds, the copy is
 	// never published (no sidecar), and its result says why.
@@ -110,11 +151,14 @@ func TestMultiWritesEveryObjectToEveryCopyAndPublishesLast(t *testing.T) {
 	m2 := NewMulti(first, Named{Name: "offsite", D: ok, RetentionDays: 30}, Named{Name: "cold", D: NewDirect(broken), RetentionDays: 30})
 	run(t, m2, OpenRequest{SurfaceID: "site", Current: cur, Now: now}, "snap-2")
 	res := m2.Results()
-	if !res[0].Held || res[1].Held || res[1].Err == nil {
+	if !res[0].Held || res[1].Held || res[1].Err == nil || !strings.Contains(res[1].Err.Error(), "bucket unreachable") {
 		t.Fatalf("results after a copy failed: %+v", res)
 	}
 	if !holds(t, ok, e)["/snapshots/snap-2.meta.json"] {
 		t.Error("the copy that took the run does not hold its sidecar")
+	}
+	if holds(t, &Direct{S: broken.Store}, e)["/snapshots/snap-2.meta.json"] {
+		t.Error("the copy that failed was published")
 	}
 
 	// A copy that holds none of a continuing epoch is behind: nothing of the

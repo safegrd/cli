@@ -260,7 +260,9 @@ func TestGmailWithoutAllMailFallsBackToFoldersAndSaysSo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ScanAndStream: %v", err)
 	}
-	_, _ = io.Copy(io.Discard, stream)
+	if _, err := io.Copy(io.Discard, stream); err != nil {
+		t.Fatal(err)
+	}
 	if meta.TotalContainers != 3 {
 		t.Errorf("backed up %d folders, want the 3 selectable ones", meta.TotalContainers)
 	}

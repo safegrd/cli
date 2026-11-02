@@ -1,6 +1,9 @@
 package model
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestADrillExpectationComparesNumbersAsNumbersAndTextAsText(t *testing.T) {
 	cases := []struct {
@@ -37,20 +40,23 @@ func TestADrillExpectationComparesNumbersAsNumbersAndTextAsText(t *testing.T) {
 
 func TestDrillChecksThatCannotRunAreRefused(t *testing.T) {
 	ok := DrillCheck{Name: "n", SQL: "SELECT 1", Expect: "1"}
-	for name, checks := range map[string][]DrillCheck{
-		"no name":          {{SQL: "SELECT 1", Expect: "1"}},
-		"named twice":      {ok, ok},
-		"both":             {{Name: "n", SQL: "SELECT 1", Expect: "1", Command: "true"}},
-		"neither":          {{Name: "n"}},
-		"sql, no expect":   {{Name: "n", SQL: "SELECT 1"}},
-		"command, expect":  {{Name: "n", Command: "true", Expect: "0"}},
-		"order on text":    {{Name: "n", SQL: "SELECT 1", Expect: "> abc"}},
-		"operator only":    {{Name: "n", SQL: "SELECT 1", Expect: ">="}},
-		"unknown variable": {{Name: "n", SQL: "SELECT '${SAFEGRD_SNAPSHOT_TIME}'", Expect: "1"}},
-		"unclosed":         {{Name: "n", SQL: "SELECT '${SAFEGRD_SNAPSHOT_CREATED_AT'", Expect: "1"}},
+	for name, c := range map[string]struct {
+		checks []DrillCheck
+		says   string
+	}{
+		"no name":          {[]DrillCheck{{SQL: "SELECT 1", Expect: "1"}}, "drill check 1 has no name"},
+		"named twice":      {[]DrillCheck{ok, ok}, `"n" is named twice`},
+		"both":             {[]DrillCheck{{Name: "n", SQL: "SELECT 1", Expect: "1", Command: "true"}}, "has both sql and command"},
+		"neither":          {[]DrillCheck{{Name: "n"}}, "has neither sql nor command"},
+		"sql, no expect":   {[]DrillCheck{{Name: "n", SQL: "SELECT 1"}}, "has no expect"},
+		"command, expect":  {[]DrillCheck{{Name: "n", Command: "true", Expect: "0"}}, "leave out expect"},
+		"order on text":    {[]DrillCheck{{Name: "n", SQL: "SELECT 1", Expect: "> abc"}}, "its value must be a number"},
+		"operator only":    {[]DrillCheck{{Name: "n", SQL: "SELECT 1", Expect: ">="}}, "has an operator and no value"},
+		"unknown variable": {[]DrillCheck{{Name: "n", SQL: "SELECT '${SAFEGRD_SNAPSHOT_TIME}'", Expect: "1"}}, "names ${SAFEGRD_SNAPSHOT_TIME}"},
+		"unclosed":         {[]DrillCheck{{Name: "n", SQL: "SELECT '${SAFEGRD_SNAPSHOT_CREATED_AT'", Expect: "1"}}, "names ${SAFEGRD_SNAPSHOT_CREATED_AT'"},
 	} {
-		if err := ValidateDrillChecks(checks); err == nil {
-			t.Errorf("%s: accepted", name)
+		if err := ValidateDrillChecks(c.checks); err == nil || !strings.Contains(err.Error(), c.says) {
+			t.Errorf("%s: %v; want an error saying %q", name, err, c.says)
 		}
 	}
 	fresh := DrillCheck{Name: "fresh", Expect: "true",

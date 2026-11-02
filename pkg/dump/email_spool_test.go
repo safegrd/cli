@@ -4,6 +4,8 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"os"
@@ -43,6 +45,7 @@ func TestAnEmailBackupHoldsBodiesOnDiskAndRemovesThem(t *testing.T) {
 	}
 	tr := tar.NewReader(reader)
 	got := 0
+	seen := map[string]int{}
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -58,17 +61,22 @@ func TestAnEmailBackupHoldsBodiesOnDiskAndRemovesThem(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		found := false
-		for _, w := range want {
-			found = found || bytes.Equal(b, w)
-		}
-		if !found {
+		sum := sha256.Sum256(b)
+		digest := hex.EncodeToString(sum[:])
+		if w, ok := want[digest]; !ok || !bytes.Equal(b, w) {
 			t.Errorf("%s in the archive is not a message the source held: %q", hdr.Name, b)
 		}
+		seen[digest]++
 		got++
 	}
-	if got == 0 {
-		t.Fatal("the archive holds no messages")
+	// Every message the source held, each once: none lost, none twice.
+	if got != len(want) {
+		t.Fatalf("the archive holds %d messages, the source %d", got, len(want))
+	}
+	for digest := range want {
+		if seen[digest] != 1 {
+			t.Errorf("message %s is in the archive %d times, want once", digest, seen[digest])
+		}
 	}
 	if left := spoolDirs(t, tmp); len(left) != 0 {
 		t.Fatalf("the spool is left behind after the archive was written: %v", left)
@@ -76,9 +84,7 @@ func TestAnEmailBackupHoldsBodiesOnDiskAndRemovesThem(t *testing.T) {
 
 	// A backup that fails before the archive removes its spool too.
 	_, _, err = NewEmailCollector(EmailCollectorConfig{Host: "imap.test"}).ScanAndStream(context.Background(), &failingSource{})
-	if err == nil || !strings.Contains(err.Error(), "refused") {
-		t.Fatalf("a refused connection: %v", err)
-	}
+	wantErr(t, err, "refused")
 	if left := spoolDirs(t, tmp); len(left) != 0 {
 		t.Fatalf("a failed backup left its spool behind: %v", left)
 	}

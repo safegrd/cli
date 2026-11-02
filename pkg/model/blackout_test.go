@@ -1,6 +1,7 @@
 package model
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -30,9 +31,14 @@ func TestBlackoutWindows(t *testing.T) {
 	if _, end, _ := BlackoutAt(touching, at("01:30")); !end.Equal(at("03:00")) {
 		t.Errorf("touching windows end at %s, want 03:00", end)
 	}
-	for _, bad := range []string{"22:00", "25:00-01:00", "10:00-10:00", "ten-eleven"} {
-		if _, err := ParseBlackout([]string{bad}); err == nil {
-			t.Errorf("%q parsed", bad)
+	for bad, words := range map[string]string{
+		"22:00":       "write it as HH:MM-HH:MM",
+		"25:00-01:00": `"25:00" is not a time of day`,
+		"10:00-10:00": "starts and ends at the same time",
+		"ten-eleven":  `"ten" is not a time of day`,
+	} {
+		if _, err := ParseBlackout([]string{bad}); err == nil || !strings.Contains(err.Error(), words) {
+			t.Errorf("%q: %v; want an error saying %q", bad, err, words)
 		}
 	}
 }

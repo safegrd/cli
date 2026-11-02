@@ -9,12 +9,11 @@ import (
 	"github.com/safegrd/cli/pkg/model"
 )
 
-// The digest contract, asserted end to end through real streaming encryption.
-//
-// The manifest Sha256Checksum records the PLAINTEXT stream digest, and
-// verification compares it against the decrypted PLAINTEXT digest.
-// This test asserts that an encrypted stream produces a manifest
-// whose digest matches the restored stream.
+// The digest contract: what a backup records is what verification compares
+// the restored stream against. The manifest's Sha256Checksum is the digest of
+// the PLAINTEXT; EncryptedSha256 is the object as stored. The metadata is
+// filled by StreamMetrics.RecordInto, the call every backup path makes, and
+// checked by checkDigests, the comparison every stream drill makes.
 func TestTheManifestDigestIsOfThePlaintext(t *testing.T) {
 	plaintext := []byte(strings.Repeat("safegrd sample data rows;", 500))
 
@@ -28,19 +27,13 @@ func TestTheManifestDigestIsOfThePlaintext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EncryptStream: %v", err)
 	}
-
-	// What `safegrd backup` records.
-	meta := &model.SnapshotMetadata{
-		SnapshotID:      "snap-digest-contract",
-		Sha256Checksum:  encMetrics.RawSha256,
-		EncryptedSha256: encMetrics.EncryptedSha256,
-	}
-
-	if meta.Sha256Checksum == meta.EncryptedSha256 {
+	if encMetrics.RawSha256 == encMetrics.EncryptedSha256 {
 		t.Fatal("the plaintext and ciphertext digests are equal, so this test proves nothing")
 	}
 
-	// What verification computes on the way back.
+	meta := &model.SnapshotMetadata{SnapshotID: "snap-digest-contract"}
+	encMetrics.RecordInto(meta)
+
 	var restored bytes.Buffer
 	decMetrics, err := crypto.DecryptStream(bytes.NewReader(sealed.Bytes()), &restored, kp.PrivateKey)
 	if err != nil {
@@ -50,18 +43,18 @@ func TestTheManifestDigestIsOfThePlaintext(t *testing.T) {
 		t.Fatal("the round trip did not return the plaintext")
 	}
 
-	if decMetrics.RawSha256 != meta.Sha256Checksum {
-		t.Errorf("a Fire Drill on a freshly written snapshot would FAIL:\n"+
-			"  manifest sha256_checksum = %s\n"+
-			"  digest of restored data  = %s\n"+
-			"  These must be the same stream, or verification can never pass.",
-			meta.Sha256Checksum, decMetrics.RawSha256)
+	report := &model.VerificationReport{}
+	v := NewVerifier(nil, "")
+	if msg := v.checkDigests(report, meta, snapshotRecord{why: "no remote server in this test"}, decMetrics); msg != "" {
+		t.Fatalf("a drill of a freshly written snapshot fails its digest check: %s\n"+
+			"  manifest sha256_checksum = %s\n  digest of restored data  = %s", msg, meta.Sha256Checksum, decMetrics.RawSha256)
 	}
-
-	// The at-rest digest must stay the other one, or it answers no question.
-	if decMetrics.EncryptedSha256 != meta.EncryptedSha256 {
-		t.Errorf("encrypted_sha256 does not describe the object as stored: manifest %s, read back %s",
-			meta.EncryptedSha256, decMetrics.EncryptedSha256)
+	if a := assertion(report, "DigestIntegrity"); a == nil || !a.Passed {
+		t.Fatalf("DigestIntegrity: %+v", a)
+	}
+	if meta.EncryptedSha256 != decMetrics.EncryptedSha256 || meta.EncryptedSizeBytes != int64(sealed.Len()) || meta.RawSizeBytes != int64(len(plaintext)) {
+		t.Errorf("the recorded object does not describe what was stored: sha %s (read back %s), %d of %d bytes, raw %d",
+			meta.EncryptedSha256, decMetrics.EncryptedSha256, meta.EncryptedSizeBytes, sealed.Len(), meta.RawSizeBytes)
 	}
 }
 

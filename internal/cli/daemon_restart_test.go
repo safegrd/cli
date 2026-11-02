@@ -2,6 +2,8 @@ package cli
 
 import (
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -12,13 +14,13 @@ import (
 // claim sent every host without a daemon to.
 func TestRestartWithNoDaemonInstalledSaysWhatToRun(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	for _, p := range []string{systemdPath(false), launchdPath(false)} {
-		if _, err := os.Stat(p); err == nil {
-			t.Skipf("this machine has a system daemon service at %s", p)
-		}
-	}
+	// The system-wide service paths under a root of the test's own: a
+	// service installed on the machine running the test does not decide it.
+	old := serviceRoot
+	serviceRoot = t.TempDir()
+	t.Cleanup(func() { serviceRoot = old })
 	if daemonServiceInstalled() {
-		t.Fatal("a fresh HOME with no service file reads as installed")
+		t.Fatal("a fresh HOME and service root with no service file reads as installed")
 	}
 	cmd := newDaemonRestartCmd()
 	cmd.SetArgs(nil)
@@ -28,5 +30,20 @@ func TestRestartWithNoDaemonInstalledSaysWhatToRun(t *testing.T) {
 	}
 	if !strings.Contains(daemonNextStep(), "safegrd daemon install") {
 		t.Fatalf("claim's next step on a host with no daemon: %q", daemonNextStep())
+	}
+	// The same root with a service file in it reads as installed, so the
+	// check above read the test's root and not the machine's.
+	p := launchdPath(false)
+	if runtime.GOOS != "darwin" {
+		p = systemdPath(false)
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !daemonServiceInstalled() {
+		t.Fatalf("a service file at %s does not read as installed", p)
 	}
 }

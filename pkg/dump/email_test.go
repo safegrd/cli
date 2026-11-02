@@ -5,20 +5,25 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/safegrd/cli/pkg/model"
 )
 
+// mockIMAPSource hands the collector fetched messages directly. It stands in
+// for the IMAP client, so nothing it does says how the client fetches: the
+// scripted server tests in email_imap_test.go record the commands sent.
 type mockIMAPSource struct {
 	folders   []string
 	messages  map[string][]FetchedEmail
-	seenFlags map[string]bool // tracks if flags were modified
-	peekUsed  bool
 	connected bool
 	closed    bool
 }
@@ -33,8 +38,6 @@ func (m *mockIMAPSource) ListFolders(ctx context.Context) ([]string, error) {
 }
 
 func (m *mockIMAPSource) FetchFolderMessages(ctx context.Context, folder string) ([]FetchedEmail, error) {
-	// BODY.PEEK[] guarantees \Seen flag is never set
-	m.peekUsed = true
 	return m.messages[folder], nil
 }
 
@@ -95,7 +98,6 @@ func createTestMailSource() *mockIMAPSource {
 				},
 			},
 		},
-		seenFlags: make(map[string]bool),
 	}
 }
 
@@ -114,11 +116,6 @@ func TestEmailCollector_LosslessExtractionAndExclusion(t *testing.T) {
 	reader, meta, err := collector.ScanAndStream(ctx, mock)
 	if err != nil {
 		t.Fatalf("ScanAndStream failed: %v", err)
-	}
-
-	// Assert BODY.PEEK[] semantics: live server flags were not modified
-	if !mock.peekUsed {
-		t.Fatalf("expected BODY.PEEK[] to be used for lossless fetch without modifying flags")
 	}
 
 	// 2 emails expected (INBOX + Sent, excluding Spam)
@@ -155,31 +152,47 @@ func TestEmailCollector_LosslessExtractionAndExclusion(t *testing.T) {
 }
 
 func TestEmailCollector_NegativeMismatchedCountFailsDrill(t *testing.T) {
-	mock := createTestMailSource()
+	collect := func() ([]byte, *model.SnapshotMetadata) {
+		t.Helper()
+		collector := NewEmailCollector(EmailCollectorConfig{
+			Host:           "imap.gmail.com",
+			Username:       "founder@startup.com",
+			ExcludeFolders: []string{"[Gmail]/Spam"},
+		})
+		reader, meta, err := collector.ScanAndStream(context.Background(), createTestMailSource())
+		if err != nil {
+			t.Fatal(err)
+		}
+		archive, err := io.ReadAll(reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return archive, meta
+	}
+	archive, meta := collect()
+	restorer := NewEmailRestorer()
 
-	collector := NewEmailCollector(EmailCollectorConfig{
-		Host:           "imap.gmail.com",
-		Username:       "founder@startup.com",
-		ExcludeFolders: []string{"[Gmail]/Spam"},
-	})
-
-	reader, meta, err := collector.ScanAndStream(context.Background(), mock)
-	if err != nil {
-		t.Fatal(err)
+	// The same archive with its own record passes: what fails below is the
+	// count alone.
+	res, err := restorer.InspectEmailArchive(context.Background(), bytes.NewReader(archive), meta)
+	if err != nil || !res.Passed {
+		t.Fatalf("the untampered archive did not pass: %+v, %v", res, err)
 	}
 
-	// Tamper outer metadata with false count
 	tamperedMeta := *meta
 	tamperedMeta.TotalItems = 99999
-
-	restorer := NewEmailRestorer()
-	res, err := restorer.InspectEmailArchive(context.Background(), reader, &tamperedMeta)
+	res, err = restorer.InspectEmailArchive(context.Background(), bytes.NewReader(archive), &tamperedMeta)
 	if err != nil {
 		t.Fatalf("InspectEmailArchive error: %v", err)
 	}
-
 	if res.Passed {
 		t.Fatalf("expected dry restore verification to fail on mismatched email count, but it passed")
+	}
+	if a := assertion(t, res.Assertions, "Archive Email Count Matches Manifest"); a.Passed {
+		t.Fatalf("the count assertion passed over a record of 99999 emails: %+v", a)
+	}
+	if !strings.Contains(res.ErrorMessage, "the snapshot record says 99999") {
+		t.Fatalf("the failure does not name the count it disagreed with: %q", res.ErrorMessage)
 	}
 }
 
@@ -213,60 +226,99 @@ func TestEmailCollector_DiskExtraction(t *testing.T) {
 		t.Fatalf("expected 2 emails extracted to disk, got %d", res.EmailsExtracted)
 	}
 
-	// Verify extracted file exists and has correct contents
-	entries, err := os.ReadDir(filepath.Join(targetDir, "INBOX"))
-	if err != nil {
-		t.Fatalf("failed reading extracted INBOX directory: %v", err)
+	// Every message that was not excluded comes back byte for byte, in its
+	// folder, and the excluded one does not.
+	src := createTestMailSource()
+	for _, folder := range []string{"INBOX", "Sent"} {
+		entries, err := os.ReadDir(filepath.Join(targetDir, folder))
+		if err != nil {
+			t.Fatalf("reading the extracted %s directory: %v", folder, err)
+		}
+		if len(entries) != len(src.messages[folder]) {
+			t.Fatalf("%s: %d files extracted, the source holds %d", folder, len(entries), len(src.messages[folder]))
+		}
+		content, err := os.ReadFile(filepath.Join(targetDir, folder, entries[0].Name()))
+		if err != nil {
+			t.Fatalf("reading the extracted message: %v", err)
+		}
+		if !bytes.Equal(content, src.messages[folder][0].Body) {
+			t.Fatalf("%s/%s is not the message the server held:\n%s", folder, entries[0].Name(), content)
+		}
 	}
-	if len(entries) != 1 {
-		t.Fatalf("expected 1 file in INBOX, got %d", len(entries))
-	}
-
-	content, err := os.ReadFile(filepath.Join(targetDir, "INBOX", entries[0].Name()))
-	if err != nil {
-		t.Fatalf("failed reading extracted EML: %v", err)
-	}
-	if !bytes.Contains(content, []byte("Backup Verification Report")) {
-		t.Fatalf("expected extracted content to contain email subject, got: %s", string(content))
+	if _, err := os.Stat(filepath.Join(targetDir, "[Gmail]")); !os.IsNotExist(err) {
+		t.Fatalf("the excluded spam folder was extracted (%v)", err)
 	}
 }
 
+// An incremental backup fetches each folder from the UID after the highest
+// it holds. When the server reports a new UIDVALIDITY (the mailbox was
+// recreated, RFC 3501 2.3.1.1), the old UIDs mean nothing and the folder is
+// fetched whole. Every fetch is BODY.PEEK[], which leaves \Seen unset.
 func TestIncrementalUIDSynchronization(t *testing.T) {
-	cfg := EmailCollectorConfig{
-		Host:     "imap.test.safegrd.dev",
-		Username: "operator@safegrd.dev",
+	serverTLS, clientTLS := selfSignedTLS(t)
+	srv := startScriptedIMAP(t, serverTLS, func(verb, args string) string {
+		switch verb {
+		case "LOGIN":
+			return "TAG OK Logged in\r\n"
+		case "CAPABILITY":
+			return "* CAPABILITY IMAP4rev1 UIDPLUS\r\nTAG OK\r\n"
+		case "LIST":
+			return "* LIST (\\HasNoChildren) \"/\" INBOX\r\n* LIST (\\HasNoChildren) \"/\" Archive\r\nTAG OK List completed\r\n"
+		case "SELECT":
+			return "* 1 EXISTS\r\n* OK [UIDVALIDITY 7] UIDs valid\r\nTAG OK [READ-WRITE] Select completed\r\n"
+		case "UID FETCH":
+			m := eml("<m@example.com>", "a message")
+			return fmt.Sprintf("* 1 FETCH (UID 500 BODY[] {%d}\r\n%s)\r\n", len(m), m) + "TAG OK Fetch completed\r\n"
+		}
+		return "TAG BAD unexpected\r\n"
+	})
+	host, port, err := net.SplitHostPort(srv.addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := strconv.Atoi(port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	collector := NewEmailCollector(EmailCollectorConfig{
+		Host: host, Port: p, Username: "u@example.com", Password: "pw", TLSConfig: clientTLS,
+		Warn: func(string) {},
 		LastFolderStats: []model.EmailFolderStat{
-			{
-				Folder:      "INBOX",
-				UIDValidity: 10001,
-				HighestUID:  450,
-			},
-			{
-				Folder:      "Sent",
-				UIDValidity: 10002,
-				HighestUID:  120,
-			},
+			// INBOX was recreated: the server now says UIDVALIDITY 7.
+			{Folder: "INBOX", UIDValidity: 10001, HighestUID: 450},
+			// Archive is the mailbox it was.
+			{Folder: "Archive", UIDValidity: 7, HighestUID: 120},
 		},
+	})
+	stream, _, err := collector.ScanAndStream(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("ScanAndStream: %v", err)
 	}
-
-	client := NewStandardIMAPClient(cfg)
-	if client.FolderUIDValidity["INBOX"] != 10001 || client.FolderHighestUID["INBOX"] != 450 {
-		t.Fatalf("failed pre-seeding UID sequence state for INBOX: got validity %d, highest %d",
-			client.FolderUIDValidity["INBOX"], client.FolderHighestUID["INBOX"])
+	if _, err := io.ReadAll(stream); err != nil {
+		t.Fatal(err)
 	}
-
-	// Test UIDVALIDITY reset behavior when mailbox is reindexed/recreated (RFC 3501 §2.3.1.1)
-	newValidity := uint32(99999)
-	if prevVal, exists := client.FolderUIDValidity["INBOX"]; exists && prevVal != newValidity {
-		client.FolderHighestUID["INBOX"] = 0
-		client.FolderUIDValidity["INBOX"] = newValidity
+	fetches := map[string]string{}
+	var selected string
+	for _, c := range srv.recorded() {
+		_, rest, _ := strings.Cut(c, " ")
+		switch {
+		case strings.HasPrefix(rest, "SELECT "):
+			selected = strings.Trim(strings.TrimPrefix(rest, "SELECT "), `"`)
+		case strings.HasPrefix(rest, "UID FETCH "):
+			fetches[selected] = rest
+		}
 	}
-
-	if client.FolderHighestUID["INBOX"] != 0 {
-		t.Fatalf("expected highest UID to reset to 0 after UIDVALIDITY change, got %d", client.FolderHighestUID["INBOX"])
-	}
-	if client.FolderUIDValidity["INBOX"] != 99999 {
-		t.Fatalf("expected new UIDVALIDITY 99999, got %d", client.FolderUIDValidity["INBOX"])
+	for folder, want := range map[string]string{"INBOX": "UID FETCH 1:* ", "Archive": "UID FETCH 121:* "} {
+		got, ok := fetches[folder]
+		if !ok {
+			t.Fatalf("%s was never fetched; commands sent: %v", folder, fetches)
+		}
+		if !strings.HasPrefix(got, want) {
+			t.Errorf("%s fetched with %q, want %q", folder, got, want)
+		}
+		if !strings.Contains(got, "BODY.PEEK[]") {
+			t.Errorf("%s fetched with %q: without BODY.PEEK[] the server marks every message read", folder, got)
+		}
 	}
 }
 

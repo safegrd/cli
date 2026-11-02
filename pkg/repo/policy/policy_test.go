@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -153,7 +154,7 @@ func TestNewEpochIDShape(t *testing.T) {
 	if !format.ValidEpochID(id) || id[:7] != "e202610" {
 		t.Fatalf("epoch id %q", id)
 	}
-	if _, err := NewEpoch(date("2026-10-01T02:00:00Z"), "s", format.ReasonFirst, "yearly", Retention{}, "age1x"); err == nil {
-		t.Fatal("an unknown tier accepted")
+	if _, err := NewEpoch(date("2026-10-01T02:00:00Z"), "s", format.ReasonFirst, "yearly", Retention{}, "age1x"); err == nil || !strings.Contains(err.Error(), `opening tier "yearly" is not`) {
+		t.Fatalf("an unknown tier: %v", err)
 	}
 }

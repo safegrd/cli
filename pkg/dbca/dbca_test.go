@@ -76,11 +76,11 @@ func TestWriteFileNamesTheFileByItsContent(t *testing.T) {
 	if err != nil || info.Mode().Perm() != 0o600 {
 		t.Fatalf("mode: %v %v", info, err)
 	}
-	if got, _ := os.ReadFile(p2); string(got) != other {
+	if got, err := os.ReadFile(p2); err != nil || string(got) != other {
 		t.Fatal("the file does not hold the CA")
 	}
-	if _, err := WriteFile(dir, "nonsense"); err == nil {
-		t.Fatal("wrote a file that is not a certificate")
+	if _, err := WriteFile(dir, "nonsense"); err == nil || !strings.Contains(err.Error(), "the CA certificate is not PEM") {
+		t.Fatalf("wrote a file that is not a certificate, or refused it for another reason: %v", err)
 	}
 }
 

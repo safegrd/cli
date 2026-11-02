@@ -505,8 +505,10 @@ func isPIDAlive(pid int) bool {
 	if err != nil {
 		return false
 	}
-	// Signal 0 checks process existence without killing it on Unix
-	if err := proc.Signal(syscall.Signal(0)); err != nil {
+	// Signal 0 checks process existence without killing it on Unix. EPERM
+	// is a process that exists and belongs to another user: a daemon running
+	// as root, seen from a CLI run by someone else, is alive.
+	if err := proc.Signal(syscall.Signal(0)); err != nil && !errors.Is(err, syscall.EPERM) {
 		return false
 	}
 	// A zombie answers signal 0 too. In a container whose first process
@@ -1764,10 +1766,7 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 		meta.DurationMs = backupMilliseconds(started)
 		meta.Status = model.SnapshotStatusCompleted
 		recordRetention(meta, storageCfg, retentionUntil)
-		meta.RawSizeBytes = metrics.RawBytes
-		meta.EncryptedSizeBytes = metrics.EncryptedBytes
-		meta.Sha256Checksum = metrics.RawSha256
-		meta.EncryptedSha256 = metrics.EncryptedSha256
+		metrics.RecordInto(meta)
 		meta.CalculateTotals()
 
 		uploadSidecars(ctx, storageProvider, storageCfg, snapshotID, meta, recoveryDocSealTo(s, pubKey))
@@ -1888,10 +1887,7 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 		meta.DurationMs = backupMilliseconds(started)
 		meta.Status = model.SnapshotStatusCompleted
 		recordRetention(meta, storageCfg, retentionUntil)
-		meta.RawSizeBytes = metrics.RawBytes
-		meta.EncryptedSizeBytes = metrics.EncryptedBytes
-		meta.Sha256Checksum = metrics.RawSha256
-		meta.EncryptedSha256 = metrics.EncryptedSha256
+		metrics.RecordInto(meta)
 		meta.CalculateTotals()
 
 		uploadSidecars(ctx, storageProvider, storageCfg, snapshotID, meta, recoveryDocSealTo(s, pubKey))
@@ -2032,10 +2028,7 @@ func runSurfaceBackup(ctx context.Context, c *config.CLIConfig, s *config.Surfac
 		dumpMeta.CompletedAt = &now
 		dumpMeta.Status = model.SnapshotStatusCompleted
 		recordRetention(dumpMeta, storageCfg, retentionUntil)
-		dumpMeta.RawSizeBytes = metrics.RawBytes
-		dumpMeta.EncryptedSizeBytes = metrics.EncryptedBytes
-		dumpMeta.Sha256Checksum = metrics.RawSha256
-		dumpMeta.EncryptedSha256 = metrics.EncryptedSha256
+		metrics.RecordInto(dumpMeta)
 		dumpMeta.CalculateTotals()
 
 		uploadSidecars(ctx, storageProvider, storageCfg, snapshotID, dumpMeta, recoveryDocSealTo(s, pubKey))
@@ -2371,9 +2364,14 @@ func (s daemonService) args() []string {
 	return []string{s.exe, "--config", s.configPath, "daemon", "run", "--state-dir", s.stateDir}
 }
 
+// serviceRoot is prefixed to the system-wide service paths. It is empty
+// outside tests, which point it at a directory of their own so that a
+// service installed on the machine running them does not decide the result.
+var serviceRoot string
+
 func systemdPath(userScope bool) string {
 	if !userScope {
-		return "/etc/systemd/system/safegrd.service"
+		return filepath.Join(serviceRoot, "/etc/systemd/system/safegrd.service")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -2423,7 +2421,7 @@ func installedUserScope() bool {
 
 func launchdPath(userScope bool) string {
 	if !userScope {
-		return "/Library/LaunchDaemons/dev.safegrd.daemon.plist"
+		return filepath.Join(serviceRoot, "/Library/LaunchDaemons/dev.safegrd.daemon.plist")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {

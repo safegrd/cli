@@ -14,6 +14,8 @@ import (
 )
 
 // wpSite is a WordPress archive under construction, in the plugin's layout.
+// It is typed by hand from the plugin's writer, which lives in another
+// repository: a change to what the plugin uploads is not caught here.
 type wpSite struct {
 	dump  string
 	files map[string]string
@@ -76,7 +78,10 @@ func (s *wpSite) archive(t *testing.T) []byte {
 	for _, f := range list {
 		total += f.Size
 	}
-	data, _ := json.Marshal(list)
+	data, err := json.Marshal(list)
+	if err != nil {
+		t.Fatal(err)
+	}
 	put("files.json", data)
 	meta := model.SnapshotMetadata{
 		SurfaceType: model.SurfaceTypeWordPress, DatabaseName: "wp", SchemaSource: WordPressSchemaSource + " 0.1.0",
@@ -84,7 +89,9 @@ func (s *wpSite) archive(t *testing.T) []byte {
 		WordPress:  &model.WordPressStats{TablePrefix: "wp_", UploadsPath: "wp-content/uploads", TotalFiles: int64(len(list)), FileBytes: total},
 	}
 	meta.CalculateTotals()
-	data, _ = json.Marshal(meta)
+	if data, err = json.Marshal(meta); err != nil {
+		t.Fatal(err)
+	}
 	put("manifest.json", data)
 	if err := tw.Close(); err != nil {
 		t.Fatal(err)

@@ -17,6 +17,7 @@ import (
 	"github.com/safegrd/cli/pkg/model"
 	"github.com/safegrd/cli/pkg/repo/format"
 	"github.com/safegrd/cli/pkg/repo/policy"
+	"github.com/safegrd/cli/pkg/repo/read"
 	"github.com/safegrd/cli/pkg/repo/sink"
 	"github.com/safegrd/cli/pkg/repo/write"
 )
@@ -141,7 +142,10 @@ func TestRepoPruneDeletesByClass(t *testing.T) {
 }
 
 func testRepoPrune(t *testing.T, noLocks bool) {
-	id, _ := age.GenerateX25519Identity()
+	id, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
 	src := t.TempDir()
 	mb := &memBucket{objs: map[string]memObj{}, root: "safegrd/snapshots", noLocks: noLocks}
 	node := &rootedStore{repoPruneStore: mb, root: "safegrd/snapshots/node-1"}
@@ -211,11 +215,13 @@ func testRepoPrune(t *testing.T, noLocks bool) {
 			}
 		}
 	}
-	// The opening snapshot is still restorable from what is left.
-	es, _ := b.Epochs(context.Background(), "s")
-	if len(es) != 2 {
-		t.Fatalf("%d epochs", len(es))
+	// The opening snapshot is still restorable from what is left: restore
+	// it and read the file back.
+	es, err := b.Epochs(context.Background(), "s")
+	if err != nil || len(es) != 2 {
+		t.Fatalf("%d epochs: %v", len(es), err)
 	}
+	restoreOpening(t, b, es, e.EpochID, opening.Snapshot.SnapshotID, id, "a")
 	// After the opening lock, October's epoch goes entirely; November's,
 	// which holds the newest snapshot, stays.
 	prune(e.OpeningRetainUntil.Add(2 * time.Hour))
@@ -224,5 +230,54 @@ func testRepoPrune(t *testing.T, noLocks bool) {
 	}
 	if mb.count("repo/s/e202611") == 0 {
 		t.Fatal("the epoch holding the newest snapshot was pruned")
+	}
+}
+
+// restoreOpening restores snapshotID from the epoch epochID and asserts the
+// one file in it holds want.
+func restoreOpening(t *testing.T, b sink.Backend, es []sink.EpochInfo, epochID, snapshotID string, id *age.X25519Identity, want string) {
+	t.Helper()
+	ctx := context.Background()
+	var ei *sink.EpochInfo
+	for i := range es {
+		if es[i].Epoch.EpochID == epochID {
+			ei = &es[i]
+		}
+	}
+	if ei == nil {
+		t.Fatalf("epoch %s is gone", epochID)
+	}
+	r := read.Open(b, *ei, []age.Identity{id})
+	snap, err := r.Snapshot(ctx, snapshotID)
+	if err != nil {
+		t.Fatalf("snapshot %s: %v", snapshotID, err)
+	}
+	idx, err := r.LoadIndex(ctx, snap)
+	if err != nil {
+		t.Fatalf("index of %s: %v", snapshotID, err)
+	}
+	target := filepath.Join(t.TempDir(), "restored")
+	res, err := r.Restore(ctx, snap, idx, read.RestoreOptions{Target: target})
+	if err != nil || res.Files != 1 {
+		t.Fatalf("restoring %s after the prune: %v (%+v)", snapshotID, err, res)
+	}
+	var got []string
+	if err := filepath.WalkDir(target, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.Type().IsRegular() {
+			b, err := os.ReadFile(p)
+			if err != nil {
+				return err
+			}
+			got = append(got, string(b))
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != want {
+		t.Fatalf("restored %q, want the one file holding %q", got, want)
 	}
 }

@@ -29,9 +29,14 @@ func TestParseScheduleAcceptsBothOldVocabularies(t *testing.T) {
 }
 
 func TestParseScheduleRefusesTheFloorAndTheUnreadable(t *testing.T) {
-	for _, in := range []string{"1m", "30s", "59m", "@hourlyy", "0 3 * *", "0d", "-2h", "xd", "106751992d", "1000000000d"} {
-		if d, err := ParseSchedule(in); err == nil {
-			t.Errorf("ParseSchedule(%q) = %v with no error", in, d)
+	for in, words := range map[string]string{
+		"1m": "more frequent than the minimum of 1h", "30s": "more frequent than the minimum", "59m": "more frequent than the minimum",
+		"@hourlyy": "is not recognised: use @hourly", "0 3 * *": "is not recognised", "-2h": "is not recognised",
+		"0d": "is not a number of days", "xd": "is not a number of days",
+		"106751992d": "106751992d", "1000000000d": "1000000000d",
+	} {
+		if d, err := ParseSchedule(in); err == nil || !strings.Contains(err.Error(), words) {
+			t.Errorf("ParseSchedule(%q) = %v, %v; want an error saying %q", in, d, err, words)
 		}
 	}
 	_, err := ParseSchedule("5m")
@@ -41,15 +46,18 @@ func TestParseScheduleRefusesTheFloorAndTheUnreadable(t *testing.T) {
 }
 
 func TestScheduleIntervalNeverFailsAndNeverGoesBelowTheFloor(t *testing.T) {
-	for in, want := range map[string]time.Duration{
-		"1m":       MinScheduleInterval,
-		"30s":      MinScheduleInterval,
-		"@hourlyy": DefaultScheduleInterval,
-		"0 3 * *":  DefaultScheduleInterval,
+	for in, want := range map[string]struct {
+		interval time.Duration
+		words    string
+	}{
+		"1m":       {MinScheduleInterval, "more frequent than the minimum"},
+		"30s":      {MinScheduleInterval, "more frequent than the minimum"},
+		"@hourlyy": {DefaultScheduleInterval, "is not recognised"},
+		"0 3 * *":  {DefaultScheduleInterval, "is not recognised"},
 	} {
 		got, err := ScheduleInterval(in)
-		if got != want || err == nil {
-			t.Errorf("ScheduleInterval(%q) = %v, %v; want %v with the problem reported", in, got, err, want)
+		if got != want.interval || err == nil || !strings.Contains(err.Error(), want.words) {
+			t.Errorf("ScheduleInterval(%q) = %v, %v; want %v with the problem reported (%q)", in, got, err, want.interval, want.words)
 		}
 	}
 	if got, err := ScheduleInterval("@hourly"); got != time.Hour || err != nil {

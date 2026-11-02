@@ -145,7 +145,10 @@ func TestAMySQLRunWithNoTablesIsOneHead(t *testing.T) {
 	if err != nil || hdr.Name != "mysql/head.sql" {
 		t.Fatalf("first entry %v %v", hdr, err)
 	}
-	body, _ := io.ReadAll(tr)
+	body, err := io.ReadAll(tr)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if string(body) != dump {
 		t.Errorf("head is not the dump:\n%s", body)
 	}
@@ -224,7 +227,10 @@ func TestAMongoRunRebuildsTheArchive(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		b, _ := io.ReadAll(tr)
+		b, err := io.ReadAll(tr)
+		if err != nil {
+			t.Fatal(err)
+		}
 		entries[hdr.Name] = b
 		names = append(names, hdr.Name)
 	}
@@ -312,7 +318,9 @@ func TestTheSplitterCutsAnOracleMySQLDump(t *testing.T) {
 			t.Fatal(err)
 		}
 		names = append(names, hdr.Name)
-		io.Copy(&joined, tr)
+		if _, err := io.Copy(&joined, tr); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if got, want := strings.Join(names, " "), "mysql/head.sql mysql/tables/t1.sql mysql/tables/v1.sql mysql/tables/we ird.sql mysql/tail.sql"; got != want {
 		t.Errorf("entries %q, want %q", got, want)
@@ -350,7 +358,10 @@ func TestAMongoRunArchiveOfOneCollection(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		b, _ := io.ReadAll(tr)
+		b, err := io.ReadAll(tr)
+		if err != nil {
+			t.Fatal(err)
+		}
 		entries[hdr.Name] = b
 	}
 	narrowed, err := MongoPreludeFor(entries[MongoPreludeEntry], map[string]bool{"orders": true})

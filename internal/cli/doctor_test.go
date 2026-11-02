@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -40,6 +39,9 @@ func TestValidationChecks(t *testing.T) {
 	}
 
 	results := runValidationChecks(cfgPath, c)
+	if len(results) < 4 {
+		t.Fatalf("validation ran %d checks: %+v", len(results), results)
+	}
 	for _, r := range results {
 		if r.Status == "FAIL" {
 			t.Errorf("unexpected check failure: %s: %s", r.Name, r.Message)
@@ -107,30 +109,56 @@ func TestDoctorStopsAtARefusedConfig(t *testing.T) {
 // the host's token, so the console shows the host as checked; a host that is
 // not enrolled has nowhere to report to.
 func TestDoctorReportsItsChecksToTheRemoteServer(t *testing.T) {
-	var got model.HostCheckReport
-	var path, auth string
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		path, auth = r.URL.Path, r.Header.Get("Authorization")
-		_ = json.NewDecoder(r.Body).Decode(&got)
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{}`))
-	}))
-	defer ts.Close()
+	const route = "/api/v1/nodes/node-7/checks"
+	api := newFakeAPI(t, "sg_tok_test", map[string]http.HandlerFunc{"POST " + route: jsonReply(http.StatusOK, `{}`)})
 
 	results := []CheckResult{{Name: "A", Status: "PASS", Message: "ok"}, {Name: "B", Status: "FAIL", Message: "no"}}
 	c := config.NewDefaultCLIConfig()
 	reportDoctorChecks(c, results, true)
-	if path != "" {
-		t.Fatalf("a host that is not enrolled reported to %s", path)
+	if n := len(api.Calls(route)); n != 0 {
+		t.Fatalf("a host that is not enrolled reported %d times", n)
 	}
 
-	c.ServerURL, c.ServerToken, c.NodeID = ts.URL, "sg_tok_test", "node-7"
-	reportDoctorChecks(c, results, true)
-	if path != "/api/v1/nodes/node-7/checks" || auth != "Bearer sg_tok_test" {
-		t.Fatalf("reported to %s as %q, want the node's checks route under its token", path, auth)
+	c.ServerURL, c.ServerToken, c.NodeID = api.URL(), "sg_tok_test", "node-7"
+	out, errOut, _ := captureStdoutErr(t, func() error { reportDoctorChecks(c, results, false); return nil })
+	calls := api.Calls(route)
+	if len(calls) != 1 {
+		t.Fatalf("reported %d times to the node's checks route, want once", len(calls))
+	}
+	var got model.HostCheckReport
+	if err := json.Unmarshal(calls[0].Body, &got); err != nil {
+		t.Fatal(err)
 	}
 	if len(got.Results) != 2 || got.Results[1].Status != "FAIL" || got.Results[1].Message != "no" {
 		t.Fatalf("reported %+v, want both results as run", got.Results)
+	}
+	if !strings.Contains(out, "Reported to "+api.URL()) || errOut != "" {
+		t.Errorf("a delivered report: stdout %q, stderr %q", out, errOut)
+	}
+}
+
+// A report that does not arrive leaves doctor's exit code alone and is said
+// on stderr: the console will not show the host as checked.
+func TestDoctorSaysWhenItsReportDidNotArrive(t *testing.T) {
+	results := []CheckResult{{Name: "A", Status: "PASS", Message: "ok"}}
+	refusing := newFakeAPI(t, "sg_tok_test", map[string]http.HandlerFunc{
+		"POST /api/v1/nodes/node-7/checks": jsonReply(http.StatusInternalServerError, `{"error":"the database is down"}`)})
+	for name, url := range map[string]string{"refused": refusing.URL(), "unreachable": "http://127.0.0.1:1"} {
+		t.Run(name, func(t *testing.T) {
+			c := config.NewDefaultCLIConfig()
+			c.ServerURL, c.ServerToken, c.NodeID = url, "sg_tok_test", "node-7"
+			out, errOut, _ := captureStdoutErr(t, func() error { reportDoctorChecks(c, results, false); return nil })
+			if !strings.Contains(errOut, "Warning: could not report these checks to "+url) ||
+				!strings.Contains(errOut, "will not show this host as checked") {
+				t.Errorf("a report that did not arrive was not said on stderr:\n%s", errOut)
+			}
+			if strings.Contains(out, "Reported to") {
+				t.Errorf("stdout claims the report arrived:\n%s", out)
+			}
+		})
+	}
+	if n := len(refusing.Calls("/api/v1/nodes/node-7/checks")); n == 0 {
+		t.Error("the refusing server was never asked, so the refused case proved nothing")
 	}
 }
 
@@ -167,7 +195,11 @@ func TestDoctorOnABareHostFailsNoSurface(t *testing.T) {
 	if len(c.Surfaces) != 0 {
 		t.Fatalf("fixture has %d surfaces", len(c.Surfaces))
 	}
-	for _, r := range runDoctorChecks("", c) {
+	results := runDoctorChecks("", c)
+	if len(results) == 0 {
+		t.Fatal("doctor ran no checks")
+	}
+	for _, r := range results {
 		if strings.HasPrefix(r.Name, "Surface") && r.Status == "FAIL" {
 			t.Errorf("a bare host failed %q: %s", r.Name, r.Message)
 		}

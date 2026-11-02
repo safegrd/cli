@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"sync"
-	"sync/atomic"
 )
 
 // KeepFreeShare is the share of a filesystem a backup or a drill leaves free
@@ -47,11 +46,32 @@ func (e *NotEnoughDiskError) Error() string {
 
 func (e *NotEnoughDiskError) Is(target error) bool { return target == ErrNotEnoughDisk }
 
-// inFlight is what writes that passed a check have yet to put on disk. The
-// free space they all read is the same, so without it writes running at
-// once (a repository's packs, uploaded in parallel) each passed and together
-// filled a disk the check had refused one of.
-var inFlight atomic.Int64
+// inFlight is what writes that passed a check have yet to put on disk, by
+// filesystem. The free space they all read is the same, so without it writes
+// running at once (a repository's packs, uploaded in parallel) each passed
+// and together filled a disk the check had refused one of. A write to one
+// disk does not count against another's free space.
+var (
+	flightMu sync.Mutex
+	inFlight = map[uint64]int64{}
+)
+
+// addInFlight adds n bytes to what is spoken for on filesystem fs.
+func addInFlight(fs uint64, n int64) {
+	flightMu.Lock()
+	defer flightMu.Unlock()
+	inFlight[fs] += n
+	if inFlight[fs] == 0 {
+		delete(inFlight, fs)
+	}
+}
+
+// inFlightOn is what is spoken for on filesystem fs.
+func inFlightOn(fs uint64) int64 {
+	flightMu.Lock()
+	defer flightMu.Unlock()
+	return inFlight[fs]
+}
 
 // CheckFreeSpace refuses to write need bytes under dir when that would leave
 // less than keepFree of the filesystem free, counting what other writes are
@@ -65,9 +85,10 @@ func CheckFreeSpace(dir string, need int64, what, remedy string) error {
 // Reserve is CheckFreeSpace for a write of need bytes that other writes may
 // run beside: the bytes count as spoken for until release is called.
 func Reserve(dir string, need int64, what, remedy string) (release func(), err error) {
-	inFlight.Add(need)
+	fs := filesystemOf(dir)
+	addInFlight(fs, need)
 	var once sync.Once
-	release = func() { once.Do(func() { inFlight.Add(-need) }) }
+	release = func() { once.Do(func() { addInFlight(fs, -need) }) }
 	if _, err := check(dir, need, need, what, remedy); err != nil {
 		release()
 		return nil, err
@@ -82,7 +103,7 @@ func check(dir string, need, own int64, what, remedy string) (int64, error) {
 	if err != nil {
 		return 0, nil
 	}
-	avail -= inFlight.Load() - own
+	avail -= inFlightOn(filesystemOf(dir)) - own
 	keep := keepFree(total)
 	if avail < need+keep {
 		return avail, &NotEnoughDiskError{Dir: dir, What: what, Need: need, Avail: max(avail, 0), Keep: keep, Remedy: remedy}
@@ -106,6 +127,10 @@ func HumanBytes(n int64) string {
 
 // spaceOf is DiskSpace, replaced in tests to stand in for a filling disk.
 var spaceOf = DiskSpace
+
+// filesystemOf names the filesystem dir is on, so reservations on one disk
+// are not counted against another. Replaced in tests.
+var filesystemOf = filesystemID
 
 // guardEvery is how much a Guard writes between looks at the free space.
 const guardEvery = 64 << 20

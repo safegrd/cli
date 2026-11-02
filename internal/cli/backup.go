@@ -379,10 +379,7 @@ and never leaves this host.`,
 				meta.Status = model.SnapshotStatusCompleted
 				meta.StorageURI = storageURI
 				recordRetention(meta, storageCfg, retentionUntil)
-				meta.RawSizeBytes = cryptoMetrics.RawBytes
-				meta.EncryptedSizeBytes = cryptoMetrics.EncryptedBytes
-				meta.Sha256Checksum = cryptoMetrics.RawSha256
-				meta.EncryptedSha256 = cryptoMetrics.EncryptedSha256
+				cryptoMetrics.RecordInto(meta)
 				meta.CalculateTotals()
 
 				uploadSidecars(ctx, storageProvider, storageCfg, snapshotID, meta, "")
@@ -516,10 +513,7 @@ and never leaves this host.`,
 				meta.Status = model.SnapshotStatusCompleted
 				meta.StorageURI = storageURI
 				recordRetention(meta, storageCfg, retentionUntil)
-				meta.RawSizeBytes = cryptoMetrics.RawBytes
-				meta.EncryptedSizeBytes = cryptoMetrics.EncryptedBytes
-				meta.Sha256Checksum = cryptoMetrics.RawSha256
-				meta.EncryptedSha256 = cryptoMetrics.EncryptedSha256
+				cryptoMetrics.RecordInto(meta)
 				meta.CalculateTotals()
 
 				uploadSidecars(ctx, storageProvider, storageCfg, snapshotID, meta, "")
@@ -738,10 +732,7 @@ and never leaves this host.`,
 			dumpMeta.Status = model.SnapshotStatusCompleted
 			dumpMeta.StorageURI = storageURI
 			recordRetention(dumpMeta, storageCfg, retentionUntil)
-			dumpMeta.RawSizeBytes = cryptoMetrics.RawBytes
-			dumpMeta.EncryptedSizeBytes = cryptoMetrics.EncryptedBytes
-			dumpMeta.Sha256Checksum = cryptoMetrics.RawSha256
-			dumpMeta.EncryptedSha256 = cryptoMetrics.EncryptedSha256
+			cryptoMetrics.RecordInto(dumpMeta)
 			dumpMeta.CalculateTotals()
 
 			uploadSidecars(ctx, storageProvider, storageCfg, snapshotID, dumpMeta, "")

@@ -1,6 +1,7 @@
 package model
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -43,9 +44,16 @@ func TestCronSchedules(t *testing.T) {
 			t.Errorf("ParseSchedule(%q) = %s, %v; want %s", schedule, d, err, want)
 		}
 	}
-	for _, bad := range []string{"*/30 * * * *", "* * * * *", "0 25 * * *", "at 25:00", "0 0 31 2 *", "a b c d e"} {
-		if _, err := ParseSchedule(bad); err == nil {
-			t.Errorf("ParseSchedule(%q) was accepted", bad)
+	for bad, words := range map[string]string{
+		"*/30 * * * *": "30m apart at its closest, more often than the minimum of 1h",
+		"* * * * *":    "1m apart at its closest",
+		"0 25 * * *":   `hour: "25" is outside 0-23`,
+		"at 25:00":     "write a time of day as at HH:MM",
+		"0 0 31 2 *":   "never runs",
+		"a b c d e":    `minute: "a" is not a number`,
+	} {
+		if _, err := ParseSchedule(bad); err == nil || !strings.Contains(err.Error(), words) {
+			t.Errorf("ParseSchedule(%q) = %v; want an error saying %q", bad, err, words)
 		}
 	}
 }

@@ -3,11 +3,13 @@ package write_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"math/rand"
 	"strings"
 	"testing"
 
+	"github.com/safegrd/cli/pkg/repo/check"
 	"github.com/safegrd/cli/pkg/repo/format"
 	"github.com/safegrd/cli/pkg/repo/read"
 	"github.com/safegrd/cli/pkg/repo/write"
@@ -41,7 +43,10 @@ func (h *harness) catAll(epochID, snapID string) map[string][]byte {
 	if root, _, err := r.ContentRoot(ctx, idx, snap); err != nil || root != snap.ContentRoot {
 		h.t.Fatalf("the content root recomputed from the trees is %s (%v), the snapshot records %s", root, err, snap.ContentRoot)
 	}
-	rootTree, _ := format.ParseID(snap.RootTree)
+	rootTree, err := format.ParseID(snap.RootTree)
+	if err != nil {
+		h.t.Fatal(err)
+	}
 	out := map[string][]byte{}
 	err = r.Walk(ctx, idx, rootTree, func(it read.Item) error {
 		if it.Node.Type != format.NodeFile {
@@ -115,6 +120,11 @@ func TestASourceRunReadsBackByteForByteAndUploadsOnlyWhatMoved(t *testing.T) {
 }
 
 func TestASourceRefusesPathsThatAreNotOneCleanTree(t *testing.T) {
+	want := map[string]string{
+		"absolute": "is not a clean relative path", "climbing": "is not a clean relative path",
+		"unclean": "is not a clean relative path", "dot": "is not a clean relative path",
+		"twice": "is emitted twice", "under a file": "is under a file", "a directory": "is a directory",
+	}
 	for name, files := range map[string][]string{
 		"absolute":     {"/etc/passwd"},
 		"climbing":     {"../x"},
@@ -134,8 +144,8 @@ func TestASourceRefusesPathsThatAreNotOneCleanTree(t *testing.T) {
 				}
 				return nil
 			}
-			if _, err := write.Run(context.Background(), h.b, h.opts(func(o *write.Options) { o.Roots, o.Source = nil, src })); err == nil {
-				t.Fatalf("paths %q were stored", files)
+			if _, err := write.Run(context.Background(), h.b, h.opts(func(o *write.Options) { o.Roots, o.Source = nil, src })); err == nil || !strings.Contains(err.Error(), want[name]) {
+				t.Fatalf("paths %q: %v, want %q", files, err, want[name])
 			}
 		})
 	}
@@ -144,8 +154,8 @@ func TestASourceRefusesPathsThatAreNotOneCleanTree(t *testing.T) {
 func TestARunTakesASourceOrRootsNotBoth(t *testing.T) {
 	h := newHarness(t)
 	_, err := write.Run(context.Background(), h.b, h.opts(func(o *write.Options) { o.Source = streams(map[string][]byte{"a": nil}) }))
-	if err == nil {
-		t.Fatal("a run with roots and a source was accepted")
+	if err == nil || !strings.Contains(err.Error(), "a run takes a source or roots, not both") {
+		t.Fatalf("a run with roots and a source: %v", err)
 	}
 }
 
@@ -158,14 +168,17 @@ func TestASourceThatFailsPublishesNoSnapshot(t *testing.T) {
 		}
 		return io.ErrUnexpectedEOF
 	}
-	if _, err := write.Run(context.Background(), h.b, h.opts(func(o *write.Options) { o.Roots, o.Source = nil, src })); err == nil {
-		t.Fatal("a failed source produced a snapshot")
+	if _, err := write.Run(context.Background(), h.b, h.opts(func(o *write.Options) { o.Roots, o.Source = nil, src })); !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("a source that failed: %v, want its error", err)
 	}
-	es, _ := h.b.Epochs(context.Background(), "files-test")
+	es, err := h.b.Epochs(context.Background(), "files-test")
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, e := range es {
-		r := read.Open(h.b, e, h.ids)
-		if _, err := r.Snapshot(context.Background(), "snap-0001"); err == nil {
-			t.Fatal("the failed run's snapshot is readable")
+		ids, err := check.Snapshots(context.Background(), h.b, e)
+		if err != nil || len(ids) != 0 {
+			t.Fatalf("epoch %s lists %v after a run whose source failed (%v)", e.Epoch.EpochID, ids, err)
 		}
 	}
 }

@@ -103,21 +103,31 @@ func TestRestoreNeverTruncatesThroughASymlink(t *testing.T) {
 		tarEntry{name: "x", typ: tar.TypeSymlink, link: victim, mode: 0o777},
 		tarEntry{name: "x", typ: tar.TypeReg, mode: 0o644, body: "overwritten"},
 	)
-	if _, err := NewFileRestorer().ExtractArchive(context.Background(), archive, target); err == nil {
-		t.Fatal("a regular file written over a symlink was accepted")
-	}
-	if got, _ := os.ReadFile(victim); string(got) != "original" {
+	_, err := NewFileRestorer().ExtractArchive(context.Background(), archive, target)
+	wantErr(t, err, "is a symlink, and writing through it could leave the restore directory")
+	if got := mustRead(t, victim); string(got) != "original" {
 		t.Fatalf("the file behind the symlink was overwritten: %q", got)
 	}
 }
 
 func TestRestoreRefusesAnAbsoluteOrEscapingName(t *testing.T) {
 	for _, name := range []string{"../escape", "a/../../escape"} {
-		target := t.TempDir()
+		parent := t.TempDir()
+		target := filepath.Join(parent, "target")
 		archive := craftTar(t, tarEntry{name: name, typ: tar.TypeReg, mode: 0o644, body: "x"})
-		if _, err := NewFileRestorer().ExtractArchive(context.Background(), archive, target); err == nil {
-			t.Errorf("entry %q was restored", name)
+		_, err := NewFileRestorer().ExtractArchive(context.Background(), archive, target)
+		wantErr(t, err, "path traversal", name)
+		if _, err := os.Stat(filepath.Join(parent, "escape")); !os.IsNotExist(err) {
+			t.Errorf("entry %q was written outside the target (%v)", name, err)
 		}
+	}
+	// An absolute name is refused, and nothing is written at its path.
+	outside := filepath.Join(t.TempDir(), "absolute")
+	archive := craftTar(t, tarEntry{name: outside, typ: tar.TypeReg, mode: 0o644, body: "x"})
+	_, err := NewFileRestorer().ExtractArchive(context.Background(), archive, t.TempDir())
+	wantErr(t, err, "path traversal", outside)
+	if _, err := os.Stat(outside); !os.IsNotExist(err) {
+		t.Fatalf("an absolute entry was written at its own path %s (%v)", outside, err)
 	}
 }
 
@@ -166,7 +176,8 @@ func fidelityTree(t *testing.T) string {
 
 func TestFileRoundTripKeepsModesTimesAndLinks(t *testing.T) {
 	// A restore running under the usual umask must still produce the modes
-	// that were backed up: creation modes pass through it.
+	// that were backed up: creation modes pass through it. The umask is the
+	// whole process's, so no test in this package may call t.Parallel.
 	defer syscall.Umask(syscall.Umask(0o022))
 
 	src := fidelityTree(t)
@@ -345,9 +356,8 @@ func TestMailIsRestoredPrivateAndNeverThroughASymlink(t *testing.T) {
 		t.Fatal(err)
 	}
 	archive = craftTar(t, tarEntry{name: "INBOX/1.eml", typ: tar.TypeReg, mode: 0o644, body: "x"})
-	if _, err := NewEmailRestorer().ExtractEmailArchive(context.Background(), archive, target2); err == nil {
-		t.Error("a mail restore wrote through a symlink in its target")
-	}
+	_, err := NewEmailRestorer().ExtractEmailArchive(context.Background(), archive, target2)
+	wantErr(t, err, "INBOX is a symlink, and writing through it could leave the restore directory")
 	if _, err := os.Stat(filepath.Join(outside, "1.eml")); !os.IsNotExist(err) {
 		t.Errorf("the mail restore wrote outside its target: %v", err)
 	}
@@ -363,7 +373,10 @@ func TestRestoreRefusesAFileThatDoesNotMatchItsDigest(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "SHA-256") {
 		t.Fatalf("a file with the wrong digest: err = %v, want a refusal", err)
 	}
-	left, _ := os.ReadDir(target)
+	left, err := os.ReadDir(target)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(left) != 0 {
 		t.Fatalf("a refused file left %d entries in the target", len(left))
 	}
@@ -377,9 +390,8 @@ func TestRestoreRefusesACorruptManifest(t *testing.T) {
 	_ = tw.WriteHeader(&tar.Header{Name: ".safegrd-manifest.json", Typeflag: tar.TypeReg, Mode: 0o600, Size: 5})
 	_, _ = tw.Write([]byte("{not "))
 	_ = tw.Close()
-	if _, err := NewFileRestorer().ExtractArchive(context.Background(), &buf, t.TempDir()); err == nil {
-		t.Fatal("a corrupt sealed manifest was restored past")
-	}
+	_, err := NewFileRestorer().ExtractArchive(context.Background(), &buf, t.TempDir())
+	wantErr(t, err, "sealed manifest does not parse")
 }
 
 // An archive with no manifest at all is refused before any file is written.
@@ -389,7 +401,6 @@ func TestRestoreRefusesFilesWithNoManifest(t *testing.T) {
 	_ = tw.WriteHeader(&tar.Header{Name: "f", Typeflag: tar.TypeReg, Mode: 0o644, Size: 1})
 	_, _ = tw.Write([]byte("x"))
 	_ = tw.Close()
-	if _, err := NewFileRestorer().ExtractArchive(context.Background(), &buf, t.TempDir()); err == nil {
-		t.Fatal("files with no sealed manifest were restored")
-	}
+	_, err := NewFileRestorer().ExtractArchive(context.Background(), &buf, t.TempDir())
+	wantErr(t, err, "comes before any sealed manifest")
 }

@@ -34,7 +34,10 @@ func TestInvalidateCheckpointClearsItAndKeepsTheCRCValid(t *testing.T) {
 	if err := InvalidateCheckpoint(dir); err != nil {
 		t.Fatal(err)
 	}
-	buf, _ := os.ReadFile(filepath.Join(dir, "global", "pg_control"))
+	buf, err := os.ReadFile(filepath.Join(dir, "global", "pg_control"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if binary.LittleEndian.Uint64(buf[32:]) != invalidLocation {
 		t.Error("the checkpoint is not the invalid location")
 	}

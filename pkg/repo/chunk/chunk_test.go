@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"io"
 	"math/rand"
+	"strings"
 	"testing"
 
 	"github.com/safegrd/cli/pkg/repo/format"
@@ -63,6 +64,11 @@ func TestBoundarySizes(t *testing.T) {
 		if len(again) != len(chunks) {
 			t.Fatalf("%d bytes: the same input cut differently", n)
 		}
+		for i := range again {
+			if len(again[i]) != len(chunks[i]) {
+				t.Fatalf("%d bytes: chunk %d is %d bytes the second time, %d the first", n, i, len(again[i]), len(chunks[i]))
+			}
+		}
 	}
 }
 
@@ -90,16 +96,16 @@ func TestAnInsertReAlignsWithinTwoChunks(t *testing.T) {
 }
 
 func TestRefusesOtherParameters(t *testing.T) {
-	if _, err := New(testPol, format.ChunkerParams{Algorithm: "fastcdc", Min: 1, Avg: 2, Max: 4}); err == nil {
-		t.Fatal("another algorithm accepted")
+	if _, err := New(testPol, format.ChunkerParams{Algorithm: "fastcdc", Min: 1, Avg: 2, Max: 4}); err == nil || !strings.Contains(err.Error(), `"fastcdc" is not rabin-restic`) {
+		t.Fatalf("another algorithm: %v", err)
 	}
 	p := format.DefaultChunker
 	p.Avg = 1000
-	if _, err := New(testPol, p); err == nil {
-		t.Fatal("an average that is not a power of two accepted")
+	if _, err := New(testPol, p); err == nil || !strings.Contains(err.Error(), "is not a power of two") {
+		t.Fatalf("an average that is not a power of two: %v", err)
 	}
-	if _, err := New(Pol(4), format.DefaultChunker); err == nil {
-		t.Fatal("a reducible polynomial accepted")
+	if _, err := New(Pol(4), format.DefaultChunker); err == nil || !strings.Contains(err.Error(), "is not irreducible") {
+		t.Fatalf("a reducible polynomial: %v", err)
 	}
 	pol, err := RandomPolynomial()
 	if err != nil || !pol.Irreducible() {

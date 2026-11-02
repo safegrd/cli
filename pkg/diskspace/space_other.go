@@ -9,3 +9,6 @@ import "errors"
 func DiskSpace(string) (int64, int64, error) {
 	return 0, 0, errors.New("free space is not read on this system")
 }
+
+// filesystemID is 0 everywhere: free space is not read on this system.
+func filesystemID(string) uint64 { return 0 }

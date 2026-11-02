@@ -2,17 +2,23 @@ package cli
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
 
 	"github.com/safegrd/cli/pkg/model"
+	"github.com/safegrd/cli/pkg/release"
 )
 
 // layoutWith makes install.sh's versions directory with the releases named,
@@ -72,18 +78,44 @@ func TestAnUpdateNeverGoesToTheReleaseRunningOrAnOlderOne(t *testing.T) {
 	}
 }
 
+// A release whose archive is not the one its checksums list, or whose
+// checksums carry no signature this build trusts, is refused before anything
+// is switched. The test serves a well-formed checksums file, so the refusal
+// can only come from the check itself.
 func TestAReleaseThatDoesNotVerifyIsNeverSwitchedTo(t *testing.T) {
-	// Served, but signed by nothing this test build trusts.
+	archive := release.ArchiveName("0.0.2", runtime.GOOS, runtime.GOARCH)
+	listed := sha256.Sum256([]byte("the archive that was published"))
+	_, untrusted, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sums := []byte(hex.EncodeToString(listed[:]) + "  " + archive + "\n")
+	files := map[string][]byte{
+		"/v0.0.2/" + release.ChecksumsFile: sums,
+		"/v0.0.2/" + release.SignatureFile: []byte(base64.StdEncoding.EncodeToString(ed25519.Sign(untrusted, sums))),
+		"/v0.0.2/" + archive:               []byte("an archive someone swapped in"),
+	}
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("data for " + r.URL.Path))
+		b, ok := files[r.URL.Path]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write(b)
 	}))
 	defer ts.Close()
 	u := layoutWith(t, "0.0.1")
 	u.baseURL = ts.URL
 	ran := noExec(t)
-	err := u.install(context.Background(), &model.UpdateRequest{ID: "r1", Action: model.UpdateActionInstall, Version: "0.0.2"})
-	if err == nil || !strings.Contains(err.Error(), "downloading 0.0.2") {
-		t.Fatalf("an unverifiable release: %v", err)
+	err = u.install(context.Background(), &model.UpdateRequest{ID: "r1", Action: model.UpdateActionInstall, Version: "0.0.2"})
+	// A build that trusts a release key checks the signature first; one
+	// that trusts none checks the archive against its checksum.
+	want := "has SHA-256"
+	if release.Signed() {
+		want = "not signed by a key this build trusts"
+	}
+	if err == nil || !strings.Contains(err.Error(), "downloading 0.0.2") || !strings.Contains(err.Error(), want) {
+		t.Fatalf("a release that does not verify: %v, want a refusal saying %q", err, want)
 	}
 	if got := u.layout.link("current"); got != "0.0.1" || len(*ran) != 0 || u.rec.Pending != nil {
 		t.Fatalf("after refusing: current %q, ran %v, pending %+v", got, *ran, u.rec.Pending)
@@ -196,7 +228,9 @@ func TestARequestWaitsForAnotherSafegrdHoldingALock(t *testing.T) {
 	}
 	// The test's parent process is alive and is not this one.
 	other := fmt.Sprintf(`{"pid":%d,"surface_id":"other"}`, os.Getppid())
-	os.WriteFile(filepath.Join(lockDir, "other.lock"), []byte(other), 0o600)
+	if err := os.WriteFile(filepath.Join(lockDir, "other.lock"), []byte(other), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if busy := otherSafegrdRunning(lockDir); !strings.Contains(busy, fmt.Sprintf("PID %d", os.Getppid())) {
 		t.Fatalf("a lock held by another live process: %q", busy)
 	}
@@ -216,20 +250,31 @@ func TestADamagedDownloadIsFetchedAgain(t *testing.T) {
 	var fetched atomic.Int32
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fetched.Add(1)
-		w.Write([]byte("data"))
+		_, _ = w.Write([]byte("data"))
 	}))
 	defer ts.Close()
 	u := layoutWith(t, "0.0.1")
 	u.baseURL = ts.URL
 	noExec(t)
 	dir := u.layout.versionDir("0.0.2")
-	os.MkdirAll(dir, 0o755)
-	os.WriteFile(filepath.Join(dir, "checksums.txt"), []byte("damaged"), 0o644)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A checksums file that is there and wrong: a missing one is fetched
+	// again too, so a setup that wrote nothing would pass for the wrong reason.
+	if err := os.WriteFile(filepath.Join(dir, "checksums.txt"), []byte("damaged"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	u.rec.Staged = "0.0.2"
 
 	err := u.install(context.Background(), &model.UpdateRequest{ID: "r1", Action: model.UpdateActionInstall, Version: "0.0.2"})
-	if err == nil || !strings.Contains(err.Error(), "downloading 0.0.2") {
-		t.Fatalf("installing a damaged download: %v", err)
+	// The fresh download is refused on its own merits: "data" lists nothing.
+	want := "does not list"
+	if release.Signed() {
+		want = "Ed25519 signature"
+	}
+	if err == nil || !strings.Contains(err.Error(), "downloading 0.0.2") || !strings.Contains(err.Error(), want) {
+		t.Fatalf("installing a damaged download: %v, want the fresh copy refused saying %q", err, want)
 	}
 	if fetched.Load() == 0 {
 		t.Fatal("the damaged download was not fetched again")

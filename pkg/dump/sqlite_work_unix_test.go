@@ -16,7 +16,7 @@ import (
 func TestSweepKeepsALiveProcesssWorkHoweverOld(t *testing.T) {
 	parent := t.TempDir()
 	live := filepath.Join(parent, fmt.Sprintf("%s%d-old", sqliteWorkPrefix, os.Getppid()))
-	dead := filepath.Join(parent, sqliteWorkPrefix+"999999-gone")
+	dead := filepath.Join(parent, fmt.Sprintf("%s%d-gone", sqliteWorkPrefix, deadPID(t)))
 	for _, d := range []string{live, dead} {
 		if err := os.Mkdir(d, 0o700); err != nil {
 			t.Fatal(err)
@@ -39,7 +39,7 @@ func TestSweepKeepsALiveProcesssWorkHoweverOld(t *testing.T) {
 // removed by the next run, not left on disk with the password in it.
 func TestSweepRemovesCredentialDirsOfDeadProcesses(t *testing.T) {
 	parent := t.TempDir()
-	dead := filepath.Join(parent, ".safegrd-mysql-999999-x")
+	dead := filepath.Join(parent, fmt.Sprintf(".safegrd-mysql-%d-x", deadPID(t)))
 	mine := filepath.Join(parent, fmt.Sprintf(".safegrd-mysql-%d-x", os.Getpid()))
 	for _, d := range []string{dead, mine} {
 		if err := os.Mkdir(d, 0o700); err != nil {

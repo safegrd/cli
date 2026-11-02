@@ -330,9 +330,9 @@ func (d *SQLiteDumper) Dump(ctx context.Context, databaseName string, dst io.Wri
 	}
 	defer os.RemoveAll(tmpDir)
 	copyPath := filepath.Join(tmpDir, "copy.sqlite")
-	schemaSource := "sqlite VACUUM INTO"
+	schemaSource := SchemaSourceSQLiteVacuum
 	if d.PageCopy {
-		schemaSource = "sqlite online backup"
+		schemaSource = SchemaSourceSQLiteBackup
 		if err := copySQLitePages(ctx, src, copyPath); err != nil {
 			return nil, fmt.Errorf("copying %s with the online backup API: %w (it needs free space in %s about the size of the database; set TMPDIR to use another disk)", path, err, os.TempDir())
 		}

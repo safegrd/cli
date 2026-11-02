@@ -11,7 +11,6 @@ import (
 	"encoding/pem"
 	"math/big"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"os"
 	"strings"
@@ -37,19 +36,20 @@ func heldTestCA(t *testing.T) string {
 	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
 }
 
-// credentialsServer answers the credentials route with a connection string
-// and the CA held beside it.
-func credentialsServer(t *testing.T, dbURL, ca string) *httptest.Server {
+// credentialsServer answers the credentials route of node-1 and of its
+// surface shop, under node-1's token, with a connection string and the CA
+// held beside it.
+func credentialsServer(t *testing.T, dbURL, ca string) *fakeAPI {
 	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasSuffix(r.URL.Path, "/credentials") {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		_ = json.NewEncoder(w).Encode(map[string]string{"node_id": "node-1", "database_url": dbURL, "ca_cert": ca})
-	}))
-	t.Cleanup(srv.Close)
-	return srv
+	body, err := json.Marshal(map[string]string{"node_id": "node-1", "database_url": dbURL, "ca_cert": ca})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reply := jsonReply(http.StatusOK, string(body))
+	return newFakeAPI(t, "sg_tok_x", map[string]http.HandlerFunc{
+		"GET /api/v1/nodes/node-1/credentials":       reply,
+		"GET /api/v1/nodes/node-1--shop/credentials": reply,
+	})
 }
 
 func caParam(t *testing.T, raw, key string) string {
@@ -72,7 +72,7 @@ func TestAHeldCAIsWrittenAndVerifiesTheConnection(t *testing.T) {
 
 	// The single-database form, as a hosted backup job runs it.
 	srv := credentialsServer(t, "postgres://backup:pw@db.example.com:5432/app", ca)
-	cfg := &config.CLIConfig{ServerURL: srv.URL, NodeID: "node-1", ServerToken: "sg_tok_x",
+	cfg := &config.CLIConfig{ServerURL: srv.URL(), NodeID: "node-1", ServerToken: "sg_tok_x",
 		Encryption: config.EncryptionConfig{PublicKey: "age1x"}}
 	st := cfg.Storage
 	st.Type = config.StorageTypeHosted
@@ -89,7 +89,7 @@ func TestAHeldCAIsWrittenAndVerifiesTheConnection(t *testing.T) {
 
 	// A held string that verifies nothing is refused with the CA, not used.
 	srv = credentialsServer(t, "postgres://backup:pw@db.example.com:5432/app?sslmode=disable", ca)
-	cfg = &config.CLIConfig{ServerURL: srv.URL, NodeID: "node-1", ServerToken: "sg_tok_x", Encryption: config.EncryptionConfig{PublicKey: "age1x"}}
+	cfg = &config.CLIConfig{ServerURL: srv.URL(), NodeID: "node-1", ServerToken: "sg_tok_x", Encryption: config.EncryptionConfig{PublicKey: "age1x"}}
 	st = cfg.Storage
 	st.Type = config.StorageTypeHosted
 	src = resolveRuntimeCredentials(context.Background(), cfg, &st, false)
@@ -102,7 +102,7 @@ func TestAHeldCAIsWrittenAndVerifiesTheConnection(t *testing.T) {
 
 	// A surface whose credential SafeGrd holds: MySQL, through ssl-ca.
 	srv = credentialsServer(t, "mysql://backup:pw@db.example.com:3306/shop", ca)
-	c := &config.CLIConfig{ServerURL: srv.URL, NodeID: "node-1", ServerToken: "sg_tok_x"}
+	c := &config.CLIConfig{ServerURL: srv.URL(), NodeID: "node-1", ServerToken: "sg_tok_x"}
 	s := &config.SurfaceConfig{ID: "shop", Type: "mysql", Credential: fromSafeGrd}
 	fetchHeldSurfaceSecret(context.Background(), c, "node-1--shop", s)
 	if s.CAFile == "" || s.HeldSecret == "" {

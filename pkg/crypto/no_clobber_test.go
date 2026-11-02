@@ -78,7 +78,7 @@ func TestOverwritePrivateKeyReplacesDeliberately(t *testing.T) {
 	}
 }
 
-// A refused write must not leave the key world-readable or half-written.
+// An identity is written readable by its owner alone.
 func TestSavePrivateKeyKeepsPermissionsTight(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "keys", "daemon.key")

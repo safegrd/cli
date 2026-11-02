@@ -17,10 +17,19 @@ import (
 // opened (first backup)", before the dump found no file.
 func TestAMissingSQLiteFileFailsBeforeStorageIsTouched(t *testing.T) {
 	missing := "sqlite://" + filepath.Join(t.TempDir(), "nope.db")
-	// No storage is configured, so reaching it would fail differently.
-	_, _, err := runRepoDatabaseBackup(context.Background(), repoDBParams{SurfaceID: "sqlite-x", DatabaseURL: missing})
+	id, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	_, _, err = runRepoDatabaseBackup(context.Background(), repoDBParams{SurfaceID: "sqlite-x", DatabaseURL: missing, Recipient: id.Recipient().String(),
+		StorageCfg: config.StorageConfig{Type: config.StorageTypeLocal, LocalPath: dir}, StateDir: t.TempDir(), SnapshotID: "snap-20261018-010000-abc124"})
 	if err == nil || !strings.Contains(err.Error(), "nope.db") || exitCodeOf(err) != exitSource {
 		t.Fatalf("backup of a missing SQLite file: %v (exit %d)", err, exitCodeOf(err))
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 0 {
+		t.Errorf("storage holds %d entries (%v) after a backup of a missing file, want none", len(entries), err)
 	}
 }
 
@@ -45,8 +54,8 @@ func TestAMissingDumpToolFailsBeforeAnEpochOpens(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), tc.env) || exitCodeOf(err) != exitSource {
 				t.Fatalf("backup with no dump tool: %v (exit %d)", err, exitCodeOf(err))
 			}
-			if entries, _ := os.ReadDir(dir); len(entries) != 0 {
-				t.Errorf("storage holds %d entries after a backup that had no dump tool, want none", len(entries))
+			if entries, err := os.ReadDir(dir); err != nil || len(entries) != 0 {
+				t.Errorf("storage holds %d entries (%v) after a backup that had no dump tool, want none", len(entries), err)
 			}
 		})
 	}

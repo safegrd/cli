@@ -3,34 +3,11 @@ package cli
 import (
 	"context"
 	"net/http"
-	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 
 	"github.com/safegrd/cli/pkg/model"
 )
-
-// captureStderr runs fn and returns what it wrote to os.Stderr.
-func captureStderr(t *testing.T, fn func()) string {
-	t.Helper()
-	orig := os.Stderr
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("pipe: %v", err)
-	}
-	os.Stderr = w
-	done := make(chan string, 1)
-	go func() {
-		buf := make([]byte, 16<<10)
-		n, _ := r.Read(buf)
-		done <- string(buf[:n])
-	}()
-	fn()
-	w.Close()
-	os.Stderr = orig
-	return <-done
-}
 
 // A backup the remote server never recorded must not look like one it did.
 //
@@ -40,15 +17,13 @@ func captureStderr(t *testing.T, fn func()) string {
 // product sells the proof rather than the copy; an attestation nobody received
 // is not a proof, and the host is the only place that can notice.
 func TestARejectedAttestationIsReported(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusForbidden)
-		_, _ = w.Write([]byte(`{"error":"node token does not match node_id"}`))
-	}))
-	defer srv.Close()
+	api := newFakeAPI(t, "sg_tok_stale", map[string]http.HandlerFunc{
+		"POST /api/v1/snapshots": jsonReply(http.StatusForbidden, `{"error":"node token does not match node_id"}`),
+	})
 
 	var reason string
 	out := captureStderr(t, func() {
-		reason = sendMetadataToServer(context.Background(), srv.URL, "sg_tok_stale",
+		reason = sendMetadataToServer(context.Background(), api.URL(), "sg_tok_stale",
 			&model.SnapshotMetadata{SnapshotID: "snap-1", NodeID: "node-1"}, true)
 	})
 	// The daemon carries this in its last error, which is how a host running
@@ -71,16 +46,11 @@ func TestARejectedAttestationIsReported(t *testing.T) {
 // with no node.id, and one with no server.token. Both must say so before a
 // request is even attempted.
 func TestMissingNodeIdentityIsReportedWithoutCallingTheServer(t *testing.T) {
-	var called bool
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		called = true
-		w.WriteHeader(http.StatusCreated)
-	}))
-	defer srv.Close()
+	api := newFakeAPI(t, "sg_tok_fine", map[string]http.HandlerFunc{"POST /api/v1/snapshots": jsonReply(http.StatusCreated, `{}`)})
 
 	t.Run("no node.id", func(t *testing.T) {
 		out := captureStderr(t, func() {
-			sendMetadataToServer(context.Background(), srv.URL, "sg_tok_fine",
+			sendMetadataToServer(context.Background(), api.URL(), "sg_tok_fine",
 				&model.SnapshotMetadata{SnapshotID: "snap-2"}, true)
 		})
 		if !strings.Contains(out, "no node.id") {
@@ -90,7 +60,7 @@ func TestMissingNodeIdentityIsReportedWithoutCallingTheServer(t *testing.T) {
 
 	t.Run("no server.token", func(t *testing.T) {
 		out := captureStderr(t, func() {
-			sendMetadataToServer(context.Background(), srv.URL, "",
+			sendMetadataToServer(context.Background(), api.URL(), "",
 				&model.SnapshotMetadata{SnapshotID: "snap-3", NodeID: "node-1"}, true)
 		})
 		if !strings.Contains(out, "no server.token") {
@@ -98,26 +68,28 @@ func TestMissingNodeIdentityIsReportedWithoutCallingTheServer(t *testing.T) {
 		}
 	})
 
-	if called {
-		t.Error("a request was sent despite the config being incomplete")
+	if n := len(api.Calls("/api/v1/snapshots")); n != 0 {
+		t.Errorf("%d requests were sent despite the config being incomplete", n)
 	}
 }
 
 // A successful report stays quiet on stderr; warnings indicate failures.
 func TestASuccessfulAttestationWarnsAboutNothing(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte(`{"snapshot_id":"snap-4"}`))
-	}))
-	defer srv.Close()
+	api := newFakeAPI(t, "sg_tok_fine", map[string]http.HandlerFunc{
+		"POST /api/v1/snapshots": jsonReply(http.StatusCreated, `{"snapshot_id":"snap-4"}`),
+	})
 
 	var reason string
 	out := captureStderr(t, func() {
-		reason = sendMetadataToServer(context.Background(), srv.URL, "sg_tok_fine",
+		reason = sendMetadataToServer(context.Background(), api.URL(), "sg_tok_fine",
 			&model.SnapshotMetadata{SnapshotID: "snap-4", NodeID: "node-1"}, true)
 	})
-	if strings.Contains(out, "NOT RECORDED") || strings.Contains(out, "OUTSIDE") || reason != "" {
+	if out != "" || reason != "" {
 		t.Errorf("a successful report produced a warning: %q, reason %q", out, reason)
+	}
+	calls := api.Calls("/api/v1/snapshots")
+	if len(calls) != 1 || !strings.Contains(string(calls[0].Body), `"snapshot_id":"snap-4"`) {
+		t.Errorf("the record was sent %d times: %+v", len(calls), calls)
 	}
 }
 
@@ -125,16 +97,14 @@ func TestASuccessfulAttestationWarnsAboutNothing(t *testing.T) {
 // storage is said on the host: the console shows the project's storage, and
 // this backup is somewhere else.
 func TestABackupOutsideTheProjectsStorageIsSaid(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte(`{"snapshot_id":"snap-5","outside_project_storage":true}`))
-	}))
-	defer srv.Close()
+	api := newFakeAPI(t, "sg_tok_fine", map[string]http.HandlerFunc{
+		"POST /api/v1/snapshots": jsonReply(http.StatusCreated, `{"snapshot_id":"snap-5","outside_project_storage":true}`),
+	})
 
 	meta := &model.SnapshotMetadata{SnapshotID: "snap-5", NodeID: "node-1", StorageURI: "file:///var/backups/snap-5"}
 	var reason string
 	out := captureStderr(t, func() {
-		reason = sendMetadataToServer(context.Background(), srv.URL, "sg_tok_fine", meta, false)
+		reason = sendMetadataToServer(context.Background(), api.URL(), "sg_tok_fine", meta, false)
 	})
 	if !strings.Contains(out, "OUTSIDE THE PROJECT'S STORAGE") || !strings.Contains(out, "file:///var/backups/snap-5") {
 		t.Errorf("a backup outside the project's storage was not said: %q", out)
@@ -149,18 +119,14 @@ func TestABackupOutsideTheProjectsStorageIsSaid(t *testing.T) {
 // without enrolling, so a node id is not a sign of enrolment; a token the
 // remote server refuses is (TestARejectedAttestationIsReported).
 func TestAStandaloneHostIsNotWarnedAndSendsNothing(t *testing.T) {
-	contacted := false
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		contacted = true
-	}))
-	defer srv.Close()
+	api := newFakeAPI(t, "sg_tok_any", map[string]http.HandlerFunc{"POST /api/v1/snapshots": jsonReply(http.StatusCreated, `{}`)})
 
 	for _, meta := range []*model.SnapshotMetadata{{SnapshotID: "snap-1"}, {SnapshotID: "snap-2", NodeID: "node-from-init"}} {
 		out := captureStderr(t, func() {
-			sendMetadataToServer(context.Background(), srv.URL, "", meta, true)
+			sendMetadataToServer(context.Background(), api.URL(), "", meta, true)
 		})
-		if strings.Contains(out, "NOT RECORDED") || contacted {
-			t.Errorf("standalone backup of %+v was warned (%q) or contacted the server (%t)", meta, out, contacted)
+		if strings.Contains(out, "NOT RECORDED") || len(api.Calls("/api/v1/snapshots")) != 0 {
+			t.Errorf("standalone backup of %+v was warned (%q) or contacted the server (%d requests)", meta, out, len(api.Calls("/api/v1/snapshots")))
 		}
 	}
 }

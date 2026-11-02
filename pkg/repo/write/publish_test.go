@@ -36,7 +36,10 @@ func (c *commitFails) Commit(ctx context.Context, e format.Epoch, rc sink.RunCom
 
 func readCatalog(t *testing.T, h *harness, e sink.EpochInfo, runID string) format.Catalog {
 	t.Helper()
-	key, _ := sink.ObjectKey(e.Prefix, sink.KindCatalog, runID)
+	key, err := sink.ObjectKey(e.Prefix, sink.KindCatalog, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	body, err := h.b.Get(context.Background(), key)
 	if err != nil {
 		t.Fatal(err)
@@ -70,8 +73,8 @@ func TestARunThatPublishedWithoutFinishingIsFollowedByACompleteCatalog(t *testin
 		t.Fatalf("a failed commit did not fail the run: %v", err)
 	}
 	e := h.epoch(first.Epoch.EpochID)
-	ids, _ := check.Snapshots(context.Background(), h.b, e)
-	if len(ids) != 2 {
+	ids, err := check.Snapshots(context.Background(), h.b, e)
+	if err != nil || len(ids) != 2 {
 		t.Fatalf("the unfinished run's snapshot is not in the store: %v", ids)
 	}
 	unfinished := ids[1]
@@ -112,8 +115,8 @@ func TestAResumedOpeningRunReportsTheEpochsTier(t *testing.T) {
 	m.apply(t, 60)
 	small := func(o *write.Options) { o.PackTargetBytes = 256 << 10; o.Concurrency = 1 }
 	f := &faulty{Backend: h.b, n: 4, puts: map[string]int{}}
-	if _, err := write.Run(context.Background(), f, h.opts(small)); err == nil {
-		t.Fatal("the opening run did not die")
+	if _, err := write.Run(context.Background(), f, h.opts(small)); !errors.Is(err, errKilled) {
+		t.Fatalf("the opening run did not die where it was killed: %v", err)
 	}
 	h.retain.KeepMonthly = 12
 	res := h.backup(func(o *write.Options) { small(o); o.Tier = format.TierMonthly })
@@ -135,18 +138,21 @@ func TestAChangedRecipientOpensANewEpoch(t *testing.T) {
 	}
 	a := h.backup(nil)
 	oldIDs := h.ids
-	id2, _ := age.GenerateX25519Identity()
+	id2, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
 	h.rec, h.ids = id2.Recipient().String(), []age.Identity{id2}
 	b := h.backup(nil)
 	if b.Epoch.EpochID == a.Epoch.EpochID || b.Reason != format.ReasonRecipient || b.Class != format.ClassOpening {
 		t.Fatalf("a changed recipient: epoch %s (was %s), reason %s, class %s", b.Epoch.EpochID, a.Epoch.EpochID, b.Reason, b.Class)
 	}
-	if got, _, _ := h.restore(b.Epoch.EpochID, b.Snapshot.SnapshotID, nil); got["f"].typ != "f" {
-		t.Fatal("the new epoch does not restore with the new identity")
+	if got, _, _ := h.restore(b.Epoch.EpochID, b.Snapshot.SnapshotID, nil); got["f"].value != sha256Hex("x") {
+		t.Fatalf("the new epoch does not restore with the new identity: %+v", got["f"])
 	}
 	h.ids = oldIDs
-	if got, _, _ := h.restore(a.Epoch.EpochID, a.Snapshot.SnapshotID, nil); got["f"].typ != "f" {
-		t.Fatal("the old epoch does not restore with the old identity")
+	if got, _, _ := h.restore(a.Epoch.EpochID, a.Snapshot.SnapshotID, nil); got["f"].value != sha256Hex("x") {
+		t.Fatalf("the old epoch does not restore with the old identity: %+v", got["f"])
 	}
 }
 
@@ -168,7 +174,10 @@ func TestTheRecoveryDocumentSitsBesideTheSidecar(t *testing.T) {
 		if sealed {
 			kind = sink.KindRecoverySealed
 		}
-		key, _ := sink.ObjectKey(h.epoch(res.Epoch.EpochID).Prefix, kind, res.Snapshot.SnapshotID)
+		key, err := sink.ObjectKey(h.epoch(res.Epoch.EpochID).Prefix, kind, res.Snapshot.SnapshotID)
+		if err != nil {
+			t.Fatal(err)
+		}
 		body, err := h.b.Get(context.Background(), key)
 		if err != nil || string(body) != "restore "+res.Snapshot.SnapshotID {
 			t.Fatalf("sealed=%v: the recovery document at %s: %q %v", sealed, key, body, err)
@@ -212,8 +221,8 @@ func TestAnEpochTheStoreDoesNotHoldIsNotContinued(t *testing.T) {
 		t.Fatalf("after the root changed: epoch %s (was %s), opened %v, class %s", b.Epoch.EpochID, a.Epoch.EpochID, b.Opened, b.Class)
 	}
 	h.epoch(b.Epoch.EpochID)
-	if got, _, _ := h.restore(b.Epoch.EpochID, b.Snapshot.SnapshotID, nil); got["f"].typ != "f" {
-		t.Fatal("the snapshot under the new root does not restore from that root alone")
+	if got, _, _ := h.restore(b.Epoch.EpochID, b.Snapshot.SnapshotID, nil); got["f"].value != sha256Hex("x") {
+		t.Fatalf("the snapshot under the new root does not restore from that root alone: %+v", got["f"])
 	}
 
 	// Once the new root holds the epoch, the next run continues it.

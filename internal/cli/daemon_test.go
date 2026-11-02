@@ -1,11 +1,13 @@
 package cli
 
 import (
+	"bufio"
 	"encoding/json"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -120,22 +122,43 @@ func TestDaemonLockingAndStaleRecovery(t *testing.T) {
 		t.Errorf("expected lockfile to be removed upon release")
 	}
 
-	// 2. Stale lock recovery: write dead PID (e.g. 999999)
+	// 2. Stale lock recovery: a lock left by a process that has exited.
 	staleLock := LockInfo{
-		PID:        999999, // Unlikely to exist
+		PID:        deadPID(t),
 		StartTime:  time.Now().UTC().Add(-3 * time.Hour),
 		SnapshotID: "snap-stale",
 		SurfaceID:  "test-surf",
 	}
-	data, _ := json.Marshal(staleLock)
-	_ = os.WriteFile(lockPath, data, 0600)
+	data, err := json.Marshal(staleLock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(lockPath, data, 0600); err != nil {
+		t.Fatal(err)
+	}
 
 	// Attempting acquisition should reclaim the stale lock
 	release2, err := acquireLock(lockPath, "test-surf", "snap-new")
 	if err != nil {
 		t.Fatalf("expected stale lock to be reclaimed, got: %v", err)
 	}
+	var now LockInfo
+	if b, err := os.ReadFile(lockPath); err != nil || json.Unmarshal(b, &now) != nil || now.SnapshotID != "snap-new" || now.PID != os.Getpid() {
+		t.Fatalf("the reclaimed lock reads %+v (%v), want this process's, for snap-new", now, err)
+	}
 	release2()
+}
+
+// deadPID is the PID of a process that has exited and been reaped. A fixed
+// number such as 999999 can be a live process on Linux, where PIDs go up to
+// 4194304.
+func deadPID(t *testing.T) int {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run=^$")
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("starting a process to outlive: %v", err)
+	}
+	return cmd.Process.Pid
 }
 
 // A lock that names this process's PID and that this process did not take
@@ -242,27 +265,91 @@ func TestBackupMillisecondsRoundsUpNeverDown(t *testing.T) {
 }
 
 // Two daemons starting together both used to proceed: the lock was read,
-// checked and then written. Exactly one of many concurrent takers wins.
+// checked and then written. Exactly one of many processes taking it at once
+// wins. They are processes, not goroutines: within one process acquireLock
+// holds a mutex, so goroutines would never race on the file.
 func TestDaemonLockHasOneWinnerUnderContention(t *testing.T) {
-	lockPath := filepath.Join(t.TempDir(), "race.lock")
-	var wg sync.WaitGroup
-	var mu sync.Mutex
+	if dir := os.Getenv("SAFEGRD_TEST_LOCK_RACE"); dir != "" {
+		lockRaceChild(dir)
+		return
+	}
+	dir := t.TempDir()
+	const takers = 8
+	type child struct {
+		cmd *exec.Cmd
+		out *bufio.Reader
+	}
+	var children []child
+	for i := 0; i < takers; i++ {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestDaemonLockHasOneWinnerUnderContention$", "-test.count=1")
+		cmd.Env = append(os.Environ(), "SAFEGRD_TEST_LOCK_RACE="+dir)
+		cmd.Stderr = os.Stderr
+		pipe, err := cmd.StdoutPipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		children = append(children, child{cmd, bufio.NewReader(pipe)})
+	}
+	t.Cleanup(func() {
+		for _, c := range children {
+			_ = c.cmd.Process.Kill() // ends a child left waiting by a failed run; its exit is not the subject
+			_ = c.cmd.Wait()         // reaps it; the result was read from its output
+		}
+	})
+	// Each child says it is ready, then all start at once.
+	for i, c := range children {
+		if line, err := c.out.ReadString('\n'); err != nil || line != "ready\n" {
+			t.Fatalf("child %d: %q, %v", i, line, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "go"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	wins := 0
-	for i := 0; i < 20; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if _, err := acquireLock(lockPath, "race", ""); err == nil {
-				mu.Lock()
-				wins++
-				mu.Unlock()
-			}
-		}()
+	for i, c := range children {
+		line, err := c.out.ReadString('\n')
+		if err != nil {
+			t.Fatalf("child %d said nothing: %v", i, err)
+		}
+		switch strings.TrimSpace(line) {
+		case "won":
+			wins++
+		case "lost":
+		default:
+			t.Fatalf("child %d: %q", i, line)
+		}
 	}
-	wg.Wait()
+	// The winner holds the lock until every child has tried.
+	if err := os.WriteFile(filepath.Join(dir, "done"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if wins != 1 {
-		t.Fatalf("%d takers held the lock at once, want 1", wins)
+		t.Fatalf("%d of %d processes held the lock at once, want 1", wins, takers)
 	}
+}
+
+// lockRaceChild is one taker: it waits for the start, takes the lock, says
+// whether it won, and holds it until told the race is over.
+func lockRaceChild(dir string) {
+	fmt.Println("ready")
+	wait := func(name string) {
+		for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+			if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+				return
+			}
+		}
+		os.Exit(3)
+	}
+	wait("go")
+	if _, err := acquireLock(filepath.Join(dir, "race.lock"), "race", ""); err == nil {
+		fmt.Println("won")
+	} else {
+		fmt.Println("lost")
+	}
+	wait("done")
 }
 
 // A surface's backups are locked for its own retention_days, else its own
@@ -283,5 +370,20 @@ func TestASurfaceRetentionFallsBackThroughItsStorage(t *testing.T) {
 		if got := surfaceRetentionDays(c, &tc.s); got != tc.want {
 			t.Errorf("surface %s: %d days, want %d", tc.s.ID, got, tc.want)
 		}
+	}
+}
+
+// A process this user may not signal is alive: signal 0 answers EPERM for
+// another user's process, and reading that as dead let a host's own CLI
+// take over the lock of a daemon running as root.
+func TestAProcessOfAnotherUserIsAlive(t *testing.T) {
+	if !isPIDAlive(1) {
+		t.Error("PID 1 reads as dead")
+	}
+	if !isPIDAlive(os.Getpid()) {
+		t.Error("this process reads as dead")
+	}
+	if pid := deadPID(t); isPIDAlive(pid) {
+		t.Errorf("PID %d, which exited, reads as alive", pid)
 	}
 }

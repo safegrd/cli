@@ -48,9 +48,8 @@ func TestDotenvRefusesAReferenceToNothing(t *testing.T) {
 	if v, err := env.Get("OTHER"); err != nil || v != "x" {
 		t.Fatalf("a key beside an unresolved one did not read: %q %v", v, err)
 	}
-	if _, err := ParseDotenv([]byte("KEY=\"open\n")); err == nil {
-		t.Fatal("an unclosed double quote was accepted")
-	}
+	_, err = ParseDotenv([]byte("KEY=\"open\n"))
+	wantErr(t, err, "opens a double quote it does not close")
 }
 
 func laravelApp(t *testing.T, env string) string {

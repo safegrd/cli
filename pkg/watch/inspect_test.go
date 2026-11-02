@@ -11,6 +11,8 @@ import (
 	"github.com/safegrd/cli/pkg/model"
 )
 
+// plainDump is typed by hand in the shape pg_dump's plain format takes; no
+// pg_dump runs in this package's tests.
 const plainDump = `--
 -- PostgreSQL database dump
 --
@@ -116,7 +118,8 @@ func TestTheLoadFilterLeavesOutJobsCommentsAndUnknownSettings(t *testing.T) {
 // A mysqldump file as Coolify writes one (mysqldump -u root -p... DATABASE,
 // no --databases): the header names the database and the server, each
 // table's rows are counted from its INSERT statements, and the completion
-// line is the end.
+// line is the end. It is typed by hand, not written by mysqldump; the dump
+// package's testdata holds a real mysqldump 8.4 file.
 const mysqlDump = "-- MariaDB dump 10.19  Distrib 10.11.6-MariaDB, for Linux (x86_64)\n--\n-- Host: localhost    Database: shop\n" +
 	"-- ------------------------------------------------------\n-- Server version\t8.4.11\n\n" +
 	"DROP TABLE IF EXISTS `users`;\nCREATE TABLE `users` (\n  `id` int NOT NULL\n);\n" +

@@ -17,10 +17,18 @@ import (
 )
 
 func TestVersionsJoinAcrossEpochsBySHA256(t *testing.T) {
-	id, _ := age.GenerateX25519Identity()
-	src := t.TempDir()
-	src, _ = filepath.EvalSymlinks(src)
-	st, _ := sink.NewDir(t.TempDir(), "n")
+	id, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := sink.NewDir(t.TempDir(), "n")
+	if err != nil {
+		t.Fatal(err)
+	}
 	b := sink.NewDirect(st)
 	state := t.TempDir()
 	at := time.Date(2026, 10, 1, 2, 0, 0, 0, time.UTC)
@@ -50,14 +58,16 @@ func TestVersionsJoinAcrossEpochsBySHA256(t *testing.T) {
 	backup(false) // b
 	w("nginx.conf", "v2")
 	backup(false) // c
-	_ = os.Remove(filepath.Join(src, "gone.txt"))
+	if err := os.Remove(filepath.Join(src, "gone.txt")); err != nil {
+		t.Fatal(err)
+	}
 	backup(true) // d, a new epoch
 	w("nginx.conf", "v3")
 	backup(false) // e
 
-	es, _ := b.Epochs(context.Background(), "s")
-	if len(es) != 2 {
-		t.Fatalf("%d epochs", len(es))
+	es, err := b.Epochs(context.Background(), "s")
+	if err != nil || len(es) != 2 {
+		t.Fatalf("%d epochs (%v)", len(es), err)
 	}
 	srcRel := strings.TrimPrefix(src, "/")
 	cache := filepath.Join(t.TempDir(), "cat")
@@ -89,9 +99,9 @@ func TestVersionsJoinAcrossEpochsBySHA256(t *testing.T) {
 	if err != nil || len(del) != 1 || filepath.Base(del[0].Path) != "gone.txt" {
 		t.Fatalf("--deleted: %+v %v", del, err)
 	}
-	// The second search opens nothing: every snapshot and catalog is cached.
-	entries, _ := os.ReadDir(cache)
-	if len(entries) != 4 {
+	// Every run's snapshot and catalog is cached after the first search.
+	entries, err := os.ReadDir(cache)
+	if err != nil || len(entries) != 4 {
 		t.Fatalf("%d cached runs", len(entries))
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"filippo.io/age"
@@ -19,18 +20,29 @@ func TestARestoreAsksForTheOneKeyItNeeds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The handler and the test share what the next request is answered
+	// with and what the last one asked.
+	var mu sync.Mutex
 	var lastQuery map[string][]string
 	reply := func(w http.ResponseWriter, r *http.Request) {}
+	setReply := func(h func(w http.ResponseWriter, r *http.Request)) {
+		mu.Lock()
+		defer mu.Unlock()
+		reply = h
+	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		lastQuery = r.URL.Query()
-		reply(w, r)
+		h := reply
+		mu.Unlock()
+		h(w, r)
 	}))
 	defer srv.Close()
 	cfg := &config.CLIConfig{ServerURL: srv.URL, NodeID: "node-1", ServerToken: "sg_tok_x",
 		Encryption: config.EncryptionConfig{PublicKey: mine.Recipient().String(), KeyPath: "/root/.safegrd/keys/daemon.key"}}
 
 	// The host's own key opens it: the server says so and releases nothing.
-	reply = func(w http.ResponseWriter, r *http.Request) {
+	setReply(func(w http.ResponseWriter, r *http.Request) {
 		for _, h := range r.URL.Query()["have"] {
 			if h == mine.Recipient().String() {
 				w.WriteHeader(http.StatusNoContent)
@@ -38,7 +50,7 @@ func TestARestoreAsksForTheOneKeyItNeeds(t *testing.T) {
 			}
 		}
 		t.Errorf("the request did not say which key the host holds: %v", r.URL.Query())
-	}
+	})
 	var keys string
 	stderr := captureStderr(t, func() {
 		keys = withManagedIdentity(context.Background(), cfg, mine.String(), heldKeyQuery{snapshotID: "snap-1"}, false)
@@ -46,14 +58,17 @@ func TestARestoreAsksForTheOneKeyItNeeds(t *testing.T) {
 	if keys != mine.String() || stderr != "" {
 		t.Errorf("own key opens it: keys %q, stderr %q; want only the local key and no warning", keys, stderr)
 	}
-	if got := lastQuery["snapshot"]; len(got) != 1 || got[0] != "snap-1" {
+	mu.Lock()
+	got := lastQuery["snapshot"]
+	mu.Unlock()
+	if len(got) != 1 || got[0] != "snap-1" {
 		t.Errorf("the request did not name the snapshot: %v", lastQuery)
 	}
 
 	// A lost host's snapshot: the one held key comes back beside the local one.
-	reply = func(w http.ResponseWriter, r *http.Request) {
+	setReply(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"org_id":"org-1","identities":[{"public_key":"age1lost","identity":"AGE-SECRET-KEY-LOST"}]}`))
-	}
+	})
 	keys = withManagedIdentity(context.Background(), cfg, mine.String(), heldKeyQuery{snapshotID: "snap-2"}, false)
 	if keys != mine.String()+"\nAGE-SECRET-KEY-LOST" {
 		t.Errorf("key set %q, want the local key then the one held key", keys)
@@ -61,10 +76,10 @@ func TestARestoreAsksForTheOneKeyItNeeds(t *testing.T) {
 
 	// No key here and SafeGrd holds none for it: say where the key was looked
 	// for and what the server said, instead of "no identity matched" later.
-	reply = func(w http.ResponseWriter, r *http.Request) {
+	setReply(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = w.Write([]byte(`{"error":"This is sealed to SG:fbd2e622:3cb18453, a key SafeGrd does not hold."}`))
-	}
+	})
 	stderr = captureStderr(t, func() {
 		keys = withManagedIdentity(context.Background(), cfg, "", heldKeyQuery{snapshotID: "snap-3"}, false)
 	})

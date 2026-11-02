@@ -233,31 +233,39 @@ func (s *SchemaExtractor) generateTableDDL(ctx context.Context, schema, table st
 		return "", err
 	}
 
-	// Query Primary Keys
+	// The primary key comes from pg_constraint, which every role reads.
+	// information_schema.table_constraints lists only the constraints of
+	// tables the role owns or holds a privilege on other than SELECT, so a
+	// read-only backup role saw no primary key and the restored table had none.
 	pkQuery := `
-		SELECT kcu.column_name
-		FROM information_schema.table_constraints tc
-		JOIN information_schema.key_column_usage kcu
-		  ON tc.constraint_name = kcu.constraint_name
-		  AND tc.table_schema = kcu.table_schema
-		WHERE tc.constraint_type = 'PRIMARY KEY'
-		  AND tc.table_schema = $1 AND tc.table_name = $2
-		ORDER BY kcu.ordinal_position;
+		SELECT a.attname
+		FROM pg_constraint con
+		JOIN pg_class c ON c.oid = con.conrelid
+		JOIN pg_namespace n ON n.oid = c.relnamespace
+		JOIN LATERAL unnest(con.conkey) WITH ORDINALITY AS k(attnum, ord) ON true
+		JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = k.attnum
+		WHERE con.contype = 'p' AND n.nspname = $1 AND c.relname = $2
+		ORDER BY k.ord;
 	`
 	pkRows, err := s.db.QueryContext(ctx, pkQuery, schema, table)
-	if err == nil {
-		var pkCols []string
-		for pkRows.Next() {
-			var col string
-			if err := pkRows.Scan(&col); err == nil {
-				pkCols = append(pkCols, quoteIdent(col))
-			}
+	if err != nil {
+		return "", fmt.Errorf("primary key of %s: %w", quoteIdent(schema, table), err)
+	}
+	var pkCols []string
+	for pkRows.Next() {
+		var col string
+		if err := pkRows.Scan(&col); err != nil {
+			pkRows.Close()
+			return "", err
 		}
-		pkRows.Close()
-
-		if len(pkCols) > 0 {
-			colDefs = append(colDefs, fmt.Sprintf("    PRIMARY KEY (%s)", strings.Join(pkCols, ", ")))
-		}
+		pkCols = append(pkCols, quoteIdent(col))
+	}
+	pkRows.Close()
+	if err := pkRows.Err(); err != nil {
+		return "", err
+	}
+	if len(pkCols) > 0 {
+		colDefs = append(colDefs, fmt.Sprintf("    PRIMARY KEY (%s)", strings.Join(pkCols, ", ")))
 	}
 
 	ddl := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (\n%s\n);",
@@ -267,16 +275,24 @@ func (s *SchemaExtractor) generateTableDDL(ctx context.Context, schema, table st
 }
 
 func (s *SchemaExtractor) extractIndexes(ctx context.Context) ([]string, error) {
+	// Every index but the one behind a primary key, which the table's DDL
+	// creates. A unique constraint's index is kept as a unique index: this
+	// schema carries no constraints but the primary key, and leaving the
+	// index out lost the uniqueness. The constraints are read from
+	// pg_constraint, which a read-only role sees whole.
 	query := `
-		SELECT indexdef
-		FROM pg_indexes
-		WHERE schemaname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
-		  AND indexname NOT IN (
-		      SELECT constraint_name 
-		      FROM information_schema.table_constraints 
-		      WHERE constraint_type IN ('PRIMARY KEY', 'UNIQUE')
+		SELECT pg_get_indexdef(i.indexrelid)
+		FROM pg_index i
+		JOIN pg_class ic ON ic.oid = i.indexrelid
+		JOIN pg_class tc ON tc.oid = i.indrelid
+		JOIN pg_namespace n ON n.oid = tc.relnamespace
+		WHERE n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+		  AND tc.relkind IN ('r', 'p', 'm')
+		  AND NOT EXISTS (
+		      SELECT 1 FROM pg_constraint con
+		      WHERE con.conindid = i.indexrelid AND con.contype = 'p'
 		  )
-		ORDER BY schemaname, tablename, indexname;
+		ORDER BY n.nspname, tc.relname, ic.relname;
 	`
 	rows, err := s.db.QueryContext(ctx, query)
 	if err != nil {
@@ -301,11 +317,17 @@ type seqRef struct {
 }
 
 func (s *SchemaExtractor) extractSequences(ctx context.Context) ([]seqRef, error) {
+	// From pg_class: information_schema.sequences lists only the sequences
+	// the role holds a privilege on, and a read-only role granted SELECT on
+	// tables alone saw none, so every serial column's default named a
+	// sequence the schema never created.
 	query := `
-		SELECT sequence_schema, sequence_name
-		FROM information_schema.sequences
-		WHERE sequence_schema NOT IN ('pg_catalog', 'information_schema')
-		ORDER BY sequence_schema, sequence_name;
+		SELECT n.nspname, c.relname
+		FROM pg_class c
+		JOIN pg_namespace n ON n.oid = c.relnamespace
+		WHERE c.relkind = 'S'
+		  AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+		ORDER BY n.nspname, c.relname;
 	`
 	rows, err := s.db.QueryContext(ctx, query)
 	if err != nil {

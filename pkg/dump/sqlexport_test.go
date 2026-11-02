@@ -58,7 +58,6 @@ func TestCountBinaryCopyRows(t *testing.T) {
 	if err := os.WriteFile(path, whole[:len(whole)-3], 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := countBinaryCopyRows(path); err == nil {
-		t.Fatal("a truncated COPY stream was counted without an error")
-	}
+	_, err := countBinaryCopyRows(path)
+	wantErr(t, err, "cut short in row 3")
 }

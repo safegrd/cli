@@ -13,22 +13,26 @@ import (
 // leftover and goes at once.
 func TestTheSweepKeepsAKeptSandboxForItsDay(t *testing.T) {
 	state := t.TempDir()
-	sock := filepath.Join(t.TempDir(), "safegrd-pg-test")
+	socks := t.TempDir()
 	mk := func(name string, until time.Time) string {
+		sock := filepath.Join(socks, "safegrd-pg-"+name)
+		if err := os.MkdirAll(sock, 0o700); err != nil {
+			t.Fatal(err)
+		}
 		d := filepath.Join(state, "drill", localSandboxPrefix+name)
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			t.Fatal(err)
 		}
 		if !until.IsZero() {
-			b, _ := json.Marshal(keptSandbox{Until: until, SockDir: sock})
+			b, err := json.Marshal(keptSandbox{Until: until, SockDir: sock})
+			if err != nil {
+				t.Fatal(err)
+			}
 			if err := os.WriteFile(filepath.Join(d, keptMarker), b, 0o600); err != nil {
 				t.Fatal(err)
 			}
 		}
 		return d
-	}
-	if err := os.MkdirAll(sock, 0o700); err != nil {
-		t.Fatal(err)
 	}
 	kept := mk("kept", time.Now().Add(time.Hour))
 	expired := mk("expired", time.Now().Add(-time.Minute))
@@ -44,7 +48,10 @@ func TestTheSweepKeepsAKeptSandboxForItsDay(t *testing.T) {
 			t.Errorf("%s was not swept", d)
 		}
 	}
-	if _, err := os.Stat(sock); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(socks, "safegrd-pg-expired")); !os.IsNotExist(err) {
 		t.Error("the expired sandbox's socket directory was left behind")
+	}
+	if _, err := os.Stat(filepath.Join(socks, "safegrd-pg-kept")); err != nil {
+		t.Errorf("the kept sandbox's socket directory was swept: %v", err)
 	}
 }

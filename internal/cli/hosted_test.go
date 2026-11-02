@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -33,8 +34,13 @@ type fakeHosted struct {
 	aborted  int
 	inFlight int32
 	maxIn    int32
-	// failPuts makes the first n part PUTs fail with 403, as an expired URL would.
+	// failPuts makes the first n part PUTs fail with 403, as an expired URL
+	// would. A URL that expired stays expired: it is in dead, and only a
+	// fresh grant (a new g in the URL) gets the part in.
 	failPuts int32
+	dead     map[string]bool
+	// granted counts the URLs granted for each part.
+	granted map[int32]int
 	// keep, when set, is the lock the server grants whatever is asked, as
 	// the plan's range does; asked records each lock the host asked for.
 	keep  time.Time
@@ -46,7 +52,8 @@ type fakeHosted struct {
 }
 
 func newFakeHosted(t *testing.T) *fakeHosted {
-	f := &fakeHosted{t: t, parts: map[int32][]byte{}, grants: map[int32]int64{}, objects: map[string][]byte{}}
+	f := &fakeHosted{t: t, parts: map[int32][]byte{}, grants: map[int32]int64{}, objects: map[string][]byte{},
+		dead: map[string]bool{}, granted: map[int32]int{}}
 	f.srv = httptest.NewTLSServer(http.HandlerFunc(f.serve))
 	t.Cleanup(f.srv.Close)
 	return f
@@ -57,8 +64,18 @@ func (f *fakeHosted) serve(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.URL.Path == "/bucket/part":
 		var n int32
-		fmt.Sscan(r.URL.Query().Get("n"), &n)
-		if atomic.AddInt32(&f.failPuts, -1) >= 0 {
+		if _, err := fmt.Sscan(r.URL.Query().Get("n"), &n); err != nil {
+			http.Error(w, "no part number", http.StatusBadRequest)
+			return
+		}
+		url := r.URL.RawQuery
+		f.mu.Lock()
+		expired := f.dead[url]
+		if !expired && atomic.AddInt32(&f.failPuts, -1) >= 0 {
+			f.dead[url], expired = true, true
+		}
+		f.mu.Unlock()
+		if expired {
 			http.Error(w, "Request has expired", http.StatusForbidden)
 			return
 		}
@@ -120,8 +137,9 @@ func (f *fakeHosted) serve(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		for _, p := range req.Parts {
 			f.grants[p.PartNumber] = p.Size
+			f.granted[p.PartNumber]++
 			out = append(out, map[string]any{"part_number": p.PartNumber, "size": p.Size,
-				"url": fmt.Sprintf("%s/bucket/part?n=%d", f.srv.URL, p.PartNumber)})
+				"url": fmt.Sprintf("%s/bucket/part?n=%d&g=%d", f.srv.URL, p.PartNumber, f.granted[p.PartNumber])})
 		}
 		f.mu.Unlock()
 		_ = json.NewEncoder(w).Encode(map[string]any{"parts": out})
@@ -213,8 +231,17 @@ func TestHostedUploadRetriesAnExpiredURLWithAFreshOne(t *testing.T) {
 	f := newFakeHosted(t)
 	f.failPuts = 2
 	p := f.provider(t)
-	if _, err := p.UploadSnapshot(context.Background(), "snap-1", bytes.NewReader(make([]byte, 100)), -1, time.Time{}); err != nil {
+	data := []byte(strings.Repeat("part one ", 11))
+	if _, err := p.UploadSnapshot(context.Background(), "snap-1", bytes.NewReader(data), -1, time.Time{}); err != nil {
 		t.Fatalf("two expired URLs in a row should be retried: %v", err)
+	}
+	// An expired URL stays expired, so the part got in only through a
+	// third URL, granted fresh.
+	f.mu.Lock()
+	granted, stored := f.granted[1], string(f.objects["node-1/snap-1.safegrd"])
+	f.mu.Unlock()
+	if granted != 3 || stored != string(data) {
+		t.Fatalf("part 1 was granted %d URLs and stored as %q; want 3 URLs and the part", granted, stored)
 	}
 }
 
@@ -241,8 +268,11 @@ func TestAFailedStreamAbortsTheUpload(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "pg_dump exited 1") {
 		t.Fatalf("upload of a broken stream: %v", err)
 	}
-	if f.aborted != 1 || len(f.objects) != 0 {
-		t.Errorf("aborted %d times, objects %d; want one abort and nothing stored", f.aborted, len(f.objects))
+	f.mu.Lock()
+	aborted, objects := f.aborted, len(f.objects)
+	f.mu.Unlock()
+	if aborted != 1 || objects != 0 {
+		t.Errorf("aborted %d times, objects %d; want one abort and nothing stored", aborted, objects)
 	}
 }
 
@@ -281,8 +311,11 @@ func TestAHostedBackupReportsTheLockTheServerKept(t *testing.T) {
 	if !meta.WORMRetentionUntil.Equal(f.keep) {
 		t.Errorf("the snapshot reports a lock until %s, the server kept it until %s", meta.WORMRetentionUntil, f.keep)
 	}
-	if len(f.asked) != 2 || !f.asked[1].Equal(f.keep) {
-		t.Errorf("the manifest asked for a lock other than the one its ciphertext has: %v", f.asked)
+	f.mu.Lock()
+	locks := append([]time.Time(nil), f.asked...)
+	f.mu.Unlock()
+	if len(locks) != 2 || !locks[1].Equal(f.keep) {
+		t.Errorf("the manifest asked for a lock other than the one its ciphertext has: %v", locks)
 	}
 }
 
@@ -314,21 +347,22 @@ func TestBucketErrorReadsS3sXML(t *testing.T) {
 // stopped before it read a byte.
 func TestTheFirstHostedCallWaitsOutARateLimit(t *testing.T) {
 	var asked int32
-	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if atomic.AddInt32(&asked, 1) <= 2 {
-			w.Header().Set("Retry-After", "60")
-			w.WriteHeader(http.StatusTooManyRequests)
-			_ = json.NewEncoder(w).Encode(map[string]string{"error": "Rate limit exceeded. Please try again later."})
-			return
-		}
-		_ = json.NewEncoder(w).Encode(hostedInfo{WORMMode: "COMPLIANCE", RetentionDays: 14, PartSize: 5 << 20})
-	}))
-	defer srv.Close()
+	api := newFakeAPITLS(t, "sg_tok_1", map[string]http.HandlerFunc{
+		"GET /api/v1/nodes/node-1/hosted": func(w http.ResponseWriter, r *http.Request) {
+			if atomic.AddInt32(&asked, 1) <= 2 {
+				w.Header().Set("Retry-After", "60")
+				w.WriteHeader(http.StatusTooManyRequests)
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": "Rate limit exceeded. Please try again later."})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(hostedInfo{WORMMode: "COMPLIANCE", RetentionDays: 14, PartSize: 5 << 20})
+		},
+	})
 	saved, savedPause := http.DefaultTransport, hostedRetryPause
-	http.DefaultTransport, hostedRetryPause = srv.Client().Transport, time.Millisecond
+	http.DefaultTransport, hostedRetryPause = api.srv.Client().Transport, time.Millisecond
 	defer func() { http.DefaultTransport, hostedRetryPause = saved, savedPause }()
 
-	cfg := &config.CLIConfig{ServerURL: srv.URL, NodeID: "node-1", ServerToken: "sg_tok_1"}
+	cfg := &config.CLIConfig{ServerURL: api.URL(), NodeID: "node-1", ServerToken: "sg_tok_1"}
 	st := &config.StorageConfig{Type: config.StorageTypeHosted}
 	info, err := resolveHostedStorage(context.Background(), cfg, st, false)
 	if err != nil {
@@ -356,8 +390,11 @@ func TestAnUploadWaitsOutARateLimitAtEveryStep(t *testing.T) {
 	if _, err := p.UploadSnapshot(context.Background(), "snap-1", bytes.NewReader(data), -1, time.Time{}); err != nil {
 		t.Fatalf("an upload refused once at each step: %v", err)
 	}
+	f.mu.Lock()
+	limited := maps.Clone(f.limited)
+	f.mu.Unlock()
 	for _, path := range []string{"/uploads", "/uploads/hup_1/parts", "/uploads/hup_1/complete"} {
-		if !f.limited["/api/v1/nodes/node-1/hosted"+path] {
+		if !limited["/api/v1/nodes/node-1/hosted"+path] {
 			t.Errorf("%s was never refused, so the test proves nothing about it", path)
 		}
 	}
@@ -367,8 +404,11 @@ func TestAnUploadWaitsOutARateLimitAtEveryStep(t *testing.T) {
 	}
 	back, _ := io.ReadAll(rc)
 	rc.Close()
-	if !bytes.Equal(back, data) || f.aborted != 0 {
-		t.Fatalf("read back %d bytes of %d, %d upload(s) aborted", len(back), len(data), f.aborted)
+	f.mu.Lock()
+	aborted := f.aborted
+	f.mu.Unlock()
+	if !bytes.Equal(back, data) || aborted != 0 {
+		t.Fatalf("read back %d bytes of %d, %d upload(s) aborted", len(back), len(data), aborted)
 	}
 }
 

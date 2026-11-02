@@ -79,9 +79,8 @@ func TestPgPassFileEscapesAndIsPrivate(t *testing.T) {
 			t.Errorf("pgpass mode %v, want 0600 (libpq ignores a wider file)", st.Mode().Perm())
 		}
 	}
-	if _, _, err := pgPassFile("line\nbreak"); err == nil {
-		t.Error("a password with a line break was written to a pgpass file, which cannot carry it")
-	}
+	_, _, err = pgPassFile("line\nbreak")
+	wantErr(t, err, "line break cannot be passed to pg_dump")
 	cleanup()
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Error("cleanup left the pgpass file behind")

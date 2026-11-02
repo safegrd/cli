@@ -70,9 +70,8 @@ func TestMySQLURLs(t *testing.T) {
 	if err != nil || tg.User != "app" || tg.Password != "p@ss" || tg.Host != "db.internal" || tg.Port != 3307 || tg.Database != "shop" || tg.TLS != "true" {
 		t.Fatalf("parsed %+v, %v", tg, err)
 	}
-	if _, err := parseMySQLURL("mysql://app@host/"); err == nil {
-		t.Error("a URL with no database was accepted")
-	}
+	_, err = parseMySQLURL("mysql://app@host/")
+	wantErr(t, err, "the URL names no database")
 	// ssl-mode is what mysql(1) takes and what Aiven's URIs carry.
 	for raw, want := range map[string]string{
 		"mysql://a:p@h:3306/db?ssl-mode=REQUIRED":                      "skip-verify",
@@ -96,12 +95,7 @@ func TestMySQLURLs(t *testing.T) {
 		"mysql://a:p@h:3306/db?ssl-mode=REQUIRED&tls=true": "disagree",
 	} {
 		_, err := parseMySQLURL(raw)
-		if err == nil {
-			t.Fatalf("%s was accepted", raw)
-		}
-		if !strings.Contains(err.Error(), words) {
-			t.Errorf("%s: %v, want %q", raw, err, words)
-		}
+		wantErr(t, err, words)
 	}
 	if !SameMySQLDatabase("mysql://a@localhost:3306/x", "mysql://b:pw@127.0.0.1/x") || SameMySQLDatabase("mysql://a@h/x", "mysql://a@h/y") {
 		t.Error("SameMySQLDatabase")

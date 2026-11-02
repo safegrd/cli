@@ -21,6 +21,13 @@ func keyPair(t *testing.T) (age.Recipient, []age.Identity) {
 	return id.Recipient(), []age.Identity{id}
 }
 
+// refused reports whether err is a refusal that says words: an error for
+// another reason (a bad fixture, a panic turned into an error) is not the one
+// the test is about.
+func refused(err error, words string) bool {
+	return err != nil && strings.Contains(err.Error(), words)
+}
+
 func newKey(t *testing.T) seal.Key {
 	k, err := seal.NewKey()
 	if err != nil {
@@ -52,7 +59,10 @@ func TestBlobRecordBytesAreFrozen(t *testing.T) {
 	if hex.EncodeToString(rec) != want {
 		t.Fatalf("record %x\nwant   %s", rec, want)
 	}
-	o, _ := NewOpener(k)
+	o, err := NewOpener(k)
+	if err != nil {
+		t.Fatal(err)
+	}
 	got, err := o.Blob(rec, format.BlobEntry{ID: id.String(), Type: 0, RawLength: 5})
 	if err != nil || string(got) != "hello" {
 		t.Fatalf("open: %q %v", got, err)
@@ -90,34 +100,34 @@ func TestEveryTamperedFieldIsRefused(t *testing.T) {
 		b[i] ^= 1
 		return b
 	}
-	if _, err := o.Blob(flip(0), e); err == nil {
-		t.Error("a changed nonce opened")
+	if _, err := o.Blob(flip(0), e); !refused(err, "does not authenticate") {
+		t.Errorf("a changed nonce opened: %v", err)
 	}
-	if _, err := o.Blob(flip(len(rec)/2), e); err == nil {
-		t.Error("a changed ciphertext opened")
+	if _, err := o.Blob(flip(len(rec)/2), e); !refused(err, "does not authenticate") {
+		t.Errorf("a changed ciphertext opened: %v", err)
 	}
-	if _, err := o.Blob(flip(len(rec)-1), e); err == nil {
-		t.Error("a changed tag opened")
+	if _, err := o.Blob(flip(len(rec)-1), e); !refused(err, "does not authenticate") {
+		t.Errorf("a changed tag opened: %v", err)
 	}
 	wrongType := e
 	wrongType.Type = format.BlobTree | format.Compressed
-	if _, err := o.Blob(rec, wrongType); err == nil {
-		t.Error("the record opened under another type byte")
+	if _, err := o.Blob(rec, wrongType); !refused(err, "does not authenticate") {
+		t.Errorf("the record opened under another type byte: %v", err)
 	}
 	rawFlag := e
 	rawFlag.Type = format.BlobData
-	if _, err := o.Blob(rec, rawFlag); err == nil {
-		t.Error("the record opened with its compression bit cleared")
+	if _, err := o.Blob(rec, rawFlag); !refused(err, "does not authenticate") {
+		t.Errorf("the record opened with its compression bit cleared: %v", err)
 	}
 	other := e
 	other.ID = format.Hash([]byte("other")).String()
-	if _, err := o.Blob(rec, other); err == nil {
-		t.Error("the record opened under another id")
+	if _, err := o.Blob(rec, other); !refused(err, "does not authenticate") {
+		t.Errorf("the record opened under another id: %v", err)
 	}
 	// A blob moved into another pack is under another key.
 	o2, _ := NewOpener(newKey(t))
-	if _, err := o2.Blob(rec, e); err == nil {
-		t.Error("a record opened under another pack's key")
+	if _, err := o2.Blob(rec, e); !refused(err, "does not authenticate") {
+		t.Errorf("a record opened under another pack's key: %v", err)
 	}
 }
 
@@ -150,12 +160,12 @@ func TestWrappedKeyOpensOnlyWithTheIdentity(t *testing.T) {
 	if err != nil || got != [32]byte(k) {
 		t.Fatalf("unwrap: %v", err)
 	}
-	if _, err := UnwrapKey(w, otherIDs); err == nil {
-		t.Fatal("another identity opened the pack key")
+	if _, err := UnwrapKey(w, otherIDs); !refused(err, "does not open with this identity") {
+		t.Fatalf("another identity opened the pack key: %v", err)
 	}
 	w[len(w)-1] ^= 1
-	if _, err := UnwrapKey(w, ids); err == nil {
-		t.Fatal("a changed wrapped key opened")
+	if _, err := UnwrapKey(w, ids); !refused(err, "failed to decrypt and authenticate") {
+		t.Fatalf("a changed wrapped key opened: %v", err)
 	}
 }
 
@@ -172,8 +182,8 @@ func TestTrailerIsBoundToItsPack(t *testing.T) {
 	if _, err := o.Trailer(pack, rec); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := o.Trailer(format.NewRandomID(), rec); err == nil {
-		t.Fatal("a trailer opened as another pack's")
+	if _, err := o.Trailer(format.NewRandomID(), rec); !refused(err, "the trailer does not authenticate") {
+		t.Fatalf("a trailer opened as another pack's: %v", err)
 	}
 }
 
@@ -193,8 +203,8 @@ func TestObjectsRoundTrip(t *testing.T) {
 		t.Fatalf("%+v", out)
 	}
 	_, other := keyPair(t)
-	if err := Object(b, other, &out); err == nil {
-		t.Fatal("another identity opened the object")
+	if err := Object(b, other, &out); !refused(err, "does not open with this identity") {
+		t.Fatalf("another identity opened the object: %v", err)
 	}
 }
 

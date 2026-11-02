@@ -41,10 +41,14 @@ func TestOwnersAreRestoredAsRoot(t *testing.T) {
 	must(os.Lchown(filepath.Join(src, "app"), 1001, 1002))
 	must(os.Lchown(filepath.Join(src, "app", "conf"), 1003, 1004))
 	must(os.Lchown(filepath.Join(src, "app", "link"), 1005, 1006))
-	must(os.Chmod(filepath.Join(src, "app", "conf"), 0o2640&0o777|0o640))
+	// setgid: a chown clears it, so the restore has to set the mode after
+	// the owner for it to come back.
+	must(os.Chmod(filepath.Join(src, "app", "conf"), 0o640|os.ModeSetgid))
 
-	id, _ := age.GenerateX25519Identity()
-	st, _ := sink.NewDir(t.TempDir(), "n")
+	id, err := age.GenerateX25519Identity()
+	must(err)
+	st, err := sink.NewDir(t.TempDir(), "n")
+	must(err)
 	b := sink.NewDirect(st)
 	now := time.Now()
 	res, err := write.Run(context.Background(), b, write.Options{
@@ -55,10 +59,13 @@ func TestOwnersAreRestoredAsRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	es, _ := b.Epochs(context.Background(), "s")
+	es, err := b.Epochs(context.Background(), "s")
+	must(err)
 	r := read.Open(b, es[0], []age.Identity{id})
-	snap, _ := r.Snapshot(context.Background(), res.Snapshot.SnapshotID)
-	idx, _ := r.LoadIndex(context.Background(), snap)
+	snap, err := r.Snapshot(context.Background(), res.Snapshot.SnapshotID)
+	must(err)
+	idx, err := r.LoadIndex(context.Background(), snap)
+	must(err)
 	target := filepath.Join(t.TempDir(), "out")
 	rr, err := r.Restore(context.Background(), snap, idx, read.RestoreOptions{Target: target})
 	if err != nil {
@@ -78,8 +85,12 @@ func TestOwnersAreRestoredAsRoot(t *testing.T) {
 			t.Errorf("%s restored as %d:%d, backed up as %d:%d", p, s.Uid, s.Gid, want[0], want[1])
 		}
 	}
-	if fi, _ := os.Stat(filepath.Join(base, "app", "conf")); fi.Mode().Perm() != 0o640 {
-		t.Errorf("app/conf restored as %o after its owner", fi.Mode().Perm())
+	fi, err := os.Stat(filepath.Join(base, "app", "conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o640 || fi.Mode()&os.ModeSetgid == 0 {
+		t.Errorf("app/conf restored as %v after its owner, want -rw-r----- with setgid", fi.Mode())
 	}
 }
 
@@ -105,8 +116,10 @@ func TestTheTargetTakesTheRootsModeAndLinksTheirTimes(t *testing.T) {
 	must(os.Chmod(src, 0o751))
 	must(os.Chtimes(src, old, old))
 
-	id, _ := age.GenerateX25519Identity()
-	st, _ := sink.NewDir(t.TempDir(), "n")
+	id, err := age.GenerateX25519Identity()
+	must(err)
+	st, err := sink.NewDir(t.TempDir(), "n")
+	must(err)
 	b := sink.NewDirect(st)
 	res, err := write.Run(context.Background(), b, write.Options{
 		SurfaceID: "s", Roots: []string{src}, StateDir: t.TempDir(), Recipient: id.Recipient().String(),
@@ -120,10 +133,13 @@ func TestTheTargetTakesTheRootsModeAndLinksTheirTimes(t *testing.T) {
 	if res.Snapshot.Stats.Dirs != 1 {
 		t.Errorf("the snapshot counts %d directories, the tree has 1 below its root", res.Snapshot.Stats.Dirs)
 	}
-	es, _ := b.Epochs(context.Background(), "s")
+	es, err := b.Epochs(context.Background(), "s")
+	must(err)
 	r := read.Open(b, es[0], []age.Identity{id})
-	snap, _ := r.Snapshot(context.Background(), res.Snapshot.SnapshotID)
-	idx, _ := r.LoadIndex(context.Background(), snap)
+	snap, err := r.Snapshot(context.Background(), res.Snapshot.SnapshotID)
+	must(err)
+	idx, err := r.LoadIndex(context.Background(), snap)
+	must(err)
 	target := filepath.Join(t.TempDir(), "out")
 	if _, err := r.Restore(context.Background(), snap, idx, read.RestoreOptions{Target: target, Base: strings.TrimPrefix(src, "/")}); err != nil {
 		t.Fatal(err)

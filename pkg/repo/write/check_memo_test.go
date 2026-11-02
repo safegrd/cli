@@ -81,8 +81,8 @@ func TestCheckingAnEpochThroughAMemoReadsEachObjectOnce(t *testing.T) {
 	// A memo for another epoch is refused rather than consulted.
 	other := e
 	other.Epoch.EpochID = "e209912-00000000"
-	if _, err := check.Snapshot(context.Background(), h.b, e, ids[0], h.ids, check.Options{Memo: check.NewMemo(h.b, other, h.ids)}); err == nil {
-		t.Fatal("a memo of another epoch was used")
+	if _, err := check.Snapshot(context.Background(), h.b, e, ids[0], h.ids, check.Options{Memo: check.NewMemo(h.b, other, h.ids)}); err == nil || !strings.Contains(err.Error(), "the memo is for epoch e209912-00000000") {
+		t.Fatalf("a memo of another epoch: %v", err)
 	}
 }
 

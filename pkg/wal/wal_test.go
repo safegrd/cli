@@ -95,15 +95,15 @@ func TestARepeatedPushIsAcceptedAndADifferentOneRefused(t *testing.T) {
 	if err := a.Push(ctx, n, bytes.NewReader(walFile(1))); err != nil {
 		t.Fatalf("the same file again: %v", err)
 	}
-	if p, _ := a.Pushed(ctx); len(p) != 1 {
-		t.Fatalf("a repeated push wrote again: %d objects", len(p))
+	if p, err := a.Pushed(ctx); err != nil || len(p) != 1 {
+		t.Fatalf("a repeated push wrote again: %d objects (%v)", len(p), err)
 	}
 	err := a.Push(ctx, n, bytes.NewReader(walFile(2)))
 	if err == nil || !strings.Contains(err.Error(), "already archived with different contents") {
 		t.Fatalf("a different file under the same name: %v", err)
 	}
-	if err := a.Push(ctx, "../../etc/passwd", bytes.NewReader(nil)); err == nil {
-		t.Fatal("a name PostgreSQL never archives was accepted")
+	if err := a.Push(ctx, "../../etc/passwd", bytes.NewReader(nil)); err == nil || !strings.Contains(err.Error(), "is not a WAL file name") {
+		t.Fatalf("a name PostgreSQL never archives: %v", err)
 	}
 }
 
@@ -129,8 +129,8 @@ func TestAFileAlreadyBundledIsDeletedNotBundledAgain(t *testing.T) {
 	if res.Files != 0 || res.Deleted != 1 {
 		t.Fatalf("second bundle: %+v, want nothing bundled and one deleted", res)
 	}
-	if b, _ := a.Bundles(ctx); len(b) != 1 {
-		t.Fatalf("%d bundles, want 1", len(b))
+	if b, err := a.Bundles(ctx); err != nil || len(b) != 1 {
+		t.Fatalf("%d bundles, want 1 (%v)", len(b), err)
 	}
 }
 
@@ -205,8 +205,8 @@ func TestPgControlIsReadLittleEndian(t *testing.T) {
 	if err != nil || id != "7697520923061272610" {
 		t.Fatalf("system id %q %v", id, err)
 	}
-	if _, err := systemIDFromControl(make([]byte, 12), "pg_control"); err == nil {
-		t.Fatal("an all-zero pg_control was read as a system id")
+	if _, err := systemIDFromControl(make([]byte, 12), "pg_control"); err == nil || !strings.Contains(err.Error(), "does not read as pg_control") {
+		t.Fatalf("an all-zero pg_control: %v", err)
 	}
 }
 
@@ -265,8 +265,8 @@ func TestAFetchReadsABundleIndexFromTheCache(t *testing.T) {
 		t.Fatal("the fetched file is not the pushed one")
 	}
 	a.IndexCache = ""
-	if err := a.Fetch(ctx, n, &bytes.Buffer{}); err == nil {
-		t.Fatal("without the cache the bad index was not read: the test proves nothing")
+	if err := a.Fetch(ctx, n, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "neither copy of the record can be read") {
+		t.Fatalf("without the cache the bad index was not read, so the test proves nothing: %v", err)
 	}
 }
 
@@ -298,7 +298,10 @@ func TestTheWindowFollowsATimelineSwitch(t *testing.T) {
 		t.Fatalf("window ends %s (%v), want %s on timeline 2", st.WindowTo, st.HasWindow, want)
 	}
 	// Timeline 2's first segment goes missing: that is the gap.
-	pushed, _ := a.Pushed(ctx)
+	pushed, err := a.Pushed(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, p := range pushed {
 		if p.Name == "000000020000000000000005" {
 			if err := a.Store.Delete(ctx, p.Key); err != nil {
@@ -370,8 +373,9 @@ func TestARestoreRefusesABaseAGapBreaks(t *testing.T) {
 	// the base's tar, which this archive does not hold. Push times are whole
 	// seconds, so a moment inside the last push's second is before the gap.
 	for _, target := range []time.Time{beforeGap, beforeGap.Add(900 * time.Millisecond)} {
-		if err := restore(target); err == nil || strings.Contains(err.Error(), "missing") {
-			t.Fatalf("a restore to %v, before the gap: %v", target, err)
+		err := restore(target)
+		if !errors.Is(err, ErrNotFound) || !strings.Contains(err.Error(), "reading base "+base.BaseID) {
+			t.Fatalf("a restore to %v, before the gap: %v; want it past the WAL check and failing on the base's tar", target, err)
 		}
 	}
 }
@@ -392,8 +396,8 @@ func TestABaseBackupKeepsThePasswordOffTheCommandLine(t *testing.T) {
 	_, err := a.Base(ctx, BaseOptions{ConnURL: "postgres://walrep:s3cret-pw@127.0.0.1:5432/app?sslmode=disable",
 		Server: Server{SystemID: a.SystemID, VersionNum: 160004, SegSize: seg16}, PgBasebackup: script,
 		ListTablespaces: func(context.Context, string) ([]Tablespace, error) { return nil, nil }})
-	if err == nil {
-		t.Fatal("a pg_basebackup that wrote nothing was taken as a base backup")
+	if err == nil || !strings.Contains(err.Error(), "pg_basebackup wrote no backup") {
+		t.Fatalf("a pg_basebackup that wrote nothing: %v", err)
 	}
 	got, err := os.ReadFile(record)
 	if err != nil {
@@ -432,7 +436,10 @@ func TestARecordWithOneDamagedCopyIsReadFromTheOther(t *testing.T) {
 	if err := os.Chmod(p, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	body, _ := os.ReadFile(p)
+	body, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
 	body[len(body)/2] ^= 1
 	if err := os.WriteFile(p, body, 0o600); err != nil {
 		t.Fatal(err)

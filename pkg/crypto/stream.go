@@ -10,6 +10,7 @@ import (
 
 	"filippo.io/age"
 	"github.com/klauspost/compress/zstd"
+	"github.com/safegrd/cli/pkg/model"
 )
 
 // StreamMetrics captures size and cryptographic checksums for a stream operation.
@@ -19,6 +20,18 @@ type StreamMetrics struct {
 	RawSha256        string  `json:"raw_sha256"`
 	EncryptedSha256  string  `json:"encrypted_sha256"`
 	CompressionRatio float64 `json:"compression_ratio"`
+}
+
+// RecordInto writes what an encryption measured into a snapshot's metadata.
+// Sha256Checksum is the digest of the plaintext, the stream a restore reads
+// back and verification hashes; EncryptedSha256 is the object as stored.
+// Every backup path records them here, so the two cannot be swapped in one
+// path and not another.
+func (s *StreamMetrics) RecordInto(meta *model.SnapshotMetadata) {
+	meta.RawSizeBytes = s.RawBytes
+	meta.EncryptedSizeBytes = s.EncryptedBytes
+	meta.Sha256Checksum = s.RawSha256
+	meta.EncryptedSha256 = s.EncryptedSha256
 }
 
 // countingWriter wraps an io.Writer while computing SHA-256 and counting bytes.

@@ -48,8 +48,8 @@ func TestTreeEncodingIsFrozen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	again, _ := EncodeTree(back)
-	if !bytes.Equal(again, got) {
+	again, err := EncodeTree(back)
+	if err != nil || !bytes.Equal(again, got) {
 		t.Fatalf("decode then encode is not the identity:\n%s\n%s", again, got)
 	}
 }
@@ -82,44 +82,47 @@ func TestTreeRefusesWhatAReaderWouldRefuse(t *testing.T) {
 	f := func(name string) Node {
 		return Node{Name: name, Type: NodeFile, ModTime: mt, SHA256: strings.Repeat("0", 64)}
 	}
-	cases := map[string]Tree{
-		"unsorted":       {Entries: []Node{f("b"), f("a")}},
-		"repeated":       {Entries: []Node{f("a"), f("a")}},
-		"slash":          {Entries: []Node{f("a/b")}},
-		"dotdot":         {Entries: []Node{f("..")}},
-		"empty name":     {Entries: []Node{f("")}},
-		"nul":            {Entries: []Node{f("a\x00")}},
-		"mode bits":      {Entries: []Node{{Name: "a", Type: NodeFile, Mode: 0o10000, ModTime: mt, SHA256: strings.Repeat("0", 64)}}},
-		"dir no subtree": {Entries: []Node{{Name: "a", Type: NodeDir, ModTime: mt}}},
-		"file no hash":   {Entries: []Node{{Name: "a", Type: NodeFile, ModTime: mt}}},
-		"data no blobs":  {Entries: []Node{{Name: "a", Type: NodeFile, Size: 3, ModTime: mt, SHA256: strings.Repeat("0", 64)}}},
-		"link no target": {Entries: []Node{{Name: "a", Type: NodeSymlink, ModTime: mt}}},
-		"socket":         {Entries: []Node{{Name: "a", Type: "socket", ModTime: mt}}},
+	cases := map[string]struct {
+		tr   Tree
+		want string
+	}{
+		"unsorted":       {Tree{Entries: []Node{f("b"), f("a")}}, "out of order or repeated"},
+		"repeated":       {Tree{Entries: []Node{f("a"), f("a")}}, "out of order or repeated"},
+		"slash":          {Tree{Entries: []Node{f("a/b")}}, "holds a slash or NUL"},
+		"dotdot":         {Tree{Entries: []Node{f("..")}}, `the name ".."`},
+		"empty name":     {Tree{Entries: []Node{f("")}}, "an empty name"},
+		"nul":            {Tree{Entries: []Node{f("a\x00")}}, "holds a slash or NUL"},
+		"mode bits":      {Tree{Entries: []Node{{Name: "a", Type: NodeFile, Mode: 0o10000, ModTime: mt, SHA256: strings.Repeat("0", 64)}}}, "beyond the permission bits"},
+		"dir no subtree": {Tree{Entries: []Node{{Name: "a", Type: NodeDir, ModTime: mt}}}, "has no subtree"},
+		"file no hash":   {Tree{Entries: []Node{{Name: "a", Type: NodeFile, ModTime: mt}}}, "has no SHA-256"},
+		"data no blobs":  {Tree{Entries: []Node{{Name: "a", Type: NodeFile, Size: 3, ModTime: mt, SHA256: strings.Repeat("0", 64)}}}, "has 3 bytes and no content"},
+		"link no target": {Tree{Entries: []Node{{Name: "a", Type: NodeSymlink, ModTime: mt}}}, "has no target"},
+		"socket":         {Tree{Entries: []Node{{Name: "a", Type: "socket", ModTime: mt}}}, `has type "socket"`},
 	}
-	for name, tr := range cases {
-		if _, err := EncodeTree(tr); err == nil {
-			t.Errorf("%s: encoded", name)
+	for name, c := range cases {
+		if _, err := EncodeTree(c.tr); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: encoded, or refused for another reason: %v (want %q)", name, err, c.want)
 		}
 	}
 	// Byte order, not string collation: "B" (0x42) sorts before "a" (0x61).
 	if _, err := EncodeTree(Tree{Entries: []Node{f("B"), f("a"), f("\xc3\xa9")}}); err != nil {
 		t.Errorf("raw byte order refused: %v", err)
 	}
-	for name, js := range map[string]string{
-		"unknown key":     `{"entries":[],"extra":1}`,
-		"no entries":      `{}`,
-		"trailing":        `{"entries":[]} {}`,
-		"dir with size":   `{"entries":[{"name":"a","type":"dir","mode":0,"mtime":"2026-01-01T00:00:00Z","size":1,"subtree":"` + strings.Repeat("0", 63) + `1"}]}`,
-		"upper hex":       `{"entries":[{"name":"a","type":"dir","mode":0,"mtime":"2026-01-01T00:00:00Z","subtree":"` + strings.Repeat("A", 64) + `"}]}`,
-		"both names":      `{"entries":[{"name":"a","name_b64":"YQ==","type":"symlink","mode":0,"mtime":"2026-01-01T00:00:00Z","target":"x"}]}`,
-		"b64 of utf8":     `{"entries":[{"name_b64":"YQ==","type":"symlink","mode":0,"mtime":"2026-01-01T00:00:00Z","target":"x"}]}`,
-		"bad mtime":       `{"entries":[{"name":"a","type":"symlink","mode":0,"mtime":"yesterday","target":"x"}]}`,
-		"link with sha":   `{"entries":[{"name":"a","type":"symlink","mode":0,"mtime":"2026-01-01T00:00:00Z","sha256":"` + strings.Repeat("0", 64) + `","target":"x"}]}`,
-		"negative size":   `{"entries":[{"name":"a","type":"file","mode":0,"mtime":"2026-01-01T00:00:00Z","size":-1,"sha256":"` + strings.Repeat("0", 64) + `","content":[]}]}`,
-		"content not ids": `{"entries":[{"name":"a","type":"file","mode":0,"mtime":"2026-01-01T00:00:00Z","size":1,"sha256":"` + strings.Repeat("0", 64) + `","content":["x"]}]}`,
+	for name, c := range map[string]struct{ js, want string }{
+		"unknown key":     {`{"entries":[],"extra":1}`, `unknown field "extra"`},
+		"no entries":      {`{}`, "no entries list"},
+		"trailing":        {`{"entries":[]} {}`, "unexpected data after the JSON value"},
+		"dir with size":   {`{"entries":[{"name":"a","type":"dir","mode":0,"mtime":"2026-01-01T00:00:00Z","size":1,"subtree":"` + strings.Repeat("0", 63) + `1"}]}`, "directory entry 0 carries a file's or a link's field"},
+		"upper hex":       {`{"entries":[{"name":"a","type":"dir","mode":0,"mtime":"2026-01-01T00:00:00Z","subtree":"` + strings.Repeat("A", 64) + `"}]}`, "is not 64 lowercase hex characters"},
+		"both names":      {`{"entries":[{"name":"a","name_b64":"YQ==","type":"symlink","mode":0,"mtime":"2026-01-01T00:00:00Z","target":"x"}]}`, "has both name and name_b64"},
+		"b64 of utf8":     {`{"entries":[{"name_b64":"YQ==","type":"symlink","mode":0,"mtime":"2026-01-01T00:00:00Z","target":"x"}]}`, "name_b64 holds valid UTF-8"},
+		"bad mtime":       {`{"entries":[{"name":"a","type":"symlink","mode":0,"mtime":"yesterday","target":"x"}]}`, "mtime"},
+		"link with sha":   {`{"entries":[{"name":"a","type":"symlink","mode":0,"mtime":"2026-01-01T00:00:00Z","sha256":"` + strings.Repeat("0", 64) + `","target":"x"}]}`, "symlink entry 0 carries a file's or a directory's field"},
+		"negative size":   {`{"entries":[{"name":"a","type":"file","mode":0,"mtime":"2026-01-01T00:00:00Z","size":-1,"sha256":"` + strings.Repeat("0", 64) + `","content":[]}]}`, "has a negative size"},
+		"content not ids": {`{"entries":[{"name":"a","type":"file","mode":0,"mtime":"2026-01-01T00:00:00Z","size":1,"sha256":"` + strings.Repeat("0", 64) + `","content":["x"]}]}`, `blob id "x" is not 64 lowercase hex characters`},
 	} {
-		if _, err := DecodeTree([]byte(js)); err == nil {
-			t.Errorf("%s: decoded", name)
+		if _, err := DecodeTree([]byte(c.js)); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: decoded, or refused for another reason: %v (want %q)", name, err, c.want)
 		}
 	}
 }
@@ -186,8 +189,8 @@ func TestContentRootAgreesWithTheSpec(t *testing.T) {
 	cr.Add('d', "-", "a")
 	cr.Add('f', strings.Repeat("1", 64), "a/b")
 	cr.Add('f', strings.Repeat("2", 64), "a-c")
-	if _, err := cr.Sum(); err == nil {
-		t.Fatal("a walk-ordered list was accepted")
+	if _, err := cr.Sum(); err == nil || !strings.Contains(err.Error(), `path "a-c" arrived after "a/b"`) {
+		t.Fatalf("a walk-ordered list: %v, want it refused by order", err)
 	}
 }
 
@@ -225,8 +228,8 @@ func TestPackHeaderAndFooterBytesAreFrozen(t *testing.T) {
 	if tl, err := ParsePackFooter(f, 19+300+8, 19); err != nil || tl != 300 {
 		t.Fatalf("footer parse %d %v", tl, err)
 	}
-	if _, err := ParsePackFooter(f, 19+299+8, 19); err == nil {
-		t.Fatal("a trailer longer than the pack was accepted")
+	if _, err := ParsePackFooter(f, 19+299+8, 19); err == nil || !strings.Contains(err.Error(), "does not fit") {
+		t.Fatalf("a trailer longer than the pack: %v, want it refused as not fitting", err)
 	}
 	bad := append([]byte{}, h...)
 	bad[4] = 2
@@ -235,8 +238,8 @@ func TestPackHeaderAndFooterBytesAreFrozen(t *testing.T) {
 	}
 	bad = append([]byte{}, h...)
 	bad[6] = 1
-	if _, _, err := ParsePackHeader(bad); err == nil {
-		t.Fatal("non-zero reserved bytes accepted")
+	if _, _, err := ParsePackHeader(bad); err == nil || !strings.Contains(err.Error(), "reserved bytes are not zero") {
+		t.Fatalf("non-zero reserved bytes: %v", err)
 	}
 }
 
@@ -253,25 +256,30 @@ func TestTrailerRoundTripAndRefusals(t *testing.T) {
 	if _, err := DecodeTrailer(b); err != nil {
 		t.Fatal(err)
 	}
-	for name, e := range map[string]BlobEntry{
-		"trailer type": {ID: id, Type: BlobTrailer, Offset: 300, Length: 100},
-		"type 2":       {ID: id, Type: 2, Offset: 300, Length: 100},
-		"in header":    {ID: id, Type: 0, Offset: 4, Length: 100, RawLength: 60},
-		"short":        {ID: id, Type: 0, Offset: 300, Length: 39},
-		"raw mismatch": {ID: id, Type: 0, Offset: 300, Length: 100, RawLength: 61},
-		"negative raw": {ID: id, Type: 128, Offset: 300, Length: 100, RawLength: -1},
+	for name, c := range map[string]struct {
+		e    BlobEntry
+		want string
+	}{
+		"trailer type": {BlobEntry{ID: id, Type: BlobTrailer, Offset: 300, Length: 100}, "type byte 127 is not data or tree"},
+		"type 2":       {BlobEntry{ID: id, Type: 2, Offset: 300, Length: 100}, "type byte 2 is not data or tree"},
+		"in header":    {BlobEntry{ID: id, Type: 0, Offset: 4, Length: 100, RawLength: 60}, "inside the pack header"},
+		"short":        {BlobEntry{ID: id, Type: 0, Offset: 300, Length: 39}, "shorter than the nonce and tag"},
+		"raw mismatch": {BlobEntry{ID: id, Type: 0, Offset: 300, Length: 100, RawLength: 61}, "cannot hold 61 raw bytes"},
+		"negative raw": {BlobEntry{ID: id, Type: 128, Offset: 300, Length: 100, RawLength: -1}, "raw length -1 is out of range"},
 	} {
-		if err := e.Validate(); err == nil {
-			t.Errorf("%s: accepted", name)
+		if err := c.e.Validate(); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: accepted, or refused for another reason: %v (want %q)", name, err, c.want)
 		}
 	}
 	overlap := Trailer{Blobs: []BlobEntry{
 		{ID: id, Type: 0, Offset: 300, Length: 100, RawLength: 60},
 		{ID: id, Type: 0, Offset: 350, Length: 100, RawLength: 60},
 	}}
-	b, _ = EncodeTrailer(overlap)
-	if _, err := DecodeTrailer(b); err == nil {
-		t.Fatal("overlapping records accepted")
+	if b, err = EncodeTrailer(overlap); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DecodeTrailer(b); err == nil || !strings.Contains(err.Error(), "overlaps the one before it") {
+		t.Fatalf("overlapping records: %v", err)
 	}
 }
 
@@ -310,8 +318,8 @@ func TestIndexValidate(t *testing.T) {
 		t.Fatal(err)
 	}
 	x.Packs[0].Bytes = 350
-	if err := x.Validate(); err == nil {
-		t.Fatal("a blob past its pack's end accepted")
+	if err := x.Validate(); err == nil || !strings.Contains(err.Error(), "ends past the pack's 350 bytes") {
+		t.Fatalf("a blob past its pack's end: %v", err)
 	}
 }
 

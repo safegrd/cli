@@ -10,6 +10,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -45,6 +47,10 @@ type archiveFile struct {
 	sealedSha               string // overrides the true digest when set
 }
 
+// filesArchive builds a file-surface archive by hand, in the layout
+// FileCollector writes, so a test can seal a wrong digest or add a link.
+// TestARestoreIntoABucketTakesWhatTheCollectorWrote restores the collector's
+// own output.
 func filesArchive(t *testing.T, files []archiveFile, links map[string]string) []byte {
 	t.Helper()
 	m := SealedFileManifest{Version: "1"}
@@ -59,7 +65,10 @@ func filesArchive(t *testing.T, files []archiveFile, links map[string]string) []
 	for name, target := range links {
 		m.Entries = append(m.Entries, FileEntryManifest{Path: name, IsSymlink: true, LinkTarget: target})
 	}
-	raw, _ := json.Marshal(m)
+	raw, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
 	write := func(h *tar.Header, body []byte) {
@@ -152,5 +161,37 @@ func TestARestoreIntoABucketRefusesSymlinksBeforeWritingAnything(t *testing.T) {
 	}
 	if len(fb.objects) != 0 {
 		t.Fatalf("objects were written before the refusal: %v", fb.objects)
+	}
+}
+
+// The archive FileCollector writes restores into a bucket byte for byte.
+func TestARestoreIntoABucketTakesWhatTheCollectorWrote(t *testing.T) {
+	src := t.TempDir()
+	files := map[string]string{"report.pdf": "%PDF-1.7 report", "docs/notes.txt": "plain notes"}
+	for name, body := range files {
+		p := filepath.Join(src, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stream, _, err := NewFileCollector(FileCollectorConfig{RootDir: src}).ScanAndStream(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fb, dst := restoreTarget(t)
+	res, err := RestoreArchiveToObjectStore(context.Background(), stream, dst)
+	if err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if res.ObjectsWritten != int64(len(files)) {
+		t.Fatalf("wrote %d objects, the tree holds %d files: %v", res.ObjectsWritten, len(files), fb.objects)
+	}
+	for name, body := range files {
+		if got := fb.objects["/uploads/restored/"+name]; got != body {
+			t.Errorf("%s restored as %q, want %q", name, got, body)
+		}
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -49,15 +50,22 @@ func TestFireDrillMissingSnapshotHandling(t *testing.T) {
 
 	// Run drill on non-existent snapshot
 	report, err := verifier.RunFireDrill(ctx, "non-existent-snap", "dummy-key", "postgres://localhost/test")
-	if err == nil {
-		t.Fatal("expected error for non-existent snapshot metadata, got nil")
+	var se *StorageError
+	if !errors.As(err, &se) || !strings.Contains(err.Error(), "failed to fetch snapshot metadata") {
+		t.Fatalf("a drill of a snapshot the store does not hold: %v, want the metadata fetch to fail", err)
 	}
-	if report != nil && report.Status == model.VerificationStatusPassed {
-		t.Errorf("expected report not to be marked passed")
+	if report != nil {
+		t.Errorf("a drill that found no snapshot returned a report: %+v", report)
 	}
 }
 
-func TestVerifier_RunDryRestore_Roundtrip(t *testing.T) {
+// The verifier's dry restore over an archive laid out by hand: it decrypts
+// with the right key, counts what the manifest records, and fails with the
+// wrong key. The archive is not what the dumper writes; the round trip from a
+// real database through the dumper and this dry restore is
+// TestANativeSnapshotPassesTheDryRestoreAndRestoresItsRows, in the tests that
+// run against PostgreSQL.
+func TestVerifier_RunDryRestore_HandBuiltArchive(t *testing.T) {
 	ctx := context.Background()
 	tempDir := t.TempDir()
 
@@ -98,48 +106,52 @@ func TestVerifier_RunDryRestore_Roundtrip(t *testing.T) {
 	var tarBuf bytes.Buffer
 	tw := tar.NewWriter(&tarBuf)
 
-	metaBytes, _ := json.MarshalIndent(meta, "", "  ")
+	metaBytes, err := json.MarshalIndent(meta, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
 	schemaSQL := `
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE TABLE IF NOT EXISTS "public"."invoices" (
   "id" integer NOT NULL,
-  "amount" numeric(10,2) NOT NULL
+  "note" text NOT NULL
 );
 `
-	// Build PGCOPY binary for 2 invoices
+	// PGCOPY binary for 2 invoices, each field in PostgreSQL's binary
+	// encoding: an int4 is 4 bytes big-endian, text is its bytes.
 	var copyBuf bytes.Buffer
 	copyBuf.Write([]byte{0x50, 0x47, 0x43, 0x4F, 0x50, 0x59, 0x0A, 0xFF, 0x0D, 0x0A, 0x00}) // sig
 	_ = binary.Write(&copyBuf, binary.BigEndian, uint32(0))                                 // flags
 	_ = binary.Write(&copyBuf, binary.BigEndian, uint32(0))                                 // extLen
 
-	// Row 1
-	_ = binary.Write(&copyBuf, binary.BigEndian, int16(2))
-	_ = binary.Write(&copyBuf, binary.BigEndian, int32(1))
-	copyBuf.WriteString("1")
-	_ = binary.Write(&copyBuf, binary.BigEndian, int32(5))
-	copyBuf.WriteString("99.50")
-
-	// Row 2
-	_ = binary.Write(&copyBuf, binary.BigEndian, int16(2))
-	_ = binary.Write(&copyBuf, binary.BigEndian, int32(1))
-	copyBuf.WriteString("2")
-	_ = binary.Write(&copyBuf, binary.BigEndian, int32(6))
-	copyBuf.WriteString("149.00")
+	for i, note := range []string{"first", "second"} {
+		_ = binary.Write(&copyBuf, binary.BigEndian, int16(2))
+		_ = binary.Write(&copyBuf, binary.BigEndian, int32(4))
+		_ = binary.Write(&copyBuf, binary.BigEndian, int32(i+1))
+		_ = binary.Write(&copyBuf, binary.BigEndian, int32(len(note)))
+		copyBuf.WriteString(note)
+	}
 
 	// Trailer
 	_ = binary.Write(&copyBuf, binary.BigEndian, int16(-1))
 
 	writeEntry := func(name string, data []byte) {
 		hdr := &tar.Header{Name: name, Mode: 0644, Size: int64(len(data))}
-		_ = tw.WriteHeader(hdr)
-		_, _ = tw.Write(data)
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write(data); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	writeEntry("pre-data.sql", []byte(schemaSQL))
 	writeEntry("data/public/invoices.copy", copyBuf.Bytes())
 	writeEntry("sequences.sql", []byte("-- none\n"))
 	writeEntry("manifest.json", metaBytes)
-	_ = tw.Close()
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	// 4. Encrypt stream with Age public key
 	var cipherBuf bytes.Buffer
@@ -257,8 +269,8 @@ func TestVerifier_RunDryRestore_Files(t *testing.T) {
 
 	// Test Fire Drill fails for file surface
 	_, err = verifier.RunFireDrill(ctx, snapshotID, kp.PrivateKey, "postgres://localhost/test")
-	if err == nil {
-		t.Fatal("expected RunFireDrill to reject file surface snapshot, but got nil error")
+	if err == nil || !strings.Contains(err.Error(), "requires a database snapshot") {
+		t.Fatalf("a sandbox drill of a file snapshot: %v, want it refused as not a database", err)
 	}
 
 	// Test Dry Restore succeeds for file surface
@@ -356,8 +368,8 @@ func TestVerifier_RunDryRestore_Email(t *testing.T) {
 
 	// Test Fire Drill fails for email surface
 	_, err = verifier.RunFireDrill(ctx, snapshotID, kp.PrivateKey, "postgres://localhost/test")
-	if err == nil {
-		t.Fatal("expected RunFireDrill to reject email surface snapshot, but got nil error")
+	if err == nil || !strings.Contains(err.Error(), "requires a database snapshot") {
+		t.Fatalf("a sandbox drill of a email snapshot: %v, want it refused as not a database", err)
 	}
 
 	// Test Dry Restore succeeds for email surface
