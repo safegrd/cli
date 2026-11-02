@@ -294,7 +294,7 @@ func guardSnapshot(ctx context.Context, opts guardOptions, what string) (*model.
 // daemon registered has its own) or, for an incremental repository, under
 // its surface id; a standalone database_url is filed under this host.
 func recentLockedSnapshot(ctx context.Context, surface *config.SurfaceConfig, standalone bool, maxAge time.Duration, now time.Time) (*model.SnapshotMetadata, error) {
-	entries, err := listedSnapshots(ctx)
+	entries, err := listedSnapshots(ctx, 0)
 	if err != nil {
 		return nil, err
 	}

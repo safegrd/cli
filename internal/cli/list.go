@@ -26,9 +26,17 @@ func newListCmd() *cobra.Command {
 		Short: "List snapshots in storage and when each lock ends",
 		Long: `Lists the snapshots in this host's storage, with what each holds and when its lock ends.
 
+Shows the newest 100 and says how many older ones it left out. --limit N shows
+the newest N, --all every one. Hosted storage holds the whole organization's
+snapshots, so a host lists other hosts' backups too, and can restore them.
+
 --json prints a JSON array on stdout, one object per snapshot, and sends every
 other line to stderr, so the output can be piped to jq.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if listLimit < 1 {
+				return fmt.Errorf("--limit is how many of the newest snapshots to show: 1 or more, or --all for every one")
+			}
+			listLimitSet = cmd.Flags().Changed("limit")
 			// The bucket is listed once for the snapshots, the ones behind
 			// a delete marker and the node of each.
 			ctx := storage.WithListingMemo(cmd.Context())
@@ -70,6 +78,12 @@ other line to stderr, so the output can be piped to jq.`,
 			shadowed := warnAboutShadowedSnapshots(ctx, storageProvider)
 
 			repoRows := recorded.keepRepo(listRepoSnapshotsKnown(ctx, storageCfg, recorded.lookup(ctx), recorded.known))
+			// Cut before any snapshot is described, so a sidecar is read only
+			// for a row that is shown.
+			older := 0
+			if !listAll {
+				snapshots, repoRows, older = newestListed(snapshots, repoRows, recorded, listLimit)
+			}
 			// Last, after both tables: each snapshot's notes, from the
 			// remote server.
 			shown := map[string]bool{}
@@ -82,6 +96,9 @@ other line to stderr, so the output can be piped to jq.`,
 				nodeIDs[r.Meta.NodeID] = true
 			}
 			defer func() { printNotes(ctx, recorded, shown, nodeIDs) }()
+			if older > 0 {
+				defer fmt.Printf("\n%d older snapshot%s not shown. Run 'safegrd list --all' for every one, or --limit N for the newest N.\n", older, plural(older))
+			}
 			if len(repoRows) > 0 {
 				defer printRepoTable(repoRows, storageCfg)
 			}
@@ -174,11 +191,91 @@ other line to stderr, so the output can be piped to jq.`,
 	cmd.Flags().StringVar(&listFromDir, "from", "", "List an export: the directory 'safegrd export --to-dir' wrote, read without the remote server or this host's storage")
 	cmd.Flags().StringVar(&listProject, "project", "", "Only the snapshots of this project (its id, as 'safegrd projects' lists it), as the remote server recorded them")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print the snapshots as a JSON array on stdout")
+	cmd.Flags().IntVar(&listLimit, "limit", 100, "Show the newest N snapshots. With --json only when given: a script reads every one")
+	cmd.Flags().BoolVar(&listAll, "all", false, "Show every snapshot")
 	return cmd
 }
 
 // listProject is list --project: one project's snapshots.
 var listProject string
+
+// listLimit and listAll are list --limit and --all. listLimitSet says
+// --limit was given, which --json honors; without it --json prints every
+// snapshot, as scripts read it.
+var (
+	listLimit    = 100
+	listAll      bool
+	listLimitSet bool
+)
+
+// newestListed keeps the newest n of both tables, each in its own order,
+// and says how many it left out. Hosted storage holds the whole
+// organization's snapshots, and a list of 4,000 rows, oldest first, put the
+// ones a person looks for at the bottom of a long scroll. A snapshot's time
+// is read from its id, so nothing is downloaded to decide; an id that names
+// no time takes the remote server's record of it.
+func newestListed(ids []string, rows []repoSnapshot, recorded *recordedList, n int) ([]string, []repoSnapshot, int) {
+	if len(ids)+len(rows) <= n {
+		return ids, rows, 0
+	}
+	when := func(id string) time.Time {
+		if t, ok := snapshotIDTime(id); ok {
+			return t
+		}
+		if m := recorded.known(id); m != nil {
+			return m.CreatedAt
+		}
+		return time.Time{}
+	}
+	type entry struct {
+		at   time.Time
+		repo bool
+		i    int
+	}
+	all := make([]entry, 0, len(ids)+len(rows))
+	for i, id := range ids {
+		all = append(all, entry{when(id), false, i})
+	}
+	for i, r := range rows {
+		at := time.Time{}
+		if r.Meta != nil {
+			at = r.Meta.CreatedAt
+			if at.IsZero() {
+				at = when(r.Meta.SnapshotID)
+			}
+		}
+		all = append(all, entry{at, true, i})
+	}
+	// Two runs a second apart can share a time: each table lists oldest
+	// first, so the later of the two is the newer.
+	sort.SliceStable(all, func(a, b int) bool {
+		if !all[a].at.Equal(all[b].at) {
+			return all[a].at.After(all[b].at)
+		}
+		return all[a].repo == all[b].repo && all[a].i > all[b].i
+	})
+	keepID, keepRow := map[int]bool{}, map[int]bool{}
+	for _, e := range all[:n] {
+		if e.repo {
+			keepRow[e.i] = true
+		} else {
+			keepID[e.i] = true
+		}
+	}
+	var outIDs []string
+	for i, id := range ids {
+		if keepID[i] {
+			outIDs = append(outIDs, id)
+		}
+	}
+	var outRows []repoSnapshot
+	for i, r := range rows {
+		if keepRow[i] {
+			outRows = append(outRows, r)
+		}
+	}
+	return outIDs, outRows, len(all) - n
+}
 
 // recordedList is what the remote server recorded of the organization's
 // snapshots, by id, read in pages of 200: one request per page in place of
@@ -211,8 +308,8 @@ func recordedSnapshots(ctx context.Context, project string) (*recordedList, erro
 			q.Set("cursor", cursor)
 		}
 		var page struct {
-			Items      []*model.SnapshotMetadata `json:"items"`
-			NextCursor string                    `json:"next_cursor"`
+			Items      []*listedRecord `json:"items"`
+			NextCursor string          `json:"next_cursor"`
 		}
 		if _, err := getJSON(ctx, cfg, "/api/v1/snapshots?"+q.Encode(), &page); err != nil {
 			if project != "" {
@@ -223,7 +320,7 @@ func recordedSnapshots(ctx context.Context, project string) (*recordedList, erro
 		}
 		for _, m := range page.Items {
 			if m != nil && m.SnapshotID != "" {
-				by[m.SnapshotID] = m
+				by[m.SnapshotID] = m.metadata()
 			}
 		}
 		if page.NextCursor == "" || len(page.Items) == 0 {
@@ -233,6 +330,25 @@ func recordedSnapshots(ctx context.Context, project string) (*recordedList, erro
 	}
 	r.by = by
 	return r, nil
+}
+
+// listedRecord is one snapshot as the remote server lists it: the
+// record, and when hosted storage deletes it if that is after its lock ends.
+// A backup on a plan that locks it a day and keeps it a week carries that
+// week here, and nowhere else in the record: the sidecar list read before
+// had it.
+type listedRecord struct {
+	model.SnapshotMetadata
+	StorageKeptUntil *time.Time `json:"storage_kept_until,omitempty"`
+}
+
+func (r *listedRecord) metadata() *model.SnapshotMetadata {
+	m := r.SnapshotMetadata
+	if k := r.StorageKeptUntil; k != nil && m.KeptUntil == nil && !m.Unlocked && k.After(m.WORMRetentionUntil) {
+		kept := *k
+		m.KeptUntil = &kept
+	}
+	return &m
 }
 
 // keep is the snapshot ids to list: all of them, or the project's.
@@ -485,7 +601,11 @@ func listStorage(ctx context.Context) (config.StorageConfig, error) {
 }
 
 func listJSON(ctx context.Context, out io.Writer) error {
-	entries, err := listedSnapshots(ctx)
+	limit := 0
+	if listLimitSet && !listAll {
+		limit = listLimit
+	}
+	entries, err := listedSnapshots(ctx, limit)
 	if err != nil {
 		return err
 	}
@@ -494,10 +614,11 @@ func listJSON(ctx context.Context, out io.Writer) error {
 	return enc.Encode(entries)
 }
 
-// listedSnapshots reads every snapshot this host's storage holds, as `list
-// --json` describes them. guard reads it too, to find a recent locked
-// snapshot instead of taking another.
-func listedSnapshots(ctx context.Context) ([]listedSnapshot, error) {
+// listedSnapshots reads every snapshot this host's storage holds, or the
+// newest limit of them when limit is more than 0, as `list --json`
+// describes them. guard reads it too, to find a recent locked snapshot
+// instead of taking another.
+func listedSnapshots(ctx context.Context, limit int) ([]listedSnapshot, error) {
 	storageCfg, err := listStorage(ctx)
 	if err != nil {
 		return nil, err
@@ -516,6 +637,10 @@ func listedSnapshots(ctx context.Context) ([]listedSnapshot, error) {
 	}
 	snapshots = recorded.keep(snapshots)
 	warnAboutShadowedSnapshots(ctx, storageProvider)
+	repoRows := recorded.keepRepo(listRepoSnapshotsKnown(ctx, storageCfg, recorded.lookup(ctx), recorded.known))
+	if limit > 0 {
+		snapshots, repoRows, _ = newestListed(snapshots, repoRows, recorded, limit)
+	}
 
 	var nodes map[string]string
 	if loc, ok := storageProvider.(storage.NodeLocator); ok {
@@ -564,7 +689,7 @@ func listedSnapshots(ctx context.Context) ([]listedSnapshot, error) {
 		entries = append(entries, e)
 	}
 
-	for _, rs := range recorded.keepRepo(listRepoSnapshotsKnown(ctx, storageCfg, recorded.lookup(ctx), recorded.known)) {
+	for _, rs := range repoRows {
 		meta := rs.Meta
 		e := listedSnapshot{SnapshotID: meta.SnapshotID, NodeID: meta.NodeID, Surface: string(meta.SurfaceType),
 			Status: string(meta.Status), EncryptedSizeBytes: meta.EncryptedSizeBytes, TotalItems: meta.TotalItems,
