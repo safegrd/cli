@@ -659,11 +659,42 @@ func repoSnapshotIDsIn(ctx context.Context, b sink.Backend, surfaces []string, e
 // readsAtOnce at a time: read one by one, 14 of them took doctor's whole
 // 10 seconds from a host far from the bucket.
 func repoSnapshots(ctx context.Context, b sink.Backend) ([]repoSnapshot, error) {
+	return repoSnapshotsKnown(ctx, b, nil)
+}
+
+// repoSnapshotsKnown is repoSnapshots that reads a sidecar only for the
+// snapshots known does not describe. list passes the remote server's record:
+// reading every sidecar of an organization's hosted storage was one object
+// per snapshot, thousands of them, for rows the record already had.
+func repoSnapshotsKnown(ctx context.Context, b sink.Backend, known func(id string) *model.SnapshotMetadata) ([]repoSnapshot, error) {
 	out, ids, err := repoSnapshotIDs(ctx, b)
 	if err != nil {
 		return nil, err
 	}
-	return withSidecars(ctx, b, out, ids)
+	if known == nil {
+		return withSidecars(ctx, b, out, ids)
+	}
+	var rest []repoSnapshot
+	var restIDs []string
+	var at []int
+	for i, id := range ids {
+		if m := known(id); m != nil {
+			out[i].Meta = m
+			continue
+		}
+		rest, restIDs, at = append(rest, out[i]), append(restIDs, id), append(at, i)
+	}
+	if len(rest) == 0 {
+		return out, nil
+	}
+	read, err := withSidecars(ctx, b, rest, restIDs)
+	if err != nil {
+		return nil, err
+	}
+	for j, i := range at {
+		out[i] = read[j]
+	}
+	return out, nil
 }
 
 // surfaceRepoSnapshots is repoSnapshots for one surface's epochs.

@@ -69,7 +69,7 @@ other line to stderr, so the output can be piped to jq.`,
 			// different situations that used to print the same sentence.
 			shadowed := warnAboutShadowedSnapshots(ctx, storageProvider)
 
-			repoRows := recorded.keepRepo(listRepoSnapshotsWith(ctx, storageCfg, recorded.lookup(ctx)))
+			repoRows := recorded.keepRepo(listRepoSnapshotsKnown(ctx, storageCfg, recorded.lookup(ctx), recorded.known))
 			// Last, after both tables: each snapshot's notes, from the
 			// remote server.
 			shown := map[string]bool{}
@@ -102,6 +102,7 @@ other line to stderr, so the output can be piped to jq.`,
 			}
 			setNode, canSetNode := storageProvider.(interface{ SetNodeID(string) })
 
+			recorded.sayUnrecorded(snapshots)
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
 			fmt.Fprintln(w, "SNAPSHOT\tNODE\tSURFACE\tCONTENTS\tENC SIZE\tRETENTION\tSTATUS")
 
@@ -272,6 +273,31 @@ func (r *recordedList) lookup(ctx context.Context) func(id string) (*model.Snaps
 	}
 }
 
+// known is the remote server's record of one snapshot, nil when it has none
+// or was not read.
+func (r *recordedList) known(id string) *model.SnapshotMetadata {
+	if r == nil {
+		return nil
+	}
+	return r.by[id]
+}
+
+// sayUnrecorded says, before the table, how many snapshots are described
+// from their sidecars, one request each. With the remote server unreachable
+// that was every snapshot in storage, and list printed nothing until it had
+// read them all.
+func (r *recordedList) sayUnrecorded(ids []string) {
+	n := 0
+	for _, id := range ids {
+		if r.known(id) == nil {
+			n++
+		}
+	}
+	if n >= 20 {
+		fmt.Fprintf(os.Stderr, "Reading %d snapshot descriptions from storage, one at a time.\n", n)
+	}
+}
+
 // metadata describes one snapshot: as the remote server recorded it when
 // it did, from its sidecar in storage otherwise.
 func (r *recordedList) metadata(ctx context.Context, p storage.StorageProvider, id string) (*model.SnapshotMetadata, error) {
@@ -334,6 +360,12 @@ func listRepoSnapshots(ctx context.Context, storageCfg config.StorageConfig) []r
 // of a snapshot read through recorded: what list read in one request, in
 // place of one request per unlocked run.
 func listRepoSnapshotsWith(ctx context.Context, storageCfg config.StorageConfig, recorded func(id string) (*model.SnapshotMetadata, error)) []repoSnapshot {
+	return listRepoSnapshotsKnown(ctx, storageCfg, recorded, nil)
+}
+
+// listRepoSnapshotsKnown is listRepoSnapshotsWith that takes a row from
+// known in place of its sidecar.
+func listRepoSnapshotsKnown(ctx context.Context, storageCfg config.StorageConfig, recorded func(id string) (*model.SnapshotMetadata, error), known func(id string) *model.SnapshotMetadata) []repoSnapshot {
 	bs, err := repoBackendsAll(ctx, storageCfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: could not list the incremental repositories: %v\n", err)
@@ -341,7 +373,7 @@ func listRepoSnapshotsWith(ctx context.Context, storageCfg config.StorageConfig,
 	}
 	var out []repoSnapshot
 	for _, b := range bs {
-		rows, err := repoSnapshots(ctx, b)
+		rows, err := repoSnapshotsKnown(ctx, b, known)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: could not list the repository in %s: %v\n", b.Describe(), err)
 			continue
@@ -494,6 +526,7 @@ func listedSnapshots(ctx context.Context) ([]listedSnapshot, error) {
 	}
 	setNode, canSetNode := storageProvider.(interface{ SetNodeID(string) })
 
+	recorded.sayUnrecorded(snapshots)
 	now := time.Now()
 	entries := make([]listedSnapshot, 0, len(snapshots))
 	for _, snapID := range snapshots {
@@ -531,7 +564,7 @@ func listedSnapshots(ctx context.Context) ([]listedSnapshot, error) {
 		entries = append(entries, e)
 	}
 
-	for _, rs := range recorded.keepRepo(listRepoSnapshotsWith(ctx, storageCfg, recorded.lookup(ctx))) {
+	for _, rs := range recorded.keepRepo(listRepoSnapshotsKnown(ctx, storageCfg, recorded.lookup(ctx), recorded.known)) {
 		meta := rs.Meta
 		e := listedSnapshot{SnapshotID: meta.SnapshotID, NodeID: meta.NodeID, Surface: string(meta.SurfaceType),
 			Status: string(meta.Status), EncryptedSizeBytes: meta.EncryptedSizeBytes, TotalItems: meta.TotalItems,

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/safegrd/cli/pkg/model"
 	"github.com/safegrd/cli/pkg/repo/format"
 	"github.com/safegrd/cli/pkg/repo/sink"
 )
@@ -369,6 +370,41 @@ func TestListingSnapshotsSignsTheirSidecarsInOneRequest(t *testing.T) {
 	if f.epochLists != 1 || f.objectLists != 2 || f.downloads != 1 || f.gets != 14 {
 		t.Fatalf("asked for the epochs %d times, listed %d epochs, signed %d times, read %d objects; want 1, 2, 1, 14",
 			f.epochLists, f.objectLists, f.downloads, f.gets)
+	}
+}
+
+// list read the sidecar of every repository snapshot in the organization's
+// hosted storage, thousands of objects for an organization a year old, to
+// print rows the remote server's record already held. A snapshot the record
+// has is not read; one it lacks still is.
+func TestListingTakesRecordedSnapshotsFromTheRecord(t *testing.T) {
+	f := newFakeRepoHosted(t)
+	var ids []string
+	for j := 0; j < 7; j++ {
+		ids = append(ids, fmt.Sprintf("snap-202610%02d-000000-%06x", j+1, j))
+	}
+	f.addEpoch(t, "orders", "e202610-00000001", ids...)
+	recorded := map[string]*model.SnapshotMetadata{}
+	for _, id := range ids[:6] {
+		recorded[id] = &model.SnapshotMetadata{SnapshotID: id, NodeID: "node-1", Status: model.SnapshotStatusVerified}
+	}
+	rows, err := repoSnapshotsKnown(context.Background(), f.repo(), func(id string) *model.SnapshotMetadata { return recorded[id] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 7 {
+		t.Fatalf("listed %d snapshots, want 7", len(rows))
+	}
+	for i, r := range rows {
+		if r.Meta == nil || r.Meta.SnapshotID != ids[i] {
+			t.Fatalf("row %d is %+v, want %s", i, r.Meta, ids[i])
+		}
+		if i < 6 && r.Meta.Status != model.SnapshotStatusVerified {
+			t.Errorf("row %d is described by its sidecar, not the record", i)
+		}
+	}
+	if f.gets != 1 {
+		t.Fatalf("read %d sidecars; want 1, for the one snapshot the record lacks", f.gets)
 	}
 }
 
