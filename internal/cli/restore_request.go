@@ -292,6 +292,9 @@ func backupSurfaceOfNode(ctx context.Context, c *config.CLIConfig, nodeID string
 		"or ask for the restore again in the console with the backup first turned off", nodeID)
 }
 
+// maxGetJSONBytes is the most getJSON reads of one answer.
+const maxGetJSONBytes = 64 << 20
+
 // getJSON is postJSON's GET.
 func getJSON(ctx context.Context, c *config.CLIConfig, path string, out any) (int, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -308,9 +311,15 @@ func getJSON(ctx context.Context, c *config.CLIConfig, path string, out any) (in
 		return 0, err
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	// A page of 200 snapshot records passed 1 MiB once a surface's records
+	// named its tables, and a 1 MiB cap cut it short: list then said the
+	// answer "does not parse" and read thousands of sidecars one by one.
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxGetJSONBytes+1))
 	if err != nil {
 		return resp.StatusCode, err
+	}
+	if len(data) > maxGetJSONBytes {
+		return resp.StatusCode, fmt.Errorf("the remote server's answer to %s is larger than %d MiB", strings.SplitN(path, "?", 2)[0], maxGetJSONBytes>>20)
 	}
 	if resp.StatusCode >= 300 {
 		var e struct {
